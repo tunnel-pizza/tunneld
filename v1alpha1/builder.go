@@ -70,20 +70,15 @@ func (b *BuilderImpl) command() *cobra.Command {
 		Long: name + ` exposes already-running local services to the public internet
 through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
 
-Pass --url once per local origin. The first is the default; each later one is
-reachable under the same public hostname by appending a bare ?n parameter, n
-being that flag's 0-based position:
+Repeat --url per origin. They share one hostname: the first is the default,
+each later one answers on a bare ?n parameter (n is that flag's position).
 
   ` + name + ` --url http://localhost:3000 --url http://localhost:4000
 
     https://<host>/     -> http://localhost:3000
     https://<host>/?1   -> http://localhost:4000
 
-A browser sticks to the origin it landed on: subresources follow their
-document's URL, and a top-level visit to ?n is remembered by cookie.
-
-Public URLs are printed to stdout, one line per origin in flag order; logs and
-the origin map go to stderr.`,
+Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
 		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
