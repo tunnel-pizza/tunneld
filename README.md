@@ -26,7 +26,8 @@ tunneld --url http://localhost:3000   # or just: tunneld --url :3000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/ -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/
+    -> http://localhost:3000
 ```
 
 ## Multiple origins
@@ -41,8 +42,20 @@ tunneld --url http://localhost:3000 --url http://localhost:4000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/?0 -> http://localhost:3000
-  https://amber-forest-9021.tunneled.pizza/?1 -> http://localhost:4000
+  https://amber-forest-9021.tunneled.pizza/
+    -> http://localhost:3000
+    -> http://localhost:4000
+```
+
+With `--multiview=false` the panel goes away and each origin is named by its
+own address instead:
+
+```
+tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
+  https://amber-forest-9021.tunneled.pizza/?0
+    -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/?1
+    -> http://localhost:4000
 ```
 
 The parameter is a routing directive the tunnel's proxy consumes — it never
@@ -62,6 +75,59 @@ That is why the map above prints `?0` for the default origin rather than a bare
 URL: every address stays correct however much you have clicked around. A single
 `--url` has nothing to route between and prints the plain URL.
 
+## Multiview
+
+Several origins behind one hostname are also served as one page, at the
+tunnel's own address:
+
+```
+tunneld --url :3000 --url :4000 --url :5000
+```
+```
+tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
+  https://cruel-donkey.tunneled.pizza/
+    -> http://localhost:3000
+    -> http://localhost:4000
+    -> http://localhost:5000
+```
+
+One iframe per origin, two columns, and an odd count gives the last tile the
+full width of the final row. Each tile is labelled with its routing index and
+its local address, and links out to that origin on its own. With `--open` on,
+this is the page that opens.
+
+The panel is served in front of the origin proxy, so it needs no port and no
+origin ever sees the request. It answers **only** the tunnel's own address:
+path `/`, no routing index, and a top-level navigation that did not come from a
+page already on this host. Everything else belongs to an origin — a
+subresource at `/app.js`, a page at `/dashboard`, a frame, a `fetch`. Without
+that narrowing the panel would swallow every asset an origin serves, or draw
+itself inside one of its own tiles.
+
+One consequence worth knowing: with the panel on, `https://<host>/?page=1`
+reaches the panel rather than the default origin, because it carries no index.
+Reach the origin with its index alongside — `https://<host>/?0&page=1`.
+
+Two things worth knowing:
+
+- The page pulls [Basecoat](https://basecoatui.com) (shadcn/ui's components as
+  plain CSS) from jsDelivr, pinned by version and checked with subresource
+  integrity. That is the one outbound request tunneld makes on your behalf;
+  `--multiview=false` removes it.
+- **Origins that refuse framing are un-refused, narrowly.** An app sending
+  `X-Frame-Options: DENY` or a CSP `frame-ancestors` directive would otherwise
+  render as a blank tile, so those two headers are dropped — but only on
+  requests the panel itself makes, identified by `Sec-Fetch-Dest` being a frame
+  and `Sec-Fetch-Site` being `same-origin`.
+
+  A top-level visit keeps everything the origin sent, and so does another
+  site's attempt to frame your tunnel: that arrives cross-site and is left
+  alone. Nothing else in the policy is touched — `script-src`, `connect-src`
+  and the rest survive directive by directive — and a browser too old to send
+  `Sec-Fetch` headers strips nothing, so the failure mode is a blank tile
+  rather than a quietly weakened origin. `--multiview=false` turns the whole
+  thing off.
+
 ## Output contract
 
 **stdout** is a machine interface: one public URL per origin, in flag order,
@@ -72,8 +138,11 @@ origin's URL.
 URL=$(tunneld --url http://localhost:3000 | head -1)
 ```
 
-**stderr** carries everything human — the build banner, the origin map above,
-and the tunnel's own logs at `--log-level`.
+**stderr** carries everything human — the addresses above, the origins they
+reach, and the tunnel's own logs at `--log-level`. With the panel on, stderr
+names the one public address and lists the origins beneath it; stdout is
+unchanged either way, because a script wants a particular origin rather than a
+page of frames.
 
 On a terminal both streams land in the same place, where the split is
 invisible and every URL would simply appear twice. So when the two go to the
@@ -100,7 +169,8 @@ default.**
 | `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
-| `--open` | `TUNNELD_OPEN` | Open the default origin's public URL in a browser once the tunnel is live. **Default on** — `--open=false` on a server or in CI. |
+| `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |
+| `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single `--url`, which keeps the bare address for itself. |
 
 So the whole thing runs from a container with no command line at all:
 
@@ -193,6 +263,7 @@ type Builder interface {
     WithProvider(host string) Builder  // quick-tunnel host; default tunnel.pizza
     WithLogLevel(level string) Builder // debug|info|warn|error on stderr
     WithOpen(open bool) Builder        // open a browser when live; default true
+    WithMultiview(mv bool) Builder     // frame the origins together; default true
     WithStdout(w io.Writer) Builder    // the public URLs
     WithStderr(w io.Writer) Builder    // banner, origin map, logs
     Build() *cobra.Command             // terminal: assembles and returns
@@ -210,9 +281,11 @@ const LogEnv          = "TUNNELD_LOG"
 const URLEnv          = "TUNNELD_URL"
 const ProviderEnv     = "TUNNELD_PROVIDER"
 const OpenEnv         = "TUNNELD_OPEN"
+const MultiviewEnv    = "TUNNELD_MULTIVIEW"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
-const DefaultOpen     = true
+const DefaultOpen      = true
+const DefaultMultiview = true
 ```
 
 And the env plumbing implementations use, in `v1alpha1`:
@@ -236,6 +309,7 @@ after construction still lands.
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_OPEN` | `--open` | Whether to open a browser once the tunnel is live. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

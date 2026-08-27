@@ -3,7 +3,7 @@
 // browser, and blocks until interrupted.
 //
 // Nothing else needs to be running — the origin on :3000 is this program's
-// own. Every tunneld flag still works, since the seeded origin is only a
+// own, serving the same page examples/multi-origin puts in its first tile. Every tunneld flag still works, since the seeded origin is only a
 // default:
 //
 //	go run ./examples/basic --url http://localhost:8080 --open=false
@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tunnel-pizza/tunneld/examples/sites"
 	"github.com/tunnel-pizza/tunneld/lib"
 )
 
@@ -41,7 +41,7 @@ func main() {
 	// cobra answers --help before it runs, so `--help` stays a pure question:
 	// it prints and exits without binding a port.
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
-		return serve(cmd.Context(), ":3000", "basic")
+		return serve(cmd.Context(), ":3000", "frontend.html")
 	}
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
@@ -50,21 +50,27 @@ func main() {
 	}
 }
 
-// serve starts an HTTP server on addr and returns once it is listening, so the
-// tunnel never proxies to a socket that is not up yet. It shuts down with ctx.
+// serve starts an HTTP server on addr answering with the named page, and
+// returns once it is listening, so the tunnel never proxies to a socket that is
+// not up yet. It shuts down with ctx.
+//
+// Every path gets the same page: this is a stand-in for a real service, and a
+// router would only be scenery.
 func serve(ctx context.Context, addr, name string) error {
+	page, err := sites.FS.ReadFile(name)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
 	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// The request target is whatever the visitor typed, and it lands
-			// in an HTML document — escape it, or the echo below is a
-			// reflected-XSS hole in a file people copy as a starter.
-			fmt.Fprintf(w, page, name, addr, html.EscapeString(r.URL.RequestURI()))
+			_, _ = w.Write(page)
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -77,13 +83,3 @@ func serve(ctx context.Context, addr, name string) error {
 	}()
 	return nil
 }
-
-// page is what a visitor sees. It echoes the request so the tunnel's work is
-// visible from the browser: the path arrives at the origin unchanged.
-const page = `<!doctype html>
-<meta charset="utf-8">
-<title>%[1]s</title>
-<h1>%[1]s</h1>
-<p>served locally by <code>%[2]s</code>, reached through a tunnel</p>
-<p>you asked for <code>%[3]s</code></p>
-`

@@ -18,10 +18,12 @@ Deep-link by filename; line numbers will drift.
 | Builder methods + command assembly             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
 | Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
+| Multiview interceptor + shell template         | [`v1alpha1/multiview.go`](./v1alpha1/multiview.go), [`v1alpha1/index.html`](./v1alpha1/index.html) |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
 | godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
+| Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -225,6 +227,27 @@ Easy to get wrong from the diff alone:
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
+- **The panel answers the tunnel's bare address, and every condition narrowing
+  that is load-bearing.** `isPanelRequest` requires path `/`, no routing index,
+  a top-level document, and no same-host referer. Drop the path check and the
+  panel swallows every `/app.js` an origin serves; drop the Sec-Fetch check and
+  it draws itself inside its own tiles; drop the referer check and a `fetch`
+  from an origin page gets HTML. See
+  [`v1alpha1/multiview.go`](./v1alpha1/multiview.go).
+- **The framing-header removal must stay narrowed to the panel's own frames.**
+  `unframe` drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile is
+  not blank, and it is gated on `Sec-Fetch-Dest` being a frame *and*
+  `Sec-Fetch-Site` being `same-origin`. Widening either condition would strip a
+  real protection from top-level visits or hand another site the ability to
+  frame somebody's tunnel. Everything else in a policy is preserved directive
+  by directive; the scrub happens in `WriteHeader`, because headers are
+  immutable after the first write.
+- **The shell's CSS is layout only.** Colour, type, borders and radius come
+  from Basecoat; the CDN build ships component classes without Tailwind's
+  utilities, so the rule of thumb is that a style earns its place only when no
+  class can supply it. Both CDN URLs carry a subresource-integrity digest —
+  recompute it (`openssl dgst -sha384 -binary <file> | openssl base64 -A`) when
+  bumping the version, or the page silently loses its stylesheet.
 - **The default origin is `?0`, not a bare URL, whenever there is more than
   one.** Routing falls back to the referring page and then to a sticky cookie,
   so a plain address stops reaching origin 0 once a browser has visited `?1`.
@@ -241,9 +264,12 @@ Easy to get wrong from the diff alone:
   is "would one reader see this twice" — equally true of `>out 2>&1`. A writer
   that is not an `*os.File` (a test buffer, an embedder's writer) is never
   merged.
-- **`examples/` is intentionally duplicated.** Each `main.go` is a
-  copy-pasteable starter; no shared internal package. Don't refactor it into
-  one.
+- **`examples/` is intentionally duplicated, except for the pages.** Each
+  `main.go` is a copy-pasteable starter and stays standalone — don't refactor
+  the wiring into a shared helper. The sample HTML in
+  [`examples/sites`](./examples/sites) is the deliberate exception: nobody
+  copies those, and one of each means a fix to the scrolling or the sticky
+  header lands everywhere instead of drifting between examples.
 - **e2e builds its binaries at runtime**, so the test cache can't see source
   changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in
@@ -262,7 +288,9 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 example is copy-pasteable on its own).
 
 An example starts the origins it exposes, so someone can run it against a
-clean machine and see a tunnel work. Hang that on the built command's
+clean machine and see a tunnel work. The pages it serves come from
+[`examples/sites`](./examples/sites), shared across examples; add one there
+rather than inlining HTML in a `main.go`. Hang that on the built command's
 `PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
 before it reaches that hook, which is what keeps `--help` from binding a port.
 `Build` returns an ordinary `*cobra.Command`, so the hook is free — but

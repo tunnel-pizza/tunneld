@@ -33,10 +33,17 @@ func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
 	return b
 }
 
-// WithOpen sets whether the default origin's public URL is opened in a browser
-// once the tunnel is live.
+// WithOpen sets whether a public URL is opened in a browser once the tunnel is
+// live.
 func (b *BuilderImpl) WithOpen(open bool) v1.Builder {
 	b.open = open
+	return b
+}
+
+// WithMultiview sets whether several origins are also served together as one
+// panel of framed views.
+func (b *BuilderImpl) WithMultiview(multiview bool) v1.Builder {
+	b.multiview = multiview
 	return b
 }
 
@@ -131,7 +138,9 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
 		"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
 	cmd.Flags().BoolVar(&b.open, "open", b.open,
-		"open the default origin's public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
+		"open a public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
+	cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
+		"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 	// Required only when nothing was seeded: an embedder that supplied an
 	// origin wants --url optional, not forbidden.
 	if len(b.urls) == 0 {

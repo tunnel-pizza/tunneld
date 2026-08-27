@@ -7,10 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cnuss/libtunnel"
 	"github.com/pkg/browser"
@@ -54,17 +56,30 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		WithContext(ctx).
 		WithLocalURL(origins...)
 
+	// Served in front of the origin proxy, so the panel needs no port of its
+	// own and no origin ever sees the request.
+	view := ""
+	if wantsMultiview(b.multiview, origins) {
+		tun.WithInterceptor(multiview(origins, log))
+		tun.WithInterceptor(unframe())
+	}
+
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
 
 	public := tun.URL()
 	if public == nil {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
-	report(stdout, stderr, public, origins)
+	if wantsMultiview(b.multiview, origins) {
+		view = multiviewURL(public)
+	}
+	report(stdout, stderr, public, origins, view)
 	if b.open {
-		// Only the default origin. The others are reported and left alone: a
-		// fan of tabs, one per --url, is rarely what anyone wanted.
-		openInBrowser(PublicURL(public, 0, len(origins)), stderr, log)
+		// One page, never a fan of tabs: the panel when there is one, since it
+		// reaches every origin, and otherwise the default origin itself.
+		target := cmp.Or(view, PublicURL(public, 0, len(origins)))
+		awaitReachable(ctx, target, reachableWithin, log)
+		openInBrowser(target, stderr, log)
 	}
 
 	select {
@@ -80,25 +95,43 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 // machine-consumable: a script reads line i to reach origin i, while the
 // banner and the arrows stay out of its way.
 //
+// stderr gets a line per public address with the origins it reaches indented
+// beneath it. With a panel that is one address and every origin; without, one
+// address per origin. stdout is unchanged either way — one line per origin, in
+// order — because a script wants the address of a particular origin, not a
+// page of frames.
+//
 // Unless the two streams land in the same place, which on a terminal they
 // normally do — and there the split is invisible, so every URL would simply
 // appear twice, once bare and once in the map. When they do, the bare lines
 // are dropped: the map already shows every address, in a form that says which
 // origin it reaches. Redirect either stream and both come back, because then
 // they are going somewhere different and the machine-readable one has a reader.
-func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
+func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL, view string) {
 	fmt.Fprintln(stderr, VersionLine())
 	merged := sameStream(stdout, stderr)
-	width := 0
-	for i := range origins {
-		width = max(width, len(PublicURL(public, i, len(origins))))
-	}
-	for i, origin := range origins {
-		addr := PublicURL(public, i, len(origins))
-		if !merged {
-			fmt.Fprintln(stdout, addr)
+
+	if !merged {
+		for i := range origins {
+			fmt.Fprintln(stdout, PublicURL(public, i, len(origins)))
 		}
-		fmt.Fprintf(stderr, "  %-*s -> %s\n", width, addr, origin)
+	}
+
+	// Every public address gets a line, with what it reaches indented beneath.
+	// A panel is the case where one address reaches them all; otherwise each
+	// origin has an address of its own. One shape either way, and no column to
+	// keep aligned as hostnames change length.
+	if view != "" {
+		fmt.Fprintf(stderr, "  %s\n", view)
+		for _, origin := range origins {
+			fmt.Fprintf(stderr, "    -> %s\n", origin)
+		}
+		return
+	}
+
+	for i, origin := range origins {
+		fmt.Fprintf(stderr, "  %s\n", PublicURL(public, i, len(origins)))
+		fmt.Fprintf(stderr, "    -> %s\n", origin)
 	}
 }
 
@@ -128,6 +161,59 @@ func sameStream(a, b io.Writer) bool {
 		return false
 	}
 	return os.SameFile(ai, bi)
+}
+
+// The window between a tunnel being ready and the edge serving it. Ten seconds
+// is far longer than the gap has been observed to be — under a second — and it
+// only ever costs that much when something is wrong, in which case the browser
+// opens anyway rather than never.
+const (
+	reachableWithin = 10 * time.Second
+	reachableEvery  = 250 * time.Millisecond
+	reachableProbe  = 5 * time.Second
+)
+
+// awaitReachable waits for the edge to actually serve addr before a browser is
+// pointed at it.
+//
+// TunnelReady, which URL has already waited on, means the connection is up and
+// the hostname resolves. It does not mean the edge has finished registering
+// the route: for a moment after that it answers 530, and a browser opened into
+// that window shows an error page for a tunnel that is about to work. Measured
+// at roughly half a second, which is exactly long enough to be the first thing
+// somebody sees.
+//
+// Anything the origin itself produced ends the wait, 404 and 401 included —
+// the question is whether the route is live, not whether the app is happy. A
+// 5xx is the edge saying it still cannot reach the tunnel. Giving up opens the
+// browser regardless: a page that may work beats no page at all, and the
+// warning says which happened.
+func awaitReachable(ctx context.Context, addr string, within time.Duration, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+
+	client := &http.Client{Timeout: reachableProbe}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, addr, nil)
+		if err != nil {
+			return // a URL this far in is well-formed; nothing to retry
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode < http.StatusInternalServerError {
+				return
+			}
+			log.Debug("edge not serving yet", "url", addr, "status", resp.StatusCode)
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Warn("opening a browser before the edge answered", "url", addr)
+			return
+		case <-time.After(reachableEvery):
+		}
+	}
 }
 
 // openInBrowser launches a browser on addr, reporting a failure as a warning

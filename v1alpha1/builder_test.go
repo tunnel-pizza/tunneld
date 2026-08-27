@@ -230,3 +230,50 @@ func TestWithOpenSeedsTheDefault(t *testing.T) {
 		t.Error("--open = false after the flag was passed, want the flag to beat the seed")
 	}
 }
+
+// TestMultiviewDefaultsOn pins the panel's default and both levers that turn
+// it off. The default is the point of the flag: someone exposing three
+// services wants to see three services.
+func TestMultiviewDefaultsOn(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		args []string
+		want bool
+	}{
+		{name: "default", want: true},
+		{name: "flag turns it off", args: []string{"--multiview=false"}, want: false},
+		{name: "variable turns it off", env: "false", want: false},
+		{name: "flag beats the variable", env: "false", args: []string{"--multiview=true"}, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.MultiviewEnv, tc.env)
+
+			b := v1alpha1.New().WithURL("http://localhost:3000", "http://localhost:4000")
+			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
+			if !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+
+			got, err := b.Build().Flags().GetBool("multiview")
+			if err != nil {
+				t.Fatalf("GetBool: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("--multiview = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithMultiviewSeedsTheDefault pins that an embedder can flip the default
+// without forbidding the flag.
+func TestWithMultiviewSeedsTheDefault(t *testing.T) {
+	b := v1alpha1.New().WithURL("http://localhost:3000").WithMultiview(false)
+
+	if got := b.Build().Flags().Lookup("multiview").DefValue; got != "false" {
+		t.Errorf("--multiview default = %q, want %q", got, "false")
+	}
+}
