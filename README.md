@@ -1,19 +1,12 @@
-<!--
-Made from this template? Find/replace "golib" → your library name across the
-repo, update lib.go's `package golib` clause, then delete this comment.
-`make all` should stay green. (Workflows read GITHUB_REPOSITORY at runtime, so
-they need no edits.)
--->
+# tunneld
 
-# golib
-
-[![Go Reference](https://pkg.go.dev/badge/github.com/cnuss/golib.svg)](https://pkg.go.dev/github.com/cnuss/golib)
-[![CI](https://github.com/cnuss/golib/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cnuss/golib/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/cnuss/golib/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/cnuss/golib/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cnuss/golib/badge)](https://scorecard.dev/viewer/?uri=github.com/cnuss/golib)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tunnel-pizza/tunneld.svg)](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
+[![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tunnel-pizza/tunneld/badge)](https://scorecard.dev/viewer/?uri=github.com/tunnel-pizza/tunneld)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-`golib` is a thin, stable façade over stable/alpha versioned packages
+`tunneld` is a thin, stable façade over stable/alpha versioned packages
 (`v1` stable contract, `v1alpha1` mutable implementation), with CI, CodeQL,
 OpenSSF Scorecard, cosign-signed releases, Dependabot, examples, and an e2e
 harness.
@@ -24,7 +17,7 @@ finalizes with `Build()`.
 ## Quick Start
 
 ```sh
-go get github.com/cnuss/golib
+go get github.com/tunnel-pizza/tunneld
 ```
 
 ```go
@@ -33,11 +26,11 @@ package main
 import (
 	"fmt"
 
-	"github.com/cnuss/golib"
+	"github.com/tunnel-pizza/tunneld"
 )
 
 func main() {
-	res := golib.New[string]().
+	res := tunneld.New[string]().
 		WithName("greeting").
 		WithValue("hello world").
 		Build()
@@ -53,16 +46,16 @@ func main() {
 Three packages, stable/alpha versioning:
 
 ```
-github.com/cnuss/golib           — root façade. New, Version, and aliases for
+github.com/tunnel-pizza/tunneld           — root façade. New, Version, and aliases for
                                    the caller-facing types.
-github.com/cnuss/golib/v1        — stable Builder[T] interface + Result[T],
+github.com/tunnel-pizza/tunneld/v1        — stable Builder[T] interface + Result[T],
                                    the Err* sentinels, the *Env constants.
-github.com/cnuss/golib/v1alpha1  — current implementation. May change
+github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation. May change
                                    between alpha revisions.
 ```
 
-Application code imports only the root: `golib.New[T]()` builds, and
-`golib.BuilderV1[T]` / `golib.Result[T]` name the types in a field or
+Application code imports only the root: `tunneld.New[T]()` builds, and
+`tunneld.BuilderV1[T]` / `tunneld.Result[T]` name the types in a field or
 signature. Import `v1` directly to implement the interface yourself, or to
 reach a symbol the façade doesn't re-export. Direct access to the
 `BuilderImpl[T]` struct lives in `v1alpha1`.
@@ -98,7 +91,7 @@ type Result[T any] struct {
 }
 
 var ErrInvalidEnv = errors.New("invalid environment value")  // match with errors.Is
-const LogEnv = "GOLIB_LOG"
+const LogEnv = "TUNNELD_LOG"
 ```
 
 And the env plumbing implementations use, in `v1alpha1`:
@@ -106,7 +99,7 @@ And the env plumbing implementations use, in `v1alpha1`:
 ```go
 func EnvBool(name string) (value, fixed bool, err error)
 func EnvDuration(name string) (value time.Duration, fixed bool, err error)
-func Logger() *slog.Logger   // silent unless GOLIB_LOG names a level
+func Logger() *slog.Logger   // silent unless TUNNELD_LOG names a level
 ```
 
 ## Environment
@@ -118,9 +111,9 @@ after construction still lands.
 
 | Variable    | Effect                                                        |
 | ----------- | ------------------------------------------------------------- |
-| `GOLIB_LOG` | Level (`debug`\|`info`\|`warn`\|`error`) of `v1alpha1.Logger`. Unset, that logger is silent. |
+| `TUNNELD_LOG` | Level (`debug`\|`info`\|`warn`\|`error`) of `v1alpha1.Logger`. Unset, that logger is silent. |
 
-Names follow `GOLIB_<KNOB>` for core knobs and `GOLIB__<IMPL>_<KNOB>` — double
+Names follow `TUNNELD_<KNOB>` for core knobs and `TUNNELD__<IMPL>_<KNOB>` — double
 underscore — for implementation-scoped ones, so two implementations can each
 expose a `TIMEOUT` without colliding.
 

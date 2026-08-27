@@ -1,4 +1,4 @@
-module github.com/cnuss/golib
+module github.com/tunnel-pizza/tunneld
 
 // 1.24 is the floor for generic type aliases (`type BuilderV1[T any] =
 // v1.Builder[T]` in lib.go) and for slog.DiscardHandler (v1alpha1's silent

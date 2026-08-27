@@ -1,4 +1,4 @@
-package golib
+package tunneld
 
 import (
 	"runtime/debug"

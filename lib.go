@@ -1,26 +1,26 @@
-// Package golib is a thin, stable façade over stable/alpha versioned packages.
+// Package tunneld is a thin, stable façade over stable/alpha versioned packages.
 //
 // The package is split into three pieces:
 //
-//   - golib (this package) — thin façade exposing New, Version, and aliases
+//   - tunneld (this package) — thin façade exposing New, Version, and aliases
 //     for the caller-facing types. Stable surface for application code.
-//   - github.com/cnuss/golib/v1 — the stable Builder[T] interface and Result
+//   - github.com/tunnel-pizza/tunneld/v1 — the stable Builder[T] interface and Result
 //     type, plus the Err* sentinels and *Env constants. Application code
 //     normally reaches these through the aliases here; import v1 directly to
 //     implement the interface or to reach a symbol the façade doesn't re-export.
-//   - github.com/cnuss/golib/v1alpha1 — the current implementation. Internals
+//   - github.com/tunnel-pizza/tunneld/v1alpha1 — the current implementation. Internals
 //     (BuilderImpl, helpers) may change between alpha revisions; pin only if
 //     you need direct access to the struct.
 //
 // New[T]() returns a Builder[T] you configure with With* methods and finalize
 // with Build().
-package golib
+package tunneld
 
 import (
 	"runtime/debug"
 
-	v1 "github.com/cnuss/golib/v1"
-	"github.com/cnuss/golib/v1alpha1"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
 // BuilderV1 is the builder returned by New: an alias for v1.Builder[T],
@@ -39,18 +39,18 @@ type (
 	Result[T any] = v1.Result[T] // structured output of Build: Name + Value
 )
 
-// modulePath is golib's import path — used to find golib's own entry in an
+// modulePath is tunneld's import path — used to find tunneld's own entry in an
 // importer's build info.
-const modulePath = "github.com/cnuss/golib"
+const modulePath = "github.com/tunnel-pizza/tunneld"
 
 // version is stamped into a release binary via
-// -ldflags "-X github.com/cnuss/golib.version=<tag>". The library ships no
+// -ldflags "-X github.com/tunnel-pizza/tunneld.version=<tag>". The library ships no
 // binary of its own, so nothing here sets it and it stays empty — Version
 // derives the value from build info instead. A fork that grows a cmd/ gets
 // stamping by passing that ldflag from its build.
 var version string
 
-// Version reports the golib release this build links against — e.g. "v0.0.5".
+// Version reports the tunneld release this build links against — e.g. "v0.0.5".
 // It matches the git tag, so a consumer can log or report the exact library
 // version it compiles against.
 //
@@ -69,7 +69,7 @@ func Version() string {
 	if !ok {
 		return "unknown"
 	}
-	// Consumer build: golib is a dependency — return the module version the
+	// Consumer build: tunneld is a dependency — return the module version the
 	// importer pinned (following a replace directive if one redirects it).
 	for _, dep := range info.Deps {
 		if dep.Path != modulePath {
@@ -82,7 +82,7 @@ func Version() string {
 			return dep.Version
 		}
 	}
-	// golib is the main module (its own binary, or its tests): the main
+	// tunneld is the main module (its own binary, or its tests): the main
 	// module version, then the VCS stamp.
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
@@ -117,7 +117,7 @@ func vcsVersion(info *debug.BuildInfo) string {
 // New returns an unconfigured Builder for values of type T. Configure it with
 // the With* methods, then call Build.
 //
-//	res := golib.New[string]().WithName("greeting").WithValue("hello").Build()
+//	res := tunneld.New[string]().WithName("greeting").WithValue("hello").Build()
 func New[T any]() BuilderV1[T] {
 	return v1alpha1.New[T]()
 }
