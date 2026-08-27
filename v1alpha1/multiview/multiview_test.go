@@ -1,4 +1,4 @@
-package v1alpha1
+package multiview
 
 import (
 	"log/slog"
@@ -26,7 +26,9 @@ func TestIsPanelRequest(t *testing.T) {
 		{name: "a later origin's index", target: "/?2", want: false},
 		{name: "an origin subresource", target: "/app.js", want: false},
 		{name: "an origin page below the root", target: "/dashboard", want: false},
-		{name: "a valued parameter is not an index", target: "/?page=1", want: true},
+		{name: "an app's own root parameters", target: "/?page=1", want: false},
+		{name: "an OAuth callback", target: "/?code=abc&state=xyz", want: false},
+		{name: "an empty query string", target: "/?", want: true},
 		{name: "a frame navigating to the root", target: "/", dest: "iframe", want: false},
 		{name: "a script or fetch for the root", target: "/", dest: "empty", want: false},
 		{name: "a link from a page on this host", target: "/", dest: "document", referer: "https://foo.tunneled.pizza/?1", want: false},
@@ -51,38 +53,15 @@ func TestIsPanelRequest(t *testing.T) {
 	}
 }
 
-// TestHasRoutingIndex pins the one thing that distinguishes an origin's
-// address from the panel's: a bare numeric segment. A valued parameter is
-// application data and must not be read as a route.
-func TestHasRoutingIndex(t *testing.T) {
-	cases := map[string]bool{
-		"":          false,
-		"0":         true,
-		"1":         true,
-		"12":        true,
-		"a=1&2":     true,
-		"2&a=1":     true,
-		"page=1":    false,
-		"0=x":       false,
-		"multiview": false,
-		"x":         false,
-	}
-	for query, want := range cases {
-		if got := hasRoutingIndex(query); got != want {
-			t.Errorf("hasRoutingIndex(%q) = %v, want %v", query, got, want)
-		}
-	}
-}
-
-// TestWantsMultiview pins that the panel needs both the flag and something to
+// TestWanted pins that the panel needs both the flag and something to
 // compare. One origin framed alone is a worse view of it than the origin
 // itself, so a lone --url keeps opening the origin.
-func TestWantsMultiview(t *testing.T) {
-	one, err := parseOrigins([]string{"http://localhost:3000"})
+func TestWanted(t *testing.T) {
+	one, err := mustOrigins([]string{"http://localhost:3000"})
 	if err != nil {
 		t.Fatalf("parseOrigins: %v", err)
 	}
-	two, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	two, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
 		t.Fatalf("parseOrigins: %v", err)
 	}
@@ -100,26 +79,26 @@ func TestWantsMultiview(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := wantsMultiview(tc.enabled, tc.origins); got != tc.want {
-				t.Errorf("wantsMultiview() = %v, want %v", got, tc.want)
+			if got := Wanted(tc.enabled, tc.origins); got != tc.want {
+				t.Errorf("Wanted() = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestMultiviewURL pins that the panel's address is the tunnel's own, and that
+// TestURL pins that the panel's address is the tunnel's own, and that
 // building it leaves the tunnel URL alone — every origin address derives from
 // the same value.
-func TestMultiviewURL(t *testing.T) {
+func TestURL(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got, want := multiviewURL(public), "https://foo.tunneled.pizza/"; got != want {
-		t.Errorf("multiviewURL() = %q, want %q", got, want)
+	if got, want := URL(public), "https://foo.tunneled.pizza/"; got != want {
+		t.Errorf("URL() = %q, want %q", got, want)
 	}
 	if public.RawQuery != "" {
-		t.Errorf("multiviewURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
+		t.Errorf("URL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
 	}
 }
 
@@ -127,7 +106,7 @@ func TestMultiviewURL(t *testing.T) {
 // per origin, each addressed by its routing index, and the host the visitor
 // actually used rather than one baked in at mint time.
 func TestServeShell(t *testing.T) {
-	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
+	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
 	if err != nil {
 		t.Fatalf("parseOrigins: %v", err)
 	}
@@ -167,7 +146,7 @@ func TestServeShell(t *testing.T) {
 // header they like -- and it lands in an HTML document, which is the shape of
 // bug that has already cost this repo one CodeQL alert.
 func TestServeShellEscapesTheHost(t *testing.T) {
-	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
 		t.Fatalf("parseOrigins: %v", err)
 	}
@@ -182,16 +161,16 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 	}
 }
 
-// TestMultiviewInterceptorServesTheShell pins the wiring: the interceptor
+// TestPanelInterceptorServesTheShell pins the wiring: the interceptor
 // matches the panel's parameter and replaces the handler that would otherwise
 // proxy the request to an origin.
-func TestMultiviewInterceptorServesTheShell(t *testing.T) {
-	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+func TestPanelInterceptorServesTheShell(t *testing.T) {
+	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
 		t.Fatalf("parseOrigins: %v", err)
 	}
 
-	interceptor := multiview(origins, slog.New(slog.DiscardHandler))
+	interceptor := Panel(origins, slog.New(slog.DiscardHandler))
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
@@ -338,14 +317,29 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 // TestUnframeInterceptorIsBehindTheShell pins the ordering: the panel is
 // served before anything considers framing, and the unframer never matches the
 // panel's own request.
-func TestUnframeInterceptorIsBehindTheShell(t *testing.T) {
-	shellPriority := multiview(nil, slog.New(slog.DiscardHandler)).Priority
-	if got := unframe().Priority; got <= shellPriority {
+func TestUnframeIsBehindThePanel(t *testing.T) {
+	shellPriority := Panel(nil, slog.New(slog.DiscardHandler)).Priority
+	if got := Unframe().Priority; got <= shellPriority {
 		t.Errorf("unframe Priority = %d, want it behind the shell's %d", got, shellPriority)
 	}
 
 	panel := httptest.NewRequest(http.MethodGet, "/", nil)
-	if unframe().Match(panel) {
+	if Unframe().Match(panel) {
 		t.Error("the unframer matched the panel request, which it does not serve")
 	}
+}
+
+// mustOrigins builds origin URLs for the tables above. The real parsing lives
+// in v1alpha1, which this package cannot import — it is the other direction —
+// and these fixtures are already-valid URLs, so a plain parse is enough.
+func mustOrigins(raw []string) ([]*url.URL, error) {
+	origins := make([]*url.URL, 0, len(raw))
+	for _, s := range raw {
+		u, err := url.Parse(s)
+		if err != nil {
+			return nil, err
+		}
+		origins = append(origins, u)
+	}
+	return origins, nil
 }

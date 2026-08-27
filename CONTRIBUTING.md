@@ -18,7 +18,7 @@ Deep-link by filename; line numbers will drift.
 | Builder methods + command assembly             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
 | Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| Multiview interceptor + shell template         | [`v1alpha1/multiview.go`](./v1alpha1/multiview.go), [`v1alpha1/index.html`](./v1alpha1/index.html) |
+| Multiview panel, framing headers, template     | [`v1alpha1/multiview/`](./v1alpha1/multiview)                    |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
 | godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -89,7 +89,11 @@ seeded.
 **Implementations grow as `v1alpha1/<name>` subpackages.** When there is more
 than one way to implement the contract, each gets its own subpackage
 (`v1alpha1/redis`, `v1alpha1/memory`) and the `v1alpha1` root stays
-implementation-agnostic — shared plumbing only. This keeps a backend's
+implementation-agnostic — shared plumbing only. The same applies to anything
+with a world of its own: [`v1alpha1/multiview`](./v1alpha1/multiview) is a
+panel, a template and header surgery, none of which the root needs to know
+about. A `go:embed`ed asset settles it on its own — the directive cannot reach
+outside its package, so the template has to live beside the code. This keeps a backend's
 dependencies out of the import graph of anyone using a different one, and gives
 each backend a natural home for its own `TUNNELD__<IMPL>_<KNOB>` environment
 variables (see the naming rules in [`v1/v1.go`](./v1/v1.go)).
@@ -228,12 +232,13 @@ Easy to get wrong from the diff alone:
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
 - **The panel answers the tunnel's bare address, and every condition narrowing
-  that is load-bearing.** `isPanelRequest` requires path `/`, no routing index,
+  that is load-bearing.** `isPanelRequest` requires path `/`, an *empty* query,
   a top-level document, and no same-host referer. Drop the path check and the
-  panel swallows every `/app.js` an origin serves; drop the Sec-Fetch check and
-  it draws itself inside its own tiles; drop the referer check and a `fetch`
-  from an origin page gets HTML. See
-  [`v1alpha1/multiview.go`](./v1alpha1/multiview.go).
+  panel swallows every `/app.js` an origin serves; loosen the query check to
+  "no routing index" and an OAuth callback at `/?code=…` lands on a page of
+  frames; drop the Sec-Fetch check and it draws itself inside its own tiles;
+  drop the referer check and a `fetch` from an origin page gets HTML. See
+  [`v1alpha1/multiview`](./v1alpha1/multiview).
 - **The framing-header removal must stay narrowed to the panel's own frames.**
   `unframe` drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile is
   not blank, and it is gated on `Sec-Fetch-Dest` being a frame *and*

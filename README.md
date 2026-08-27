@@ -98,15 +98,17 @@ this is the page that opens.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
-path `/`, no routing index, and a top-level navigation that did not come from a
-page already on this host. Everything else belongs to an origin — a
-subresource at `/app.js`, a page at `/dashboard`, a frame, a `fetch`. Without
-that narrowing the panel would swallow every asset an origin serves, or draw
-itself inside one of its own tiles.
+path `/`, an empty query, and a top-level navigation that did not come from a
+page already on this host. Everything else belongs to an origin — a subresource
+at `/app.js`, a page at `/dashboard`, a frame, a `fetch`, and anything carrying
+a query at all. Without that narrowing the panel would swallow every asset an
+origin serves, or draw itself inside one of its own tiles.
 
-One consequence worth knowing: with the panel on, `https://<host>/?page=1`
-reaches the panel rather than the default origin, because it carries no index.
-Reach the origin with its index alongside — `https://<host>/?0&page=1`.
+The query has to be *empty*, not merely free of a routing index, because an
+app's root legitimately takes parameters that the caller does not choose. An
+OAuth provider redirecting to `https://<host>/?code=…&state=…` reaches the
+default origin, as it must. The panel takes no parameters of its own, so it
+gives up nothing by answering exactly one address.
 
 Two things worth knowing:
 
