@@ -39,9 +39,9 @@
   .grid {
     display: flex;
     flex-wrap: wrap;
-    gap: .5rem;
+    gap: .25rem;
     height: 100%;
-    padding: .5rem;
+    padding: .25rem;
 
     /* Load-bearing, though it is also the initial value: a wrapped flex
        container with a definite height hands its leftover space to the flex
@@ -54,7 +54,7 @@
      calculated from a row count, which keeps the server out of the layout. */
   .tile {
     position: relative;  /* the label strip is positioned against this */
-    flex: 1 1 calc(50% - .25rem);
+    flex: 1 1 calc(50% - .125rem);  /* half the gap, so two tiles fit a row */
     min-width: 0;      /* let a tile shrink past its iframe's intrinsic width */
 
     /* A card spaces its own children; a tile's child is a full-bleed iframe,
