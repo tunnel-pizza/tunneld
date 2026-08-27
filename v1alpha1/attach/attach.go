@@ -67,6 +67,11 @@ type Target interface {
 	// Stdin reports whether the target will read anything written to it.
 	Stdin() bool
 	// Close releases the target. A Server closes its own on shutdown.
+	//
+	// It must tolerate a second call: Server.Close calls it unconditionally
+	// from both the context.AfterFunc registered in Serve and a caller's own
+	// defer, so an implementation that cannot survive being closed twice will
+	// break at shutdown.
 	Close() error
 }
 
@@ -164,7 +169,42 @@ func (s *Server) serveAttach(w http.ResponseWriter, r *http.Request) {
 		Stderr: !s.target.TTY(),
 		TTY:    s.target.TTY(),
 	}
-	remotecommand.ServeAttach(w, r, s.target, name, "", name, opts,
+	remotecommand.ServeAttach(w, r, notice{s.target}, name, "", name, opts,
 		idleTimeout, remotecommand.DefaultStreamCreationTimeout,
 		remotecommand.SupportedStreamingProtocols)
+}
+
+// notice wraps a Target to write one dim line about what the container cannot
+// do, ahead of anything the container itself says.
+//
+// It goes on the stream rather than into the page for two reasons: it then
+// appears in order with the container's first output instead of above it, and
+// it survives however the page was reached — a reload, a second tab, a client
+// that is not this page at all.
+type notice struct{ Target }
+
+func (n notice) AttachContainer(ctx context.Context, name, uid, container string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	if line := degraded(n.Target); line != "" {
+		// CRLF, not LF: a raw terminal does not move the carriage on its own.
+		fmt.Fprintf(out, "\x1b[2m%s\x1b[0m\r\n", line)
+	}
+	return n.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, resize)
+}
+
+// degraded names what a container was started without, or "" when it was
+// started with both -t and -i and there is nothing to explain.
+//
+// The wording names the docker run flag rather than the symptom, because that
+// is the lever: nothing tunneld can do fixes a container already running
+// without a TTY, and the reader's next move is to restart it.
+func degraded(t Target) string {
+	switch {
+	case !t.TTY() && !t.Stdin():
+		return "no TTY and no stdin (started without -it) — output only"
+	case !t.TTY():
+		return "no TTY (started without -t) — no line editing, no resize"
+	case !t.Stdin():
+		return "stdin closed (started without -i) — keystrokes go nowhere"
+	}
+	return ""
 }

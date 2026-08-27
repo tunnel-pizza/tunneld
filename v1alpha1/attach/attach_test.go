@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorilla/websocket"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
@@ -127,5 +128,167 @@ func TestURLIsLoopback(t *testing.T) {
 	}
 	if !strings.HasPrefix(u.Host, "127.0.0.1:") {
 		t.Errorf("host = %q, want a 127.0.0.1 port", u.Host)
+	}
+}
+
+// dial opens a v4.channel.k8s.io socket to a Server and closes it with the
+// test. The subprotocol is what selects binary channel framing; without it the
+// server negotiates the base64 variant and every assertion below shifts.
+func dial(t *testing.T, s *Server) *websocket.Conn {
+	t.Helper()
+	d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
+	c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", nil)
+	if err != nil {
+		t.Fatalf("dial /attach: %v", err)
+	}
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// readFrame reads one binary frame and splits it into channel and payload.
+func readFrame(t *testing.T, c *websocket.Conn) (byte, []byte) {
+	t.Helper()
+	kind, data, err := c.ReadMessage()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	if kind != websocket.BinaryMessage {
+		t.Fatalf("frame type = %d, want binary", kind)
+	}
+	if len(data) == 0 {
+		t.Fatal("frame is empty, want at least a channel byte")
+	}
+	return data[0], data[1:]
+}
+
+// writeFrame sends one channel-prefixed binary frame.
+func writeFrame(t *testing.T, c *websocket.Conn, channel byte, payload string) {
+	t.Helper()
+	if err := c.WriteMessage(websocket.BinaryMessage, append([]byte{channel}, payload...)); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+}
+
+// TestEstablishedFrame pins the one-byte frame the server sends on connect.
+// The page keys "the terminal is live" on it — it is the only signal that the
+// attach actually began, since a healthy container may say nothing for hours.
+func TestEstablishedFrame(t *testing.T) {
+	s := serveFake(t, newFakeTarget("api", true, true))
+	channel, payload := readFrame(t, dial(t, s))
+	if channel != 1 {
+		t.Errorf("established frame channel = %d, want 1 (stdout)", channel)
+	}
+	if len(payload) != 0 {
+		t.Errorf("established frame payload = %q, want empty", payload)
+	}
+}
+
+// TestStdout pins that what the target writes reaches the browser on the
+// stdout channel, unaltered.
+func TestStdout(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "hello from pid 1\r\n"
+	c := dial(t, serveFake(t, target))
+
+	readFrame(t, c) // the established frame
+	channel, payload := readFrame(t, c)
+	if channel != 1 {
+		t.Errorf("channel = %d, want 1 (stdout)", channel)
+	}
+	if string(payload) != target.out {
+		t.Errorf("payload = %q, want %q", payload, target.out)
+	}
+}
+
+// TestStdin pins that keystrokes reach the target.
+func TestStdin(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	c := dial(t, serveFake(t, target))
+	readFrame(t, c) // the established frame
+
+	writeFrame(t, c, 0, "echo hi\n")
+	select {
+	case got := <-target.seenIn:
+		if got != "echo hi\n" {
+			t.Errorf("target read %q, want %q", got, "echo hi\n")
+		}
+	case <-t.Context().Done():
+		t.Fatal("target never saw stdin")
+	}
+}
+
+// TestResize pins the resize wire format. It is JSON on a channel of its own,
+// read by a streaming decoder, so successive sizes need no framing — which is
+// what lets the page use it as a heartbeat.
+func TestResize(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	c := dial(t, serveFake(t, target))
+	readFrame(t, c) // the established frame
+
+	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
+	writeFrame(t, c, 4, `{"Width":120,"Height":50}`)
+
+	want := []remotecommand.TerminalSize{{Width: 100, Height: 40}, {Width: 120, Height: 50}}
+	for _, w := range want {
+		select {
+		case got := <-target.seenSz:
+			if got != w {
+				t.Errorf("size = %+v, want %+v", got, w)
+			}
+		case <-t.Context().Done():
+			t.Fatalf("target never saw %+v", w)
+		}
+	}
+}
+
+// TestDegradedNotice pins the line a container earns by having been started
+// without -t or -i. Half of docker attach's behaviour is decided before
+// tunneld is involved, and a terminal that silently swallows keystrokes is the
+// one outcome worth spending a line to prevent.
+func TestDegradedNotice(t *testing.T) {
+	cases := []struct {
+		name  string
+		tty   bool
+		stdin bool
+		want  string
+	}{
+		{"a full terminal says nothing", true, true, ""},
+		{"no tty", false, true, "no TTY"},
+		{"no stdin", true, false, "stdin"},
+		{"neither", false, false, "output only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := degraded(newFakeTarget("api", tc.tty, tc.stdin))
+			if tc.want == "" {
+				if got != "" {
+					t.Errorf("degraded = %q, want no notice", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("degraded = %q, does not mention %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNoticeReachesTheTerminal pins that the notice is written to the stream
+// rather than baked into the page, so it appears in order with the container's
+// own first output and survives however the page was loaded.
+func TestNoticeReachesTheTerminal(t *testing.T) {
+	target := newFakeTarget("api", false, false)
+	c := dial(t, serveFake(t, target))
+	readFrame(t, c) // the established frame
+
+	channel, payload := readFrame(t, c)
+	if channel != 1 {
+		t.Errorf("channel = %d, want 1 (stdout)", channel)
+	}
+	if !strings.Contains(string(payload), "output only") {
+		t.Errorf("first frame = %q, want the degraded notice", payload)
 	}
 }
