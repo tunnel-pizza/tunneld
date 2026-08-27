@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -53,7 +54,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 	if err != nil {
 		_ = cli.Close()
 		switch {
-		case client.IsErrNotFound(err):
+		case cerrdefs.IsNotFound(err):
 			return nil, fmt.Errorf("%w: no container named %q", v1.ErrInvalidOrigin, ref)
 		case client.IsErrConnectionFailed(err):
 			return nil, fmt.Errorf("%w: %w", v1.ErrNoDocker, err)

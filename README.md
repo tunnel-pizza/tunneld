@@ -373,12 +373,11 @@ Self-contained programs in [`./examples`](./examples):
 | ------- | ------------ |
 | `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
-| `attach` | A running container's terminal on the public hostname. Needs a container: `docker run -d --rm --name tunneld-demo -it alpine sh`. |
+| `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
 
-`basic` and `multi-origin` start the origins they expose, so nothing else
-needs to be running. `attach` is the exception: a container is somebody else's
-process, so start one first (see the table above). All three block until
-interrupted:
+Each starts the origins it exposes, so nothing else needs to be running —
+`attach` starts its container too, pulling `alpine` if it is not already
+local. All three block until interrupted:
 
 ```sh
 make run basic

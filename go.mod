@@ -9,6 +9,7 @@ go 1.26.0
 
 require (
 	github.com/cnuss/libtunnel v0.0.50
+	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-logr/logr v1.4.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -27,7 +28,6 @@ require (
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/cloudflared v0.0.0-20260612062426-68620efbce4c // indirect
-	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
