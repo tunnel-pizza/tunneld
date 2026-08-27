@@ -68,6 +68,17 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		_ = cli.Close()
 		return nil, fmt.Errorf("%w: container %q is not running", v1.ErrInvalidOrigin, ref)
 	}
+	// Config is what says whether the container was started with -t and -i,
+	// and both fields are read unconditionally below. The API models it as a
+	// pointer, so a daemon that answers without one — an old API version, a
+	// shim that is not Docker — would panic here rather than fail. It reads as
+	// an origin problem for the same reason a stopped container does: nothing
+	// tunneld can do makes this container attachable, and the lever is the
+	// --url.
+	if info.Config == nil {
+		_ = cli.Close()
+		return nil, fmt.Errorf("%w: container %q reports no configuration", v1.ErrInvalidOrigin, ref)
+	}
 
 	return &Attacher{
 		cli:   cli,
@@ -115,10 +126,30 @@ func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Re
 	}
 	defer resp.Close()
 
+	// ctx got the connection dialed and then stopped mattering: once the
+	// daemon hands the socket over, resp.Reader is a bare net.Conn with
+	// nothing left tying it to a context. Neither shutdown path reaches a copy
+	// parked in Read on a quiet container either — net/http.Server.Close
+	// deliberately leaves hijacked connections alone, and client.Close only
+	// drops *idle* transport connections, which this is not. Closing the
+	// socket is the one thing that unblocks that Read, so it is what makes the
+	// "or ctx is canceled" half of this function's promise true rather than
+	// aspirational; the error it produces is already read as a normal end
+	// below. AfterFunc rather than a goroutine parked on ctx.Done(), because
+	// stop() on the way out is what keeps the watcher from outliving the
+	// attach on a context that is never canceled at all.
+	stop := context.AfterFunc(ctx, func() { resp.Close() })
+	defer stop()
+
 	go a.watchResize(ctx, resize)
 
 	if a.stdin && in != nil {
 		go func() {
+			// Bounded from both ends: a write parked on resp.Conn dies with
+			// the socket the watcher above closes, and a read parked on in
+			// ends when the caller closes it — which ServeAttach does the
+			// moment this function returns, since tearing the websocket down
+			// closes every channel on it.
 			_, _ = io.Copy(resp.Conn, in)
 			// Half-close, so a container reading to EOF sees one. Closing the
 			// whole connection here would cut its output off mid-sentence.

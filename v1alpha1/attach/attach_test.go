@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -51,17 +52,23 @@ func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.
 			f.seenSz <- size
 		}
 	}()
+	// Stdin on a goroutine rather than inline, because that is the shape a
+	// real provider has: it copies both directions at once and ends on its
+	// context, not on stdin running dry. Reading it inline would make this
+	// fake pass the shutdown tests below for a reason no real Target shares.
 	if in != nil {
-		buf := make([]byte, 64)
-		for {
-			n, err := in.Read(buf)
-			if n > 0 {
-				f.seenIn <- string(buf[:n])
+		go func() {
+			buf := make([]byte, 64)
+			for {
+				n, err := in.Read(buf)
+				if n > 0 {
+					f.seenIn <- string(buf[:n])
+				}
+				if err != nil {
+					return
+				}
 			}
-			if err != nil {
-				break
-			}
-		}
+		}()
 	}
 	<-ctx.Done()
 	return nil
@@ -70,7 +77,14 @@ func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.
 // serveFake starts a Server on a fake target and tears it down with the test.
 func serveFake(t *testing.T, target Target) *Server {
 	t.Helper()
-	s, err := Serve(t.Context(), target, slog.New(slog.DiscardHandler))
+	return serveFakeOn(t, t.Context(), target)
+}
+
+// serveFakeOn is serveFake on a context the caller holds the cancel for, which
+// is how a test shuts the tunnel down rather than the test ending.
+func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
+	t.Helper()
+	s, err := Serve(ctx, target, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -284,5 +298,45 @@ func TestNoticeReachesTheTerminal(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "output only") {
 		t.Errorf("first frame = %q, want the degraded notice", payload)
+	}
+}
+
+// TestSessionEnds pins the two ways a session is over, from the point of view
+// of a Target that is only reading output — the state a quiet container leaves
+// it in for hours at a time.
+//
+// Neither route is something such a Target can see for itself. The context
+// ServeAttach hands it is the request's, and Go cancels that when the handler
+// returns, which cannot happen while the handler is still inside the Target;
+// the socket is hijacked, so shutting the HTTP server down does not touch it
+// either. Get this wrong and every abandoned tab costs a goroutine and a
+// daemon connection for the life of the process. Asserted on a deadline rather
+// than a bare receive, so a regression fails in five seconds instead of
+// hanging the lane.
+func TestSessionEnds(t *testing.T) {
+	cases := []struct {
+		name string
+		end  func(c *websocket.Conn, shutdown context.CancelFunc)
+	}{
+		{"the visitor closes the tab", func(c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }},
+		{"the tunnel shuts down", func(_ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, shutdown := context.WithCancel(t.Context())
+			defer shutdown()
+
+			target := newFakeTarget("api", true, true)
+			c := dial(t, serveFakeOn(t, ctx, target))
+			readFrame(t, c) // the established frame
+
+			tc.end(c, shutdown)
+
+			select {
+			case <-target.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("AttachContainer never returned after the session ended")
+			}
+		})
 	}
 }

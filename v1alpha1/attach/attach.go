@@ -81,6 +81,10 @@ type Server struct {
 	listener net.Listener
 	srv      *http.Server
 	log      *slog.Logger
+	// ctx is the tunnel's lifetime, held rather than passed because the only
+	// place that needs it is a handler, and a handler's signature is fixed.
+	// serveAttach explains why a request's own context will not do.
+	ctx context.Context
 }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
@@ -98,7 +102,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 		return nil, fmt.Errorf("attach %s: listen: %w", target.Name(), err)
 	}
 
-	s := &Server{target: target, listener: listener, log: log}
+	s := &Server{target: target, listener: listener, log: log, ctx: ctx}
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
@@ -159,6 +163,22 @@ func (s *Server) servePage(w http.ResponseWriter, _ *http.Request) {
 // serveAttach hands the request to ServeAttach, which owns the websocket
 // upgrade and the v4.channel.k8s.io framing on it.
 func (s *Server) serveAttach(w http.ResponseWriter, r *http.Request) {
+	// ServeAttach hands the Target r.Context(), and on this one handler that
+	// context is a promise it cannot keep: Go cancels a request's context when
+	// its handler returns, and this handler cannot return while ServeAttach is
+	// still inside the Target. So the Target waits for a cancel that is
+	// waiting for the Target. Nothing else rescues it either — the connection
+	// is hijacked by the websocket upgrade, and http.Server.Close does not
+	// touch hijacked connections.
+	//
+	// Deriving from the Server's own lifetime instead breaks the circle: a
+	// tunnel shutting down cancels this before ServeAttach returns, which is
+	// the only moment at which cancelling it is worth anything. Please do not
+	// "simplify" this back to r.Context().
+	ctx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	r = r.WithContext(ctx)
+
 	name := s.target.Name()
 	opts := &remotecommand.Options{
 		Stdin:  s.target.Stdin(),
@@ -188,6 +208,44 @@ func (n notice) AttachContainer(ctx context.Context, name, uid, container string
 		// CRLF, not LF: a raw terminal does not move the carriage on its own.
 		fmt.Fprintf(out, "\x1b[2m%s\x1b[0m\r\n", line)
 	}
+
+	// The context serveAttach supplies covers tunneld shutting down. The far
+	// commoner exit is a visitor closing their tab, and a Target parked on a
+	// quiet container cannot see that: nothing it holds is tied to the
+	// browser. stdin is, though — ServeAttach closes it when the socket ends —
+	// so a copy off it running dry is the socket's death, translated into
+	// something a Target that only ever reads output can act on. The pipe is
+	// what lets us watch stdin without taking it away from the Target.
+	//
+	// Only where stdin was really negotiated. On a container started without
+	// -i the stream is a stub: wsstream opens that channel as IgnoreChannel,
+	// whose Read short-circuits to EOF without ever touching the socket, so
+	// pumping it unconditionally would announce the tab closed the instant it
+	// opened. The cost of the guard is that a container started without -i
+	// still cannot see a closed tab, and only the tunnel's own shutdown
+	// reaches it. Fixing that needs a different signal — the resize channel is
+	// the one thing ServeAttach hands over that is live in both cases — and
+	// that is a change to what the Target is passed, not to this wrapper.
+	if n.Stdin() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+
+		// socket is bound before in is reassigned: the goroutine below closes
+		// over the variable, not its value, so pumping "in" directly would
+		// have it copying the pipe into itself.
+		socket := in
+		pr, pw := io.Pipe()
+		in = pr
+		go func() {
+			_, err := io.Copy(pw, socket)
+			// The Target reads the pipe, so it learns of the end the same way
+			// it would have learned it from the socket.
+			_ = pw.CloseWithError(err)
+			cancel()
+		}()
+	}
+
 	return n.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, resize)
 }
 

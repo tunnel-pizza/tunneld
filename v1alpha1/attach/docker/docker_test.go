@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -92,9 +94,8 @@ func startContainer(t *testing.T, cli *client.Client, tty, stdin bool) string {
 // are the operator's typo or stale assumption, and a public hostname that
 // answers only errors is a worse way to learn it.
 func TestOpenRejects(t *testing.T) {
-	cli := withDaemon(t)
-
 	t.Run("no such container", func(t *testing.T) {
+		withDaemon(t)
 		got, err := Open(t.Context(), "tunneld-test-nonexistent", discard())
 		if err == nil {
 			_ = got.Close()
@@ -109,6 +110,7 @@ func TestOpenRejects(t *testing.T) {
 	})
 
 	t.Run("container not running", func(t *testing.T) {
+		cli := withDaemon(t)
 		id := startContainer(t, cli, true, true)
 		if err := cli.ContainerStop(t.Context(), id, container.StopOptions{}); err != nil {
 			t.Fatalf("stop: %v", err)
@@ -120,6 +122,38 @@ func TestOpenRejects(t *testing.T) {
 		}
 		if !errors.Is(err, v1.ErrInvalidOrigin) {
 			t.Errorf("error = %v, want %v", err, v1.ErrInvalidOrigin)
+		}
+	})
+
+	// Config is a pointer in the API's own model, and Open reads two fields
+	// off it. Real Docker always sends one, which is exactly why this case
+	// needs a stub daemon rather than a container: the shapes that would
+	// arrive without it — an old API version, something answering the socket
+	// that is not Docker — cannot be produced locally, and the alternative to
+	// pinning it here is finding out through a nil dereference in production.
+	t.Run("no container configuration", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Api-Version", "1.51")
+			w.Header().Set("Ostype", "linux")
+			if strings.HasSuffix(r.URL.Path, "/_ping") {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Id":"deadbeef","State":{"Running":true}}`)
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
+
+		got, err := Open(t.Context(), "shim", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open on a container with no config succeeded, want an error")
+		}
+		if !errors.Is(err, v1.ErrInvalidOrigin) {
+			t.Errorf("error = %v, want %v", err, v1.ErrInvalidOrigin)
+		}
+		if !strings.Contains(err.Error(), "shim") {
+			t.Errorf("error %q does not name the container", err)
 		}
 	})
 }
@@ -197,9 +231,26 @@ func TestAttach(t *testing.T) {
 				t.Errorf("output carries a stdcopy frame header, demux did not run: %q", out.String())
 			}
 
+			// A cancelled context is the only shutdown signal a Target gets —
+			// the tunnel going down and the visitor leaving both arrive here
+			// as exactly this and nothing else. Note what is deliberately not
+			// done first: stdin is left open, so nothing on that side can end
+			// the attach on the implementation's behalf. sh has printed its
+			// prompt and is waiting for input it will never get, so the output
+			// copy is parked in Read on a socket that will never produce
+			// another byte — which is precisely the state an abandoned session
+			// is in. Without something closing that socket on cancel, this
+			// never returns, and every abandoned session leaks a goroutine and
+			// a daemon connection for the life of the process. Asserted on a
+			// deadline rather than a bare receive so a regression fails in
+			// five seconds instead of hanging the lane.
 			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("AttachContainer did not return within 5s of its context being cancelled")
+			}
 			_ = stdinW.Close()
-			<-done
 		})
 	}
 }
