@@ -70,6 +70,15 @@ var ErrInvalidLogLevel = errors.New("invalid log level")
 // debug is the lever, since the underlying library logs the attempt.
 var ErrNotReady = errors.New("tunnel did not become ready")
 
+// ErrNoDocker reports a dockerd:// origin whose Docker daemon could not be
+// reached: the socket refused the connection, or the API answered an error
+// that is not about this particular container. It is separate from
+// ErrInvalidOrigin because the origin may be perfectly well-formed and the
+// daemon simply not running, which is by far the likeliest failure of a
+// container origin and has a different lever — start Docker, or point
+// $DOCKER_HOST at the socket that has it.
+var ErrNoDocker = errors.New("docker daemon unreachable")
+
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read
@@ -135,6 +144,16 @@ const (
 	// and makes it overridable with WithProvider rather than only through the
 	// engine's environment.
 	DefaultProvider = "tunnel.pizza"
+
+	// DockerScheme names a running container as an origin instead of an HTTP
+	// service: --url dockerd://<container-name-or-id> serves a terminal
+	// attached to that container, on the same public hostname and the same
+	// ?n index as any other origin.
+	//
+	// The daemon, not the container, is what the scheme names — the same
+	// reading as dockerd's own socket — because the container reference is
+	// the authority component that follows it.
+	DockerScheme = "dockerd"
 )
 
 // DefaultOpen is whether a tunnel opens its public URL in a browser once it is
