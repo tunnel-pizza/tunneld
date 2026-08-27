@@ -111,6 +111,12 @@ make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
 ```
 
+The container tests under [`v1alpha1/attach/`](./v1alpha1/attach) skip
+themselves unless a Docker daemon answers *and* the `alpine` image is already
+local, so `make test` goes green on a machine that has neither — and a skipped
+test proves nothing. To actually run them, start Docker and `docker pull
+alpine` once; CI's `docker` lane does exactly that.
+
 Run it against a local service:
 
 ```sh
@@ -286,6 +292,27 @@ Easy to get wrong from the diff alone:
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
 
+### Container origins
+
+`v1alpha1/attach/` serves a `dockerd://` origin as a browser terminal, and
+`v1alpha1/attach/docker/` is the one provider behind it. The split is
+load-bearing: `attach` knows HTTP and the `v4.channel.k8s.io` stream protocol
+and nothing about Docker, and `docker` is the reverse. A second provider
+implements `attach.Target` — five methods, four of its own plus the embedded
+`remotecommand.Attacher`'s `AttachContainer` — and `attach` does not change.
+
+Two things there will bite if you change them without knowing why:
+
+- **The page builds its socket URL as `"/attach" + location.search`.** A
+  websocket handshake carries no `Referer`, so libtunnel cannot route it as a
+  subresource and would fall back to the sticky `libtunnel-origin` cookie,
+  which is last-write-wins across tabs. Drop the suffix and two container tiles
+  fight over one socket.
+- **`bindOrigins` keeps the dialable list the same length and order as the
+  displayed one.** Index *n* means origin *n* for `?n` routing, `PublicURL`,
+  the reported map and the multiview tiles. Reordering or filtering either list
+  breaks all four at once.
+
 ## Adding an example
 
 Examples live in `./examples/<name>/main.go`. Keep each example self-contained
@@ -293,9 +320,14 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 example is copy-pasteable on its own).
 
 An example starts the origins it exposes, so someone can run it against a
-clean machine and see a tunnel work. The pages it serves come from
+clean machine and see a tunnel work. That holds even when the origin isn't an
+HTTP server: `examples/attach` creates and starts the container it attaches
+to, and pulls the image if it has to, rather than telling a reader to go run
+`docker` first. An example that needs setup done for it has moved the
+interesting part into a README nobody reads. The pages an example does serve
+come from
 [`examples/sites`](./examples/sites), shared across examples; add one there
-rather than inlining HTML in a `main.go`. Hang that on the built command's
+rather than inlining HTML in a `main.go`. Hang startup on the built command's
 `PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
 before it reaches that hook, which is what keeps `--help` from binding a port.
 `Build` returns an ordinary `*cobra.Command`, so the hook is free — but
@@ -390,9 +422,20 @@ re-runs `go vet`, `go build`, `make test`, and `make e2e` against that
 ref, then:
 
 - pushes the new tag,
-- creates a GitHub Release with auto-generated notes, and
+- creates a GitHub Release with auto-generated notes,
+- builds and pushes `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and
+  `linux/arm64`, tagged with the release and `latest`, and
 - warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
   surfaces the new version without manual prodding.
+
+Source archives and the image are both signed with cosign in keyless mode. The
+image is signed **by digest**, not by tag: a tag can be moved to point at other
+bytes, and a signature that followed it would vouch for whatever it moved to.
+
+The image is multi-arch without QEMU — the [`Dockerfile`](./Dockerfile) builds
+on `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so both arches
+are native compiles. `make image` builds it for the host platform from the same
+file, which is how you catch a break before a tag does.
 
 To opt a commit out of the auto-bump, put `[skip release]` on its own
 line in the commit body. (It must be the only thing on its line, so

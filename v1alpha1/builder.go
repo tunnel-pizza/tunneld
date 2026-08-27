@@ -94,6 +94,11 @@ each later one answers on a bare ?n parameter (n is that flag's position).
     https://<host>/?0   -> http://localhost:3000
     https://<host>/?1   -> http://localhost:4000
 
+An origin can also be a running container, which is served as a terminal in
+the browser rather than proxied:
+
+  ` + name + ` --url dockerd://my-container
+
 Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
@@ -132,7 +137,7 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	// as the reference for configuring a container. The registry behind those
 	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-		"local origin to expose, e.g. http://localhost:3000 (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
+		"local origin to expose, e.g. http://localhost:3000 or dockerd://my-container (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,

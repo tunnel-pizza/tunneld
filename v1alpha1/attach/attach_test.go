@@ -1,0 +1,478 @@
+package attach
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
+)
+
+// fakeTarget stands in for a container. Every failure mode this package has to
+// handle — no TTY, no stdin, a stream that ends — is a field here rather than a
+// container somebody has to arrange, which is what makes them testable at all.
+type fakeTarget struct {
+	name   string
+	tty    bool
+	stdin  bool
+	out    string      // written to stdout as soon as the attach begins
+	seenIn chan string // what arrived on stdin
+	seenSz chan remotecommand.TerminalSize
+	done   chan struct{} // closed when AttachContainer returns
+}
+
+func newFakeTarget(name string, tty, stdin bool) *fakeTarget {
+	return &fakeTarget{
+		name:   name,
+		tty:    tty,
+		stdin:  stdin,
+		seenIn: make(chan string, 4),
+		seenSz: make(chan remotecommand.TerminalSize, 4),
+		done:   make(chan struct{}),
+	}
+}
+
+func (f *fakeTarget) Name() string { return f.name }
+func (f *fakeTarget) TTY() bool    { return f.tty }
+func (f *fakeTarget) Stdin() bool  { return f.stdin }
+func (f *fakeTarget) Close() error { return nil }
+
+func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, _ io.WriteCloser, _ bool, resize <-chan remotecommand.TerminalSize) error {
+	defer close(f.done)
+	if f.out != "" {
+		_, _ = io.WriteString(out, f.out)
+	}
+	go func() {
+		for size := range resize {
+			f.seenSz <- size
+		}
+	}()
+	// Stdin on a goroutine rather than inline, because that is the shape a
+	// real provider has: it copies both directions at once and ends on its
+	// context, not on stdin running dry. Reading it inline would make this
+	// fake pass the shutdown tests below for a reason no real Target shares.
+	if in != nil {
+		go func() {
+			buf := make([]byte, 64)
+			for {
+				n, err := in.Read(buf)
+				if n > 0 {
+					f.seenIn <- string(buf[:n])
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	<-ctx.Done()
+	return nil
+}
+
+// serveFake starts a Server on a fake target and tears it down with the test.
+func serveFake(t *testing.T, target Target) *Server {
+	t.Helper()
+	return serveFakeOn(t, t.Context(), target)
+}
+
+// serveFakeOn is serveFake on a context the caller holds the cancel for, which
+// is how a test shuts the tunnel down rather than the test ending.
+func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
+	t.Helper()
+	s, err := Serve(ctx, target, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// TestPage pins that the tunnel's own address answers with the terminal page
+// and that nothing else on the origin answers at all. The origin exists to
+// serve exactly two paths; anything else reaching it is a bug upstream, and a
+// 404 says so instead of quietly returning the shell again.
+func TestPage(t *testing.T) {
+	s := serveFake(t, newFakeTarget("api", true, true))
+
+	cases := []struct {
+		name   string
+		path   string
+		status int
+		want   string
+	}{
+		{"the root serves the terminal", "/", http.StatusOK, "@xterm/xterm@"},
+		{"the root names the container", "/", http.StatusOK, "api"},
+		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
+		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := http.Get(s.URL().String() + tc.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", tc.path, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("GET %s = %d, want %d", tc.path, resp.StatusCode, tc.status)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			if tc.want != "" && !strings.Contains(string(body), tc.want) {
+				t.Errorf("GET %s body does not contain %q", tc.path, tc.want)
+			}
+		})
+	}
+}
+
+// TestURLIsLoopback pins that the origin never leaves the machine. The page it
+// serves is unauthenticated by design; the only thing keeping it off the local
+// network is the address it binds.
+func TestURLIsLoopback(t *testing.T) {
+	s := serveFake(t, newFakeTarget("api", true, true))
+	u := s.URL()
+	if u.Scheme != "http" {
+		t.Errorf("scheme = %q, want http", u.Scheme)
+	}
+	if !strings.HasPrefix(u.Host, "127.0.0.1:") {
+		t.Errorf("host = %q, want a 127.0.0.1 port", u.Host)
+	}
+}
+
+// dial opens a v4.channel.k8s.io socket to a Server and closes it with the
+// test. The subprotocol is what selects binary channel framing; without it the
+// server negotiates the base64 variant and every assertion below shifts.
+func dial(t *testing.T, s *Server) *websocket.Conn {
+	t.Helper()
+	d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
+	c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", nil)
+	if err != nil {
+		t.Fatalf("dial /attach: %v", err)
+	}
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// TestCrossOriginHandshake pins the gate that keeps the socket from being the
+// hole the loopback bind is assumed to have closed.
+//
+// A websocket handshake is not covered by the same-origin policy and the
+// wsstream handshake never reads Origin, so without this any page in the
+// operator's browser could dial ws://127.0.0.1:<port>/attach and hold the
+// container's stdin. Dialed with the real handshake rather than a bare GET,
+// since the whole question is what the upgrade does with the header.
+//
+// The absent-Origin row is as load-bearing as the refusal: no Origin means a
+// non-browser client, and breaking curl buys nothing.
+//
+// The rows carrying a Host are the shape a request arrives in through the
+// tunnel, where the page was served from the public hostname and libtunnel
+// forwards the inbound Host rather than rewriting it to the origin's. It is
+// also the multiview shape: a tile's document is served from that same
+// hostname, so its socket's Origin is the same string again.
+func TestCrossOriginHandshake(t *testing.T) {
+	cases := []struct {
+		name string
+		// host overrides the Host header; "" leaves the dialed 127.0.0.1:port.
+		host string
+		// origin is given the effective Host. "" sends no Origin at all.
+		origin func(host string) string
+		want   bool // whether the handshake should succeed
+	}{
+		{"a foreign origin is refused", "", func(string) string { return "https://evil.example" }, false},
+		{"a foreign origin on loopback is refused", "", func(string) string { return "http://127.0.0.1:1" }, false},
+		{"an unparsable origin is refused", "", func(string) string { return "://" }, false},
+		{"the page's own origin is accepted", "", func(host string) string { return "http://" + host }, true},
+		{"no origin at all is accepted", "", func(string) string { return "" }, true},
+		{"the tunnel's public hostname is accepted", "demo.tunnel.pizza",
+			func(host string) string { return "https://" + host }, true},
+		{"a foreign origin through the tunnel is refused", "demo.tunnel.pizza",
+			func(string) string { return "https://evil.example" }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A Server per case, not one shared across the table: an accepted
+			// handshake attaches, and a fake target that has been attached
+			// twice is a fake with two goroutines closing one done channel.
+			s := serveFake(t, newFakeTarget("api", true, true))
+
+			header := http.Header{}
+			host := s.URL().Host
+			if tc.host != "" {
+				header.Set("Host", tc.host)
+				host = tc.host
+			}
+			if o := tc.origin(host); o != "" {
+				header.Set("Origin", o)
+			}
+			d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
+			c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", header)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			if c != nil {
+				defer func() { _ = c.Close() }()
+			}
+
+			if tc.want {
+				if err != nil {
+					t.Fatalf("handshake = %v, want it to succeed", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("handshake succeeded, want it refused")
+			}
+			if resp == nil {
+				t.Fatalf("handshake failed without a response: %v", err)
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+// readFrame reads one binary frame and splits it into channel and payload.
+func readFrame(t *testing.T, c *websocket.Conn) (byte, []byte) {
+	t.Helper()
+	kind, data, err := c.ReadMessage()
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	if kind != websocket.BinaryMessage {
+		t.Fatalf("frame type = %d, want binary", kind)
+	}
+	if len(data) == 0 {
+		t.Fatal("frame is empty, want at least a channel byte")
+	}
+	return data[0], data[1:]
+}
+
+// writeFrame sends one channel-prefixed binary frame.
+func writeFrame(t *testing.T, c *websocket.Conn, channel byte, payload string) {
+	t.Helper()
+	if err := c.WriteMessage(websocket.BinaryMessage, append([]byte{channel}, payload...)); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+}
+
+// TestEstablishedFrame pins the one-byte frame the server sends on connect.
+// The page keys "the terminal is live" on it — it is the only signal that the
+// attach actually began, since a healthy container may say nothing for hours.
+func TestEstablishedFrame(t *testing.T) {
+	s := serveFake(t, newFakeTarget("api", true, true))
+	channel, payload := readFrame(t, dial(t, s))
+	if channel != 1 {
+		t.Errorf("established frame channel = %d, want 1 (stdout)", channel)
+	}
+	if len(payload) != 0 {
+		t.Errorf("established frame payload = %q, want empty", payload)
+	}
+}
+
+// TestStdout pins that what the target writes reaches the browser on the
+// stdout channel, unaltered.
+func TestStdout(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "hello from pid 1\r\n"
+	c := dial(t, serveFake(t, target))
+
+	readFrame(t, c) // the established frame
+	channel, payload := readFrame(t, c)
+	if channel != 1 {
+		t.Errorf("channel = %d, want 1 (stdout)", channel)
+	}
+	if string(payload) != target.out {
+		t.Errorf("payload = %q, want %q", payload, target.out)
+	}
+}
+
+// TestStdin pins that keystrokes reach the target.
+func TestStdin(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	c := dial(t, serveFake(t, target))
+	readFrame(t, c) // the established frame
+
+	writeFrame(t, c, 0, "echo hi\n")
+	select {
+	case got := <-target.seenIn:
+		if got != "echo hi\n" {
+			t.Errorf("target read %q, want %q", got, "echo hi\n")
+		}
+	case <-t.Context().Done():
+		t.Fatal("target never saw stdin")
+	}
+}
+
+// TestResize pins the resize wire format. It is JSON on a channel of its own,
+// read by a streaming decoder, so successive sizes need no framing — which is
+// what lets the page use it as a heartbeat.
+func TestResize(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	c := dial(t, serveFake(t, target))
+	readFrame(t, c) // the established frame
+
+	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
+	writeFrame(t, c, 4, `{"Width":120,"Height":50}`)
+
+	want := []remotecommand.TerminalSize{{Width: 100, Height: 40}, {Width: 120, Height: 50}}
+	for _, w := range want {
+		select {
+		case got := <-target.seenSz:
+			if got != w {
+				t.Errorf("size = %+v, want %+v", got, w)
+			}
+		case <-t.Context().Done():
+			t.Fatalf("target never saw %+v", w)
+		}
+	}
+}
+
+// TestDegradedNotice pins the line a container earns by having been started
+// without -t or -i. Half of docker attach's behaviour is decided before
+// tunneld is involved, and a terminal that silently swallows keystrokes is the
+// one outcome worth spending a line to prevent.
+func TestDegradedNotice(t *testing.T) {
+	cases := []struct {
+		name  string
+		tty   bool
+		stdin bool
+		want  string
+	}{
+		{"a full terminal says nothing", true, true, ""},
+		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
+		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
+		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := degraded(newFakeTarget("api", tc.tty, tc.stdin))
+			if got != tc.want {
+				t.Errorf("degraded = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNoticeOnThePage pins where the notice lives: in the served HTML, as an
+// element of its own, and nowhere at all for a container that has nothing
+// wrong with it.
+//
+// The page is the right home because the notice is not something the container
+// said. Written into the stream it would scroll away from the reader who needs
+// it, and come back on every reconnect for the one who does not; rendered as
+// chrome it simply stays true for as long as the tab is open. The absence case
+// is as load-bearing as the others — a container started with -it must get no
+// element and no gap, because a terminal that gives up a row to say nothing is
+// worse than no notice at all.
+func TestNoticeOnThePage(t *testing.T) {
+	cases := []struct {
+		name  string
+		tty   bool
+		stdin bool
+		want  string // "" means: no notice element at all
+	}{
+		{"a full terminal renders no notice", true, true, ""},
+		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
+		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
+		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serveFake(t, newFakeTarget("api", tc.tty, tc.stdin))
+			resp, err := http.Get(s.URL().String() + "/")
+			if err != nil {
+				t.Fatalf("GET /: %v", err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(raw)
+
+			// The class is what the absence case turns on: asserting the text
+			// is missing would also pass if the element rendered empty, which
+			// is the failure that costs a row and says nothing.
+			if tc.want == "" {
+				if strings.Contains(body, `class="degraded"`) {
+					t.Errorf("page carries a notice element for a container that earns none")
+				}
+				return
+			}
+			if !strings.Contains(body, `class="degraded"`) {
+				t.Errorf("page has no notice element")
+			}
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("page does not contain %q", tc.want)
+			}
+		})
+	}
+}
+
+// TestSessionEnds pins the three ways a session is over, from the point of
+// view of a Target that is only reading output — the state a quiet container
+// leaves it in for hours at a time.
+//
+// Neither route is something such a Target can see for itself. The context
+// ServeAttach hands it is the request's, and Go cancels that when the handler
+// returns, which cannot happen while the handler is still inside the Target;
+// the socket is hijacked, so shutting the HTTP server down does not touch it
+// either. Get this wrong and every abandoned tab costs a goroutine and a
+// daemon connection for the life of the process. Asserted on a deadline rather
+// than a bare receive, so a regression fails in five seconds instead of
+// hanging the lane.
+func TestSessionEnds(t *testing.T) {
+	closeTab := func(_ *Server, c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }
+	cases := []struct {
+		name  string
+		stdin bool
+		end   func(s *Server, c *websocket.Conn, shutdown context.CancelFunc)
+	}{
+		{"the visitor closes the tab", true, closeTab},
+		// The same, on a container started without -i. It earns a case of its
+		// own because the signal used to come off stdin, which such a
+		// container never negotiates: the stream is a stub that reads EOF at
+		// once. The resize channel is opened whatever the options say, which
+		// is the entire reason it replaced stdin here.
+		{"the visitor closes the tab, no stdin", false, closeTab},
+		{"the tunnel shuts down", true, func(_ *Server, _ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
+		// Close with nobody having cancelled anything, which is the shape of
+		// the tunnel failing on its own: run's defer closes what it bound and
+		// the context is still live. Neither close inside reaches a live
+		// session — net/http leaves hijacked connections alone by design, and
+		// a Target's Close only reaps what is idle — so Close has to end the
+		// session itself or mean two different things on two paths.
+		{"the server is closed with the context still live", true,
+			func(s *Server, _ *websocket.Conn, _ context.CancelFunc) { _ = s.Close() }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, shutdown := context.WithCancel(t.Context())
+			defer shutdown()
+
+			target := newFakeTarget("api", true, tc.stdin)
+			s := serveFakeOn(t, ctx, target)
+			c := dial(t, s)
+			readFrame(t, c) // the established frame
+
+			tc.end(s, c, shutdown)
+
+			select {
+			case <-target.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("AttachContainer never returned after the session ended")
+			}
+		})
+	}
+}

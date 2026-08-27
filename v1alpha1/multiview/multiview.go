@@ -117,7 +117,7 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 	for i, origin := range origins {
 		data.Origins = append(data.Origins, shellOrigin{
 			Index: i,
-			Local: origin.Host,
+			Local: label(origin),
 			// Relative, so the page works under whatever hostname served it.
 			Route: "/?" + strconv.Itoa(i),
 		})
@@ -260,4 +260,16 @@ func withoutFrameAncestors(policy string) string {
 // itself rather than framing one page in a panel.
 func Wanted(enabled bool, origins []*url.URL) bool {
 	return enabled && len(origins) > 1
+}
+
+// label is how a tile names the origin behind it. An http origin is named by
+// its host, because the scheme is the assumption and the host is the thing the
+// operator typed. Anything else keeps its scheme, so a tile framing a
+// container reads as dockerd://api rather than as a bare hostname that happens
+// to be a container name.
+func label(u *url.URL) string {
+	if u.Scheme == "http" || u.Scheme == "https" {
+		return u.Host
+	}
+	return u.Scheme + "://" + u.Host
 }

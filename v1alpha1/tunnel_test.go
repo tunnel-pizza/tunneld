@@ -45,6 +45,14 @@ func TestParseOriginsAccepts(t *testing.T) {
 			[]string{"http://localhost:3000", "http://localhost:4000"},
 			[]string{"http://localhost:3000", "http://localhost:4000"},
 		},
+		{"a container by name", []string{"dockerd://api"}, []string{"dockerd://api"}},
+		{"a container by id", []string{"dockerd://3f2a1b9c8d7e"}, []string{"dockerd://3f2a1b9c8d7e"}},
+		{"a container name keeps case and underscores", []string{"dockerd://My_Container"}, []string{"dockerd://My_Container"}},
+		{
+			"a container beside an http origin, in order",
+			[]string{"http://localhost:3000", "dockerd://api"},
+			[]string{"http://localhost:3000", "dockerd://api"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -82,6 +90,10 @@ func TestParseOriginsRejects(t *testing.T) {
 		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrInvalidOrigin, "ftp"},
 		{"scheme with no host", []string{"http://"}, v1.ErrInvalidOrigin, "http://"},
 		{"one bad origin among good ones", []string{"http://localhost:3000", "ftp://localhost:21"}, v1.ErrInvalidOrigin, "ftp"},
+		{"a container with no name", []string{"dockerd://"}, v1.ErrInvalidOrigin, "dockerd://"},
+		{"a container with a path", []string{"dockerd://api/sh"}, v1.ErrInvalidOrigin, "dockerd://api"},
+		{"a container with a query", []string{"dockerd://api?tty=1"}, v1.ErrInvalidOrigin, "dockerd://api"},
+		{"a container with a fragment", []string{"dockerd://api#sh"}, v1.ErrInvalidOrigin, "dockerd://api"},
 	}
 
 	for _, tc := range cases {

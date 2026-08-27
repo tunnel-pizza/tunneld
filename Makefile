@@ -1,4 +1,4 @@
-.PHONY: all check fmt fmt-check vet build binary windows test race e2e run
+.PHONY: all check fmt fmt-check vet build binary image windows test race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -65,9 +65,12 @@ e2e:
 # Run an example by name:
 #   make run basic
 #   make run multi-origin
+#   make run attach
 #
 # Examples are real programs: each starts the origins it exposes, opens a
-# tunnel, and blocks until interrupted. Nothing else needs to be running.
+# tunnel, and blocks until interrupted. Nothing else needs to be running —
+# except `attach`, whose origin is a container it cannot spawn, so it wants
+# `docker run -d --rm --name tunneld-demo -it alpine sh` first.
 #
 # Only bare words forward — make reads a leading -- as one of its own options,
 # so anything with flags goes through go run directly:
@@ -79,3 +82,9 @@ run:
 # Swallow the example name and forwarded args (extra goals) so make doesn't error.
 %:
 	@:
+
+# Build the container image for the host platform. CI builds it multi-arch and
+# pushes to ghcr; this is the same Dockerfile, so a local build catches a break
+# before a tag does.
+image:
+	docker build --build-arg VERSION=$$(git describe --tags --always --dirty) -t tunneld:local .

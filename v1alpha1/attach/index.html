@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Name}} · attach</title>
+
+<!-- xterm.js, pinned by version and checked by digest so a change at the CDN
+     cannot silently alter what a tunnel serves. xterm 6 ships no .min. files;
+     jsDelivr would minify on the fly for a .min.js URL, but the integrity hash
+     has to match the bytes actually served, so these are the real paths. -->
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css"
+      integrity="sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"
+        integrity="sha384-f/1U6Z9wM4D71a5eRXEZnyOTMOvjqxr2XLwh+Go1OvIl3L3tOcvUrzudnhbECwl4"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js"
+        integrity="sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
+
+<style>
+  /* The terminal is the page. No chrome, no header, nothing to explain — what
+     the container has to say is the only content, and anything framing it
+     steals rows from a viewport that is often a phone. */
+  html, body { height: 100%; margin: 0; background: #000; }
+  body { display: flex; flex-direction: column; }
+  #term { flex: 1; min-height: 0; width: 100%; }
+
+  /* The one thing worth framing it for: what the container cannot do. That is
+     a fact about how it was started — settled before the socket opened, and
+     unchanged by anything printed after — so it belongs to the page rather
+     than to the scrollback, where it would scroll away from the reader who
+     needs it and reappear on every reconnect for the one who does not.
+     Deliberately quiet: one line, small, grey on near-black with a hairline
+     under it, so it reads as the window's edge and not as the container
+     speaking. At this size it costs the terminal a row or two and nothing
+     else, and when there is nothing to say the element is not rendered at all
+     — no empty bar, no stray gap. */
+  .degraded {
+    flex: none;
+    font: 11px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #7a7a7a;
+    background: #0c0c0c;
+    border-bottom: 1px solid #1e1e1e;
+    padding: 0 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+{{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
+<div id="term"></div>
+<script>
+(() => {
+  // The k8s remotecommand channels. The first byte of every binary frame says
+  // which stream it belongs to, in both directions.
+  const STDIN = 0, STDOUT = 1, STDERR = 2, ERROR = 3, RESIZE = 4;
+
+  // convertEol unconditionally, because half the containers worth attaching to
+  // have no line discipline behind them. Without a TTY nothing supplies the
+  // carriage return: the container writes a bare \n, xterm does exactly what
+  // it was told and feeds the line without returning the carriage, and the
+  // output walks diagonally down the page. A real terminal never shows this
+  // because the kernel's tty driver is doing ONLCR out of sight, and there is
+  // no kernel anywhere in this path.
+  //
+  // Safe on a TTY too, which is why this needs no flag of its own. The option
+  // rewrites no bytes and adds no line feed — it only makes the line-feed
+  // handler set the cursor column to 0 as well — so on a stream that already
+  // sends \r\n the column is simply set to 0 twice, and the row still advances
+  // once. One setting covers both, and no second copy of "does this container
+  // have a TTY" is left here to drift out of step with degraded().
+  const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 13 });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('term'));
+  fit.fit();
+
+  // location.search is the tunnel's own bare routing parameter, carried over
+  // verbatim: the page was served at /?1, so its socket goes to /attach?1 and
+  // lands on the same origin. Leaning on the sticky origin cookie instead
+  // would let a second tab's container steal this one's socket, and a
+  // websocket handshake sends no Referer for the tunnel to route by.
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(proto + '//' + location.host + '/attach' + location.search,
+                           ['v4.channel.k8s.io']);
+  ws.binaryType = 'arraybuffer';
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  const send = (channel, bytes) => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const frame = new Uint8Array(bytes.length + 1);
+    frame[0] = channel;
+    frame.set(bytes, 1);
+    ws.send(frame);
+  };
+
+  const sendSize = () => send(RESIZE, encoder.encode(
+    JSON.stringify({ Width: term.cols, Height: term.rows })));
+
+  ws.onmessage = (event) => {
+    const frame = new Uint8Array(event.data);
+    // A one-byte frame is the server saying the stream is established. There
+    // is nothing to print, but it is the moment the terminal is really live,
+    // so the first size goes out here rather than on open.
+    if (frame.length < 2) {
+      if (frame[0] === STDOUT) sendSize();
+      return;
+    }
+    const body = frame.subarray(1);
+    switch (frame[0]) {
+      case STDOUT:
+      case STDERR:
+        term.write(body);
+        break;
+      case ERROR:
+        // A v4 status: success carries no message worth showing, and a
+        // failure is the only thing the reader can act on.
+        try {
+          const status = JSON.parse(decoder.decode(body));
+          if (status.status !== 'Success') {
+            term.write('\r\n\x1b[2m' + (status.message || 'attach failed') + '\x1b[0m\r\n');
+          }
+        } catch { /* not JSON; nothing useful to show */ }
+        break;
+    }
+  };
+
+  term.onData((data) => send(STDIN, encoder.encode(data)));
+
+  new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
+
+  // Cloudflare closes idle websockets and a page cannot send a websocket ping,
+  // so the terminal's own size doubles as the heartbeat: resizing to the
+  // dimensions already in effect is a no-op on the container.
+  const beat = setInterval(sendSize, 30000);
+
+  ws.onclose = () => {
+    clearInterval(beat);
+    term.write('\r\n\x1b[2mdetached\x1b[0m\r\n');
+  };
+})();
+</script>
+</body>
+</html>

@@ -45,6 +45,15 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// A container is not an HTTP service, so tunneld serves one on its behalf
+	// and hands the tunnel the loopback address instead. origins stays what
+	// the operator typed — it is what the reported map and the panel show.
+	bound, err := bindOrigins(ctx, origins, log)
+	if err != nil {
+		return err
+	}
+	defer bound.Close()
+
 	backend := libtunnel.Cloudflare()
 	if b.provider != "" {
 		backend = backend.WithProvider(b.provider)
@@ -55,7 +64,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	tun := libtunnel.New(backend).
 		WithLogger(log).
 		WithContext(ctx).
-		WithLocalURL(origins...)
+		WithLocalURL(bound.dialable...)
 
 	// Served in front of the origin proxy, so the panel needs no port of its
 	// own and no origin ever sees the request.
@@ -287,8 +296,23 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
 		}
+		// A container is not proxied at all: it is served, by a loopback
+		// origin bindOrigins stands up later. Everything the shorthands below
+		// fill in — a default scheme, a default host, a preserved path — is
+		// meaningless here, so the value is taken exactly as typed and
+		// anything extra is an error rather than a silent drop.
+		if u.Scheme == v1.DockerScheme {
+			if u.Host == "" {
+				return nil, fmt.Errorf("%w: %q names no container, pass e.g. dockerd://my-container", v1.ErrInvalidOrigin, s)
+			}
+			if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+				return nil, fmt.Errorf("%w: %q carries more than a container reference; pass %s://%s", v1.ErrInvalidOrigin, s, v1.DockerScheme, u.Host)
+			}
+			origins = append(origins, u)
+			continue
+		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return nil, fmt.Errorf("%w: %q has scheme %q, only http and https origins can be proxied", v1.ErrInvalidOrigin, s, u.Scheme)
+			return nil, fmt.Errorf("%w: %q has scheme %q, want http, https or %s", v1.ErrInvalidOrigin, s, u.Scheme, v1.DockerScheme)
 		}
 		// A port with no host in front of it — ":8000", or the
 		// "http://:8000" the scheme default above makes of it — means the

@@ -38,3 +38,7 @@ go.work.sum
 
 # Built by `make binary`.
 /tunneld
+
+# Subagent-driven development scratch: ledgers, briefs, review packages.
+# Regenerated per plan; the git history is the durable record.
+.superpowers/

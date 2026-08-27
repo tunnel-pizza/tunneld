@@ -16,6 +16,7 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.LogEnv, "TUNNELD_LOG"},
 		{v1.CommandName, "tunneld"},
 		{v1.DefaultProvider, "tunnel.pizza"},
+		{v1.DockerScheme, "dockerd"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -34,6 +35,7 @@ func TestSentinelsAreDistinct(t *testing.T) {
 		"ErrInvalidOrigin":   v1.ErrInvalidOrigin,
 		"ErrInvalidLogLevel": v1.ErrInvalidLogLevel,
 		"ErrNotReady":        v1.ErrNotReady,
+		"ErrNoDocker":        v1.ErrNoDocker,
 	}
 	for name, err := range sentinels {
 		if err == nil {

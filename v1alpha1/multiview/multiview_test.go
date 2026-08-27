@@ -343,3 +343,25 @@ func mustOrigins(raw []string) ([]*url.URL, error) {
 	}
 	return origins, nil
 }
+
+// TestLabel pins how a tile names the origin behind it. An http origin is
+// named by its host, which is what the operator typed; anything else keeps its
+// scheme, so a container tile cannot be misread as a hostname.
+func TestLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://localhost:3000", "localhost:3000"},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
+		{"dockerd://api", "dockerd://api"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			u, err := url.Parse(tc.in)
+			if err != nil {
+				t.Fatalf("url.Parse(%q): %v", tc.in, err)
+			}
+			if got := label(u); got != tc.want {
+				t.Errorf("label(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
