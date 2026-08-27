@@ -59,6 +59,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	view := ""
 	if wantsMultiview(b.multiview, origins) {
 		tun.WithInterceptor(multiview(origins, log))
+		tun.WithInterceptor(unframe())
 	}
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))

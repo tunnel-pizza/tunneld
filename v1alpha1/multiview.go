@@ -129,6 +129,115 @@ func multiviewURL(public *url.URL) string {
 	return shown.String()
 }
 
+// unframe builds the interceptor that lets the panel's own frames render.
+//
+// An origin is entitled to refuse being framed, and most that care say so with
+// X-Frame-Options: DENY or a CSP frame-ancestors directive. Through the panel
+// that refusal produces a blank tile, so the framing headers are dropped — but
+// only on the requests the panel itself makes, which is what keeps this from
+// being a blanket removal of somebody's clickjacking protection.
+//
+// The narrowing is Sec-Fetch: the request must be a frame navigation
+// (Sec-Fetch-Dest) originating from this same tunnel (Sec-Fetch-Site). A
+// top-level visit keeps every header the origin sent, and so does an attempt by
+// another site to frame the tunnel — that arrives cross-site and is left alone.
+// A browser old enough not to send Sec-Fetch at all strips nothing, which fails
+// closed: a blank tile rather than a quietly weakened origin.
+//
+// Priority 2, behind the panel itself, so the shell is served before anything
+// looks at framing.
+func unframe() libtunnel.Interceptor {
+	return libtunnel.Interceptor{
+		Priority: 2,
+		Match:    isPanelFrame,
+		Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
+			next := ic.Handler()
+			return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+				next(&unframer{ResponseWriter: w}, r)
+			})
+		},
+	}
+}
+
+// isPanelFrame reports whether a request is one of the panel's own frames.
+func isPanelFrame(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "iframe", "frame":
+	default:
+		return false
+	}
+	return r.Header.Get("Sec-Fetch-Site") == "same-origin"
+}
+
+// unframer drops the framing headers on the way out. It scrubs at WriteHeader
+// rather than after the fact because headers are immutable once written.
+type unframer struct {
+	http.ResponseWriter
+	written bool
+}
+
+// Unwrap lets http.NewResponseController reach the real writer, so flushing
+// and hijacking keep working through the wrapper — a streaming origin behind
+// the panel would otherwise stall.
+func (u *unframer) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+func (u *unframer) WriteHeader(code int) {
+	if !u.written {
+		u.written = true
+		stripFraming(u.Header())
+	}
+	u.ResponseWriter.WriteHeader(code)
+}
+
+// Write covers the handler that never calls WriteHeader: without this the
+// implicit 200 would be written by the wrapped writer, past the scrub.
+func (u *unframer) Write(b []byte) (int, error) {
+	if !u.written {
+		u.WriteHeader(http.StatusOK)
+	}
+	return u.ResponseWriter.Write(b)
+}
+
+// stripFraming removes X-Frame-Options and CSP's frame-ancestors, and nothing
+// else. Both are dropped because frame-ancestors supersedes X-Frame-Options in
+// every current browser, so removing one alone would leave half the origins
+// blank; the rest of a policy — script-src, connect-src, everything the origin
+// relies on — is preserved directive by directive.
+func stripFraming(h http.Header) {
+	h.Del("X-Frame-Options")
+
+	for _, key := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+		policies := h.Values(key)
+		if len(policies) == 0 {
+			continue
+		}
+		h.Del(key)
+		for _, policy := range policies {
+			if kept := withoutFrameAncestors(policy); kept != "" {
+				h.Add(key, kept)
+			}
+		}
+	}
+}
+
+// withoutFrameAncestors returns policy with any frame-ancestors directive
+// removed, or "" when that was the whole policy.
+func withoutFrameAncestors(policy string) string {
+	kept := make([]string, 0, strings.Count(policy, ";")+1)
+	for directive := range strings.SplitSeq(policy, ";") {
+		trimmed := strings.TrimSpace(directive)
+		if trimmed == "" {
+			continue
+		}
+		name, _, _ := strings.Cut(trimmed, " ")
+		if strings.EqualFold(name, "frame-ancestors") {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return strings.Join(kept, "; ")
+}
+
 // wantsMultiview reports whether the shell should be served at all. One origin
 // has nothing to compare against, so a lone --url keeps opening the origin
 // itself rather than a panel framing it.

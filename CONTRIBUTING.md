@@ -231,6 +231,14 @@ Easy to get wrong from the diff alone:
   mistake it for a routing index. A valued `?multiview=1` belongs to the origin
   and is deliberately not matched — see `matchMultiview` in
   [`v1alpha1/multiview.go`](./v1alpha1/multiview.go).
+- **The framing-header removal must stay narrowed to the panel's own frames.**
+  `unframe` drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile is
+  not blank, and it is gated on `Sec-Fetch-Dest` being a frame *and*
+  `Sec-Fetch-Site` being `same-origin`. Widening either condition would strip a
+  real protection from top-level visits or hand another site the ability to
+  frame somebody's tunnel. Everything else in a policy is preserved directive
+  by directive; the scrub happens in `WriteHeader`, because headers are
+  immutable after the first write.
 - **The shell's CSS is layout only.** Colour, type, borders and radius come
   from Basecoat; the CDN build ships component classes without Tailwind's
   utilities, so the rule of thumb is that a style earns its place only when no

@@ -95,9 +95,19 @@ Two things worth knowing:
   plain CSS) from jsDelivr, pinned by version and checked with subresource
   integrity. That is the one outbound request tunneld makes on your behalf;
   `--multiview=false` removes it.
-- An origin that sends `X-Frame-Options: DENY` refuses to be framed, and its
-  tile will be blank. Every tile links out to its origin's own URL, so there is
-  always a way through.
+- **Origins that refuse framing are un-refused, narrowly.** An app sending
+  `X-Frame-Options: DENY` or a CSP `frame-ancestors` directive would otherwise
+  render as a blank tile, so those two headers are dropped — but only on
+  requests the panel itself makes, identified by `Sec-Fetch-Dest` being a frame
+  and `Sec-Fetch-Site` being `same-origin`.
+
+  A top-level visit keeps everything the origin sent, and so does another
+  site's attempt to frame your tunnel: that arrives cross-site and is left
+  alone. Nothing else in the policy is touched — `script-src`, `connect-src`
+  and the rest survive directive by directive — and a browser too old to send
+  `Sec-Fetch` headers strips nothing, so the failure mode is a blank tile
+  rather than a quietly weakened origin. `--multiview=false` turns the whole
+  thing off.
 
 ## Output contract
 
