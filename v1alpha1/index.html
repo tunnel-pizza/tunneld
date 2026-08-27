@@ -32,28 +32,16 @@
 
   html, body { height: 100%; margin: 0; }
 
-  body {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
+  body { overflow: hidden; }
 
-  header {
-    display: flex;
-    align-items: center;
-    gap: .5rem;
-    padding: .375rem .625rem;
-  }
-
-  .muted { color: var(--muted-foreground); }
-
+  /* The grid is the whole page: the frames are the content, and a bar naming
+     the host only repeated what the tab title already says. */
   .grid {
     display: flex;
     flex-wrap: wrap;
     gap: .5rem;
-    flex: 1;
-    min-height: 0;
-    padding: 0 .5rem .5rem;
+    height: 100%;
+    padding: .5rem;
 
     /* Load-bearing, though it is also the initial value: a wrapped flex
        container with a definite height hands its leftover space to the flex
@@ -124,17 +112,12 @@
   /* Narrow: one column, and let the page scroll rather than crush the tiles. */
   @media (max-width: 45rem) {
     body { overflow: auto; }
-    .grid { flex: none; align-content: flex-start; }
+    .grid { height: auto; align-content: flex-start; }
     .tile { flex-basis: 100%; height: 70dvh; }
   }
 </style>
 </head>
 <body>
-
-<header>
-  <span class="badge">{{.Host}}</span>
-  <span class="muted">{{len .Origins}} origins</span>
-</header>
 
 <main class="grid">
   {{- range .Origins}}
