@@ -96,6 +96,7 @@ var flagEnv = map[string]string{
 	"provider":  v1.ProviderEnv,
 	"log-level": v1.LogEnv,
 	"open":      v1.OpenEnv,
+	"multiview": v1.MultiviewEnv,
 }
 
 // newEnv returns the environment binding for one command's flags.

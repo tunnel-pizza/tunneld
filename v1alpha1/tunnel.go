@@ -54,17 +54,27 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		WithContext(ctx).
 		WithLocalURL(origins...)
 
+	// Served in front of the origin proxy, so the panel needs no port of its
+	// own and no origin ever sees the request.
+	view := ""
+	if wantsMultiview(b.multiview, origins) {
+		tun.WithInterceptor(multiview(origins, log))
+	}
+
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
 
 	public := tun.URL()
 	if public == nil {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
-	report(stdout, stderr, public, origins)
+	if wantsMultiview(b.multiview, origins) {
+		view = multiviewURL(public)
+	}
+	report(stdout, stderr, public, origins, view)
 	if b.open {
-		// Only the default origin. The others are reported and left alone: a
-		// fan of tabs, one per --url, is rarely what anyone wanted.
-		openInBrowser(PublicURL(public, 0, len(origins)), stderr, log)
+		// One page, never a fan of tabs: the panel when there is one, since it
+		// reaches every origin, and otherwise the default origin itself.
+		openInBrowser(cmp.Or(view, PublicURL(public, 0, len(origins))), stderr, log)
 	}
 
 	select {
@@ -80,16 +90,20 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 // machine-consumable: a script reads line i to reach origin i, while the
 // banner and the arrows stay out of its way.
 //
+// view, the panel's address when there is one, is named on stderr only. It
+// reaches every origin rather than one, so putting it on stdout would break
+// the line-i-is-origin-i rule that makes that stream worth reading.
+//
 // Unless the two streams land in the same place, which on a terminal they
 // normally do — and there the split is invisible, so every URL would simply
 // appear twice, once bare and once in the map. When they do, the bare lines
 // are dropped: the map already shows every address, in a form that says which
 // origin it reaches. Redirect either stream and both come back, because then
 // they are going somewhere different and the machine-readable one has a reader.
-func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
+func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL, view string) {
 	fmt.Fprintln(stderr, VersionLine())
 	merged := sameStream(stdout, stderr)
-	width := 0
+	width := len(view)
 	for i := range origins {
 		width = max(width, len(PublicURL(public, i, len(origins))))
 	}
@@ -99,6 +113,9 @@ func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
 			fmt.Fprintln(stdout, addr)
 		}
 		fmt.Fprintf(stderr, "  %-*s -> %s\n", width, addr, origin)
+	}
+	if view != "" {
+		fmt.Fprintf(stderr, "  %-*s -> all %d, framed together\n", width, view, len(origins))
 	}
 }
 

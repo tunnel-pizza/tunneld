@@ -18,6 +18,7 @@ Deep-link by filename; line numbers will drift.
 | Builder methods + command assembly             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
 | Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
+| Multiview interceptor + shell template         | [`v1alpha1/multiview.go`](./v1alpha1/multiview.go), [`v1alpha1/index.html`](./v1alpha1/index.html) |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
 | godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -225,6 +226,17 @@ Easy to get wrong from the diff alone:
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
+- **`?multiview` must stay bare and non-numeric.** Bare, so it sits in the same
+  namespace as the routing parameters; non-numeric, so the tunnel can never
+  mistake it for a routing index. A valued `?multiview=1` belongs to the origin
+  and is deliberately not matched — see `matchMultiview` in
+  [`v1alpha1/multiview.go`](./v1alpha1/multiview.go).
+- **The shell's CSS is layout only.** Colour, type, borders and radius come
+  from Basecoat; the CDN build ships component classes without Tailwind's
+  utilities, so the rule of thumb is that a style earns its place only when no
+  class can supply it. Both CDN URLs carry a subresource-integrity digest —
+  recompute it (`openssl dgst -sha384 -binary <file> | openssl base64 -A`) when
+  bumping the version, or the page silently loses its stylesheet.
 - **The default origin is `?0`, not a bare URL, whenever there is more than
   one.** Routing falls back to the referring page and then to a sticky cookie,
   so a plain address stops reaching origin 0 once a browser has visited `?1`.

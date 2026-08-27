@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Host}} · multiview</title>
+
+<!-- Basecoat (Maia): shadcn/ui's components and design tokens as plain CSS, no
+     framework. Pinned by version and checked by digest, so a change at the CDN
+     cannot silently alter what a tunnel serves.
+
+     Dark, because the tiles frame other people's pages and most of those are
+     light: a dark shell keeps the boundary between chrome and content legible
+     instead of letting the two bleed together. -->
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/basecoat-maia.cdn.min.css"
+      integrity="sha384-04cyw9ANXtmbhyvozet8IzMh2M9bytBmhCuyrZ+YgDFgzSEcH26lLdQ47iE8cHvv"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer">
+<script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/js/all.min.js"
+        integrity="sha384-rD2ZCuReXV7nIneJcn1lsTn6yOv87YARLQyUsemVAxrYYHdy5hcAW8XZEQxx87Dj"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"
+        defer></script>
+
+<style>
+  /* Layout only. Every colour, border, radius and typeface comes from
+     Basecoat; the CDN build ships component classes without Tailwind's
+     utilities, so the arrangement below is the part no class can supply. */
+
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .5rem .75rem;
+  }
+
+  /* The route link labels the tile; it should not outshout the page inside
+     it, and the CDN build has no quiet button variant to reach for. */
+  header a {
+    margin-left: auto;
+    color: var(--muted-foreground);
+    text-decoration: none;
+  }
+
+  header a:hover,
+  header a:focus-visible { color: var(--foreground); }
+
+  .muted { color: var(--muted-foreground); }
+
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    flex: 1;
+    min-height: 0;
+    padding: 0 .5rem .5rem;
+  }
+
+  /* Two columns. --rows is ceil(n/2), rendered in by the server: a wrapped
+     flex container will not divide the free height into equal rows on its
+     own, and CSS has no way to count them. */
+  .tile {
+    flex: 1 1 calc(50% - .25rem);
+    height: calc((100% - (var(--rows) - 1) * .5rem) / var(--rows));
+    min-width: 0;      /* let a tile shrink past its iframe's intrinsic width */
+
+    /* A card spaces its own children; a tile's child is a full-bleed iframe,
+       so the padding and gap would only frame it in dead space. */
+    gap: 0;
+    padding-block: 0;
+  }
+
+  /* An odd number of origins: the last tile takes the whole final row. */
+  .tile:nth-child(odd):last-child { flex-basis: 100%; }
+
+  .tile header { border-bottom: 1px solid var(--border); }
+
+  .tile iframe {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    background: #fff; /* most origins are light; don't flash the shell's ink */
+  }
+
+  /* Narrow: one column, and let the page scroll rather than crush the tiles. */
+  @media (max-width: 45rem) {
+    body { overflow: auto; }
+    .grid { flex: none; }
+    .tile { flex-basis: 100%; height: 70dvh; }
+  }
+</style>
+</head>
+<body style="--rows:{{.Rows}}">
+
+<header>
+  <span class="badge">{{.Host}}</span>
+  <span class="muted">{{len .Origins}} origins</span>
+</header>
+
+<main class="grid">
+  {{- range .Origins}}
+  <section class="card tile">
+    <header>
+      <span class="badge">{{.Index}}</span>
+      <span class="muted">{{.Local}}</span>
+      <a href="{{.Route}}" target="_blank" rel="noopener">{{.Route}} &#8599;</a>
+    </header>
+    <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
+  </section>
+  {{- end}}
+</main>
+
+</body>
+</html>

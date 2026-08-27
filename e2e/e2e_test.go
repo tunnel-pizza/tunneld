@@ -89,7 +89,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--open", "tunneld --url"}},
+		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--open", "--multiview", "tunneld --url"}},
 	}
 
 	for _, tc := range cases {
@@ -217,6 +217,11 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			name: "TUNNELD_OPEN is validated",
 			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_OPEN": "nonsense"},
 			want: "TUNNELD_OPEN=\"nonsense\": invalid environment value",
+		},
+		{
+			name: "TUNNELD_MULTIVIEW is validated",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
+			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
 		},
 		{
 			name: "TUNNELD_OPEN accepts a boolean",

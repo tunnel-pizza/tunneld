@@ -152,7 +152,7 @@ func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	report(f, f, public, origins)
+	report(f, f, public, origins, "")
 	if err := f.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestReportSplitsStreams(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	report(&stdout, &stderr, public, origins)
+	report(&stdout, &stderr, public, origins, "")
 
 	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
 	if stdout.String() != wantOut {
@@ -300,4 +300,30 @@ func swapOpener(t *testing.T, fn func(string) error) {
 	old := openURL
 	t.Cleanup(func() { openURL = old })
 	openURL = fn
+}
+
+// TestReportNamesTheMultiviewPanel pins that the panel's address reaches the
+// human on stderr and never stdout. It answers for every origin at once, so a
+// line for it on stdout would break the rule that makes that stream readable:
+// line i is origin i.
+func TestReportNamesTheMultiviewPanel(t *testing.T) {
+	public, err := url.Parse("https://foo.tunneled.pizza/")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	if err != nil {
+		t.Fatalf("parseOrigins: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	report(&stdout, &stderr, public, origins, multiviewURL(public))
+
+	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
+	if stdout.String() != wantOut {
+		t.Errorf("stdout = %q, want only the origins %q", stdout.String(), wantOut)
+	}
+	if !strings.Contains(stderr.String(), "https://foo.tunneled.pizza/?multiview") {
+		t.Errorf("stderr %q does not name the panel", stderr.String())
+	}
 }

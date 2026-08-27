@@ -17,13 +17,13 @@ import (
 // New returns a BuilderImpl carrying the defaults that are not the zero value.
 // The lib.New façade wraps this and returns the v1.Builder interface.
 //
-// Only open needs seeding: its default is on, and a bool field cannot express
-// "unset" separately from "off". Setting it here rather than at the flag
-// binding keeps one rule for every knob — the flag's default is always the
-// field it binds over, so WithOpen(false) is honoured exactly like every other
-// seed.
+// Only the booleans need seeding: their defaults are on, and a bool field
+// cannot express "unset" separately from "off". Setting them here rather than
+// at the flag binding keeps one rule for every knob — a flag's default is
+// always the field it binds over, so WithOpen(false) is honoured exactly like
+// every other seed.
 func New() *BuilderImpl {
-	return &BuilderImpl{open: v1.DefaultOpen}
+	return &BuilderImpl{open: v1.DefaultOpen, multiview: v1.DefaultMultiview}
 }
 
 // BuilderImpl is the default Builder implementation. Its fields are the
@@ -31,11 +31,12 @@ func New() *BuilderImpl {
 // over the field it defaults from, so an argv value simply overwrites the
 // seed and there is no second copy of the configuration to keep in sync.
 type BuilderImpl struct {
-	name     string
-	urls     []string
-	provider string
-	logLevel string
-	open     bool
+	name      string
+	urls      []string
+	provider  string
+	logLevel  string
+	open      bool
+	multiview bool
 
 	// stdout carries the public URLs, stderr the banner, the origin map, and
 	// the tunnel's logs. They are staging only: Build hands them to the

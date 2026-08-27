@@ -120,6 +120,12 @@ const (
 	// and the attempt is only noise.
 	OpenEnv = "TUNNELD_OPEN"
 
+	// MultiviewEnv names whether to serve the multiview panel — the mirror of
+	// --multiview, which beats it. Any value strconv.ParseBool accepts works.
+	// Turning it off leaves the origins reachable exactly as before; only the
+	// page that frames them together goes away.
+	MultiviewEnv = "TUNNELD_MULTIVIEW"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"
@@ -136,6 +142,13 @@ const (
 // something they are about to look at; the lever for every other case is
 // --open=false or OpenEnv.
 const DefaultOpen = true
+
+// DefaultMultiview is whether several origins are also served as one panel of
+// framed views. On, because the alternative for someone exposing three
+// services is three tabs and no way to see them together. It costs nothing
+// when unused: the panel answers on its own query parameter and every origin
+// stays reachable on its own index.
+const DefaultMultiview = true
 
 // Builder assembles the tunneld command. Configure it with the With* methods
 // (each returns the Builder for chaining), then call the terminal Build to
@@ -172,11 +185,16 @@ type Builder interface {
 	// stderr. Unset, the level comes from LogEnv, and silence if that is
 	// unset too.
 	WithLogLevel(level string) Builder
-	// WithOpen sets whether the default origin's public URL is opened in a
-	// browser once the tunnel is live. Only the default origin is opened; the
-	// rest are reported and left alone, since a fan of tabs is rarely what
-	// anyone wanted. Unset, the behaviour is DefaultOpen.
+	// WithOpen sets whether a public URL is opened in a browser once the
+	// tunnel is live — the multiview panel when there is one, otherwise the
+	// default origin. Exactly one page is opened either way, since a fan of
+	// tabs is rarely what anyone wanted. Unset, the behaviour is DefaultOpen.
 	WithOpen(open bool) Builder
+	// WithMultiview sets whether several origins are also served together as
+	// one panel of framed views, reachable on a bare ?multiview parameter. It
+	// does nothing with a single origin, which has nothing to sit beside.
+	// Unset, the behaviour is DefaultMultiview.
+	WithMultiview(multiview bool) Builder
 	// WithStdout redirects the public URLs, which are written one line per
 	// origin in order, along with the help text and the version banner. Build
 	// passes it to the command's SetOut, so calling SetOut on the built
