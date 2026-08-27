@@ -25,9 +25,12 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
+	"k8s.io/klog/v2"
 )
 
 // pageHTML is the terminal page. Embedded rather than fetched, so a tunnel
@@ -47,12 +50,41 @@ var page = template.Must(template.New("attach").Parse(pageHTML))
 // told us about.
 const idleTimeout = 2 * time.Minute
 
+// klogRouted guards the process-global redirect in routeKlog.
+var klogRouted sync.Once
+
+// routeKlog points klog at the tunnel's own logger, once per process.
+//
+// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
+// logs through klog.Background(), which writes to stderr and has never heard
+// of --log-level. That silently breaks a documented promise: the flag's
+// default is silence, and Logger really does hand back a discard handler. The
+// line it breaks on is not an exotic one either. Any abrupt disconnect prints
+//
+//	E0827 17:37:35.563392 conn.go:353] "Error on socket receive" err="read tcp ...: connection reset by peer"
+//
+// and an abrupt disconnect is how sessions normally end: a killed browser, a
+// closed laptop, a dropped network, the Cloudflare edge reaping a connection.
+//
+// klog.SetLogger is process-global, which is the cost. It is the same trade
+// tunneld already makes and documents for browser.Stdout/Stderr in
+// openInBrowser (v1alpha1/tunnel.go) — a package global set on a dependency's
+// behalf, because owning the process's output is worth more than leaving a
+// global untouched. Routed here rather than in the command so the guarantee
+// holds for an embedding program that never runs run(). The first Server's
+// logger wins, which for a process with one --log-level is the only logger
+// there is.
+func routeKlog(log *slog.Logger) {
+	klogRouted.Do(func() { klog.SetLogger(logr.FromSlogHandler(log.Handler())) })
+}
+
 // Target is one attachable thing behind a Server: it streams, it says what it
 // can do, and it releases whatever it holds.
 //
-// Four methods is the whole provider contract, which is what keeps this
-// package free of Docker. A second provider — podman, or a local shell over a
-// pty — implements these and nothing here changes.
+// Five methods is the whole provider contract — AttachContainer, from the
+// embedded remotecommand.Attacher, plus the four below — which is what keeps
+// this package free of Docker. A second provider — podman, or a local shell
+// over a pty — implements them and nothing here changes.
 type Target interface {
 	// AttachContainer streams between the caller's ends and the target's
 	// stdio, returning when the target's stream ends. The name, uid and
@@ -81,10 +113,12 @@ type Server struct {
 	listener net.Listener
 	srv      *http.Server
 	log      *slog.Logger
-	// ctx is the tunnel's lifetime, held rather than passed because the only
-	// place that needs it is a handler, and a handler's signature is fixed.
-	// serveAttach explains why a request's own context will not do.
-	ctx context.Context
+	// ctx is this Server's lifetime — the tunnel's, narrowed by a cancel of
+	// its own — held rather than passed because the only place that needs it
+	// is a handler, and a handler's signature is fixed. serveAttach explains
+	// why a request's own context will not do.
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
@@ -93,16 +127,32 @@ type Server struct {
 //
 // The address is 127.0.0.1 rather than a wildcard, deliberately. The page is
 // unauthenticated by design — the tunnel hostname is the secret — so the local
-// network is not somewhere it belongs.
+// network is not somewhere it belongs. That is the whole of what the bind
+// buys, and it is worth being precise about the half it does not: anything
+// already running on this machine still reaches the port, a page loaded in the
+// operator's own browser included. serveAttach's origin check is what covers
+// that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
 func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
+	routeKlog(log)
+
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("attach %s: listen: %w", target.Name(), err)
 	}
 
-	s := &Server{target: target, listener: listener, log: log, ctx: ctx}
+	// A cancel of our own, so Close means the same thing however it is
+	// reached. The tunnel failing on its own cancels nothing — nobody
+	// signalled — and neither srv.Close (which deliberately leaves hijacked
+	// connections alone) nor target.Close (which only reaps idle transport
+	// connections) reaches a live session. Without this, a Close on that path
+	// leaves the session's goroutines and its daemon connection running until
+	// the websocket idle timeout unwinds them. The binary exits and never
+	// notices; an embedding program, which is the case bindOrigins says it
+	// cares about, keeps running.
+	sctx, cancel := context.WithCancel(ctx)
+	s := &Server{target: target, listener: listener, log: log, ctx: sctx, cancel: cancel}
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
@@ -133,9 +183,16 @@ func (s *Server) URL() *url.URL {
 	return &url.URL{Scheme: "http", Host: s.listener.Addr().String()}
 }
 
-// Close stops the origin and releases the target. It is safe to call twice,
-// which it is: once from the context and once from the caller's defer.
+// Close ends every session, stops the origin and releases the target, in that
+// order: cancelling first is what unblocks a Target parked in a read on a
+// hijacked connection, which neither of the closes below can touch.
+//
+// It is safe to call twice, which it is: once from the context and once from
+// the caller's defer. A context.CancelFunc is documented to tolerate it,
+// http.Server.Close is idempotent, and a Target's Close is required to be —
+// see Target.Close.
 func (s *Server) Close() error {
+	s.cancel()
 	err := s.srv.Close()
 	if terr := s.target.Close(); err == nil {
 		err = terr
@@ -169,6 +226,37 @@ func (s *Server) servePage(w http.ResponseWriter, _ *http.Request) {
 // serveAttach hands the request to ServeAttach, which owns the websocket
 // upgrade and the v4.channel.k8s.io framing on it.
 func (s *Server) serveAttach(w http.ResponseWriter, r *http.Request) {
+	// Refuse a handshake that came from somewhere else. A websocket is exempt
+	// from the same-origin policy — new WebSocket() reaches any host the page
+	// can resolve, with no preflight in the way — and the Handshake wsstream
+	// installs replaces the one golang.org/x/net/websocket ships with: it
+	// negotiates a subprotocol and looks at Origin not at all.
+	//
+	// So the bind in Serve is not the whole defence. Loopback keeps this page
+	// off the local network; it does nothing about a page already running in
+	// the operator's browser, which reaches 127.0.0.1 exactly as easily as we
+	// do. Without this check, any tab they open can sweep ws://127.0.0.1:<port>
+	// for something that speaks v4.channel.k8s.io and, on the first hit, hold
+	// stdin and stdout to the container — no tunnel hostname needed.
+	//
+	// Host is what to compare against because it is the address the page was
+	// served from, in all three shapes this origin is reached in: the public
+	// hostname through the tunnel (libtunnel forwards the inbound Host rather
+	// than rewriting it to the origin's), 127.0.0.1:port on a direct visit,
+	// and the public hostname again inside a multiview frame, whose document
+	// is served from it.
+	//
+	// An absent Origin passes, deliberately. A browser always sends one on a
+	// handshake, so no Origin means a non-browser client — curl, a script, a
+	// test — which was never the thing at risk here. Refusing it would break
+	// them and buy nothing.
+	if o := r.Header.Get("Origin"); o != "" {
+		if u, err := url.Parse(o); err != nil || u.Host != r.Host {
+			http.Error(w, "attach: cross-origin websocket refused", http.StatusForbidden)
+			return
+		}
+	}
+
 	// ServeAttach hands the Target r.Context(), and on this one handler that
 	// context is a promise it cannot keep: Go cancels a request's context when
 	// its handler returns, and this handler cannot return while ServeAttach is

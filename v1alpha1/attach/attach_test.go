@@ -162,6 +162,86 @@ func dial(t *testing.T, s *Server) *websocket.Conn {
 	return c
 }
 
+// TestCrossOriginHandshake pins the gate that keeps the socket from being the
+// hole the loopback bind is assumed to have closed.
+//
+// A websocket handshake is not covered by the same-origin policy and the
+// wsstream handshake never reads Origin, so without this any page in the
+// operator's browser could dial ws://127.0.0.1:<port>/attach and hold the
+// container's stdin. Dialed with the real handshake rather than a bare GET,
+// since the whole question is what the upgrade does with the header.
+//
+// The absent-Origin row is as load-bearing as the refusal: no Origin means a
+// non-browser client, and breaking curl buys nothing.
+//
+// The rows carrying a Host are the shape a request arrives in through the
+// tunnel, where the page was served from the public hostname and libtunnel
+// forwards the inbound Host rather than rewriting it to the origin's. It is
+// also the multiview shape: a tile's document is served from that same
+// hostname, so its socket's Origin is the same string again.
+func TestCrossOriginHandshake(t *testing.T) {
+	cases := []struct {
+		name string
+		// host overrides the Host header; "" leaves the dialed 127.0.0.1:port.
+		host string
+		// origin is given the effective Host. "" sends no Origin at all.
+		origin func(host string) string
+		want   bool // whether the handshake should succeed
+	}{
+		{"a foreign origin is refused", "", func(string) string { return "https://evil.example" }, false},
+		{"a foreign origin on loopback is refused", "", func(string) string { return "http://127.0.0.1:1" }, false},
+		{"an unparsable origin is refused", "", func(string) string { return "://" }, false},
+		{"the page's own origin is accepted", "", func(host string) string { return "http://" + host }, true},
+		{"no origin at all is accepted", "", func(string) string { return "" }, true},
+		{"the tunnel's public hostname is accepted", "demo.tunnel.pizza",
+			func(host string) string { return "https://" + host }, true},
+		{"a foreign origin through the tunnel is refused", "demo.tunnel.pizza",
+			func(string) string { return "https://evil.example" }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A Server per case, not one shared across the table: an accepted
+			// handshake attaches, and a fake target that has been attached
+			// twice is a fake with two goroutines closing one done channel.
+			s := serveFake(t, newFakeTarget("api", true, true))
+
+			header := http.Header{}
+			host := s.URL().Host
+			if tc.host != "" {
+				header.Set("Host", tc.host)
+				host = tc.host
+			}
+			if o := tc.origin(host); o != "" {
+				header.Set("Origin", o)
+			}
+			d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
+			c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", header)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			if c != nil {
+				defer func() { _ = c.Close() }()
+			}
+
+			if tc.want {
+				if err != nil {
+					t.Fatalf("handshake = %v, want it to succeed", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("handshake succeeded, want it refused")
+			}
+			if resp == nil {
+				t.Fatalf("handshake failed without a response: %v", err)
+			}
+			if resp.StatusCode != http.StatusForbidden {
+				t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+			}
+		})
+	}
+}
+
 // readFrame reads one binary frame and splits it into channel and payload.
 func readFrame(t *testing.T, c *websocket.Conn) (byte, []byte) {
 	t.Helper()
@@ -340,9 +420,9 @@ func TestNoticeOnThePage(t *testing.T) {
 	}
 }
 
-// TestSessionEnds pins the two ways a session is over, from the point of view
-// of a Target that is only reading output — the state a quiet container leaves
-// it in for hours at a time.
+// TestSessionEnds pins the three ways a session is over, from the point of
+// view of a Target that is only reading output — the state a quiet container
+// leaves it in for hours at a time.
 //
 // Neither route is something such a Target can see for itself. The context
 // ServeAttach hands it is the request's, and Go cancels that when the handler
@@ -353,11 +433,11 @@ func TestNoticeOnThePage(t *testing.T) {
 // than a bare receive, so a regression fails in five seconds instead of
 // hanging the lane.
 func TestSessionEnds(t *testing.T) {
-	closeTab := func(c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }
+	closeTab := func(_ *Server, c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }
 	cases := []struct {
 		name  string
 		stdin bool
-		end   func(c *websocket.Conn, shutdown context.CancelFunc)
+		end   func(s *Server, c *websocket.Conn, shutdown context.CancelFunc)
 	}{
 		{"the visitor closes the tab", true, closeTab},
 		// The same, on a container started without -i. It earns a case of its
@@ -366,7 +446,15 @@ func TestSessionEnds(t *testing.T) {
 		// once. The resize channel is opened whatever the options say, which
 		// is the entire reason it replaced stdin here.
 		{"the visitor closes the tab, no stdin", false, closeTab},
-		{"the tunnel shuts down", true, func(_ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
+		{"the tunnel shuts down", true, func(_ *Server, _ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
+		// Close with nobody having cancelled anything, which is the shape of
+		// the tunnel failing on its own: run's defer closes what it bound and
+		// the context is still live. Neither close inside reaches a live
+		// session — net/http leaves hijacked connections alone by design, and
+		// a Target's Close only reaps what is idle — so Close has to end the
+		// session itself or mean two different things on two paths.
+		{"the server is closed with the context still live", true,
+			func(s *Server, _ *websocket.Conn, _ context.CancelFunc) { _ = s.Close() }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -374,10 +462,11 @@ func TestSessionEnds(t *testing.T) {
 			defer shutdown()
 
 			target := newFakeTarget("api", true, tc.stdin)
-			c := dial(t, serveFakeOn(t, ctx, target))
+			s := serveFakeOn(t, ctx, target)
+			c := dial(t, s)
 			readFrame(t, c) // the established frame
 
-			tc.end(c, shutdown)
+			tc.end(s, c, shutdown)
 
 			select {
 			case <-target.done:
