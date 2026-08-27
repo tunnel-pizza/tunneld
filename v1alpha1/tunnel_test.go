@@ -3,11 +3,13 @@ package v1alpha1
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -188,4 +190,54 @@ func TestLogger(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOpenInBrowser pins the two things the opener promises. It never writes
+// to stdout — the spawned process inherits writers from pkg/browser's package
+// globals, which default to os.Stdout, and that stream carries nothing but
+// public URLs. And a failure to open is a warning, not an error: the tunnel is
+// up and serving either way, and a headless host is a normal place to run
+// this, not a broken one.
+func TestOpenInBrowser(t *testing.T) {
+	t.Run("opens the address and leaves stdout alone", func(t *testing.T) {
+		var opened string
+		swapOpener(t, func(addr string) error {
+			opened = addr
+			return nil
+		})
+
+		var stderr bytes.Buffer
+		openInBrowser("https://foo.tunneled.pizza/", &stderr, slog.New(slog.DiscardHandler))
+
+		if want := "https://foo.tunneled.pizza/"; opened != want {
+			t.Errorf("opened %q, want %q", opened, want)
+		}
+		if browser.Stdout != io.Writer(&stderr) {
+			t.Error("browser.Stdout was left pointing elsewhere, want the stderr writer")
+		}
+		if browser.Stderr != io.Writer(&stderr) {
+			t.Error("browser.Stderr was left pointing elsewhere, want the stderr writer")
+		}
+	})
+
+	t.Run("a failure warns and returns", func(t *testing.T) {
+		swapOpener(t, func(string) error { return errors.New("no browser here") })
+
+		var logged bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		openInBrowser("https://foo.tunneled.pizza/", io.Discard, log)
+
+		if !strings.Contains(logged.String(), "could not open a browser") {
+			t.Errorf("log = %q, want a warning naming the failure", logged.String())
+		}
+	})
+}
+
+// swapOpener replaces the browser launcher for one test and restores it after,
+// so the suite never opens a window on whoever is running it.
+func swapOpener(t *testing.T, fn func(string) error) {
+	t.Helper()
+	old := openURL
+	t.Cleanup(func() { openURL = old })
+	openURL = fn
 }

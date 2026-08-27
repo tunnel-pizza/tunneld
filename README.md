@@ -83,6 +83,7 @@ default.**
 | `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A bare `host:port` implies `http`. Required unless supplied by the variable or seeded in code. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
+| `--open` | `TUNNELD_OPEN` | Open the default origin's public URL in a browser once the tunnel is live. **Default on** — `--open=false` on a server or in CI. |
 
 So the whole thing runs from a container with no command line at all:
 
@@ -174,6 +175,7 @@ type Builder interface {
     WithURL(urls ...string) Builder    // origins, in order; appends across calls
     WithProvider(host string) Builder  // quick-tunnel host; default tunnel.pizza
     WithLogLevel(level string) Builder // debug|info|warn|error on stderr
+    WithOpen(open bool) Builder        // open a browser when live; default true
     WithStdout(w io.Writer) Builder    // the public URLs
     WithStderr(w io.Writer) Builder    // banner, origin map, logs
     Build() *cobra.Command             // terminal: assembles and returns
@@ -188,8 +190,12 @@ var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")
 
 const LogEnv          = "TUNNELD_LOG"
+const URLEnv          = "TUNNELD_URL"
+const ProviderEnv     = "TUNNELD_PROVIDER"
+const OpenEnv         = "TUNNELD_OPEN"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
+const DefaultOpen     = true
 ```
 
 And the env plumbing implementations use, in `v1alpha1`:
@@ -212,6 +218,7 @@ after construction still lands.
 | `TUNNELD_URL` | `--url` | Local origins, comma-separated in the order the repeated flag would take them. An origin URL containing a literal comma has to use the flag, which parses no separator. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
+| `TUNNELD_OPEN` | `--open` | Whether to open a browser once the tunnel is live. Any value `strconv.ParseBool` accepts. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

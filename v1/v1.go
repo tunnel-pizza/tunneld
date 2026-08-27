@@ -113,6 +113,13 @@ const (
 	// DefaultProvider.
 	ProviderEnv = "TUNNELD_PROVIDER"
 
+	// OpenEnv names whether to open the default origin's public URL in a
+	// browser once the tunnel is live — the mirror of --open, which beats it.
+	// Any value strconv.ParseBool accepts works; anything else is an error.
+	// Set it to false on a server or in CI, where there is no browser to open
+	// and the attempt is only noise.
+	OpenEnv = "TUNNELD_OPEN"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"
@@ -123,6 +130,12 @@ const (
 	// engine's environment.
 	DefaultProvider = "tunnel.pizza"
 )
+
+// DefaultOpen is whether a tunnel opens its public URL in a browser once it is
+// live. On, because the overwhelmingly common case is a developer exposing
+// something they are about to look at; the lever for every other case is
+// --open=false or OpenEnv.
+const DefaultOpen = true
 
 // Builder assembles the tunneld command. Configure it with the With* methods
 // (each returns the Builder for chaining), then call the terminal Build to
@@ -156,6 +169,11 @@ type Builder interface {
 	// stderr. Unset, the level comes from LogEnv, and silence if that is
 	// unset too.
 	WithLogLevel(level string) Builder
+	// WithOpen sets whether the default origin's public URL is opened in a
+	// browser once the tunnel is live. Only the default origin is opened; the
+	// rest are reported and left alone, since a fan of tabs is rarely what
+	// anyone wanted. Unset, the behaviour is DefaultOpen.
+	WithOpen(open bool) Builder
 	// WithStdout redirects the public URLs, which are written one line per
 	// origin in order, along with the help text and the version banner. Build
 	// passes it to the command's SetOut, so calling SetOut on the built

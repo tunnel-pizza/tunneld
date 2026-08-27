@@ -95,6 +95,7 @@ var flagEnv = map[string]string{
 	"url":       v1.URLEnv,
 	"provider":  v1.ProviderEnv,
 	"log-level": v1.LogEnv,
+	"open":      v1.OpenEnv,
 }
 
 // newEnv returns the environment binding for one command's flags.

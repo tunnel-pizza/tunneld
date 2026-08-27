@@ -33,6 +33,13 @@ func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
 	return b
 }
 
+// WithOpen sets whether the default origin's public URL is opened in a browser
+// once the tunnel is live.
+func (b *BuilderImpl) WithOpen(open bool) v1.Builder {
+	b.open = open
+	return b
+}
+
 // WithStdout redirects the public URLs.
 func (b *BuilderImpl) WithStdout(w io.Writer) v1.Builder {
 	b.stdout = w
@@ -123,6 +130,8 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
 		"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
+	cmd.Flags().BoolVar(&b.open, "open", b.open,
+		"open the default origin's public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
 	// Required only when nothing was seeded: an embedder that supplied an
 	// origin wants --url optional, not forbidden.
 	if len(b.urls) == 0 {

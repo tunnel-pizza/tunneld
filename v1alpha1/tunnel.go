@@ -12,8 +12,13 @@ import (
 	"strings"
 
 	"github.com/cnuss/libtunnel"
+	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
+
+// openURL launches a browser on addr. A variable, not a direct call, so a test
+// can observe the call without a window appearing on whoever is running it.
+var openURL = browser.OpenURL
 
 // run is the built command's body: it brings the tunnel up, reports the public
 // URLs, and blocks until ctx is canceled or the tunnel fails. ctx is the
@@ -55,6 +60,11 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
 	report(stdout, stderr, public, origins)
+	if b.open {
+		// Only the default origin. The others are reported and left alone: a
+		// fan of tabs, one per --url, is rarely what anyone wanted.
+		openInBrowser(PublicURL(public, 0), stderr, log)
+	}
 
 	select {
 	case <-ctx.Done():
@@ -78,6 +88,24 @@ func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
 		addr := PublicURL(public, i)
 		fmt.Fprintln(stdout, addr)
 		fmt.Fprintf(stderr, "  %-*s -> %s\n", width, addr, origin)
+	}
+}
+
+// openInBrowser launches a browser on addr, reporting a failure as a warning
+// rather than an error: the tunnel is up and serving either way, and a
+// headless host — a server, a container, CI — is a normal place to run this,
+// not a broken one. --open=false (or v1.OpenEnv) turns off the attempt.
+//
+// pkg/browser wires the spawned process's output to its package-level Stdout,
+// which defaults to os.Stdout — the one stream tunneld promises carries
+// nothing but public URLs. Both are pointed at stderr before the child can
+// write a word. They are package globals, so this is process-wide; tunneld
+// owns its process, and an embedding program gets the same guarantee it wants
+// anyway.
+func openInBrowser(addr string, stderr io.Writer, log *slog.Logger) {
+	browser.Stdout, browser.Stderr = stderr, stderr
+	if err := openURL(addr); err != nil {
+		log.Warn("could not open a browser", "url", addr, "error", err)
 	}
 }
 

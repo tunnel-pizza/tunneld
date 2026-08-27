@@ -89,7 +89,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents the repeatable url flag", []string{"--help"}, []string{"--url", "tunneld --url"}},
+		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--open", "tunneld --url"}},
 	}
 
 	for _, tc := range cases {
@@ -129,6 +129,7 @@ func TestRefusedInvocations(t *testing.T) {
 		{"unknown log level", []string{"--url", "http://localhost:3000", "--log-level", "loud"}, "log-level"},
 		{"positional argument", []string{"--url", "http://localhost:3000", "stray"}, "stray"},
 		{"unknown flag", []string{"--url", "http://localhost:3000", "--nope"}, "nope"},
+		{"unparsable boolean flag", []string{"--url", "http://localhost:3000", "--open=nonsense"}, "open"},
 	}
 
 	for _, tc := range cases {
@@ -207,6 +208,19 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			name: "the flag beats the variable",
 			env:  map[string]string{"TUNNELD_LOG": "info"},
 			args: []string{"--url", "http://localhost:3000", "--log-level", "loud"},
+			want: "invalid log level",
+		},
+		{
+			// A typed flag is where the environment's strictness is visible:
+			// pflag refuses the value and applyEnv reports it as
+			// ErrInvalidEnv, naming the variable rather than the flag.
+			name: "TUNNELD_OPEN is validated",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_OPEN": "nonsense"},
+			want: "TUNNELD_OPEN=\"nonsense\": invalid environment value",
+		},
+		{
+			name: "TUNNELD_OPEN accepts a boolean",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_OPEN": "false", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 	}
