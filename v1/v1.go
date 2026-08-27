@@ -1,4 +1,4 @@
-// Package v1 is the stable public surface for golib. The Builder interface and
+// Package v1 is the stable public surface for tunneld. The Builder interface and
 // Result type here are the contract callers depend on across releases; the
 // implementation lives in v1alpha1 and may change between alpha revisions.
 //
@@ -45,23 +45,23 @@ var ErrUnnamed = errors.New("builder has no name")
 // lazily, where its knob takes effect, rather than once at init, so a value
 // set after construction still lands.
 //
-// Naming: GOLIB_<KNOB> for a core knob, GOLIB__<IMPL>_<KNOB> (double
+// Naming: TUNNELD_<KNOB> for a core knob, TUNNELD__<IMPL>_<KNOB> (double
 // underscore) for an implementation-scoped one. The doubled separator
 // namespaces the implementation, so two implementations can each expose a
-// TIMEOUT knob (GOLIB__FOO_TIMEOUT, GOLIB__BAR_TIMEOUT) without colliding
-// with each other or with a core GOLIB_TIMEOUT.
+// TIMEOUT knob (TUNNELD__FOO_TIMEOUT, TUNNELD__BAR_TIMEOUT) without colliding
+// with each other or with a core TUNNELD_TIMEOUT.
 const (
 	// LogEnv names the level (debug|info|warn|error) of the logger
 	// v1alpha1.Logger returns: set, it writes to stderr at that level;
 	// unset, that logger is silent. An unrecognized value reads as info and
 	// logs a warning saying so — a misspelled level should not silence the
 	// logs the operator was trying to turn on.
-	LogEnv = "GOLIB_LOG"
+	LogEnv = "TUNNELD_LOG"
 )
 
 // Builder assembles a value of type T from optional configuration. Configure it
 // with the With* methods (each returns the Builder for chaining), then call the
-// terminal Build to produce a Result. Obtain one from golib.New.
+// terminal Build to produce a Result. Obtain one from tunneld.New.
 type Builder[T any] interface {
 	// WithName sets a display name carried into the Result. Unset, the name is
 	// empty.

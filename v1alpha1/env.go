@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	v1 "github.com/cnuss/golib/v1"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // EnvBool reads an env-fixed boolean knob. The three results carry the whole
@@ -52,7 +52,7 @@ func EnvDuration(name string) (value time.Duration, fixed bool, err error) {
 	return v, true, nil
 }
 
-// Logger returns the default logger: silent unless v1.LogEnv (GOLIB_LOG) names
+// Logger returns the default logger: silent unless v1.LogEnv (TUNNELD_LOG) names
 // a level, in which case it writes to stderr at that level. Silence is the
 // default because a library that logs uninvited pollutes its importer's
 // output; the environment variable is the operator's way to turn it on without

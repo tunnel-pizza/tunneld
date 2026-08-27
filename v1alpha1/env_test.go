@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	v1 "github.com/cnuss/golib/v1"
-	"github.com/cnuss/golib/v1alpha1"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
-const boolVar = "GOLIB__TEST_BOOL"
+const boolVar = "TUNNELD__TEST_BOOL"
 
 // TestEnvBool covers the (value, fixed, err) contract: an unset knob is not
 // fixed, an explicit false is fixed (which a bare bool return could not
@@ -55,7 +55,7 @@ func TestEnvBool(t *testing.T) {
 	}
 }
 
-const durationVar = "GOLIB__TEST_DURATION"
+const durationVar = "TUNNELD__TEST_DURATION"
 
 // TestEnvDuration mirrors TestEnvBool for the duration knob, including the
 // zero-but-fixed case that separates "set to 0s" from "unset".
@@ -121,7 +121,7 @@ func TestLoggerSilentByDefault(t *testing.T) {
 	t.Setenv(v1.LogEnv, "")
 
 	if v1alpha1.Logger().Enabled(t.Context(), 1000) {
-		t.Error("Logger() is enabled with GOLIB_LOG unset, want silent")
+		t.Error("Logger() is enabled with TUNNELD_LOG unset, want silent")
 	}
 }
 
