@@ -1,4 +1,4 @@
-package tunneld
+package v1alpha1
 
 import (
 	"runtime/debug"

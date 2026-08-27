@@ -10,16 +10,16 @@ Deep-link by filename; line numbers will drift.
 
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
-| Façade (`New`, type aliases, `Version`)        | [`lib.go`](./lib.go)                                             |
-| Stable interface (`Builder[T]` + `Result[T]`)  | [`v1/v1.go`](./v1/v1.go)                                         |
-| `Err*` sentinels + `*Env` constants            | [`v1/v1.go`](./v1/v1.go)                                         |
-| Implementation struct + `New[T]` constructor   | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
-| Builder methods (`WithName`, `WithValue`, …)   | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
+| Process shell (signals → context → Execute)    | [`main.go`](./main.go)                                           |
+| Façade (`New`, `Version`, type alias)          | [`lib/lib.go`](./lib/lib.go)                                     |
+| Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
+| `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
+| Implementation struct + `New` constructor      | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
+| Builder methods + command assembly             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
+| Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
+| Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
-| Unit tests + fuzz target                       | [`v1alpha1/builder_test.go`](./v1alpha1/builder_test.go)         |
-| godoc examples                                 | [`v1/example_test.go`](./v1/example_test.go)                     |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
-| Worked examples                                | [`examples/`](./examples)                                        |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -30,25 +30,35 @@ Deep-link by filename; line numbers will drift.
 
 ## Module layout
 
-Three packages, stable/alpha versioning:
+The module root is the `tunneld` command; the library tiers sit under it with
+stable/alpha versioning:
 
 ```
-github.com/tunnel-pizza/tunneld           — root façade. Stable surface (New).
-github.com/tunnel-pizza/tunneld/v1        — stable Builder[T] interface + Result[T].
-github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation. May change
-                                   between alpha revisions.
+github.com/tunnel-pizza/tunneld           — package main. Signals → context →
+                                            Execute, and nothing else.
+github.com/tunnel-pizza/tunneld/lib       — façade. Stable surface (New,
+                                            Version, BuilderV1).
+github.com/tunnel-pizza/tunneld/v1        — stable Builder contract, Err*
+                                            sentinels, env / default constants.
+github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
+                                            assembly, the tunnel it runs, the
+                                            version resolution. May change
+                                            between alpha revisions.
 ```
 
-Application code imports the root (`tunneld.New[T]()…`). Code that needs to
-declare types against the interface imports `v1`. Direct access to the
-`BuilderImpl[T]` struct lives in `v1alpha1`. The current `Builder[T]` API is a
-generic starting point — swap it for the real one, keeping the layering.
+Application code imports `lib` (`lib.New()…`). Code that needs to declare types
+against the interface imports `v1`. Direct access to the `BuilderImpl` struct
+lives in `v1alpha1`.
+
+`main.go` stays thin on purpose. Everything the command *does* — flags, help
+text, validation, the tunnel — is assembled by the builder, so another program
+can embed tunneld as a subcommand of its own with `lib.New().WithName("expose")`
+and get the identical behaviour. A feature that only works when tunneld is
+`os.Args[0]` is a feature in the wrong package.
 
 ## Design conventions
 
-The placeholder `Builder` is deliberately tiny, but these are the shapes a real
-implementation should grow into. They are conventions, not machinery — nothing
-here enforces them.
+Conventions, not machinery — nothing here enforces them.
 
 **Surface/engine split.** Keep the stable `v1` interface minimal: only what a
 caller calls. When the implementation needs more of itself than the interface
@@ -58,14 +68,19 @@ public interface then fails immediately and with a clear message, rather than
 half-working until it reaches the one method it doesn't have. The assertion
 also documents, in code, exactly what the engine requires beyond the contract.
 
-**Write-once configuration.** Guard each `With*` mutator with its own
-`sync.Once` — one per knob, not one for the whole builder. First call wins; the
-first internal *use* of an unset knob fixes its default. That combination is
-what makes a configured value safe to read from another goroutine: once anyone
-has observed a knob, no later `With*` can change it underneath them. Per-knob
-`Once` (rather than a single "frozen" flag) keeps an unrelated late
-configuration from being silently dropped. `Build` already follows this shape —
-see `builtOnce` in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go).
+**Build assembles once.** `Build` is guarded by `builtOnce` (see
+[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
+an optimization: the command's flags bind *over* the builder's own fields, so a
+second assembly would register a second set of flags against the same storage.
+If a knob ever needs the same protection, give it its own `sync.Once` — one per
+knob, not one shared "frozen" flag, so an unrelated late configuration is not
+silently dropped.
+
+**Seeds are defaults, not settings.** Every `With*` value becomes the default
+of the flag that binds over it, so an argv value always wins. That is what lets
+an embedder supply a working origin (`WithURL`) while leaving the user free to
+override it — and it is why `--url` is marked required only when nothing was
+seeded.
 
 **Implementations grow as `v1alpha1/<name>` subpackages.** When there is more
 than one way to implement the contract, each gets its own subpackage
@@ -77,34 +92,55 @@ variables (see the naming rules in [`v1/v1.go`](./v1/v1.go)).
 
 ## Local development
 
-Requires Go 1.21 or later.
+Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engine
+(see the comment in [`go.mod`](./go.mod)).
 
 ```sh
 git clone https://github.com/tunnel-pizza/tunneld.git
 cd tunneld
-make test   # library unit + fuzz tests (fast, in-package)
-make e2e    # builds and runs every example binary
+make test     # unit tests (fast, in-package)
+make e2e      # builds the binary and drives its offline paths
+make binary   # build ./tunneld for the host
 ```
 
-Run a specific example locally:
+Run it against a local service:
 
 ```sh
-make run basic
-make run named
+make run ARGS="--url http://localhost:3000 --url http://localhost:4000"
 ```
+
+Arguments go in `ARGS` because make would parse a bare `--url` as one of its
+own flags.
 
 ## Test layout
 
-Three tiers, each with a distinct job — don't blur them:
+Two tiers, each with a distinct job — don't blur them:
 
 - **`*_test.go` next to the code** — unit tests: anything with fabricated
-  inputs or fakes, however elaborate. Includes fuzz targets and the godoc
-  examples in [`v1/example_test.go`](./v1/example_test.go).
-- **`examples/`** — real-world, simple-ish API usage written for humans. An
-  example demonstrates; it never asserts. Assertion logic belongs in `e2e/`.
-- **`e2e/`** — the harness builds and runs the example binaries and asserts
-  on their output. If a check can pass without running an example binary, it
+  inputs or fakes, however elaborate. Fuzz targets and godoc examples live here
+  too.
+- **`e2e/`** — the harness builds the `tunneld` binary and drives it, asserting
+  exit codes and output. If a check can pass without executing the binary, it
   is a unit test, not e2e.
+
+**One test file per source file: `something.go` → `something_test.go`.** Tests
+belong with the code they cover, not in files named after the scenario that
+motivated them — no `multi_origin_test.go`, no `regression_test.go`. When a bug
+sends you looking for somewhere to put its test, the answer is always the
+`_test.go` beside the file that had the bug, as another case in the table that
+already covers that function. Use cases are what the table rows are for; files
+are for code. A source file with no test file is a gap worth naming in review.
+
+Test the *thing*, not the incident: name the test after the behaviour it pins
+(`TestFlagReplacesSeededURLs`), and let its doc comment say why that behaviour
+matters. Internal (`package v1alpha1`) and external (`package v1alpha1_test`)
+test files coexist in one directory — reach for the external form by default,
+and the internal one only to cover unexported behaviour.
+
+Neither tier mints a real tunnel: that needs the public internet and a live
+provider, which would make CI flaky and slow. Everything up to the mint —
+parse, validate, refuse or proceed — is covered here; the tunnel itself is
+covered by `libtunnel`'s own live tier.
 
 ## Before you push
 
@@ -127,15 +163,20 @@ CI runs the same on every PR, and adds one lane `make all` leaves out:
 
 Easy to get wrong from the diff alone:
 
-- **`examples/` is intentionally duplicated.** Each `main.go` is a
-  copy-pasteable starter; no shared internal package. Don't refactor it into
-  one.
-- **godoc example funcs can't bind to generic types.** `go vet` rejects
-  `ExampleBuilder_*` in `v1` because `Builder` is parameterized — its example
-  checker hasn't caught up with generics. Work around it with package-level
-  example names (`Example_value` etc.). See [`v1/example_test.go`](./v1/example_test.go).
-- **e2e builds binaries at runtime**, so the test cache can't see example
-  source changes — `make e2e` passes `-count=1` to force a rebuild.
+- **`--url` uses `StringArray`, not `StringSlice`.** `StringSlice` splits on
+  commas, which would silently shred an origin URL carrying one in its query.
+  `StringArray` also replaces the flag's default on the first `--url` and
+  appends after that, which is what makes a command line override a `WithURL`
+  seed instead of merging into it.
+- **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
+  origin 1; `?1=x` is application data the proxy forwards untouched. See
+  `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
+- **stdout is a machine interface.** One public URL per origin, in order,
+  nothing else — a script reads line *i* to reach origin *i*. The banner, the
+  origin map, and every log line go to stderr. Adding a friendly line to stdout
+  breaks callers.
+- **e2e builds the binary at runtime**, so the test cache can't see source
+  changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in
   [`ci.yml`](./.github/workflows/ci.yml) (`resolve tag` step) is
   `^[[:space:]]*\[skip release\][[:space:]]*$`. Inline prose mentions are safe;
@@ -145,15 +186,25 @@ Easy to get wrong from the diff alone:
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
 
-## Adding an example
+## Adding a flag
 
-Examples live in `./examples/<name>/main.go`. Keep each example self-contained
-(there's no shared internal package — the duplication is intentional, so each
-example is copy-pasteable on its own).
+The flag surface is deliberately small: `--url`, `--provider`, `--log-level`.
+Everything else the tunnel engine can do is reachable through `libtunnel`'s own
+`LIBTUNNEL_*` environment variables, which pass straight through — reach for
+those before adding a flag.
 
-Print a single recognizable line so the e2e harness can assert on it, then add
-a row to the `cases` table in `e2e/e2e_test.go` (name + expected substring) and
-to the README's example table.
+When a flag really is warranted, four things move together:
+
+1. a `With*` setter on the `Builder` interface in [`v1/v1.go`](./v1/v1.go), so
+   an embedder can seed it;
+2. the field, the setter, and the `cmd.Flags()` binding in `v1alpha1` — the
+   binding's default is the seeded field, never a literal;
+3. a case in the table in `v1alpha1/builder_test.go`, plus a row in
+   `e2e/e2e_test.go` if the flag has a refusable value; and
+4. the **Flags** table in the README.
+
+A knob with an env-expressible value also gets a constant in `v1/v1.go` and a
+row in the README's environment table.
 
 ## Branch / PR flow
 
@@ -181,13 +232,16 @@ etc.
 ## Pull requests
 
 - Keep PRs focused. One feature or fix per PR.
-- Include test coverage for behavior changes — lib tests (`v1alpha1/`) for API
-  changes, e2e tests (`e2e/e2e_test.go`) for example-visible changes.
-- **Keep the README in sync with the façade.** The README mirrors the public
-  surface, so any change to it must update the README in the same PR:
-  - a new/changed/removed method on `Builder[T]` (or the `v1` surface) → update
-    the **API at a glance** block and the **Quick Start** snippet;
-  - a new example → add a row to the **Examples** table;
+- Include test coverage for behavior changes — unit tests beside the code
+  (`something.go` → `something_test.go`) for library changes, e2e tests
+  (`e2e/e2e_test.go`) for anything visible at the command line.
+- **Keep the README in sync with the surface.** The README mirrors both the
+  flag surface and the public API, so any change to either must update it in
+  the same PR:
+  - a new/changed/removed flag → update the **Flags** table and, if it is
+    user-facing enough, the **Quick Start**;
+  - a new/changed/removed method on `Builder` (or the `v1` surface) → update
+    the **API at a glance** block;
   - a renamed package/version tier → update the **Layout** tree.
   Treat the README's code blocks as documentation that must compile against the
   current API — stale snippets are a review blocker.

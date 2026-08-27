@@ -6,16 +6,27 @@ agent-specific framing.
 
 ## Read first, in order
 
-1. [README.md](./README.md) — what the library does + public surface
+1. [README.md](./README.md) — what the command does + public surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
-3. [`v1/v1.go`](./v1/v1.go) — public `Builder[T]` interface + `Result[T]`
-4. [`examples/basic/main.go`](./examples/basic/main.go) — minimal call site
+3. [`v1/v1.go`](./v1/v1.go) — public `Builder` interface (`Build() *cobra.Command`)
+4. [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go) — the tunnel the command runs
+5. [`main.go`](./main.go) — the whole process shell, ~15 lines
 
 ## Before you touch anything
 
-- File map, module layout, and the conventions that bite (generics + godoc,
-  e2e `-count=1`, skip release anchoring, annotated cosign tags) are all in
-  [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the diff.
+- File map, module layout, and the conventions that bite (`StringArray` vs
+  `StringSlice`, the bare `?n` routing parameter, stdout as a machine
+  interface, e2e `-count=1`, skip release anchoring, annotated cosign tags) are
+  all in [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the
+  diff.
+- **Tests go beside their source**: `something.go` → `something_test.go`, one
+  file per source file, never a file named after a scenario. New cases join the
+  table in the existing file. See
+  [CONTRIBUTING.md → Test layout](./CONTRIBUTING.md#test-layout).
+- **`main.go` stays thin.** Flags, help, validation, and the tunnel belong to
+  the builder in `v1alpha1`, so tunneld embeds as another program's subcommand.
+  A feature that only works when tunneld is `os.Args[0]` is in the wrong
+  package.
 - **Every change starts with an issue**, then a branch + PR with `Closes #<n>`.
   Don't push to `main`. Full flow in
   [CONTRIBUTING.md → Branch / PR flow](./CONTRIBUTING.md#branch--pr-flow).

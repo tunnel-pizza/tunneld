@@ -1,8 +1,9 @@
-.PHONY: all check fmt fmt-check vet build windows test race e2e run
+.PHONY: all check fmt fmt-check vet build binary windows test race e2e run
 
-# The library is pure Go. Forcing CGO off keeps every build identical across
-# hosts and sidesteps broken toolchains (e.g. windows-11-arm runners ship an
-# x86_64 gcc that can't assemble runtime/cgo's arm64 stubs).
+# tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
+# identical across hosts, produces a dependency-free binary that runs on a
+# scratch/distroless base, and sidesteps broken toolchains (e.g. windows-11-arm
+# runners ship an x86_64 gcc that can't assemble runtime/cgo's arm64 stubs).
 export CGO_ENABLED = 0
 
 # Default: everything CI runs except the race lane (needs a C toolchain — run
@@ -29,13 +30,17 @@ vet:
 build:
 	go build ./...
 
-# Cross-compile + vet for Windows. A build-only smoke so a host-only library
-# doesn't quietly stop building on the other major target.
+# Build just the tunneld binary into the working directory.
+binary:
+	go build -o tunneld .
+
+# Cross-compile + vet for Windows. A build-only smoke so the binary doesn't
+# quietly stop building on the other major target.
 windows:
 	GOOS=windows go vet ./...
 	GOOS=windows go build ./...
 
-# Library unit + fuzz tests (v1alpha1) plus the godoc examples (v1).
+# Unit tests: every package's own *_test.go, plus the godoc examples in lib.
 test:
 	go test ./...
 
@@ -44,25 +49,22 @@ test:
 # the global export above: the detector links through cgo. Kept out of `all`
 # for that reason — it is the one target needing a C toolchain.
 #
-# If this library ever grows a live e2e tier gated on testing.Short(), this
-# lane must pass -short too: without it the live cases start running under the
-# detector on every CI run, which is exactly the traffic the tiering exists to
-# avoid.
+# If this repo ever grows a live e2e tier gated on testing.Short() — one that
+# mints a real tunnel — this lane must pass -short too: without it the live
+# cases start running under the detector on every CI run, which is exactly the
+# traffic the tiering exists to avoid.
 race:
 	CGO_ENABLED=1 go test -race ./...
 
-# End-to-end: the harness builds and drives every example binary. -count=1 disables
-# go test caching, since the harness builds the example binaries at runtime and the
-# cache key wouldn't otherwise pick up example source changes.
+# End-to-end: the harness builds the tunneld binary and drives its offline
+# paths. -count=1 disables go test caching, since the harness builds the binary
+# at runtime and the cache key wouldn't otherwise pick up source changes.
 e2e:
 	go test -count=1 -v ./e2e
 
-# Run an example by name, forwarding any trailing words as args:
-#   make run basic
-#   make run named
+# Run tunneld from source. Arguments go in ARGS rather than as trailing words,
+# because make would parse a bare --url as one of its own flags:
+#   make run ARGS="--url http://localhost:3000"
+#   make run ARGS="--url http://localhost:3000 --url http://localhost:4000"
 run:
-	cd examples/$(word 2,$(MAKECMDGOALS)) && go run . $(wordlist 3,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
-
-# Swallow the example name and forwarded args (extra goals) so make doesn't error.
-%:
-	@:
+	go run . $(ARGS)

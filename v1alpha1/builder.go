@@ -1,30 +1,137 @@
 package v1alpha1
 
-import v1 "github.com/tunnel-pizza/tunneld/v1"
+import (
+	"cmp"
+	"io"
 
-// WithName sets the display name carried into the Result.
-func (b *BuilderImpl[T]) WithName(name string) v1.Builder[T] {
+	"github.com/spf13/cobra"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+)
+
+// WithName sets the built command's name.
+func (b *BuilderImpl) WithName(name string) v1.Builder {
 	b.name = name
 	return b
 }
 
-// WithValue sets the payload Build produces.
-func (b *BuilderImpl[T]) WithValue(v T) v1.Builder[T] {
-	b.value = v
+// WithURL seeds the local origins to expose, appending across calls.
+func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
+	b.urls = append(b.urls, urls...)
 	return b
 }
 
-// Build assembles the configured value and returns it. It is the terminal step;
-// the result is computed once and cached, so repeated calls are cheap and
-// stable.
-func (b *BuilderImpl[T]) Build() v1.Result[T] {
-	b.builtOnce.Do(func() {
-		b.built = v1.Result[T]{Name: b.name, Value: b.value}
-	})
+// WithProvider sets the quick-tunnel provider host to mint against.
+func (b *BuilderImpl) WithProvider(host string) v1.Builder {
+	b.provider = host
+	return b
+}
+
+// WithLogLevel sets the tunnel's stderr log level.
+func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
+	b.logLevel = level
+	return b
+}
+
+// WithStdout redirects the public URLs.
+func (b *BuilderImpl) WithStdout(w io.Writer) v1.Builder {
+	b.stdout = w
+	return b
+}
+
+// WithStderr redirects the banner, the origin map, and the tunnel's logs.
+func (b *BuilderImpl) WithStderr(w io.Writer) v1.Builder {
+	b.stderr = w
+	return b
+}
+
+// Name returns the configured command name, defaulting to v1.CommandName.
+func (b *BuilderImpl) Name() string {
+	if b.name == "" {
+		return v1.CommandName
+	}
+	return b.name
+}
+
+// Build assembles the configured command. It is the terminal step; the command
+// is built once and cached, so repeated calls return the same *cobra.Command
+// rather than a second one with a second set of flags bound to these fields.
+func (b *BuilderImpl) Build() *cobra.Command {
+	b.builtOnce.Do(func() { b.built = b.command() })
 	return b.built
 }
 
-// Name returns the configured name (empty if WithName was never called).
-func (b *BuilderImpl[T]) Name() string {
-	return b.name
+// command is the one-shot assembly behind Build.
+func (b *BuilderImpl) command() *cobra.Command {
+	name := b.Name()
+
+	cmd := &cobra.Command{
+		Use:   name + " --url <local-url> [--url <local-url> ...]",
+		Short: "Expose local origins to the public internet through a quick tunnel",
+		Long: name + ` exposes already-running local services to the public internet
+through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
+
+Pass --url once per local origin. The first is the default; each later one is
+reachable under the same public hostname by appending a bare ?n parameter, n
+being that flag's 0-based position:
+
+  ` + name + ` --url http://localhost:3000 --url http://localhost:4000
+
+    https://<host>/     -> http://localhost:3000
+    https://<host>/?1   -> http://localhost:4000
+
+A browser sticks to the origin it landed on: subresources follow their
+document's URL, and a top-level visit to ?n is remembered by cookie.
+
+Public URLs are printed to stdout, one line per origin in flag order; logs and
+the origin map go to stderr.`,
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
+		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Deferred to run time so cobra's SetOut/SetErr on an
+			// already-built command still take effect.
+			if b.stdout == nil {
+				b.stdout = cmd.OutOrStdout()
+			}
+			if b.stderr == nil {
+				b.stderr = cmd.ErrOrStderr()
+			}
+			return b.run(cmd.Context())
+		},
+	}
+
+	// Each flag binds over the field it defaults from, so a seeded value is a
+	// default and an argv value overwrites it. StringArray, not StringSlice:
+	// a repeated flag must collect values verbatim, and StringSlice splits on
+	// commas, which would silently shred a URL carrying one in its query.
+	// pflag's stringArray replaces the default on the first --url and appends
+	// after that, so a command line never merges into a seeded set.
+	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
+		"local origin to expose, e.g. http://localhost:3000 (repeat for more; a bare host:port implies http)")
+	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
+		"quick-tunnel provider host to mint against")
+	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
+		"tunnel log level on stderr: debug, info, warn, error (default: silent, or $"+v1.LogEnv+")")
+	// Required only when nothing was seeded: an embedder that supplied an
+	// origin wants --url optional, not forbidden.
+	if len(b.urls) == 0 {
+		_ = cmd.MarkFlagRequired("url")
+	}
+
+	cmd.AddCommand(versionCommand(name))
+	return cmd
+}
+
+// versionCommand prints the build banner and exits — the build id of the
+// binary plus the tunnel library it links against, since that library is what
+// actually speaks to the edge and a bug report needs both numbers.
+func versionCommand(name string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the " + name + " build identifier and exit",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			cmd.Println(VersionLine())
+		},
+	}
 }

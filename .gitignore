@@ -35,3 +35,6 @@ go.work.sum
 
 # Claude Code local state
 .claude/
+
+# Built by `make binary`.
+/tunneld

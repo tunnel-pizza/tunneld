@@ -1,13 +1,24 @@
-// Package v1 is the stable public surface for tunneld. The Builder interface and
-// Result type here are the contract callers depend on across releases; the
-// implementation lives in v1alpha1 and may change between alpha revisions.
+// Package v1 is the stable public surface for tunneld. The Builder interface
+// here is the contract callers depend on across releases; the implementation
+// lives in v1alpha1 and may change between alpha revisions.
+//
+// The builder assembles the `tunneld` command: a fluent chain of With* setters
+// finalized by Build, which returns a *cobra.Command ready to Execute. That
+// shape is what lets tunneld be both a binary and an embeddable subcommand —
+// a host program builds the command, renames it, seeds its origins, redirects
+// its streams, and hangs it off its own root without reimplementing anything.
 //
 // Two other things live at this layer because they are equally part of the
-// contract: the Err* sentinels callers match with errors.Is, and the *Env
-// constants naming every environment knob.
+// contract: the Err* sentinels callers match with errors.Is, and the constants
+// naming every environment knob and default.
 package v1
 
-import "errors"
+import (
+	"errors"
+	"io"
+
+	"github.com/spf13/cobra"
+)
 
 // The sentinel errors, centralized: declared here with errors.New, wrapped by
 // the implementation in v1alpha1, and matched by callers with errors.Is. Two
@@ -31,15 +42,34 @@ import "errors"
 // to fall back to the code value deliberately.
 var ErrInvalidEnv = errors.New("invalid environment value")
 
-// ErrUnnamed was the Build error of a builder configured without WithName,
-// back when a name was mandatory. Names are optional now — an unset name
-// builds a Result with an empty Name and no error — so nothing returns this
-// any more. It remains so callers matching on it keep compiling.
-//
-// Deprecated: Build no longer fails on a missing name; nothing returns this.
-var ErrUnnamed = errors.New("builder has no name")
+// ErrNoOrigin reports a command built and run with nothing to expose: no
+// --url flag and no WithURL seed. A tunnel with no origin would come up
+// pointing at a loopback socket nobody serves on — a public hostname that
+// answers only errors — so this fails before the mint instead. The lever is
+// --url (repeatable), or WithURL when embedding.
+var ErrNoOrigin = errors.New("no origin")
 
-// The environment variables, centralized: every code knob with an
+// ErrInvalidOrigin reports a --url value the tunnel could not proxy to: an
+// unparsable URL, a scheme other than http or https, or a URL with no host. A
+// bare host:port is not an error — it implies http. The wrapped message names
+// the offending value; the lever is to correct it.
+var ErrInvalidOrigin = errors.New("invalid origin")
+
+// ErrInvalidLogLevel reports a --log-level value that is not debug, info, warn
+// or error. It is an error rather than a silent fallback because the operator
+// typed it: quietly reading an unknown level as info would hide the typo
+// behind logs that look almost right. The environment mirror (LogEnv) is
+// deliberately lenient instead — see v1alpha1.Logger.
+var ErrInvalidLogLevel = errors.New("invalid log level")
+
+// ErrNotReady reports a tunnel that never became reachable end to end and
+// failed without a cause of its own — the fallback when neither the tunnel's
+// own error nor the context's explains the failure. In practice it means the
+// edge connection or the hostname resolution gave up quietly; --log-level
+// debug is the lever, since the underlying library logs the attempt.
+var ErrNotReady = errors.New("tunnel did not become ready")
+
+// The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read
 // lazily, where its knob takes effect, rather than once at init, so a value
@@ -50,35 +80,73 @@ var ErrUnnamed = errors.New("builder has no name")
 // namespaces the implementation, so two implementations can each expose a
 // TIMEOUT knob (TUNNELD__FOO_TIMEOUT, TUNNELD__BAR_TIMEOUT) without colliding
 // with each other or with a core TUNNELD_TIMEOUT.
+//
+// tunneld's tunnel engine is github.com/cnuss/libtunnel, which carries its own
+// LIBTUNNEL_* environment surface for everything this one does not expose —
+// origin TLS, spec replay, edge pinning, the cache directory. Those pass
+// straight through; they are documented in that library, not mirrored here.
 const (
-	// LogEnv names the level (debug|info|warn|error) of the logger
-	// v1alpha1.Logger returns: set, it writes to stderr at that level;
-	// unset, that logger is silent. An unrecognized value reads as info and
-	// logs a warning saying so — a misspelled level should not silence the
-	// logs the operator was trying to turn on.
+	// LogEnv names the level (debug|info|warn|error) of the default logger:
+	// set, the tunnel writes to stderr at that level; unset, it is silent.
+	// An unrecognized value reads as info and logs a warning saying so — a
+	// misspelled level should not silence the logs the operator was trying to
+	// turn on. The --log-level flag beats it, and is strict where this is
+	// lenient (see ErrInvalidLogLevel).
 	LogEnv = "TUNNELD_LOG"
+
+	// CommandName is the built command's default name, overridable with
+	// WithName so an embedding program can mount it under its own verb.
+	CommandName = "tunneld"
+
+	// DefaultProvider is the quick-tunnel service tunneld mints against. It is
+	// also the underlying library's default; naming it here puts it in --help
+	// and makes it overridable with WithProvider rather than only through the
+	// engine's environment.
+	DefaultProvider = "tunnel.pizza"
 )
 
-// Builder assembles a value of type T from optional configuration. Configure it
-// with the With* methods (each returns the Builder for chaining), then call the
-// terminal Build to produce a Result. Obtain one from tunneld.New.
-type Builder[T any] interface {
-	// WithName sets a display name carried into the Result. Unset, the name is
-	// empty.
-	WithName(name string) Builder[T]
-	// WithValue sets the payload the builder produces. Unset, Build returns the
-	// zero value of T.
-	WithValue(v T) Builder[T]
-	// Build assembles the configured value and returns it. It is the terminal
-	// step; calling it more than once returns the same Result.
-	Build() Result[T]
-	// Name returns the configured name (empty if WithName was never called).
+// Builder assembles the tunneld command. Configure it with the With* methods
+// (each returns the Builder for chaining), then call the terminal Build to
+// produce a *cobra.Command. Obtain one from lib.New.
+//
+//	cmd := lib.New().WithURL("http://localhost:3000").Build()
+//	err := cmd.ExecuteContext(ctx)
+//
+// Every With* value is a default, not a fixed setting: the command's flags
+// bind over the same fields, so an argv value wins. Seeding an origin with
+// WithURL therefore makes --url optional rather than forbidden, which is what
+// an embedding program wants — a working default the user can still override.
+//
+// The command's context is its shutdown handle. Run it with ExecuteContext and
+// cancel that context (a signal, in the binary's case) to tear the tunnel
+// down, during startup as well as after it is live.
+type Builder interface {
+	// WithName sets the built command's name — the verb in usage strings and
+	// what cobra matches when the command is mounted under another root.
+	// Unset, the name is CommandName.
+	WithName(name string) Builder
+	// WithURL seeds the local origins to expose, in order: the first is the
+	// default origin and each later one answers on a bare ?n parameter.
+	// Repeated calls append. A --url flag on the command line replaces the
+	// whole seeded set rather than adding to it.
+	WithURL(urls ...string) Builder
+	// WithProvider sets the quick-tunnel provider host to mint against.
+	// Unset, the provider is DefaultProvider.
+	WithProvider(host string) Builder
+	// WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
+	// stderr. Unset, the level comes from LogEnv, and silence if that is
+	// unset too.
+	WithLogLevel(level string) Builder
+	// WithStdout redirects the public URLs, which are written one line per
+	// origin in order. Unset, they go to the process's stdout.
+	WithStdout(w io.Writer) Builder
+	// WithStderr redirects the banner, the origin map, and the tunnel's logs.
+	// Unset, they go to the process's stderr.
+	WithStderr(w io.Writer) Builder
+	// Build assembles the configured command and returns it. It is the
+	// terminal step; calling it more than once returns the same command.
+	Build() *cobra.Command
+	// Name returns the configured command name (CommandName if WithName was
+	// never called).
 	Name() string
-}
-
-// Result is the structured output of Builder.Build. The json tags make it drop
-// straight into encoding/json and compatible marshalers.
-type Result[T any] struct {
-	Name  string `json:"name,omitempty"`
-	Value T      `json:"value"`
 }
