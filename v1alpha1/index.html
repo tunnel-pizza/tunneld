@@ -65,14 +65,18 @@
     flex: 1;
     min-height: 0;
     padding: 0 .5rem .5rem;
+
+    /* Load-bearing, though it is also the initial value: a wrapped flex
+       container with a definite height hands its leftover space to the flex
+       lines equally. Every tile has the same base height, so the rows come out
+       even without anyone counting them. */
+    align-content: stretch;
   }
 
-  /* Two columns. --rows is ceil(n/2), rendered in by the server: a wrapped
-     flex container will not divide the free height into equal rows on its
-     own, and CSS has no way to count them. */
+  /* Two columns. The height is left to align-content above rather than
+     calculated from a row count, which keeps the server out of the layout. */
   .tile {
     flex: 1 1 calc(50% - .25rem);
-    height: calc((100% - (var(--rows) - 1) * .5rem) / var(--rows));
     min-width: 0;      /* let a tile shrink past its iframe's intrinsic width */
 
     /* A card spaces its own children; a tile's child is a full-bleed iframe,
@@ -97,12 +101,12 @@
   /* Narrow: one column, and let the page scroll rather than crush the tiles. */
   @media (max-width: 45rem) {
     body { overflow: auto; }
-    .grid { flex: none; }
+    .grid { flex: none; align-content: flex-start; }
     .tile { flex-basis: 100%; height: 70dvh; }
   }
 </style>
 </head>
-<body style="--rows:{{.Rows}}">
+<body>
 
 <header>
   <span class="badge">{{.Host}}</span>

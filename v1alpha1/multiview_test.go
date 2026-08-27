@@ -117,7 +117,6 @@ func TestServeShell(t *testing.T) {
 		`src="/?2"`,
 		"localhost:3000",
 		"localhost:5000",
-		"--rows:2", // ceil(3/2): the flex layout cannot count its own rows
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page does not contain %q", want)
@@ -125,29 +124,6 @@ func TestServeShell(t *testing.T) {
 	}
 	if got, want := strings.Count(body, "<iframe"), len(origins); got != want {
 		t.Errorf("page has %d frames, want one per origin (%d)", got, want)
-	}
-}
-
-// TestServeShellRowsAreCeilHalf pins the row count the layout is given, since
-// getting it wrong is invisible in the markup and wrong only on screen.
-func TestServeShellRowsAreCeilHalf(t *testing.T) {
-	cases := map[int]string{1: "--rows:1", 2: "--rows:1", 3: "--rows:2", 4: "--rows:2", 5: "--rows:3"}
-
-	for n, want := range cases {
-		raw := make([]string, n)
-		for i := range raw {
-			raw[i] = "http://localhost:3000"
-		}
-		origins, err := parseOrigins(raw)
-		if err != nil {
-			t.Fatalf("parseOrigins: %v", err)
-		}
-
-		rec := httptest.NewRecorder()
-		serveShell(rec, httptest.NewRequest(http.MethodGet, "/?multiview", nil), origins, slog.New(slog.DiscardHandler))
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("%d origins: page does not carry %q", n, want)
-		}
 	}
 }
 

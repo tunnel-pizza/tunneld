@@ -41,9 +41,6 @@ type shellData struct {
 	// tunnel, so the page names whatever address the visitor actually used.
 	Host    string
 	Origins []shellOrigin
-	// Rows is ceil(n/2): the flex layout needs the row count to divide the
-	// viewport, since a wrapped flex container will not do it on its own.
-	Rows int
 }
 
 // shellOrigin is one tile: the index that routes to it, the local address it
@@ -95,7 +92,6 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 	data := shellData{
 		Host:    r.Host,
 		Origins: make([]shellOrigin, 0, len(origins)),
-		Rows:    (len(origins) + 1) / 2,
 	}
 	for i, origin := range origins {
 		data.Origins = append(data.Origins, shellOrigin{
