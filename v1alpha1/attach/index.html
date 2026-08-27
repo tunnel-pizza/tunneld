@@ -65,7 +65,21 @@
   // which stream it belongs to, in both directions.
   const STDIN = 0, STDOUT = 1, STDERR = 2, ERROR = 3, RESIZE = 4;
 
-  const term = new Terminal({ cursorBlink: true, convertEol: false, fontSize: 13 });
+  // convertEol unconditionally, because half the containers worth attaching to
+  // have no line discipline behind them. Without a TTY nothing supplies the
+  // carriage return: the container writes a bare \n, xterm does exactly what
+  // it was told and feeds the line without returning the carriage, and the
+  // output walks diagonally down the page. A real terminal never shows this
+  // because the kernel's tty driver is doing ONLCR out of sight, and there is
+  // no kernel anywhere in this path.
+  //
+  // Safe on a TTY too, which is why this needs no flag of its own. The option
+  // rewrites no bytes and adds no line feed — it only makes the line-feed
+  // handler set the cursor column to 0 as well — so on a stream that already
+  // sends \r\n the column is simply set to 0 twice, and the row still advances
+  // once. One setting covers both, and no second copy of "does this container
+  // have a TTY" is left here to drift out of step with degraded().
+  const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 13 });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(document.getElementById('term'));
