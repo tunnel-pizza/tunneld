@@ -130,9 +130,7 @@ func TestReportSplitsStreams(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	b := New()
-	b.stdout, b.stderr = &stdout, &stderr
-	b.report(public, origins)
+	report(&stdout, &stderr, public, origins)
 
 	wantOut := "https://foo.tunneled.pizza/\nhttps://foo.tunneled.pizza/?1\n"
 	if stdout.String() != wantOut {

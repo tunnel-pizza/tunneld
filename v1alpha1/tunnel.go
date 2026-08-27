@@ -21,9 +21,12 @@ import (
 // tunnel down during startup as well as after, so this returns rather than
 // hanging. A tunnel that fails on its own returns the cause.
 //
+// stdout and stderr come from the command's own OutOrStdout/ErrOrStderr, so
+// cobra stays the single owner of where output goes; they are never nil.
+//
 // The engine is github.com/cnuss/libtunnel driving Cloudflare's edge in
 // process — no cloudflared binary, no account, no DNS to configure.
-func (b *BuilderImpl) run(ctx context.Context) error {
+func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	origins, err := parseOrigins(b.urls)
 	if err != nil {
 		return err
@@ -51,7 +54,7 @@ func (b *BuilderImpl) run(ctx context.Context) error {
 	if public == nil {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
-	b.report(public, origins)
+	report(stdout, stderr, public, origins)
 
 	select {
 	case <-ctx.Done():
@@ -65,10 +68,7 @@ func (b *BuilderImpl) run(ctx context.Context) error {
 // human-readable map to stderr. The split is what keeps the stdout stream
 // machine-consumable: a script reads line i to reach origin i, while the
 // banner and the arrows stay out of its way.
-func (b *BuilderImpl) report(public *url.URL, origins []*url.URL) {
-	stdout := cmp.Or[io.Writer](b.stdout, os.Stdout)
-	stderr := cmp.Or[io.Writer](b.stderr, os.Stderr)
-
+func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
 	fmt.Fprintln(stderr, VersionLine())
 	width := 0
 	for i := range origins {

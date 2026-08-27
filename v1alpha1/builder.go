@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"cmp"
+	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -83,16 +84,21 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
 		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Deferred to run time so cobra's SetOut/SetErr on an
-			// already-built command still take effect.
-			if b.stdout == nil {
-				b.stdout = cmd.OutOrStdout()
-			}
-			if b.stderr == nil {
-				b.stderr = cmd.ErrOrStderr()
-			}
-			return b.run(cmd.Context())
+			return b.run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
+	}
+
+	// Hand the configured writers to cobra rather than keeping a second
+	// mechanism beside its own: SetOut/SetErr is where a *cobra.Command
+	// records this, and OutOrStdout/ErrOrStderr then answer for the whole
+	// command — help, usage, and the version banner as well as the URLs. A
+	// caller that would rather set them on the built command still can, and
+	// wins, being the later and more specific call.
+	if b.stdout != nil {
+		cmd.SetOut(b.stdout)
+	}
+	if b.stderr != nil {
+		cmd.SetErr(b.stderr)
 	}
 
 	// Each flag binds over the field it defaults from, so a seeded value is a
@@ -120,13 +126,17 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 // versionCommand prints the build banner and exits — the build id of the
 // binary plus the tunnel library it links against, since that library is what
 // actually speaks to the edge and a bug report needs both numbers.
+//
+// The banner is written to OutOrStdout explicitly. cmd.Print and friends route
+// through OutOrStderr, which falls back to os.Stderr, and a version a script
+// cannot read off stdout is a version nobody can pipe.
 func versionCommand(name string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the " + name + " build identifier and exit",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
-			cmd.Println(VersionLine())
+			fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
 		},
 	}
 }

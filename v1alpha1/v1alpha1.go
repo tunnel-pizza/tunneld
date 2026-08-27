@@ -30,9 +30,10 @@ type BuilderImpl struct {
 	logLevel string
 
 	// stdout carries the public URLs, stderr the banner, the origin map, and
-	// the tunnel's logs. Nil until Build's RunE fills them from the command,
-	// which is what makes cobra's SetOut/SetErr work on a command nobody
-	// redirected explicitly.
+	// the tunnel's logs. They are staging only: Build hands them to the
+	// command with SetOut/SetErr and everything downstream reads them back
+	// through OutOrStdout/ErrOrStderr, so cobra stays the single owner of
+	// where output goes. Nil means whatever cobra defaults to.
 	stdout, stderr io.Writer
 
 	// Build assembles once; subsequent calls return the cached command.

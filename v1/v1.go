@@ -138,10 +138,13 @@ type Builder interface {
 	// unset too.
 	WithLogLevel(level string) Builder
 	// WithStdout redirects the public URLs, which are written one line per
-	// origin in order. Unset, they go to the process's stdout.
+	// origin in order, along with the help text and the version banner. Build
+	// passes it to the command's SetOut, so calling SetOut on the built
+	// command overrides this. Unset, output goes to the process's stdout.
 	WithStdout(w io.Writer) Builder
 	// WithStderr redirects the banner, the origin map, and the tunnel's logs.
-	// Unset, they go to the process's stderr.
+	// Build passes it to the command's SetErr, so calling SetErr on the built
+	// command overrides this. Unset, output goes to the process's stderr.
 	WithStderr(w io.Writer) Builder
 	// Build assembles the configured command and returns it. It is the
 	// terminal step; calling it more than once returns the same command.

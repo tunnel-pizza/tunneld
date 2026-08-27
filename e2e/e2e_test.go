@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"errors"
 	"os/exec"
 	"path/filepath"
@@ -25,13 +26,20 @@ func build(t *testing.T) string {
 	return bin
 }
 
-// run executes the binary with args and returns (combined output, exit code).
-// exitCode is -1 if the process could not be started at all.
-func run(t *testing.T, bin string, args ...string) (string, int) {
+// run executes the binary with args and returns its two streams separately,
+// plus the exit code (-1 if the process could not be started at all).
+//
+// Separately is the point: stdout is tunneld's machine interface and stderr is
+// everything human, so a test that merged them could not tell the two apart —
+// and a line drifting from one to the other is exactly the regression these
+// cases exist to catch.
+func run(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	out, err := exec.Command(bin, args...).CombinedOutput()
-	code := 0
-	if err != nil {
+	var out, errOut bytes.Buffer
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+
+	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			code = ee.ExitCode()
@@ -39,12 +47,18 @@ func run(t *testing.T, bin string, args ...string) (string, int) {
 			code = -1
 		}
 	}
-	t.Logf("$ tunneld %s (exit %d)\n%s", strings.Join(args, " "), code, out)
-	return string(out), code
+	t.Logf("$ tunneld %s (exit %d)\n--- stdout ---\n%s--- stderr ---\n%s",
+		strings.Join(args, " "), code, out.String(), errOut.String())
+	return out.String(), errOut.String(), code
 }
 
 // TestSucceedingInvocations covers the paths that resolve without a tunnel and
 // are expected to exit 0: the binary self-identifies and documents itself.
+//
+// Each case asserts on stdout specifically. Both of these are things a script
+// reads — `tunneld version` into a variable, `--help` into a pager — so
+// landing them on stderr would be a regression a combined-output assertion
+// would sail straight past.
 func TestSucceedingInvocations(t *testing.T) {
 	bin := build(t)
 
@@ -60,23 +74,26 @@ func TestSucceedingInvocations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			out, code := run(t, bin, tc.args...)
+			stdout, stderr, code := run(t, bin, tc.args...)
 			if code != 0 {
 				t.Errorf("exited %d, want 0", code)
 			}
 			for _, want := range tc.wants {
-				if !strings.Contains(out, want) {
-					t.Errorf("output %q does not contain %q", out, want)
+				if !strings.Contains(stdout, want) {
+					t.Errorf("stdout %q does not contain %q", stdout, want)
 				}
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q, want empty on a successful invocation", stderr)
 			}
 		})
 	}
 }
 
 // TestRefusedInvocations covers every way the binary declines to start,
-// asserting both a non-zero exit and a message that names what to fix. These
-// are the failures an operator hits first, so a silent or unhelpful one is a
-// real regression.
+// asserting a non-zero exit, a stderr message that names what to fix, and an
+// empty stdout. These are the failures an operator hits first, so a silent or
+// unhelpful one is a real regression.
 func TestRefusedInvocations(t *testing.T) {
 	bin := build(t)
 
@@ -96,12 +113,17 @@ func TestRefusedInvocations(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			out, code := run(t, bin, tc.args...)
+			stdout, stderr, code := run(t, bin, tc.args...)
 			if code != 1 {
 				t.Errorf("exited %d, want 1", code)
 			}
-			if !strings.Contains(out, tc.want) {
-				t.Errorf("output %q does not name %q", out, tc.want)
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr %q does not name %q", stderr, tc.want)
+			}
+			// The machine interface stays clean: a caller reading line i for
+			// origin i must never receive a diagnostic instead.
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty on a refused invocation", stdout)
 			}
 		})
 	}
