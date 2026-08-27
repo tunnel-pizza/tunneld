@@ -13,6 +13,9 @@
 // and show it arriving clean. A browser then sticks to whichever origin it
 // landed on — subresources follow their document's URL, and a top-level visit
 // to ?1 is remembered by cookie.
+//
+// That stickiness is why the pages link to ?0 rather than to "/" for the
+// default origin: only an explicit index clears a previous choice.
 package main
 
 import (
@@ -82,14 +85,20 @@ func serve(ctx context.Context, addr, name string) error {
 	return nil
 }
 
-// page names which origin answered, so switching between / and /?1 in a
+// page names which origin answered, so switching between the two links in a
 // browser shows the routing working. It echoes the request path too: the
 // routing parameter is gone by the time it arrives here.
+//
+// Both links carry an explicit parameter, ?0 included. A bare "/" would not
+// come back to the default origin once you had visited ?1 — with no parameter
+// of its own the tunnel routes by the referring page's, and the sticky cookie
+// still names origin 1 besides. ?0 is what says "this one, and forget the last
+// choice": an explicit index routes and rewrites the cookie in one move.
 const page = `<!doctype html>
 <meta charset="utf-8">
 <title>%[1]s</title>
 <h1>%[1]s</h1>
 <p>served locally by <code>%[2]s</code>, reached through a tunnel</p>
 <p>you asked for <code>%[3]s</code></p>
-<p><a href="/">default origin</a> &middot; <a href="/?1">origin 1</a></p>
+<p><a href="/?0">origin 0</a> &middot; <a href="/?1">origin 1</a></p>
 `

@@ -52,6 +52,13 @@ subresources follow their document's URL via `Referer`, and a top-level visit
 to `?n` is remembered with a cookie. So a frontend on `:3000` and an API on
 `:4000` both work behind a single hostname, without one tunnel per port.
 
+**Getting back to the default origin takes `?0`, not a bare `/`.** Stickiness
+cuts both ways: once a browser has visited `?1`, a link to `/` carries no index
+of its own, so it routes by the referring page's — and the cookie still names
+origin 1 besides. Only an explicit index clears a previous choice, routing and
+rewriting the cookie in one move. `examples/multi-origin` links its two pages
+that way.
+
 ## Output contract
 
 **stdout** is a machine interface: one public URL per origin, in flag order,
