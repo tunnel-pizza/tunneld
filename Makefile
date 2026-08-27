@@ -66,8 +66,8 @@ e2e:
 #   make run basic
 #   make run multi-origin
 #
-# Examples are real programs: each opens a tunnel and blocks, so it needs the
-# local service it names to be listening.
+# Examples are real programs: each starts the origins it exposes, opens a
+# tunnel, and blocks until interrupted. Nothing else needs to be running.
 #
 # Only bare words forward — make reads a leading -- as one of its own options,
 # so anything with flags goes through go run directly:

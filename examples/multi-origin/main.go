@@ -1,25 +1,32 @@
 // Command multi-origin exposes two local services through a single tunnel.
 //
-// They share one public hostname: the first --url is the default and the
-// second answers on a bare ?1 parameter, so a frontend on :3000 and an API on
-// :4000 live behind one name without a tunnel per port.
+// It starts both — nothing else needs to be running — and puts them behind one
+// public hostname. The first --url is the default; the second answers on a
+// bare ?1 parameter, so a frontend on :3000 and an API on :4000 share a name
+// without a tunnel per port:
 //
 //	https://<host>/     -> http://localhost:3000
 //	https://<host>/?1   -> http://localhost:4000
 //
-// A browser sticks to whichever origin it landed on — subresources follow
-// their document's URL, and a top-level visit to ?1 is remembered by cookie.
-//
-// It needs something listening on :3000 and :4000.
+// The parameter is a routing directive the tunnel consumes; it never reaches
+// the origin, which is why each page below can echo the path it was asked for
+// and show it arriving clean. A browser then sticks to whichever origin it
+// landed on — subresources follow their document's URL, and a top-level visit
+// to ?1 is remembered by cookie.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/tunnel-pizza/tunneld/lib"
 )
 
@@ -29,13 +36,60 @@ func main() {
 
 	cmd := lib.New().
 		WithURL("http://localhost:3000", "http://localhost:4000").
-		// Two origins but one browser tab would open, on the default origin.
-		// Off here so the example reports the whole map and opens nothing.
+		// Only the default origin would open, and this example is about
+		// seeing both. Off, so it reports the whole map and opens nothing.
 		WithOpen(false).
 		Build()
+
+	// PreRunE rather than plain code before ExecuteContext: cobra answers
+	// --help before that hook runs, so `--help` stays a pure question and
+	// binds no ports.
+	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		if err := serve(cmd.Context(), ":3000", "frontend"); err != nil {
+			return err
+		}
+		return serve(cmd.Context(), ":4000", "api")
+	}
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "multi-origin: "+err.Error())
 		os.Exit(1)
 	}
 }
+
+// serve starts an HTTP server on addr and returns once it is listening, so the
+// tunnel never proxies to a socket that is not up yet. It shuts down with ctx.
+func serve(ctx context.Context, addr, name string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, page, name, addr, r.URL.RequestURI())
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	context.AfterFunc(ctx, func() { _ = srv.Close() })
+
+	go func() {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "multi-origin: "+err.Error())
+		}
+	}()
+	return nil
+}
+
+// page names which origin answered, so switching between / and /?1 in a
+// browser shows the routing working. It echoes the request path too: the
+// routing parameter is gone by the time it arrives here.
+const page = `<!doctype html>
+<meta charset="utf-8">
+<title>%[1]s</title>
+<h1>%[1]s</h1>
+<p>served locally by <code>%[2]s</code>, reached through a tunnel</p>
+<p>you asked for <code>%[3]s</code></p>
+<p><a href="/">default origin</a> &middot; <a href="/?1">origin 1</a></p>
+`

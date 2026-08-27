@@ -254,16 +254,19 @@ Self-contained programs in [`./examples`](./examples):
 
 | Example | Demonstrates |
 | ------- | ------------ |
-| `basic` | Smallest wiring — one seeded origin, `Build` + `ExecuteContext`. |
-| `multi-origin` | Two origins behind one hostname, reachable via `?n`. |
+| `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
+| `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 
-Each is a real program: it opens a tunnel and blocks, so it needs the local
-service it names to be listening. Run one locally:
+Each starts the origins it exposes, so nothing else needs to be running. Both
+block until interrupted:
 
 ```sh
 make run basic
 make run multi-origin
 ```
+
+`multi-origin` is the one to try in a browser — it serves a different page on
+`:3000` and `:4000`, so switching between `/` and `/?1` shows the routing.
 
 The seeded origins are only defaults, so every tunneld flag still works — but
 pass them through `go run`, since make would read a leading `--` as one of its

@@ -255,12 +255,20 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 (there's no shared internal package — the duplication is intentional, so each
 example is copy-pasteable on its own).
 
-Every tunneld example is a real program that opens a tunnel and blocks, so it
-cannot be run outright in CI. Give it a configuration that shows up in its own
-`--help` — a seeded origin list, a flag default it flips — then add a row to
-the `cases` table in `e2e/e2e_test.go` (name + a substring unique to that
-example's help) and to the README's example table. A substring that would also
-match another example is a case that can pass against the wrong binary.
+An example starts the origins it exposes, so someone can run it against a
+clean machine and see a tunnel work. Hang that on the built command's
+`PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
+before it reaches that hook, which is what keeps `--help` from binding a port.
+`Build` returns an ordinary `*cobra.Command`, so the hook is free — but
+`PersistentPreRunE` is already taken by the environment binding, so use the
+non-persistent one.
+
+Every example opens a tunnel and then blocks, so none can be run outright in
+CI. Give each a configuration that shows up in its own `--help` — a seeded
+origin list, a flag default it flips — then add a row to the `cases` table in
+`e2e/e2e_test.go` (name + a substring unique to that example's help) and to the
+README's example table. A substring that would also match another example is a
+case that can pass against the wrong binary.
 
 ## Adding a flag
 
