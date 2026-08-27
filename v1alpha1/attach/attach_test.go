@@ -284,20 +284,59 @@ func TestDegradedNotice(t *testing.T) {
 	}
 }
 
-// TestNoticeReachesTheTerminal pins that the notice is written to the stream
-// rather than baked into the page, so it appears in order with the container's
-// own first output and survives however the page was loaded.
-func TestNoticeReachesTheTerminal(t *testing.T) {
-	target := newFakeTarget("api", false, false)
-	c := dial(t, serveFake(t, target))
-	readFrame(t, c) // the established frame
-
-	channel, payload := readFrame(t, c)
-	if channel != 1 {
-		t.Errorf("channel = %d, want 1 (stdout)", channel)
+// TestNoticeOnThePage pins where the notice lives: in the served HTML, as an
+// element of its own, and nowhere at all for a container that has nothing
+// wrong with it.
+//
+// The page is the right home because the notice is not something the container
+// said. Written into the stream it would scroll away from the reader who needs
+// it, and come back on every reconnect for the one who does not; rendered as
+// chrome it simply stays true for as long as the tab is open. The absence case
+// is as load-bearing as the others — a container started with -it must get no
+// element and no gap, because a terminal that gives up a row to say nothing is
+// worse than no notice at all.
+func TestNoticeOnThePage(t *testing.T) {
+	cases := []struct {
+		name  string
+		tty   bool
+		stdin bool
+		want  string // "" means: no notice element at all
+	}{
+		{"a full terminal renders no notice", true, true, ""},
+		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
+		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
+		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
 	}
-	if !strings.Contains(string(payload), "output only") {
-		t.Errorf("first frame = %q, want the degraded notice", payload)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := serveFake(t, newFakeTarget("api", tc.tty, tc.stdin))
+			resp, err := http.Get(s.URL().String() + "/")
+			if err != nil {
+				t.Fatalf("GET /: %v", err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(raw)
+
+			// The class is what the absence case turns on: asserting the text
+			// is missing would also pass if the element rendered empty, which
+			// is the failure that costs a row and says nothing.
+			if tc.want == "" {
+				if strings.Contains(body, `class="degraded"`) {
+					t.Errorf("page carries a notice element for a container that earns none")
+				}
+				return
+			}
+			if !strings.Contains(body, `class="degraded"`) {
+				t.Errorf("page has no notice element")
+			}
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("page does not contain %q", tc.want)
+			}
+		})
 	}
 }
 
@@ -314,19 +353,27 @@ func TestNoticeReachesTheTerminal(t *testing.T) {
 // than a bare receive, so a regression fails in five seconds instead of
 // hanging the lane.
 func TestSessionEnds(t *testing.T) {
+	closeTab := func(c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }
 	cases := []struct {
-		name string
-		end  func(c *websocket.Conn, shutdown context.CancelFunc)
+		name  string
+		stdin bool
+		end   func(c *websocket.Conn, shutdown context.CancelFunc)
 	}{
-		{"the visitor closes the tab", func(c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }},
-		{"the tunnel shuts down", func(_ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
+		{"the visitor closes the tab", true, closeTab},
+		// The same, on a container started without -i. It earns a case of its
+		// own because the signal used to come off stdin, which such a
+		// container never negotiates: the stream is a stub that reads EOF at
+		// once. The resize channel is opened whatever the options say, which
+		// is the entire reason it replaced stdin here.
+		{"the visitor closes the tab, no stdin", false, closeTab},
+		{"the tunnel shuts down", true, func(_ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, shutdown := context.WithCancel(t.Context())
 			defer shutdown()
 
-			target := newFakeTarget("api", true, true)
+			target := newFakeTarget("api", true, tc.stdin)
 			c := dial(t, serveFakeOn(t, ctx, target))
 			readFrame(t, c) // the established frame
 

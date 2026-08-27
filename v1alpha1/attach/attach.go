@@ -147,7 +147,13 @@ func (s *Server) Close() error {
 // with a plain error rather than a half-written page.
 func (s *Server) servePage(w http.ResponseWriter, _ *http.Request) {
 	var rendered strings.Builder
-	if err := page.Execute(&rendered, struct{ Name string }{s.target.Name()}); err != nil {
+	// The notice is page chrome, not container output: it states how the
+	// container was started, which was already true before the socket opened
+	// and is not changed by anything printed after it. html/template escapes
+	// it like any other value — it is our own prose, but it travels next to a
+	// name the operator typed.
+	data := struct{ Name, Notice string }{s.target.Name(), degraded(s.target)}
+	if err := page.Execute(&rendered, data); err != nil {
 		s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 		http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -189,64 +195,63 @@ func (s *Server) serveAttach(w http.ResponseWriter, r *http.Request) {
 		Stderr: !s.target.TTY(),
 		TTY:    s.target.TTY(),
 	}
-	remotecommand.ServeAttach(w, r, notice{s.target}, name, "", name, opts,
+	remotecommand.ServeAttach(w, r, bounded{s.target}, name, "", name, opts,
 		idleTimeout, remotecommand.DefaultStreamCreationTimeout,
 		remotecommand.SupportedStreamingProtocols)
 }
 
-// notice wraps a Target to write one dim line about what the container cannot
-// do, ahead of anything the container itself says.
+// bounded wraps a Target so that an attach ends when its connection does.
 //
-// It goes on the stream rather than into the page for two reasons: it then
-// appears in order with the container's first output instead of above it, and
-// it survives however the page was reached — a reload, a second tab, a client
-// that is not this page at all.
-type notice struct{ Target }
+// A Target streaming a quiet container is blind to both exits. The context
+// serveAttach supplies covers the tunnel shutting down; the far commoner exit
+// is a visitor closing their tab, and nothing the Target holds is tied to that
+// browser — a copy parked in Read on a socket that will never speak again has
+// no way to learn the far end is gone.
+//
+// The resize channel is the one thing that does know. On the websocket path
+// this page speaks, ServeAttach opens it unconditionally — not gated on TTY,
+// not gated on stdin, unlike every other stream here — and closes it when the
+// connection ends, so ranging over it and cancelling at the end translates
+// "the socket died" into the one signal a Target already acts on. Forwarding
+// sizes through a channel of our own is what lets us watch for that end
+// without taking resize away from the Target.
+//
+// Worst case is bounded rather than instant: a clean close ends the range at
+// once, and a connection that dies without saying so waits out the websocket's
+// idle timeout first. Two minutes is the ceiling either way, which is the
+// whole point — before this, the ceiling was the life of the process.
+type bounded struct{ Target }
 
-func (n notice) AttachContainer(ctx context.Context, name, uid, container string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	if line := degraded(n.Target); line != "" {
-		// CRLF, not LF: a raw terminal does not move the carriage on its own.
-		fmt.Fprintf(out, "\x1b[2m%s\x1b[0m\r\n", line)
-	}
+func (b bounded) AttachContainer(ctx context.Context, name, uid, container string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// The context serveAttach supplies covers tunneld shutting down. The far
-	// commoner exit is a visitor closing their tab, and a Target parked on a
-	// quiet container cannot see that: nothing it holds is tied to the
-	// browser. stdin is, though — ServeAttach closes it when the socket ends —
-	// so a copy off it running dry is the socket's death, translated into
-	// something a Target that only ever reads output can act on. The pipe is
-	// what lets us watch stdin without taking it away from the Target.
-	//
-	// Only where stdin was really negotiated. On a container started without
-	// -i the stream is a stub: wsstream opens that channel as IgnoreChannel,
-	// whose Read short-circuits to EOF without ever touching the socket, so
-	// pumping it unconditionally would announce the tab closed the instant it
-	// opened. The cost of the guard is that a container started without -i
-	// still cannot see a closed tab, and only the tunnel's own shutdown
-	// reaches it. Fixing that needs a different signal — the resize channel is
-	// the one thing ServeAttach hands over that is live in both cases — and
-	// that is a change to what the Target is passed, not to this wrapper.
-	if n.Stdin() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithCancel(ctx)
+	forwarded := make(chan remotecommand.TerminalSize)
+	go func() {
+		defer close(forwarded)
 		defer cancel()
+		for {
+			select {
+			case size, ok := <-resize:
+				if !ok {
+					return
+				}
+				select {
+				case forwarded <- size:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				// Also the escape hatch for a resize channel that is nil,
+				// which is what a client negotiating no subprotocol over SPDY
+				// would produce. Ranging over that would park this goroutine
+				// for good; selecting on the context cannot.
+				return
+			}
+		}
+	}()
 
-		// socket is bound before in is reassigned: the goroutine below closes
-		// over the variable, not its value, so pumping "in" directly would
-		// have it copying the pipe into itself.
-		socket := in
-		pr, pw := io.Pipe()
-		in = pr
-		go func() {
-			_, err := io.Copy(pw, socket)
-			// The Target reads the pipe, so it learns of the end the same way
-			// it would have learned it from the socket.
-			_ = pw.CloseWithError(err)
-			cancel()
-		}()
-	}
-
-	return n.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, resize)
+	return b.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, forwarded)
 }
 
 // degraded names what a container was started without, or "" when it was

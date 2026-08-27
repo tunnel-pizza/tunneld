@@ -30,10 +30,34 @@
      the container has to say is the only content, and anything framing it
      steals rows from a viewport that is often a phone. */
   html, body { height: 100%; margin: 0; background: #000; }
-  #term { height: 100%; width: 100%; }
+  body { display: flex; flex-direction: column; }
+  #term { flex: 1; min-height: 0; width: 100%; }
+
+  /* The one thing worth framing it for: what the container cannot do. That is
+     a fact about how it was started — settled before the socket opened, and
+     unchanged by anything printed after — so it belongs to the page rather
+     than to the scrollback, where it would scroll away from the reader who
+     needs it and reappear on every reconnect for the one who does not.
+     Deliberately quiet: one line, small, grey on near-black with a hairline
+     under it, so it reads as the window's edge and not as the container
+     speaking. At this size it costs the terminal a row or two and nothing
+     else, and when there is nothing to say the element is not rendered at all
+     — no empty bar, no stray gap. */
+  .degraded {
+    flex: none;
+    font: 11px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: #7a7a7a;
+    background: #0c0c0c;
+    border-bottom: 1px solid #1e1e1e;
+    padding: 0 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 </style>
 </head>
 <body>
+{{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <script>
 (() => {
