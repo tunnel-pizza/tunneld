@@ -18,6 +18,7 @@ import (
 
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/multiview"
 )
 
 // TestParseOriginsAccepts covers the shapes a caller is allowed to type,
@@ -322,7 +323,7 @@ func TestReportNamesTheMultiviewPanel(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	report(&stdout, &stderr, public, origins, multiviewURL(public))
+	report(&stdout, &stderr, public, origins, multiview.URL(public))
 
 	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
 	if stdout.String() != wantOut {

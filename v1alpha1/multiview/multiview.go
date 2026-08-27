@@ -1,4 +1,10 @@
-package v1alpha1
+// Package multiview serves the panel that frames every origin behind a tunnel,
+// and the header surgery that lets those frames render.
+//
+// It is an implementation subpackage: the v1alpha1 root stays plumbing, and
+// anything with a world of its own lives beside it. index.html travels with
+// the code because go:embed cannot reach outside its own package directory.
+package multiview
 
 import (
 	_ "embed"
@@ -41,13 +47,13 @@ type shellOrigin struct {
 	Route string
 }
 
-// multiview builds the interceptor that serves the panel. It is a constructor
+// Panel builds the interceptor that serves the panel. It is a constructor
 // returning an Interceptor, the shape the tunnel library expects for anything
 // reusable.
 //
 // Priority 1 is the highest there is, so nothing registered later can shadow
 // the one request that must never reach an origin.
-func multiview(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
+func Panel(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Priority: 1,
 		Match:    isPanelRequest,
@@ -62,16 +68,21 @@ func multiview(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 // isPanelRequest reports whether a request is somebody arriving at the tunnel
 // itself, which is what the panel answers. With several origins the bare
 // hostname has no better meaning: every origin has its own ?n, so the address
-// with no index is the one that can show all of them.
+// with nothing after it is the one that can show all of them.
 //
 // Three conditions narrow it, and each one is load-bearing:
 //
 // The path is exactly "/". An origin's own subresources — /app.js, /style.css
-// — carry no routing index either, and serving them a page of frames instead
-// of the file they asked for would break every origin that has any.
+// — carry no query either, and serving them a page of frames instead of the
+// file they asked for would break every origin that has any.
 //
-// The query carries no routing index. ?0 names an origin explicitly and must
-// reach it, even at the root.
+// The query is empty. Not merely free of a routing index: an app's root
+// legitimately takes parameters, and the caller often does not choose them.
+// An OAuth provider redirects to /?code=…&state=…, which carries no index and
+// would otherwise land on a page of frames with the sign-in silently lost.
+// Exposing an app mid-auth-flow is close to the median reason to reach for a
+// tunnel. The panel takes no parameters of its own, so it gives up nothing by
+// answering exactly one address.
 //
 // It is a top-level document, and it did not come from a page already on this
 // host. A frame navigating to "/" would otherwise draw the panel inside one of
@@ -80,7 +91,7 @@ func multiview(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 // all — curl, an older browser — counts as top-level, since nothing suggests
 // otherwise.
 func isPanelRequest(r *http.Request) bool {
-	if r.URL.Path != "/" || hasRoutingIndex(r.URL.RawQuery) {
+	if r.URL.Path != "/" || r.URL.RawQuery != "" {
 		return false
 	}
 	switch r.Header.Get("Sec-Fetch-Dest") {
@@ -92,18 +103,6 @@ func isPanelRequest(r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-// hasRoutingIndex reports whether a raw query carries a bare numeric segment,
-// the parameter that names an origin. A valued parameter ("1=x") is
-// application data and never routes, so Atoi rejecting it is the test.
-func hasRoutingIndex(rawQuery string) bool {
-	for segment := range strings.SplitSeq(rawQuery, "&") {
-		if _, err := strconv.Atoi(segment); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 // serveShell renders the panel. A render failure is logged and answered with a
@@ -139,15 +138,15 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 	}
 }
 
-// multiviewURL is the address the panel answers on: the tunnel's own URL, with
-// nothing appended. Reported and opened as-is.
-func multiviewURL(public *url.URL) string {
+// URL is the address the panel answers on: the tunnel's own URL, with nothing
+// appended. Reported and opened as-is.
+func URL(public *url.URL) string {
 	shown := *public
 	shown.RawQuery = ""
 	return shown.String()
 }
 
-// unframe builds the interceptor that lets the panel's own frames render.
+// Unframe builds the interceptor that lets the panel's own frames render.
 //
 // An origin is entitled to refuse being framed, and most that care say so with
 // X-Frame-Options: DENY or a CSP frame-ancestors directive. Through the panel
@@ -164,7 +163,7 @@ func multiviewURL(public *url.URL) string {
 //
 // Priority 2, behind the panel itself, so the shell is served before anything
 // looks at framing.
-func unframe() libtunnel.Interceptor {
+func Unframe() libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Priority: 2,
 		Match:    isPanelFrame,
@@ -256,9 +255,9 @@ func withoutFrameAncestors(policy string) string {
 	return strings.Join(kept, "; ")
 }
 
-// wantsMultiview reports whether the shell should be served at all. One origin
-// has nothing to compare against, so a lone --url keeps opening the origin
-// itself rather than a panel framing it.
-func wantsMultiview(enabled bool, origins []*url.URL) bool {
+// Wanted reports whether the panel should be served at all. One origin has
+// nothing to compare against, so a lone --url keeps the bare address for
+// itself rather than framing one page in a panel.
+func Wanted(enabled bool, origins []*url.URL) bool {
 	return enabled && len(origins) > 1
 }

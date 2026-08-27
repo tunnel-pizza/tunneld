@@ -17,6 +17,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/multiview"
 )
 
 // openURL launches a browser on addr. A variable, not a direct call, so a test
@@ -59,9 +60,9 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	// Served in front of the origin proxy, so the panel needs no port of its
 	// own and no origin ever sees the request.
 	view := ""
-	if wantsMultiview(b.multiview, origins) {
-		tun.WithInterceptor(multiview(origins, log))
-		tun.WithInterceptor(unframe())
+	if multiview.Wanted(b.multiview, origins) {
+		tun.WithInterceptor(multiview.Panel(origins, log))
+		tun.WithInterceptor(multiview.Unframe())
 	}
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
@@ -70,8 +71,8 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	if public == nil {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
-	if wantsMultiview(b.multiview, origins) {
-		view = multiviewURL(public)
+	if multiview.Wanted(b.multiview, origins) {
+		view = multiview.URL(public)
 	}
 	report(stdout, stderr, public, origins, view)
 	if b.open {
