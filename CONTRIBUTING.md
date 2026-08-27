@@ -19,7 +19,9 @@ Deep-link by filename; line numbers will drift.
 | Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
+| godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
+| Worked examples                                | [`examples/`](./examples)                                        |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -99,48 +101,92 @@ Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engin
 git clone https://github.com/tunnel-pizza/tunneld.git
 cd tunneld
 make test     # unit tests (fast, in-package)
-make e2e      # builds the binary and drives its offline paths
+make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
 ```
 
 Run it against a local service:
 
 ```sh
-make run ARGS="--url http://localhost:3000 --url http://localhost:4000"
+go run . --url http://localhost:3000 --url http://localhost:4000
 ```
 
-Arguments go in `ARGS` because make would parse a bare `--url` as one of its
-own flags.
+Or run an example, which seeds its own origins:
+
+```sh
+make run basic
+make run multi-origin
+```
+
+`go run` rather than a make target wherever flags are involved: make reads a
+leading `--` as one of its own options and refuses. The `run` target takes an
+example *name*, which is a bare word, so it works — `make run basic --url ...`
+does not.
 
 ## Test layout
 
-Two tiers, each with a distinct job — don't blur them:
+Three tiers, each with a distinct job — don't blur them:
 
 - **`*_test.go` next to the code** — unit tests: anything with fabricated
-  inputs or fakes, however elaborate. Fuzz targets and godoc examples live here
-  too.
-- **`e2e/`** — the harness builds the `tunneld` binary and drives it, asserting
-  exit codes and output. If a check can pass without executing the binary, it
+  inputs or fakes, however elaborate. Includes fuzz targets and the godoc
+  examples in [`lib/example_test.go`](./lib/example_test.go).
+- **`examples/`** — real-world, simple-ish API usage written for humans. An
+  example demonstrates; it never asserts. Assertion logic belongs in `e2e/`.
+- **`e2e/`** — the harness builds the `tunneld` binary and every example
+  binary, and drives them. If a check can pass without executing a binary, it
   is a unit test, not e2e.
 
-**One test file per source file: `something.go` → `something_test.go`.** Tests
-belong with the code they cover, not in files named after the scenario that
-motivated them — no `multi_origin_test.go`, no `regression_test.go`. When a bug
-sends you looking for somewhere to put its test, the answer is always the
-`_test.go` beside the file that had the bug, as another case in the table that
-already covers that function. Use cases are what the table rows are for; files
-are for code. A source file with no test file is a gap worth naming in review.
+No tier mints a real tunnel: that needs the public internet and a live
+provider, which would make CI flaky and slow. Everything up to the mint —
+parse, validate, refuse or proceed — is covered here; the tunnel itself is
+covered by `libtunnel`'s own live tier. It is also why e2e drives each example
+with `--help` rather than running it outright: an example is a network program
+that would otherwise mint a hostname and block forever.
 
-Test the *thing*, not the incident: name the test after the behaviour it pins
+Test the *thing*, not the incident: name a test after the behaviour it pins
 (`TestFlagReplacesSeededURLs`), and let its doc comment say why that behaviour
 matters. Internal (`package v1alpha1`) and external (`package v1alpha1_test`)
 test files coexist in one directory — reach for the external form by default,
 and the internal one only to cover unexported behaviour.
 
-Neither tier mints a real tunnel: that needs the public internet and a live
-provider, which would make CI flaky and slow. Everything up to the mint —
-parse, validate, refuse or proceed — is covered here; the tunnel itself is
-covered by `libtunnel`'s own live tier.
+### One test file per source file
+
+A test file mirrors its source file and takes its name: `something.go` is
+tested by `something_test.go`, and that is the only test file for it. Don't
+mint a second file per topic, per concern, or per test style —
+`version_internal_test.go`, `builder_edge_cases_test.go`,
+`env_validation_test.go` all name a *use case* rather than a source file, and
+none of them should exist.
+
+The pull is real, so it's worth naming why we resist it. A topic-named file
+looks tidy the day it's added and stops being findable a month later: the tests
+for one symbol scatter across files whose names only their author can predict,
+nothing tells you which file a new test belongs in, and two files quietly grow
+overlapping coverage of the same function. Pairing with the source file removes
+the judgment call — there is exactly one answer, and it's the same answer every
+time.
+
+If a test file grows unwieldy, that's a signal about the *source* file, not the
+test file. Split the source, and the tests split with it along the same seam.
+
+When a bug sends you looking for somewhere to put its test, the answer is
+always the `_test.go` beside the file that had the bug, as another case in the
+table that already covers that function. Use cases are what table rows are for;
+files are for code.
+
+Two deliberate exceptions:
+
+- **`lib/example_test.go`** — godoc examples. `example_test.go` is an
+  established Go idiom and renders as documentation on pkg.go.dev, so it keeps
+  its name.
+- **`e2e/`** — a test-only package, so there's no source file to pair with.
+
+One consequence worth knowing: a source file whose tests need both unexported
+access and an outside-the-package view still gets one test file, so it is
+`package <pkg>` (internal) and the external view is covered elsewhere.
+[`v1alpha1/env_test.go`](./v1alpha1/env_test.go) is that case — it reaches
+`applyEnv` and `flagEnv`, so the whole file is internal, and the genuine
+consumer's view is covered by `e2e`.
 
 ## Before you push
 
@@ -183,7 +229,10 @@ Easy to get wrong from the diff alone:
   nothing else — a script reads line *i* to reach origin *i*. The banner, the
   origin map, and every log line go to stderr. Adding a friendly line to stdout
   breaks callers.
-- **e2e builds the binary at runtime**, so the test cache can't see source
+- **`examples/` is intentionally duplicated.** Each `main.go` is a
+  copy-pasteable starter; no shared internal package. Don't refactor it into
+  one.
+- **e2e builds its binaries at runtime**, so the test cache can't see source
   changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in
   [`ci.yml`](./.github/workflows/ci.yml) (`resolve tag` step) is
@@ -193,6 +242,19 @@ Easy to get wrong from the diff alone:
   annotated tags; pinning the tag-object SHA fails Sigstore verification
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
+
+## Adding an example
+
+Examples live in `./examples/<name>/main.go`. Keep each example self-contained
+(there's no shared internal package — the duplication is intentional, so each
+example is copy-pasteable on its own).
+
+Every tunneld example is a real program that opens a tunnel and blocks, so it
+cannot be run outright in CI. Give it a configuration that shows up in its own
+`--help` — a seeded origin list, a flag default it flips — then add a row to
+the `cases` table in `e2e/e2e_test.go` (name + a substring unique to that
+example's help) and to the README's example table. A substring that would also
+match another example is a case that can pass against the wrong binary.
 
 ## Adding a flag
 

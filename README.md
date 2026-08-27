@@ -241,26 +241,53 @@ doesn't expose. Those variables pass straight through and are documented in
 [libtunnel](https://github.com/cnuss/libtunnel#environment-variables), not
 mirrored here.
 
+## Examples
+
+Self-contained programs in [`./examples`](./examples):
+
+| Example | Demonstrates |
+| ------- | ------------ |
+| `basic` | Smallest wiring — one seeded origin, `Build` + `ExecuteContext`. |
+| `multi-origin` | Two origins behind one hostname, reachable via `?n`. |
+
+Each is a real program: it opens a tunnel and blocks, so it needs the local
+service it names to be listening. Run one locally:
+
+```sh
+make run basic
+make run multi-origin
+```
+
+The seeded origins are only defaults, so every tunneld flag still works — but
+pass them through `go run`, since make would read a leading `--` as one of its
+own options:
+
+```sh
+go run ./examples/basic --url http://localhost:8080 --open=false
+```
+
 ## Testing
 
 ```sh
 make test   # unit tests (fast, in-package)
-make e2e    # builds the binary and drives its offline paths
+make e2e    # builds the binary and every example, drives their offline paths
 make race   # every package under the race detector — the lane CI gates on
 ```
 
 Neither tier mints a real tunnel — that needs the public internet and a live
 provider, which would make CI flaky. Everything up to the mint is covered here;
-the tunnel itself is covered by libtunnel's own live tier.
+the tunnel itself is covered by libtunnel's own live tier. That is also why the
+harness drives each example with `--help`: it exercises the whole assembly path
+and exits without a packet.
 
 `make e2e` runs `go test -count=1 -v ./e2e`. The `-count=1` defeats the test
-cache, since the harness builds the binary at runtime and the cache key
+cache, since the harness builds the binaries at runtime and the cache key
 wouldn't otherwise pick up source changes.
 
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local dev loop, the test-file
-convention, and the release process.
+convention, what makes a good example, and the release process.
 
 ## License
 

@@ -257,3 +257,71 @@ func TestVersionIgnoresABadEnvironment(t *testing.T) {
 		t.Errorf("stdout %q does not carry the build banner", stdout)
 	}
 }
+
+// runner builds one example binary, then runs it. The harness builds at test
+// time (not via `go build ./...`) so example source changes are always picked
+// up — that's why `make e2e` passes -count=1 to defeat the test cache.
+type runner struct {
+	name string
+	bin  string
+}
+
+func newRunner(t *testing.T, name string) *runner {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), name)
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, "../examples/"+name).CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v\n%s", name, err, out)
+	}
+	return &runner{name: name, bin: bin}
+}
+
+// assertExample builds an example, runs it, and checks the exit code is 0 and
+// its output contains want. Each example added under examples/ should get a row
+// in the table below.
+//
+// It drives --help rather than the example's own default behaviour, because
+// every tunneld example is a network program: running one for real mints a
+// public hostname and then blocks until interrupted, which this lane can
+// neither do nor assert on. --help still exercises the whole assembly path —
+// the builder, the seeded defaults, every flag binding — and exits 0 without a
+// packet, so what each case asserts is that example's specific configuration
+// surfacing in its own help. The template this repo grew from has examples that
+// are pure computation and simply runs them; this is the one place tunneld has
+// to deviate.
+func assertExample(t *testing.T, name, want string) {
+	t.Helper()
+	r := newRunner(t, name)
+	stdout, stderr, code := run(t, r.bin, "--help")
+	if code != 0 {
+		t.Errorf("%s exited %d, want 0", name, code)
+	}
+	if !strings.Contains(stdout, want) {
+		t.Errorf("%s help %q does not contain %q", name, stdout, want)
+	}
+	if stderr != "" {
+		t.Errorf("%s wrote %q to stderr, want help on stdout alone", name, stderr)
+	}
+}
+
+// TestExamples pins that every example compiles and assembles the command it
+// documents. The wanted substring is deliberately the part that differs
+// between them — each example's own seeded origin list — so a case cannot pass
+// against the wrong example.
+func TestExamples(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"basic", "(default [http://localhost:3000])"},
+		{"multi-origin", "(default [http://localhost:3000,http://localhost:4000])"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assertExample(t, tc.name, tc.want)
+		})
+	}
+}

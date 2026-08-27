@@ -62,9 +62,20 @@ race:
 e2e:
 	go test -count=1 -v ./e2e
 
-# Run tunneld from source. Arguments go in ARGS rather than as trailing words,
-# because make would parse a bare --url as one of its own flags:
-#   make run ARGS="--url http://localhost:3000"
-#   make run ARGS="--url http://localhost:3000 --url http://localhost:4000"
+# Run an example by name:
+#   make run basic
+#   make run multi-origin
+#
+# Examples are real programs: each opens a tunnel and blocks, so it needs the
+# local service it names to be listening.
+#
+# Only bare words forward — make reads a leading -- as one of its own options,
+# so anything with flags goes through go run directly:
+#   go run ./examples/basic --url http://localhost:8080
+#   go run . --url http://localhost:3000
 run:
-	go run . $(ARGS)
+	cd examples/$(word 2,$(MAKECMDGOALS)) && go run . $(wordlist 3,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+
+# Swallow the example name and forwarded args (extra goals) so make doesn't error.
+%:
+	@:
