@@ -305,7 +305,7 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 			if u.Host == "" {
 				return nil, fmt.Errorf("%w: %q names no container, pass e.g. dockerd://my-container", v1.ErrInvalidOrigin, s)
 			}
-			if u.Path != "" || u.RawQuery != "" || u.User != nil {
+			if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 				return nil, fmt.Errorf("%w: %q carries more than a container reference; pass %s://%s", v1.ErrInvalidOrigin, s, v1.DockerScheme, u.Host)
 			}
 			origins = append(origins, u)
