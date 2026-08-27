@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/http"
 	"os"
@@ -71,7 +72,10 @@ func serve(ctx context.Context, addr, name string) error {
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, page, name, addr, r.URL.RequestURI())
+			// The request target is whatever the visitor typed, and it lands
+			// in an HTML document — escape it, or the echo below is a
+			// reflected-XSS hole in a file people copy as a starter.
+			fmt.Fprintf(w, page, name, addr, html.EscapeString(r.URL.RequestURI()))
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
