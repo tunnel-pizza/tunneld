@@ -78,17 +78,55 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 // human-readable map to stderr. The split is what keeps the stdout stream
 // machine-consumable: a script reads line i to reach origin i, while the
 // banner and the arrows stay out of its way.
+//
+// Unless the two streams land in the same place, which on a terminal they
+// normally do — and there the split is invisible, so every URL would simply
+// appear twice, once bare and once in the map. When they do, the bare lines
+// are dropped: the map already shows every address, in a form that says which
+// origin it reaches. Redirect either stream and both come back, because then
+// they are going somewhere different and the machine-readable one has a reader.
 func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
 	fmt.Fprintln(stderr, VersionLine())
+	merged := sameStream(stdout, stderr)
 	width := 0
 	for i := range origins {
 		width = max(width, len(PublicURL(public, i)))
 	}
 	for i, origin := range origins {
 		addr := PublicURL(public, i)
-		fmt.Fprintln(stdout, addr)
+		if !merged {
+			fmt.Fprintln(stdout, addr)
+		}
 		fmt.Fprintf(stderr, "  %-*s -> %s\n", width, addr, origin)
 	}
+}
+
+// sameStream reports whether two writers end up at the same terminal, file, or
+// pipe. Anything that is not an *os.File — a buffer in a test, a writer an
+// embedding program supplied — is never merged: it has a reader of its own by
+// construction.
+//
+// Stat rather than an isatty check, because the case is not "is this a
+// terminal" but "would the reader see this twice", which is equally true of
+// `tunneld --url ... >out 2>&1`.
+func sameStream(a, b io.Writer) bool {
+	af, ok := a.(*os.File)
+	if !ok {
+		return false
+	}
+	bf, ok := b.(*os.File)
+	if !ok {
+		return false
+	}
+	ai, err := af.Stat()
+	if err != nil {
+		return false
+	}
+	bi, err := bf.Stat()
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // openInBrowser launches a browser on addr, reporting a failure as a warning

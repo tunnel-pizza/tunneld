@@ -65,6 +65,13 @@ URL=$(tunneld --url http://localhost:3000 | head -1)
 **stderr** carries everything human — the build banner, the origin map above,
 and the tunnel's own logs at `--log-level`.
 
+On a terminal both streams land in the same place, where the split is
+invisible and every URL would simply appear twice. So when the two go to the
+same destination — a terminal, or `>out 2>&1` — the bare lines are dropped and
+only the map is printed; it shows every address anyway, and says which origin
+each one reaches. Redirect either stream and both come back, because then the
+machine-readable one has a reader of its own.
+
 The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
 fails first.
 

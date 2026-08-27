@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -117,10 +119,59 @@ func TestPublicURL(t *testing.T) {
 	}
 }
 
+// TestReportSkipsTheEchoOnOneStream pins the terminal case: when stdout and
+// stderr land in the same place the split is invisible, so printing both would
+// show every URL twice — once bare, once in the map. The map wins, because it
+// says which origin each address reaches.
+//
+// One file passed as both writers is the same condition a terminal produces,
+// and the same one as `tunneld --url ... >out 2>&1`.
+func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
+	public, err := url.Parse("https://foo.tunneled.pizza/")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	if err != nil {
+		t.Fatalf("parseOrigins: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "merged")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	report(f, f, public, origins)
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	merged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, addr := range []string{"https://foo.tunneled.pizza/", "https://foo.tunneled.pizza/?1"} {
+		// The default origin's URL is a prefix of the routed one, so count
+		// whole lines rather than substrings.
+		got := 0
+		for line := range strings.SplitSeq(string(merged), "\n") {
+			if strings.Contains(line, addr+" ") || strings.TrimSpace(line) == addr {
+				got++
+			}
+		}
+		if got != 1 {
+			t.Errorf("%s appears on %d lines, want 1:\n%s", addr, got, merged)
+		}
+	}
+}
+
 // TestReportSplitsStreams pins the output contract: stdout is one public URL
 // per origin in order and nothing else, so `| head -1` reaches the default
 // origin and line i reaches origin i. Everything human — the banner, the
 // arrows — belongs to stderr, where it cannot corrupt that stream.
+//
+// Two distinct writers, which is what a redirect of either stream produces —
+// and unlike the merged case above, both halves are written.
 func TestReportSplitsStreams(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {

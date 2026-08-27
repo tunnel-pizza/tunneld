@@ -229,6 +229,12 @@ Easy to get wrong from the diff alone:
   nothing else — a script reads line *i* to reach origin *i*. The banner, the
   origin map, and every log line go to stderr. Adding a friendly line to stdout
   breaks callers.
+- **…except when both streams share a destination**, which on a terminal they
+  do. `report` drops the bare stdout lines then, or every URL would print
+  twice. The check is `os.SameFile`, not an isatty test, because the question
+  is "would one reader see this twice" — equally true of `>out 2>&1`. A writer
+  that is not an `*os.File` (a test buffer, an embedder's writer) is never
+  merged.
 - **`examples/` is intentionally duplicated.** Each `main.go` is a
   copy-pasteable starter; no shared internal package. Don't refactor it into
   one.
