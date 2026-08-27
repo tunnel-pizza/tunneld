@@ -322,6 +322,7 @@ func TestExamples(t *testing.T) {
 	}{
 		{"basic", "(default [http://localhost:3000])"},
 		{"multi-origin", "(default [http://localhost:3000,http://localhost:4000])"},
+		{"attach", "(default [dockerd://tunneld-demo])"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

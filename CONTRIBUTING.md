@@ -286,6 +286,26 @@ Easy to get wrong from the diff alone:
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
 
+### Container origins
+
+`v1alpha1/attach/` serves a `dockerd://` origin as a browser terminal, and
+`v1alpha1/attach/docker/` is the one provider behind it. The split is
+load-bearing: `attach` knows HTTP and the `v4.channel.k8s.io` stream protocol
+and nothing about Docker, and `docker` is the reverse. A second provider
+implements `attach.Target` — four methods — and `attach` does not change.
+
+Two things there will bite if you change them without knowing why:
+
+- **The page builds its socket URL as `"/attach" + location.search`.** A
+  websocket handshake carries no `Referer`, so libtunnel cannot route it as a
+  subresource and would fall back to the sticky `libtunnel-origin` cookie,
+  which is last-write-wins across tabs. Drop the suffix and two container tiles
+  fight over one socket.
+- **`bindOrigins` keeps the dialable list the same length and order as the
+  displayed one.** Index *n* means origin *n* for `?n` routing, `PublicURL`,
+  the reported map and the multiview tiles. Reordering or filtering either list
+  breaks all four at once.
+
 ## Adding an example
 
 Examples live in `./examples/<name>/main.go`. Keep each example self-contained

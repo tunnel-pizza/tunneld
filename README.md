@@ -75,6 +75,37 @@ That is why the map above prints `?0` for the default origin rather than a bare
 URL: every address stays correct however much you have clicked around. A single
 `--url` has nothing to route between and prints the plain URL.
 
+### Containers
+
+`--url dockerd://<container-name-or-id>` exposes a terminal attached to a
+running container instead of an HTTP service:
+
+```sh
+tunneld --url dockerd://my-container
+```
+
+It is an origin like any other, so it takes an index, gets a multiview tile,
+and mixes freely with HTTP origins:
+
+```sh
+tunneld --url :3000 --url dockerd://my-container
+```
+
+The semantics are `docker attach`'s, which means most of the behaviour was
+decided when the container was started. Without `-t` there is no TTY, so no
+line editing and no resize; without `-i` keystrokes reach nothing. The page
+shows a small notice bar naming which of those applies — e.g. `no TTY and no
+stdin (started without -it) — output only` — rather than leaving you guessing.
+With a TTY, Ctrl-C reaches PID 1 and stops the container — that is what
+`docker attach` does, not something tunneld adds.
+
+The container's existing output replays when the page opens, so a quiet
+container still looks alive.
+
+**The page is unauthenticated.** The tunnel hostname is the only secret, the
+same as every other origin tunneld exposes — but here the thing behind it is a
+shell. Anyone with the link has it.
+
 ## Multiview
 
 Several origins behind one hostname are also served as one page, at the
@@ -168,7 +199,7 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container-name-or-id>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |
@@ -342,13 +373,17 @@ Self-contained programs in [`./examples`](./examples):
 | ------- | ------------ |
 | `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
+| `attach` | A running container's terminal on the public hostname. Needs a container: `docker run -d --rm --name tunneld-demo -it alpine sh`. |
 
-Each starts the origins it exposes, so nothing else needs to be running. Both
-block until interrupted:
+`basic` and `multi-origin` start the origins they expose, so nothing else
+needs to be running. `attach` is the exception: a container is somebody else's
+process, so start one first (see the table above). All three block until
+interrupted:
 
 ```sh
 make run basic
 make run multi-origin
+make run attach
 ```
 
 `multi-origin` is the one to try in a browser — it serves a different page on
