@@ -168,6 +168,14 @@ Easy to get wrong from the diff alone:
   `StringArray` also replaces the flag's default on the first `--url` and
   appends after that, which is what makes a command line override a `WithURL`
   seed instead of merging into it.
+- **`TUNNELD_URL` does split on commas** — a single variable has no other way
+  to carry a list, and viper does not split one for you. That asymmetry with
+  the flag is deliberate and documented; it is also the mirror's one
+  limitation.
+- **The environment is applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
+  that hook *before* `ValidateRequiredFlags`, which is the only reason
+  `TUNNELD_URL` alone can satisfy a required `--url`. `applyEnv` setting
+  `f.Changed` is the other half.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
@@ -193,18 +201,24 @@ Everything else the tunnel engine can do is reachable through `libtunnel`'s own
 `LIBTUNNEL_*` environment variables, which pass straight through — reach for
 those before adding a flag.
 
-When a flag really is warranted, four things move together:
+When a flag really is warranted, five things move together:
 
 1. a `With*` setter on the `Builder` interface in [`v1/v1.go`](./v1/v1.go), so
    an embedder can seed it;
-2. the field, the setter, and the `cmd.Flags()` binding in `v1alpha1` — the
-   binding's default is the seeded field, never a literal;
-3. a case in the table in `v1alpha1/builder_test.go`, plus a row in
+2. its environment mirror, as a `TUNNELD_<KNOB>` constant in `v1/v1.go` — the
+   one registry for operator-facing strings;
+3. the field, the setter, and the `cmd.Flags()` binding in `v1alpha1` — the
+   binding's default is the seeded field, never a literal — plus a row in
+   `flagEnv` in [`v1alpha1/env.go`](./v1alpha1/env.go) pairing the flag with
+   the constant;
+4. a case in the table in `v1alpha1/builder_test.go`, plus a row in
    `e2e/e2e_test.go` if the flag has a refusable value; and
-4. the **Flags** table in the README.
+5. the **Flags** and **Environment** tables in the README.
 
-A knob with an env-expressible value also gets a constant in `v1/v1.go` and a
-row in the README's environment table.
+Step 3's `flagEnv` row is the one that is easy to forget, and
+`TestFlagEnvRegistryIsComplete` in `v1alpha1/env_test.go` fails without it: a
+flag with no mirror works on the command line and is silently unreachable from
+a container's environment.
 
 ## Branch / PR flow
 

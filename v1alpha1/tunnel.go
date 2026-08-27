@@ -95,44 +95,50 @@ func PublicURL(public *url.URL, i int) string {
 	return routed.String()
 }
 
-// parseOrigins turns the --url values into origin URLs, rejecting anything the
-// tunnel could not proxy to. A bare host:port (or host) implies http, matching
-// what people type; anything else must carry an http or https scheme and a
-// host, so a typo surfaces here rather than as a public hostname that answers
-// only errors. Every failure wraps a v1 sentinel and names the offending value.
+// parseOrigins turns the settled origin values into URLs, rejecting anything
+// the tunnel could not proxy to. A bare host:port (or host) implies http,
+// matching what people type; anything else must carry an http or https scheme
+// and a host, so a typo surfaces here rather than as a public hostname that
+// answers only errors. Every failure wraps a v1 sentinel and names the
+// offending value.
+//
+// The messages name the value, not the flag, because by this point a value may
+// have arrived either way — through --url or through v1.URLEnv bound onto it.
+// Only the nothing-at-all case names both, since that is the one an operator
+// fixes by choosing between them.
 func parseOrigins(raw []string) ([]*url.URL, error) {
 	origins := make([]*url.URL, 0, len(raw))
 	for _, s := range raw {
 		s = strings.TrimSpace(s)
 		if s == "" {
-			return nil, fmt.Errorf("%w: --url is empty, pass a local origin (e.g. http://localhost:3000)", v1.ErrNoOrigin)
+			return nil, fmt.Errorf("%w: empty origin, pass a local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin)
 		}
 		if !strings.Contains(s, "://") {
 			s = "http://" + s
 		}
 		u, err := url.Parse(s)
 		if err != nil {
-			return nil, fmt.Errorf("%w: --url %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
+			return nil, fmt.Errorf("%w: %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
 		}
 		if u.Scheme != "http" && u.Scheme != "https" {
-			return nil, fmt.Errorf("%w: --url %q has scheme %q, only http and https origins can be proxied", v1.ErrInvalidOrigin, s, u.Scheme)
+			return nil, fmt.Errorf("%w: %q has scheme %q, only http and https origins can be proxied", v1.ErrInvalidOrigin, s, u.Scheme)
 		}
 		if u.Host == "" {
-			return nil, fmt.Errorf("%w: --url %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
+			return nil, fmt.Errorf("%w: %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
 		}
 		origins = append(origins, u)
 	}
 	if len(origins) == 0 {
-		return nil, fmt.Errorf("%w: pass --url with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin)
+		return nil, fmt.Errorf("%w: pass --url (or $%s) with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin, v1.URLEnv)
 	}
 	return origins, nil
 }
 
-// logger resolves the tunnel's log sink: the --log-level flag wins, and
-// Logger's v1.LogEnv resolution is the fallback. The flag is strict — the
-// operator typed it, so a silent downgrade to info would hide the typo — while
-// the environment mirror stays lenient, which is what Logger does and what the
-// underlying library does with its own LIBTUNNEL_LOG.
+// logger resolves the tunnel's log sink from the level the command settled on
+// — the --log-level flag, or v1.LogEnv bound onto it by applyEnv. An
+// unrecognized level is an error either way: somebody typed it, and a silent
+// downgrade to info would hide the typo. Logger is the fallback when neither
+// was set, which is silence.
 //
 // The sink is stderr either way, so logs never pollute the machine-readable
 // URLs on stdout. run passes it to WithLogger, so tunneld's own startup line
@@ -143,7 +149,7 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
-		return nil, fmt.Errorf("%w: --log-level %q, want debug, info, warn or error", v1.ErrInvalidLogLevel, b.logLevel)
+		return nil, fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})), nil
 }

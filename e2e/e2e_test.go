@@ -3,9 +3,11 @@ package e2e
 import (
 	"bytes"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -35,9 +37,28 @@ func build(t *testing.T) string {
 // cases exist to catch.
 func run(t *testing.T, bin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	return runEnv(t, bin, nil, args...)
+}
+
+// runEnv is run with environment overrides. The child starts from the test
+// process's environment with every TUNNELD_ variable stripped, so a variable
+// that happens to be set in the developer's shell cannot change what a case
+// asserts, and then takes env on top.
+func runEnv(t *testing.T, bin string, env map[string]string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
 	var out, errOut bytes.Buffer
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
+
+	cmd.Env = make([]string, 0, len(os.Environ())+len(env))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TUNNELD_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
@@ -47,8 +68,8 @@ func run(t *testing.T, bin string, args ...string) (stdout, stderr string, code 
 			code = -1
 		}
 	}
-	t.Logf("$ tunneld %s (exit %d)\n--- stdout ---\n%s--- stderr ---\n%s",
-		strings.Join(args, " "), code, out.String(), errOut.String())
+	t.Logf("$ %stunneld %s (exit %d)\n--- stdout ---\n%s--- stderr ---\n%s",
+		envPrefix(env), strings.Join(args, " "), code, out.String(), errOut.String())
 	return out.String(), errOut.String(), code
 }
 
@@ -126,5 +147,99 @@ func TestRefusedInvocations(t *testing.T) {
 				t.Errorf("stdout = %q, want empty on a refused invocation", stdout)
 			}
 		})
+	}
+}
+
+// envPrefix renders the overrides as the shell prefix a reader would type to
+// reproduce the case, sorted so the log line is stable across runs.
+func envPrefix(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	assignments := make([]string, 0, len(env))
+	for k, v := range env {
+		assignments = append(assignments, k+"="+v)
+	}
+	slices.Sort(assignments)
+	return strings.Join(assignments, " ") + " "
+}
+
+// TestEnvironmentDrivesTheCommand covers the `docker run -e ...` shape: every
+// flag has a TUNNELD_ mirror, so a deployed binary is reconfigured without a
+// rebuild and without a command line.
+//
+// None of these reach the network. Each pairs the variable under test with a
+// deliberately bad log level, so the run stops once the flags have settled —
+// reaching that specific failure is itself the proof that everything earlier,
+// including cobra's required-flag check, accepted what the environment
+// supplied.
+func TestEnvironmentDrivesTheCommand(t *testing.T) {
+	bin := build(t)
+
+	cases := []struct {
+		name string
+		env  map[string]string
+		args []string
+		want string
+	}{
+		{
+			name: "TUNNELD_URL satisfies the required flag",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_LOG": "loud"},
+			want: "invalid log level",
+		},
+		{
+			name: "TUNNELD_URL takes a comma-separated list",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000,http://localhost:4000", "TUNNELD_LOG": "loud"},
+			want: "invalid log level",
+		},
+		{
+			name: "TUNNELD_URL is validated like the flag",
+			env:  map[string]string{"TUNNELD_URL": "ftp://localhost:21"},
+			want: "invalid origin",
+		},
+		{
+			name: "TUNNELD_LOG is strict",
+			env:  map[string]string{"TUNNELD_LOG": "loud"},
+			args: []string{"--url", "http://localhost:3000"},
+			want: "invalid log level",
+		},
+		{
+			name: "the flag beats the variable",
+			env:  map[string]string{"TUNNELD_LOG": "info"},
+			args: []string{"--url", "http://localhost:3000", "--log-level", "loud"},
+			want: "invalid log level",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdout, stderr, code := runEnv(t, bin, tc.env, tc.args...)
+			if code != 1 {
+				t.Errorf("exited %d, want 1", code)
+			}
+			if !strings.Contains(stderr, tc.want) {
+				t.Errorf("stderr %q does not contain %q", stderr, tc.want)
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want empty on a refused invocation", stdout)
+			}
+		})
+	}
+}
+
+// TestVersionIgnoresABadEnvironment pins that self-identification never
+// depends on configuration being valid. `tunneld version` is what somebody
+// runs while diagnosing a broken deployment, so a variable that stops the
+// tunnel must not also stop the answer to "which build is this".
+func TestVersionIgnoresABadEnvironment(t *testing.T) {
+	bin := build(t)
+
+	stdout, _, code := runEnv(t, bin, map[string]string{"TUNNELD_LOG": "loud", "TUNNELD_URL": "ftp://nope"}, "version")
+	if code != 0 {
+		t.Errorf("exited %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "tunneld ") {
+		t.Errorf("stdout %q does not carry the build banner", stdout)
 	}
 }
