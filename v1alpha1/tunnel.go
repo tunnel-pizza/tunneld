@@ -63,7 +63,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	if b.open {
 		// Only the default origin. The others are reported and left alone: a
 		// fan of tabs, one per --url, is rarely what anyone wanted.
-		openInBrowser(PublicURL(public, 0), stderr, log)
+		openInBrowser(PublicURL(public, 0, len(origins)), stderr, log)
 	}
 
 	select {
@@ -90,10 +90,10 @@ func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL) {
 	merged := sameStream(stdout, stderr)
 	width := 0
 	for i := range origins {
-		width = max(width, len(PublicURL(public, i)))
+		width = max(width, len(PublicURL(public, i, len(origins))))
 	}
 	for i, origin := range origins {
-		addr := PublicURL(public, i)
+		addr := PublicURL(public, i, len(origins))
 		if !merged {
 			fmt.Fprintln(stdout, addr)
 		}
@@ -147,13 +147,22 @@ func openInBrowser(addr string, stderr io.Writer, log *slog.Logger) {
 	}
 }
 
-// PublicURL is the address origin i answers on: the tunnel's URL itself for
-// the default origin, and that URL with a bare ?i routing parameter for the
-// rest. Bare is load-bearing — a valued parameter ("?1=x") is application data
-// the proxy forwards, while the bare form is the routing directive it consumes
-// and strips before the request reaches the origin.
-func PublicURL(public *url.URL, i int) string {
-	if i == 0 {
+// PublicURL is the address origin i answers on, out of n origins: the tunnel's
+// URL with a bare ?i routing parameter. Bare is load-bearing — a valued
+// parameter ("?1=x") is application data the proxy forwards, while the bare
+// form is the routing directive it consumes and strips before the request
+// reaches the origin.
+//
+// The default origin is explicit too, as ?0, whenever there is more than one.
+// A bare URL routes by the referring page and then by the sticky cookie, so
+// once a browser has visited ?1 a plain address no longer reaches origin 0 —
+// only an explicit index clears a previous choice. An address that stops
+// working after someone clicks around is worse than a longer one.
+//
+// A lone origin has nothing to route between, so n of 1 gives the plain URL
+// and no parameter at all.
+func PublicURL(public *url.URL, i, n int) string {
+	if n <= 1 {
 		return public.String()
 	}
 	routed := *public

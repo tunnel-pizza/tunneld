@@ -84,7 +84,7 @@ each later one answers on a bare ?n parameter (n is that flag's position).
 
   ` + name + ` --url http://localhost:3000 --url http://localhost:4000
 
-    https://<host>/     -> http://localhost:3000
+    https://<host>/?0   -> http://localhost:3000
     https://<host>/?1   -> http://localhost:4000
 
 Public URLs go to stdout, one line per origin; logs go to stderr.`,

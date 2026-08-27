@@ -41,7 +41,7 @@ tunneld --url http://localhost:3000 --url http://localhost:4000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/   -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/?0 -> http://localhost:3000
   https://amber-forest-9021.tunneled.pizza/?1 -> http://localhost:4000
 ```
 
@@ -56,8 +56,11 @@ to `?n` is remembered with a cookie. So a frontend on `:3000` and an API on
 cuts both ways: once a browser has visited `?1`, a link to `/` carries no index
 of its own, so it routes by the referring page's — and the cookie still names
 origin 1 besides. Only an explicit index clears a previous choice, routing and
-rewriting the cookie in one move. `examples/multi-origin` links its two pages
-that way.
+rewriting the cookie in one move.
+
+That is why the map above prints `?0` for the default origin rather than a bare
+URL: every address stays correct however much you have clicked around. A single
+`--url` has nothing to route between and prints the plain URL.
 
 ## Output contract
 

@@ -5,7 +5,7 @@
 // bare ?1 parameter, so a frontend on :3000 and an API on :4000 share a name
 // without a tunnel per port:
 //
-//	https://<host>/     -> http://localhost:3000
+//	https://<host>/?0   -> http://localhost:3000
 //	https://<host>/?1   -> http://localhost:4000
 //
 // The parameter is a routing directive the tunnel consumes; it never reaches

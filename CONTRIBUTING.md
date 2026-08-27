@@ -225,6 +225,12 @@ Easy to get wrong from the diff alone:
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
+- **The default origin is `?0`, not a bare URL, whenever there is more than
+  one.** Routing falls back to the referring page and then to a sticky cookie,
+  so a plain address stops reaching origin 0 once a browser has visited `?1`.
+  Only an explicit index clears a previous choice. A lone origin has nothing to
+  route between and keeps the plain URL — which is why `PublicURL` takes the
+  origin count.
 - **stdout is a machine interface.** One public URL per origin, in order,
   nothing else — a script reads line *i* to reach origin *i*. The banner, the
   origin map, and every log line go to stderr. Adding a friendly line to stdout

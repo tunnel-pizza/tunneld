@@ -90,11 +90,16 @@ func TestParseOriginsRejects(t *testing.T) {
 	}
 }
 
-// TestPublicURL pins the routing contract: origin 0 answers on the tunnel URL
-// untouched, and origin i answers on that URL with a bare ?i — the parameter
-// the tunnel's proxy consumes. A valued parameter ("?1=x") would be application
-// data and route nowhere, so the bareness is the assertion. The tunnel URL
-// itself must survive unmodified, since every later call derives from it.
+// TestPublicURL pins the routing contract: with more than one origin every
+// address carries a bare ?i, the parameter the tunnel's proxy consumes — the
+// default origin included, since a plain URL routes by referer and cookie and
+// so stops reaching origin 0 once a browser has visited ?1. A valued parameter
+// ("?1=x") would be application data and route nowhere, so the bareness is
+// half the assertion and the explicit ?0 is the other half.
+//
+// A lone origin has nothing to route between and gets the plain URL. The
+// tunnel URL itself must survive unmodified either way, since every later call
+// derives from it.
 func TestPublicURL(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
@@ -102,16 +107,18 @@ func TestPublicURL(t *testing.T) {
 	}
 
 	cases := []struct {
-		i    int
+		name string
+		i, n int
 		want string
 	}{
-		{0, "https://foo.tunneled.pizza/"},
-		{1, "https://foo.tunneled.pizza/?1"},
-		{12, "https://foo.tunneled.pizza/?12"},
+		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
+		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
+		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
+		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
 	}
 	for _, tc := range cases {
-		if got := PublicURL(public, tc.i); got != tc.want {
-			t.Errorf("PublicURL(_, %d) = %q, want %q", tc.i, got, tc.want)
+		if got := PublicURL(public, tc.i, tc.n); got != tc.want {
+			t.Errorf("%s: PublicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
 		}
 	}
 	if public.RawQuery != "" {
@@ -150,9 +157,7 @@ func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	for _, addr := range []string{"https://foo.tunneled.pizza/", "https://foo.tunneled.pizza/?1"} {
-		// The default origin's URL is a prefix of the routed one, so count
-		// whole lines rather than substrings.
+	for _, addr := range []string{"https://foo.tunneled.pizza/?0", "https://foo.tunneled.pizza/?1"} {
 		got := 0
 		for line := range strings.SplitSeq(string(merged), "\n") {
 			if strings.Contains(line, addr+" ") || strings.TrimSpace(line) == addr {
@@ -185,7 +190,7 @@ func TestReportSplitsStreams(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	report(&stdout, &stderr, public, origins)
 
-	wantOut := "https://foo.tunneled.pizza/\nhttps://foo.tunneled.pizza/?1\n"
+	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
 	if stdout.String() != wantOut {
 		t.Errorf("stdout = %q, want %q", stdout.String(), wantOut)
 	}
