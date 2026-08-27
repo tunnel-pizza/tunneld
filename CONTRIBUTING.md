@@ -23,6 +23,7 @@ Deep-link by filename; line numbers will drift.
 | godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
+| Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -226,10 +227,12 @@ Easy to get wrong from the diff alone:
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
-- **`?multiview` must stay bare and non-numeric.** Bare, so it sits in the same
-  namespace as the routing parameters; non-numeric, so the tunnel can never
-  mistake it for a routing index. A valued `?multiview=1` belongs to the origin
-  and is deliberately not matched — see `matchMultiview` in
+- **The panel answers the tunnel's bare address, and every condition narrowing
+  that is load-bearing.** `isPanelRequest` requires path `/`, no routing index,
+  a top-level document, and no same-host referer. Drop the path check and the
+  panel swallows every `/app.js` an origin serves; drop the Sec-Fetch check and
+  it draws itself inside its own tiles; drop the referer check and a `fetch`
+  from an origin page gets HTML. See
   [`v1alpha1/multiview.go`](./v1alpha1/multiview.go).
 - **The framing-header removal must stay narrowed to the panel's own frames.**
   `unframe` drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile is
@@ -261,9 +264,12 @@ Easy to get wrong from the diff alone:
   is "would one reader see this twice" — equally true of `>out 2>&1`. A writer
   that is not an `*os.File` (a test buffer, an embedder's writer) is never
   merged.
-- **`examples/` is intentionally duplicated.** Each `main.go` is a
-  copy-pasteable starter; no shared internal package. Don't refactor it into
-  one.
+- **`examples/` is intentionally duplicated, except for the pages.** Each
+  `main.go` is a copy-pasteable starter and stays standalone — don't refactor
+  the wiring into a shared helper. The sample HTML in
+  [`examples/sites`](./examples/sites) is the deliberate exception: nobody
+  copies those, and one of each means a fix to the scrolling or the sticky
+  header lands everywhere instead of drifting between examples.
 - **e2e builds its binaries at runtime**, so the test cache can't see source
   changes — `make e2e` passes `-count=1` to force a rebuild.
 - **Skip-release token must be line-anchored.** The regex in
@@ -282,7 +288,9 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 example is copy-pasteable on its own).
 
 An example starts the origins it exposes, so someone can run it against a
-clean machine and see a tunnel work. Hang that on the built command's
+clean machine and see a tunnel work. The pages it serves come from
+[`examples/sites`](./examples/sites), shared across examples; add one there
+rather than inlining HTML in a `main.go`. Hang that on the built command's
 `PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
 before it reaches that hook, which is what keeps `--help` from binding a port.
 `Build` returns an ordinary `*cobra.Command`, so the hook is free — but

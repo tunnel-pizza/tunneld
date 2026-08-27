@@ -26,7 +26,8 @@ tunneld --url http://localhost:3000   # or just: tunneld --url :3000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/ -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/
+    -> http://localhost:3000
 ```
 
 ## Multiple origins
@@ -41,8 +42,20 @@ tunneld --url http://localhost:3000 --url http://localhost:4000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/?0 -> http://localhost:3000
-  https://amber-forest-9021.tunneled.pizza/?1 -> http://localhost:4000
+  https://amber-forest-9021.tunneled.pizza/
+    -> http://localhost:3000
+    -> http://localhost:4000
+```
+
+With `--multiview=false` the panel goes away and each origin is named by its
+own address instead:
+
+```
+tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
+  https://amber-forest-9021.tunneled.pizza/?0
+    -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/?1
+    -> http://localhost:4000
 ```
 
 The parameter is a routing directive the tunnel's proxy consumes — it never
@@ -64,18 +77,18 @@ URL: every address stays correct however much you have clicked around. A single
 
 ## Multiview
 
-Several origins behind one hostname are also served as one page, at
-`?multiview`:
+Several origins behind one hostname are also served as one page, at the
+tunnel's own address:
 
 ```
 tunneld --url :3000 --url :4000 --url :5000
 ```
 ```
 tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
-  https://cruel-donkey.tunneled.pizza/?0         -> http://localhost:3000
-  https://cruel-donkey.tunneled.pizza/?1         -> http://localhost:4000
-  https://cruel-donkey.tunneled.pizza/?2         -> http://localhost:5000
-  https://cruel-donkey.tunneled.pizza/?multiview -> all 3, framed together
+  https://cruel-donkey.tunneled.pizza/
+    -> http://localhost:3000
+    -> http://localhost:4000
+    -> http://localhost:5000
 ```
 
 One iframe per origin, two columns, and an odd count gives the last tile the
@@ -84,10 +97,16 @@ its local address, and links out to that origin on its own. With `--open` on,
 this is the page that opens.
 
 The panel is served in front of the origin proxy, so it needs no port and no
-origin ever sees the request. `?multiview` is bare and non-numeric, which is
-what keeps it clear of the `?n` routing parameters — the tunnel treats a bare
-*numeric* segment as a route and forwards everything else untouched, so an
-origin with its own `multiview=…` parameter is unaffected.
+origin ever sees the request. It answers **only** the tunnel's own address:
+path `/`, no routing index, and a top-level navigation that did not come from a
+page already on this host. Everything else belongs to an origin — a
+subresource at `/app.js`, a page at `/dashboard`, a frame, a `fetch`. Without
+that narrowing the panel would swallow every asset an origin serves, or draw
+itself inside one of its own tiles.
+
+One consequence worth knowing: with the panel on, `https://<host>/?page=1`
+reaches the panel rather than the default origin, because it carries no index.
+Reach the origin with its index alongside — `https://<host>/?0&page=1`.
 
 Two things worth knowing:
 
@@ -119,10 +138,11 @@ origin's URL.
 URL=$(tunneld --url http://localhost:3000 | head -1)
 ```
 
-**stderr** carries everything human — the build banner, the origin map above,
-the multiview address, and the tunnel's own logs at `--log-level`. The panel is
-named there and not on stdout: it answers for every origin at once, so a line
-for it would break the line-*i*-is-origin-*i* rule.
+**stderr** carries everything human — the addresses above, the origins they
+reach, and the tunnel's own logs at `--log-level`. With the panel on, stderr
+names the one public address and lists the origins beneath it; stdout is
+unchanged either way, because a script wants a particular origin rather than a
+page of frames.
 
 On a terminal both streams land in the same place, where the split is
 invisible and every URL would simply appear twice. So when the two go to the
@@ -150,7 +170,7 @@ default.**
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |
-| `--multiview` | `TUNNELD_MULTIVIEW` | Serve every origin together as one panel of framed views, on `?multiview`. **Default on**, and inert with a single `--url`. |
+| `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single `--url`, which keeps the bare address for itself. |
 
 So the whole thing runs from a container with no command line at all:
 
