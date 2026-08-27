@@ -181,6 +181,22 @@ func TestAttach(t *testing.T) {
 				}
 			}
 
+			// A stdcopy frame precedes its payload with 8 bytes: a stream byte
+			// (0, 1 or 2), three reserved zero bytes, then a 4-byte big-endian
+			// length. "\x01\x00\x00\x00" is the stream byte and reserve of a
+			// stdout frame — not a sequence an alpine shell has any reason to
+			// print — so finding it in the output means AttachContainer forwarded
+			// stdcopy's own framing instead of stripping it. That is a bug the
+			// marker check above cannot see: the header lands as a clean prefix
+			// ahead of the payload rather than inside it, so the marker still
+			// turns up whether or not the demux ran. This holds for both
+			// subtests, not just the non-TTY one: a TTY container is never
+			// stdcopy-framed by the daemon in the first place, so the header is
+			// equally absent whichever path handled it.
+			if strings.Contains(out.String(), "\x01\x00\x00\x00") {
+				t.Errorf("output carries a stdcopy frame header, demux did not run: %q", out.String())
+			}
+
 			cancel()
 			_ = stdinW.Close()
 			<-done
