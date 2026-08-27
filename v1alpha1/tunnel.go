@@ -45,6 +45,15 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// A container is not an HTTP service, so tunneld serves one on its behalf
+	// and hands the tunnel the loopback address instead. origins stays what
+	// the operator typed — it is what the reported map and the panel show.
+	bound, err := bindOrigins(ctx, origins, log)
+	if err != nil {
+		return err
+	}
+	defer bound.Close()
+
 	backend := libtunnel.Cloudflare()
 	if b.provider != "" {
 		backend = backend.WithProvider(b.provider)
@@ -55,7 +64,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	tun := libtunnel.New(backend).
 		WithLogger(log).
 		WithContext(ctx).
-		WithLocalURL(origins...)
+		WithLocalURL(bound.dialable...)
 
 	// Served in front of the origin proxy, so the panel needs no port of its
 	// own and no origin ever sees the request.
