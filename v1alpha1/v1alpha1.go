@@ -11,12 +11,19 @@ import (
 	"sync"
 
 	"github.com/spf13/cobra"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// New returns an unconfigured BuilderImpl. The lib.New façade wraps this and
-// returns the v1.Builder interface.
+// New returns a BuilderImpl carrying the defaults that are not the zero value.
+// The lib.New façade wraps this and returns the v1.Builder interface.
+//
+// Only open needs seeding: its default is on, and a bool field cannot express
+// "unset" separately from "off". Setting it here rather than at the flag
+// binding keeps one rule for every knob — the flag's default is always the
+// field it binds over, so WithOpen(false) is honoured exactly like every other
+// seed.
 func New() *BuilderImpl {
-	return &BuilderImpl{}
+	return &BuilderImpl{open: v1.DefaultOpen}
 }
 
 // BuilderImpl is the default Builder implementation. Its fields are the
@@ -28,6 +35,7 @@ type BuilderImpl struct {
 	urls     []string
 	provider string
 	logLevel string
+	open     bool
 
 	// stdout carries the public URLs, stderr the banner, the origin map, and
 	// the tunnel's logs. They are staging only: Build hands them to the

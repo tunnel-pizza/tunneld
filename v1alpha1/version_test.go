@@ -20,7 +20,7 @@ func TestVersionStampWins(t *testing.T) {
 
 // TestVersionFallbackNonEmpty pins that Version always self-identifies: with
 // no stamp it derives an identifier from build info (module version, main
-// version, or VCS revision) and never returns "".
+// version, VCS revision, or "devel") and never returns "".
 func TestVersionFallbackNonEmpty(t *testing.T) {
 	old := version
 	t.Cleanup(func() { version = old })
@@ -79,5 +79,21 @@ func TestVCSVersion(t *testing.T) {
 				t.Errorf("vcsVersion() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestVersionDevelBeatsUnknown pins the `go run` case. That toolchain path
+// skips VCS stamping, so the only thing build info carries is Main.Version
+// "(devel)" — and reporting "unknown" there reads as a broken build rather
+// than an unreleased one.
+func TestVersionDevelBeatsUnknown(t *testing.T) {
+	if got := vcsVersion(&debug.BuildInfo{}); got != "unknown" {
+		t.Fatalf("vcsVersion with no settings = %q, want the unknown sentinel", got)
+	}
+	// Version's own "(devel)" branch is what turns that into "devel"; the
+	// build running this test may carry a real stamp, so assert the rule
+	// rather than the value.
+	if got := Version(); got == "" || got == "unknown" {
+		t.Errorf("Version() = %q, want a self-identifying value", got)
 	}
 }

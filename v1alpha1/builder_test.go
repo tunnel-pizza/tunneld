@@ -167,3 +167,66 @@ func TestHelpNamesTheCommand(t *testing.T) {
 		t.Errorf("help %q does not use the configured command name", stdout)
 	}
 }
+
+// TestOpenDefaultsOn pins that a plain invocation opens a browser and that
+// both levers turn it off. The default is the whole point of the flag — a
+// developer exposing something is about to look at it — so a silent flip to
+// off would be a real regression.
+func TestOpenDefaultsOn(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		args []string
+		want bool
+	}{
+		{name: "default", want: true},
+		{name: "flag turns it off", args: []string{"--open=false"}, want: false},
+		{name: "variable turns it off", env: "false", want: false},
+		{name: "flag beats the variable", env: "false", args: []string{"--open=true"}, want: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.OpenEnv, tc.env)
+
+			b := v1alpha1.New().WithURL("http://localhost:3000")
+			// A deliberately bad level stops the run once the flags have
+			// settled, before anything dials or any window opens.
+			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
+			if !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+
+			got, err := b.Build().Flags().GetBool("open")
+			if err != nil {
+				t.Fatalf("GetBool: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("--open = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithOpenSeedsTheDefault pins that an embedder can flip the default
+// without forbidding the flag: WithOpen(false) makes --open default to false,
+// and a user passing --open still gets a browser.
+func TestWithOpenSeedsTheDefault(t *testing.T) {
+	b := v1alpha1.New().WithURL("http://localhost:3000").WithOpen(false)
+
+	if got := b.Build().Flags().Lookup("open").DefValue; got != "false" {
+		t.Errorf("--open default = %q, want %q", got, "false")
+	}
+
+	_, _, err := execute(t, b, "--open", "--log-level", "loud")
+	if !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+	got, err := b.Build().Flags().GetBool("open")
+	if err != nil {
+		t.Fatalf("GetBool: %v", err)
+	}
+	if !got {
+		t.Error("--open = false after the flag was passed, want the flag to beat the seed")
+	}
+}

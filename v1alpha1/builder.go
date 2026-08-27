@@ -33,6 +33,13 @@ func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
 	return b
 }
 
+// WithOpen sets whether the default origin's public URL is opened in a browser
+// once the tunnel is live.
+func (b *BuilderImpl) WithOpen(open bool) v1.Builder {
+	b.open = open
+	return b
+}
+
 // WithStdout redirects the public URLs.
 func (b *BuilderImpl) WithStdout(w io.Writer) v1.Builder {
 	b.stdout = w
@@ -64,6 +71,7 @@ func (b *BuilderImpl) Build() *cobra.Command {
 // command is the one-shot assembly behind Build.
 func (b *BuilderImpl) command() *cobra.Command {
 	name := b.Name()
+	env := newEnv()
 
 	cmd := &cobra.Command{
 		Use:   name + " --url <local-url> [--url <local-url> ...]",
@@ -76,13 +84,19 @@ each later one answers on a bare ?n parameter (n is that flag's position).
 
   ` + name + ` --url http://localhost:3000 --url http://localhost:4000
 
-    https://<host>/     -> http://localhost:3000
+    https://<host>/?0   -> http://localhost:3000
     https://<host>/?1   -> http://localhost:4000
 
 Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
 		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
+		// Persistent, so it also covers a subcommand — and placed here rather
+		// than in RunE because cobra runs this hook ahead of required-flag
+		// validation, which is what lets TUNNELD_URL satisfy --url.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			return applyEnv(cmd, env)
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return b.run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
@@ -107,12 +121,17 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	// commas, which would silently shred a URL carrying one in its query.
 	// pflag's stringArray replaces the default on the first --url and appends
 	// after that, so a command line never merges into a seeded set.
+	// Each usage string names the flag's environment mirror, so --help doubles
+	// as the reference for configuring a container. The registry behind those
+	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-		"local origin to expose, e.g. http://localhost:3000 (repeat for more; a bare host:port implies http)")
+		"local origin to expose, e.g. http://localhost:3000 (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
-		"quick-tunnel provider host to mint against")
+		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
-		"tunnel log level on stderr: debug, info, warn, error (default: silent, or $"+v1.LogEnv+")")
+		"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
+	cmd.Flags().BoolVar(&b.open, "open", b.open,
+		"open the default origin's public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
 	// Required only when nothing was seeded: an embedder that supplied an
 	// origin wants --url optional, not forbidden.
 	if len(b.urls) == 0 {

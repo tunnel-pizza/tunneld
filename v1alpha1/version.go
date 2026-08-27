@@ -26,9 +26,10 @@ var version string
 // ldflag); the module version recorded in build info (the `go install
 // tunneld@v0.0.5` case, following a replace directive if one redirects it);
 // the main-module version; and finally the short VCS revision of a local
-// build, with a -dirty suffix for an uncommitted tree. A build carrying no
-// version information at all returns "unknown", never the empty string —
-// Version always self-identifies.
+// build, with a -dirty suffix for an uncommitted tree; then "devel" for a
+// build the toolchain stamped as such but left unstamped by VCS, which is what
+// `go run` produces. A build carrying no version information at all returns
+// "unknown", never the empty string — Version always self-identifies.
 func Version() string {
 	if version != "" {
 		return version
@@ -56,7 +57,17 @@ func Version() string {
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
 	}
-	return vcsVersion(info)
+	if v := vcsVersion(info); v != "unknown" {
+		return v
+	}
+	// A build the toolchain stamped as "(devel)" and nothing else: `go run`,
+	// which skips VCS stamping. That is still information — locally built,
+	// from no release — and reporting it beats "unknown", which reads as a
+	// broken build rather than an unreleased one.
+	if info.Main.Version == "(devel)" {
+		return "devel"
+	}
+	return "unknown"
 }
 
 // vcsVersion is the local-build fallback: the short VCS revision with a

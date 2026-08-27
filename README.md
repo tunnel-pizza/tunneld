@@ -21,7 +21,7 @@ go install github.com/tunnel-pizza/tunneld@latest
 ```
 
 ```sh
-tunneld --url http://localhost:3000
+tunneld --url http://localhost:3000   # or just: tunneld --url :3000
 ```
 
 ```
@@ -41,7 +41,7 @@ tunneld --url http://localhost:3000 --url http://localhost:4000
 
 ```
 tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/   -> http://localhost:3000
+  https://amber-forest-9021.tunneled.pizza/?0 -> http://localhost:3000
   https://amber-forest-9021.tunneled.pizza/?1 -> http://localhost:4000
 ```
 
@@ -51,6 +51,16 @@ application data. A browser then sticks to whichever origin it landed on:
 subresources follow their document's URL via `Referer`, and a top-level visit
 to `?n` is remembered with a cookie. So a frontend on `:3000` and an API on
 `:4000` both work behind a single hostname, without one tunnel per port.
+
+**Getting back to the default origin takes `?0`, not a bare `/`.** Stickiness
+cuts both ways: once a browser has visited `?1`, a link to `/` carries no index
+of its own, so it routes by the referring page's — and the cookie still names
+origin 1 besides. Only an explicit index clears a previous choice, routing and
+rewriting the cookie in one move.
+
+That is why the map above prints `?0` for the default origin rather than a bare
+URL: every address stays correct however much you have clicked around. A single
+`--url` has nothing to route between and prints the plain URL.
 
 ## Output contract
 
@@ -65,6 +75,13 @@ URL=$(tunneld --url http://localhost:3000 | head -1)
 **stderr** carries everything human — the build banner, the origin map above,
 and the tunnel's own logs at `--log-level`.
 
+On a terminal both streams land in the same place, where the split is
+invisible and every URL would simply appear twice. So when the two go to the
+same destination — a terminal, or `>out 2>&1` — the bare lines are dropped and
+only the map is printed; it shows every address anyway, and says which origin
+each one reaches. Redirect either stream and both come back, because then the
+machine-readable one has a reader of its own.
+
 The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
 fails first.
 
@@ -75,11 +92,23 @@ TLS, spec replay, edge pinning, the cache directory — is reachable through
 `libtunnel`'s own `LIBTUNNEL_*` variables, which pass straight through; see
 [its README](https://github.com/cnuss/libtunnel#environment-variables).
 
-| Flag | Effect |
-| ---- | ------ |
-| `-u`, `--url` | Local origin to expose. Repeat for more; the first is the default and later ones answer on `?n`. A bare `host:port` implies `http`. Required unless seeded in code. |
-| `--provider` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
-| `--log-level` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent, or `$TUNNELD_LOG`. |
+Every flag has an environment mirror, and the flag wins: **flag > environment >
+default.**
+
+| Flag | Variable | Effect |
+| ---- | -------- | ------ |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. |
+| `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
+| `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
+| `--open` | `TUNNELD_OPEN` | Open the default origin's public URL in a browser once the tunnel is live. **Default on** — `--open=false` on a server or in CI. |
+
+So the whole thing runs from a container with no command line at all:
+
+```sh
+docker run -e TUNNELD_URL=http://host.docker.internal:3000,http://host.docker.internal:4000 \
+           -e TUNNELD_LOG=info \
+           tunneld
+```
 
 | Command | Effect |
 | ------- | ------ |
@@ -163,6 +192,7 @@ type Builder interface {
     WithURL(urls ...string) Builder    // origins, in order; appends across calls
     WithProvider(host string) Builder  // quick-tunnel host; default tunnel.pizza
     WithLogLevel(level string) Builder // debug|info|warn|error on stderr
+    WithOpen(open bool) Builder        // open a browser when live; default true
     WithStdout(w io.Writer) Builder    // the public URLs
     WithStderr(w io.Writer) Builder    // banner, origin map, logs
     Build() *cobra.Command             // terminal: assembles and returns
@@ -177,8 +207,12 @@ var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")
 
 const LogEnv          = "TUNNELD_LOG"
+const URLEnv          = "TUNNELD_URL"
+const ProviderEnv     = "TUNNELD_PROVIDER"
+const OpenEnv         = "TUNNELD_OPEN"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
+const DefaultOpen     = true
 ```
 
 And the env plumbing implementations use, in `v1alpha1`:
@@ -196,44 +230,84 @@ Every knob with an env-expressible value has a mirror constant in `v1`, and
 rebuild. Variables are read lazily, where the knob takes effect, so a value set
 after construction still lands.
 
-| Variable | Effect |
-| -------- | ------ |
-| `TUNNELD_LOG` | Level (`debug`\|`info`\|`warn`\|`error`) of the tunnel's stderr logger. Unset, it is silent. `--log-level` beats it, and is strict where this is lenient: an unrecognized value here reads as `info` with a warning, while a bad flag is an error. |
+| Variable | Mirrors | Effect |
+| -------- | ------- | ------ |
+| `TUNNELD_URL` | `--url` | Local origins, comma-separated in the order the repeated flag would take them. An origin URL containing a literal comma has to use the flag, which parses no separator. |
+| `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
+| `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
+| `TUNNELD_OPEN` | `--open` | Whether to open a browser once the tunnel is live. Any value `strconv.ParseBool` accepts. |
+
+Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
+built command rather than the package global, with each variable bound
+explicitly to the constant naming it in `v1` — so the operator-facing strings
+live in one registry instead of being derived from flag names.
 
 Names follow `TUNNELD_<KNOB>` for core knobs and `TUNNELD__<IMPL>_<KNOB>` —
 double underscore — for implementation-scoped ones, so two implementations can
 each expose a `TIMEOUT` without colliding.
 
-An override that is set but unparsable is reported, never silently ignored:
-`EnvBool` and `EnvDuration` return an error wrapping `v1.ErrInvalidEnv` naming
-the variable and the bad value. A typo'd knob that quietly did nothing would be
-indistinguishable from one that worked.
+An override that is set but unparsable is reported, never silently ignored — a
+typo'd knob that quietly did nothing would be indistinguishable from one that
+worked. That holds for the flag mirrors (`TUNNELD_LOG=loud` is an error, the
+same as `--log-level loud`) and for the `EnvBool`/`EnvDuration` helpers, which
+return an error wrapping `v1.ErrInvalidEnv` naming the variable and the bad
+value.
 
 The tunnel engine carries its own `LIBTUNNEL_*` surface for everything this one
 doesn't expose. Those variables pass straight through and are documented in
 [libtunnel](https://github.com/cnuss/libtunnel#environment-variables), not
 mirrored here.
 
+## Examples
+
+Self-contained programs in [`./examples`](./examples):
+
+| Example | Demonstrates |
+| ------- | ------------ |
+| `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
+| `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
+
+Each starts the origins it exposes, so nothing else needs to be running. Both
+block until interrupted:
+
+```sh
+make run basic
+make run multi-origin
+```
+
+`multi-origin` is the one to try in a browser — it serves a different page on
+`:3000` and `:4000`, so switching between `/` and `/?1` shows the routing.
+
+The seeded origins are only defaults, so every tunneld flag still works — but
+pass them through `go run`, since make would read a leading `--` as one of its
+own options:
+
+```sh
+go run ./examples/basic --url http://localhost:8080 --open=false
+```
+
 ## Testing
 
 ```sh
 make test   # unit tests (fast, in-package)
-make e2e    # builds the binary and drives its offline paths
+make e2e    # builds the binary and every example, drives their offline paths
 make race   # every package under the race detector — the lane CI gates on
 ```
 
 Neither tier mints a real tunnel — that needs the public internet and a live
 provider, which would make CI flaky. Everything up to the mint is covered here;
-the tunnel itself is covered by libtunnel's own live tier.
+the tunnel itself is covered by libtunnel's own live tier. That is also why the
+harness drives each example with `--help`: it exercises the whole assembly path
+and exits without a packet.
 
 `make e2e` runs `go test -count=1 -v ./e2e`. The `-count=1` defeats the test
-cache, since the harness builds the binary at runtime and the cache key
+cache, since the harness builds the binaries at runtime and the cache key
 wouldn't otherwise pick up source changes.
 
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local dev loop, the test-file
-convention, and the release process.
+convention, what makes a good example, and the release process.
 
 ## License
 

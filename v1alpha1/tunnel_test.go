@@ -3,11 +3,15 @@ package v1alpha1
 import (
 	"bytes"
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -24,6 +28,10 @@ func TestParseOriginsAccepts(t *testing.T) {
 		{"https origin", []string{"https://127.0.0.1:8443"}, []string{"https://127.0.0.1:8443"}},
 		{"bare host:port implies http", []string{"localhost:3000"}, []string{"http://localhost:3000"}},
 		{"bare host implies http", []string{"localhost"}, []string{"http://localhost"}},
+		{"bare port implies localhost", []string{":8000"}, []string{"http://localhost:8000"}},
+		{"bare port keeps an explicit scheme", []string{"https://:8443"}, []string{"https://localhost:8443"}},
+		{"scheme and bare port", []string{"http://:8000"}, []string{"http://localhost:8000"}},
+		{"bare port with a path", []string{":8000/api"}, []string{"http://localhost:8000/api"}},
 		{"surrounding space trimmed", []string{"  http://localhost:3000  "}, []string{"http://localhost:3000"}},
 		{"path preserved", []string{"http://localhost:3000/api"}, []string{"http://localhost:3000/api"}},
 		{
@@ -86,11 +94,16 @@ func TestParseOriginsRejects(t *testing.T) {
 	}
 }
 
-// TestPublicURL pins the routing contract: origin 0 answers on the tunnel URL
-// untouched, and origin i answers on that URL with a bare ?i — the parameter
-// the tunnel's proxy consumes. A valued parameter ("?1=x") would be application
-// data and route nowhere, so the bareness is the assertion. The tunnel URL
-// itself must survive unmodified, since every later call derives from it.
+// TestPublicURL pins the routing contract: with more than one origin every
+// address carries a bare ?i, the parameter the tunnel's proxy consumes — the
+// default origin included, since a plain URL routes by referer and cookie and
+// so stops reaching origin 0 once a browser has visited ?1. A valued parameter
+// ("?1=x") would be application data and route nowhere, so the bareness is
+// half the assertion and the explicit ?0 is the other half.
+//
+// A lone origin has nothing to route between and gets the plain URL. The
+// tunnel URL itself must survive unmodified either way, since every later call
+// derives from it.
 func TestPublicURL(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
@@ -98,16 +111,18 @@ func TestPublicURL(t *testing.T) {
 	}
 
 	cases := []struct {
-		i    int
+		name string
+		i, n int
 		want string
 	}{
-		{0, "https://foo.tunneled.pizza/"},
-		{1, "https://foo.tunneled.pizza/?1"},
-		{12, "https://foo.tunneled.pizza/?12"},
+		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
+		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
+		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
+		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
 	}
 	for _, tc := range cases {
-		if got := PublicURL(public, tc.i); got != tc.want {
-			t.Errorf("PublicURL(_, %d) = %q, want %q", tc.i, got, tc.want)
+		if got := PublicURL(public, tc.i, tc.n); got != tc.want {
+			t.Errorf("%s: PublicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
 		}
 	}
 	if public.RawQuery != "" {
@@ -115,10 +130,57 @@ func TestPublicURL(t *testing.T) {
 	}
 }
 
+// TestReportSkipsTheEchoOnOneStream pins the terminal case: when stdout and
+// stderr land in the same place the split is invisible, so printing both would
+// show every URL twice — once bare, once in the map. The map wins, because it
+// says which origin each address reaches.
+//
+// One file passed as both writers is the same condition a terminal produces,
+// and the same one as `tunneld --url ... >out 2>&1`.
+func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
+	public, err := url.Parse("https://foo.tunneled.pizza/")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	if err != nil {
+		t.Fatalf("parseOrigins: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "merged")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	report(f, f, public, origins)
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	merged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for _, addr := range []string{"https://foo.tunneled.pizza/?0", "https://foo.tunneled.pizza/?1"} {
+		got := 0
+		for line := range strings.SplitSeq(string(merged), "\n") {
+			if strings.Contains(line, addr+" ") || strings.TrimSpace(line) == addr {
+				got++
+			}
+		}
+		if got != 1 {
+			t.Errorf("%s appears on %d lines, want 1:\n%s", addr, got, merged)
+		}
+	}
+}
+
 // TestReportSplitsStreams pins the output contract: stdout is one public URL
 // per origin in order and nothing else, so `| head -1` reaches the default
 // origin and line i reaches origin i. Everything human — the banner, the
 // arrows — belongs to stderr, where it cannot corrupt that stream.
+//
+// Two distinct writers, which is what a redirect of either stream produces —
+// and unlike the merged case above, both halves are written.
 func TestReportSplitsStreams(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
@@ -132,7 +194,7 @@ func TestReportSplitsStreams(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	report(&stdout, &stderr, public, origins)
 
-	wantOut := "https://foo.tunneled.pizza/\nhttps://foo.tunneled.pizza/?1\n"
+	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
 	if stdout.String() != wantOut {
 		t.Errorf("stdout = %q, want %q", stdout.String(), wantOut)
 	}
@@ -188,4 +250,54 @@ func TestLogger(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOpenInBrowser pins the two things the opener promises. It never writes
+// to stdout — the spawned process inherits writers from pkg/browser's package
+// globals, which default to os.Stdout, and that stream carries nothing but
+// public URLs. And a failure to open is a warning, not an error: the tunnel is
+// up and serving either way, and a headless host is a normal place to run
+// this, not a broken one.
+func TestOpenInBrowser(t *testing.T) {
+	t.Run("opens the address and leaves stdout alone", func(t *testing.T) {
+		var opened string
+		swapOpener(t, func(addr string) error {
+			opened = addr
+			return nil
+		})
+
+		var stderr bytes.Buffer
+		openInBrowser("https://foo.tunneled.pizza/", &stderr, slog.New(slog.DiscardHandler))
+
+		if want := "https://foo.tunneled.pizza/"; opened != want {
+			t.Errorf("opened %q, want %q", opened, want)
+		}
+		if browser.Stdout != io.Writer(&stderr) {
+			t.Error("browser.Stdout was left pointing elsewhere, want the stderr writer")
+		}
+		if browser.Stderr != io.Writer(&stderr) {
+			t.Error("browser.Stderr was left pointing elsewhere, want the stderr writer")
+		}
+	})
+
+	t.Run("a failure warns and returns", func(t *testing.T) {
+		swapOpener(t, func(string) error { return errors.New("no browser here") })
+
+		var logged bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		openInBrowser("https://foo.tunneled.pizza/", io.Discard, log)
+
+		if !strings.Contains(logged.String(), "could not open a browser") {
+			t.Errorf("log = %q, want a warning naming the failure", logged.String())
+		}
+	})
+}
+
+// swapOpener replaces the browser launcher for one test and restores it after,
+// so the suite never opens a window on whoever is running it.
+func swapOpener(t *testing.T, fn func(string) error) {
+	t.Helper()
+	old := openURL
+	t.Cleanup(func() { openURL = old })
+	openURL = fn
 }

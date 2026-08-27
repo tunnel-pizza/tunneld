@@ -55,11 +55,12 @@ var ErrNoOrigin = errors.New("no origin")
 // the offending value; the lever is to correct it.
 var ErrInvalidOrigin = errors.New("invalid origin")
 
-// ErrInvalidLogLevel reports a --log-level value that is not debug, info, warn
-// or error. It is an error rather than a silent fallback because the operator
-// typed it: quietly reading an unknown level as info would hide the typo
-// behind logs that look almost right. The environment mirror (LogEnv) is
-// deliberately lenient instead — see v1alpha1.Logger.
+// ErrInvalidLogLevel reports a --log-level value, or a LogEnv value bound onto
+// it, that is not debug, info, warn or error. It is an error rather than a
+// silent fallback because somebody typed it: quietly reading an unknown level
+// as info would hide the typo behind logs that look almost right. That is the
+// same promise ErrInvalidEnv makes for the other environment knobs — an
+// override nobody notices failing is worse than one that stops the process.
 var ErrInvalidLogLevel = errors.New("invalid log level")
 
 // ErrNotReady reports a tunnel that never became reachable end to end and
@@ -86,13 +87,38 @@ var ErrNotReady = errors.New("tunnel did not become ready")
 // origin TLS, spec replay, edge pinning, the cache directory. Those pass
 // straight through; they are documented in that library, not mirrored here.
 const (
-	// LogEnv names the level (debug|info|warn|error) of the default logger:
-	// set, the tunnel writes to stderr at that level; unset, it is silent.
-	// An unrecognized value reads as info and logs a warning saying so — a
-	// misspelled level should not silence the logs the operator was trying to
-	// turn on. The --log-level flag beats it, and is strict where this is
-	// lenient (see ErrInvalidLogLevel).
+	// LogEnv names the level (debug|info|warn|error) of the tunnel's logger:
+	// set, it writes to stderr at that level; unset, it is silent. It is the
+	// mirror of --log-level, which beats it. An unrecognized value is an error
+	// (ErrInvalidLogLevel), not a fallback to info.
+	//
+	// The name predates the flag, which is why it is TUNNELD_LOG rather than
+	// the TUNNELD_LOG_LEVEL a mechanical derivation would produce — the
+	// binding names it explicitly for that reason.
 	LogEnv = "TUNNELD_LOG"
+
+	// URLEnv names the local origins to expose — the mirror of --url, which
+	// beats it. Several origins are comma-separated, in the same order the
+	// repeated flag would take them: the first is the default and each later
+	// one answers on a bare ?n parameter.
+	//
+	// Comma is the separator because that is what the tunnel engine uses for
+	// its own list-valued variables. It is also the one limitation of this
+	// mirror: an origin URL carrying a literal comma has to arrive through the
+	// flag, which parses no separator at all.
+	URLEnv = "TUNNELD_URL"
+
+	// ProviderEnv names the quick-tunnel provider host to mint against — the
+	// mirror of --provider, which beats it. Unset, the provider is
+	// DefaultProvider.
+	ProviderEnv = "TUNNELD_PROVIDER"
+
+	// OpenEnv names whether to open the default origin's public URL in a
+	// browser once the tunnel is live — the mirror of --open, which beats it.
+	// Any value strconv.ParseBool accepts works; anything else is an error.
+	// Set it to false on a server or in CI, where there is no browser to open
+	// and the attempt is only noise.
+	OpenEnv = "TUNNELD_OPEN"
 
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
@@ -104,6 +130,12 @@ const (
 	// engine's environment.
 	DefaultProvider = "tunnel.pizza"
 )
+
+// DefaultOpen is whether a tunnel opens its public URL in a browser once it is
+// live. On, because the overwhelmingly common case is a developer exposing
+// something they are about to look at; the lever for every other case is
+// --open=false or OpenEnv.
+const DefaultOpen = true
 
 // Builder assembles the tunneld command. Configure it with the With* methods
 // (each returns the Builder for chaining), then call the terminal Build to
@@ -129,6 +161,9 @@ type Builder interface {
 	// default origin and each later one answers on a bare ?n parameter.
 	// Repeated calls append. A --url flag on the command line replaces the
 	// whole seeded set rather than adding to it.
+	//
+	// A missing scheme implies http and a missing host implies localhost, so
+	// ":8000", "localhost:8000" and "http://localhost:8000" name one origin.
 	WithURL(urls ...string) Builder
 	// WithProvider sets the quick-tunnel provider host to mint against.
 	// Unset, the provider is DefaultProvider.
@@ -137,6 +172,11 @@ type Builder interface {
 	// stderr. Unset, the level comes from LogEnv, and silence if that is
 	// unset too.
 	WithLogLevel(level string) Builder
+	// WithOpen sets whether the default origin's public URL is opened in a
+	// browser once the tunnel is live. Only the default origin is opened; the
+	// rest are reported and left alone, since a fan of tabs is rarely what
+	// anyone wanted. Unset, the behaviour is DefaultOpen.
+	WithOpen(open bool) Builder
 	// WithStdout redirects the public URLs, which are written one line per
 	// origin in order, along with the help text and the version banner. Build
 	// passes it to the command's SetOut, so calling SetOut on the built

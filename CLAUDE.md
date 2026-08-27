@@ -21,8 +21,13 @@ agent-specific framing.
   diff.
 - **Tests go beside their source**: `something.go` → `something_test.go`, one
   file per source file, never a file named after a scenario. New cases join the
-  table in the existing file. See
-  [CONTRIBUTING.md → Test layout](./CONTRIBUTING.md#test-layout).
+  table in the existing file. Two exceptions only — `lib/example_test.go` and
+  `e2e/`. See
+  [CONTRIBUTING.md → One test file per source file](./CONTRIBUTING.md#one-test-file-per-source-file).
+- **Examples are real programs** that open a tunnel and block, so e2e drives
+  them with `--help`. A new example needs a row in `e2e/e2e_test.go` and in the
+  README table. See
+  [CONTRIBUTING.md → Adding an example](./CONTRIBUTING.md#adding-an-example).
 - **`main.go` stays thin.** Flags, help, validation, and the tunnel belong to
   the builder in `v1alpha1`, so tunneld embeds as another program's subcommand.
   A feature that only works when tunneld is `os.Args[0]` is in the wrong
