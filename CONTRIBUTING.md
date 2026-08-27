@@ -313,9 +313,14 @@ Examples live in `./examples/<name>/main.go`. Keep each example self-contained
 example is copy-pasteable on its own).
 
 An example starts the origins it exposes, so someone can run it against a
-clean machine and see a tunnel work. The pages it serves come from
+clean machine and see a tunnel work — except `examples/attach`, which can't:
+a container is somebody else's process, not this program's own, so there is
+nothing to spawn. That is the bar for the exception — reach for it only when
+an origin genuinely isn't yours to start, and say why in the doc comment
+(`examples/attach`'s carries the `docker run` line a reader needs instead of
+a `serve` helper). The pages an example does serve come from
 [`examples/sites`](./examples/sites), shared across examples; add one there
-rather than inlining HTML in a `main.go`. Hang that on the built command's
+rather than inlining HTML in a `main.go`. Hang startup on the built command's
 `PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
 before it reaches that hook, which is what keeps `--help` from binding a port.
 `Build` returns an ordinary `*cobra.Command`, so the hook is free — but
