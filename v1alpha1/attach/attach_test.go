@@ -256,21 +256,15 @@ func TestDegradedNotice(t *testing.T) {
 		want  string
 	}{
 		{"a full terminal says nothing", true, true, ""},
-		{"no tty", false, true, "no TTY"},
-		{"no stdin", true, false, "stdin"},
-		{"neither", false, false, "output only"},
+		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
+		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
+		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := degraded(newFakeTarget("api", tc.tty, tc.stdin))
-			if tc.want == "" {
-				if got != "" {
-					t.Errorf("degraded = %q, want no notice", got)
-				}
-				return
-			}
-			if !strings.Contains(got, tc.want) {
-				t.Errorf("degraded = %q, does not mention %q", got, tc.want)
+			if got != tc.want {
+				t.Errorf("degraded = %q, want %q", got, tc.want)
 			}
 		})
 	}
