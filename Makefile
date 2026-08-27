@@ -65,9 +65,12 @@ e2e:
 # Run an example by name:
 #   make run basic
 #   make run multi-origin
+#   make run attach
 #
 # Examples are real programs: each starts the origins it exposes, opens a
-# tunnel, and blocks until interrupted. Nothing else needs to be running.
+# tunnel, and blocks until interrupted. Nothing else needs to be running —
+# except `attach`, whose origin is a container it cannot spawn, so it wants
+# `docker run -d --rm --name tunneld-demo -it alpine sh` first.
 #
 # Only bare words forward — make reads a leading -- as one of its own options,
 # so anything with flags goes through go run directly:

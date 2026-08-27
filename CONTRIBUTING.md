@@ -298,7 +298,8 @@ Easy to get wrong from the diff alone:
 `v1alpha1/attach/docker/` is the one provider behind it. The split is
 load-bearing: `attach` knows HTTP and the `v4.channel.k8s.io` stream protocol
 and nothing about Docker, and `docker` is the reverse. A second provider
-implements `attach.Target` — four methods — and `attach` does not change.
+implements `attach.Target` — five methods, four of its own plus the embedded
+`remotecommand.Attacher`'s `AttachContainer` — and `attach` does not change.
 
 Two things there will bite if you change them without knowing why:
 

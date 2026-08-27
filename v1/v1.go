@@ -49,10 +49,19 @@ var ErrInvalidEnv = errors.New("invalid environment value")
 // --url (repeatable), or WithURL when embedding.
 var ErrNoOrigin = errors.New("no origin")
 
-// ErrInvalidOrigin reports a --url value the tunnel could not proxy to: an
-// unparsable URL, a scheme other than http or https, or a URL with no host. A
-// bare host:port is not an error — it implies http. The wrapped message names
-// the offending value; the lever is to correct it.
+// ErrInvalidOrigin reports a --url value tunneld cannot expose: an unparsable
+// URL, a scheme that is none of http, https or DockerScheme, or a URL with no
+// host. A bare host:port is not an error — it implies http.
+//
+// A dockerd:// value earns it for reasons of its own, all of them about the
+// reference rather than the syntax: anything beyond a container name (a path,
+// a query, a fragment, credentials), a container the daemon has never heard
+// of, one that is not running, and one whose inspect comes back with no
+// configuration to read. A daemon that cannot be reached at all is ErrNoDocker
+// instead — there the origin is fine and Docker is not, and the lever is a
+// different one.
+//
+// The wrapped message names the offending value; the lever is to correct it.
 var ErrInvalidOrigin = errors.New("invalid origin")
 
 // ErrInvalidLogLevel reports a --log-level value, or a LogEnv value bound onto
