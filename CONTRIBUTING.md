@@ -111,6 +111,12 @@ make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
 ```
 
+The container tests under [`v1alpha1/attach/`](./v1alpha1/attach) skip
+themselves unless a Docker daemon answers *and* the `alpine` image is already
+local, so `make test` goes green on a machine that has neither — and a skipped
+test proves nothing. To actually run them, start Docker and `docker pull
+alpine` once; CI's `docker` lane does exactly that.
+
 Run it against a local service:
 
 ```sh

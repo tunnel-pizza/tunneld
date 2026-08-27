@@ -105,8 +105,43 @@ jobs:
         # the same command.
         run: make race
 
+  # The container tests, on the one lane that can run them. docker_test.go's
+  # withDaemon skips unless a daemon answers and alpine is already local, and
+  # no cell of the matrix above provides either — so without this lane the
+  # whole of TestAttach and two thirds of TestOpenRejects skip silently on
+  # every CI run, green and unexecuted.
+  #
+  # Two assertions in particular are only ever run here. The stdcopy-demux one
+  # is the only thing that catches a TTY/non-TTY inversion, which corrupts
+  # output instead of failing; the cancel-unblocks-a-parked-read one is the
+  # regression guard for the goroutine-and-connection leak this package spent
+  # four rounds fixing. Neither should depend on which developer last ran the
+  # suite.
+  #
+  # alpine is pulled rather than assumed: the runner is fresh every time, and
+  # the local skip exists so a contributor's laptop is not made to hit a
+  # registry — a hosted runner has no such objection.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: pull alpine
+        run: docker pull alpine
+
+      # Not a make target: every other lane runs the whole module, and this one
+      # deliberately runs one subtree against a live daemon. -count=1 because a
+      # cached pass proves nothing about a daemon that was absent last time.
+      - name: container tests
+        run: go test ./v1alpha1/attach/... -count=1 -timeout 300s
+
   release:
-    needs: [ci, race]
+    needs: [ci, race, docker]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
