@@ -30,6 +30,34 @@ tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
     -> http://localhost:3000
 ```
 
+### Container image
+
+`ghcr.io/tunnel-pizza/tunneld` is the same binary on a distroless base, running
+as `nonroot`. Every flag has an environment mirror, which is what a container
+is configured with:
+
+```sh
+docker run --rm -e TUNNELD_URL=http://host.docker.internal:8080 \
+  ghcr.io/tunnel-pizza/tunneld
+```
+
+`TUNNELD_OPEN` is `false` in the image — there is no browser in a container to
+open. A `dockerd://` origin additionally needs the daemon socket, and that is a
+real grant: the container can then reach every container on the host.
+
+```sh
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -e TUNNELD_URL=dockerd://my-container ghcr.io/tunnel-pizza/tunneld
+```
+
+Images are signed by digest, so a moved tag cannot inherit a signature:
+
+```sh
+cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
+  --certificate-identity-regexp '^https://github.com/tunnel-pizza/tunneld/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Multiple origins
 
 Pass `--url` once per local service. They share one public hostname: the first

@@ -422,9 +422,20 @@ re-runs `go vet`, `go build`, `make test`, and `make e2e` against that
 ref, then:
 
 - pushes the new tag,
-- creates a GitHub Release with auto-generated notes, and
+- creates a GitHub Release with auto-generated notes,
+- builds and pushes `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and
+  `linux/arm64`, tagged with the release and `latest`, and
 - warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
   surfaces the new version without manual prodding.
+
+Source archives and the image are both signed with cosign in keyless mode. The
+image is signed **by digest**, not by tag: a tag can be moved to point at other
+bytes, and a signature that followed it would vouch for whatever it moved to.
+
+The image is multi-arch without QEMU — the [`Dockerfile`](./Dockerfile) builds
+on `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so both arches
+are native compiles. `make image` builds it for the host platform from the same
+file, which is how you catch a break before a tag does.
 
 To opt a commit out of the auto-bump, put `[skip release]` on its own
 line in the commit body. (It must be the only thing on its line, so
