@@ -1,28 +1,26 @@
 // Command multi-origin exposes two local services through a single tunnel.
 //
 // It starts both — nothing else needs to be running — and puts them behind one
-// public hostname. The first --url is the default; the second answers on a
-// bare ?1 parameter, so a frontend on :3000 and an API on :4000 share a name
+// public hostname, so a frontend on :3000 and an API on :4000 share a name
 // without a tunnel per port:
 //
+//	https://<host>/     -> both, framed side by side
 //	https://<host>/?0   -> http://localhost:3000
 //	https://<host>/?1   -> http://localhost:4000
 //
-// The parameter is a routing directive the tunnel consumes; it never reaches
-// the origin, which is why each page below can echo the path it was asked for
-// and show it arriving clean. A browser then sticks to whichever origin it
-// landed on — subresources follow their document's URL, and a top-level visit
-// to ?1 is remembered by cookie.
+// The index is a routing directive the tunnel consumes; it never reaches the
+// origin. The bare address belongs to the panel, which is why each origin has
+// an index of its own — and why reaching one with query parameters of its own
+// means keeping the index alongside them, as /?0&page=1.
 //
-// That stickiness is why the pages link to ?0 rather than to "/" for the
-// default origin: only an explicit index clears a previous choice.
+// Run it with --multiview=false to hand the bare address back to the default
+// origin and see the same two services without the panel.
 package main
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +29,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tunnel-pizza/tunneld/examples/sites"
 	"github.com/tunnel-pizza/tunneld/lib"
 )
 
@@ -49,10 +48,10 @@ func main() {
 	// --help before that hook runs, so `--help` stays a pure question and
 	// binds no ports.
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
-		if err := serve(cmd.Context(), ":3000", "frontend"); err != nil {
+		if err := serve(cmd.Context(), ":3000", "frontend.html"); err != nil {
 			return err
 		}
-		return serve(cmd.Context(), ":4000", "api")
+		return serve(cmd.Context(), ":4000", "api.html")
 	}
 
 	if err := cmd.ExecuteContext(ctx); err != nil {
@@ -61,21 +60,27 @@ func main() {
 	}
 }
 
-// serve starts an HTTP server on addr and returns once it is listening, so the
-// tunnel never proxies to a socket that is not up yet. It shuts down with ctx.
+// serve starts an HTTP server on addr answering with the named page, and
+// returns once it is listening, so the tunnel never proxies to a socket that is
+// not up yet. It shuts down with ctx.
+//
+// Every path gets the same page: this is a stand-in for a real service, and a
+// router would only be scenery.
 func serve(ctx context.Context, addr, name string) error {
+	page, err := sites.FS.ReadFile(name)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
 	srv := &http.Server{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			// The request target is whatever the visitor typed, and it lands
-			// in an HTML document — escape it, or the echo below is a
-			// reflected-XSS hole in a file people copy as a starter.
-			fmt.Fprintf(w, page, name, addr, html.EscapeString(r.URL.RequestURI()))
+			_, _ = w.Write(page)
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -88,21 +93,3 @@ func serve(ctx context.Context, addr, name string) error {
 	}()
 	return nil
 }
-
-// page names which origin answered, so switching between the two links in a
-// browser shows the routing working. It echoes the request path too: the
-// routing parameter is gone by the time it arrives here.
-//
-// Both links carry an explicit parameter, ?0 included. A bare "/" would not
-// come back to the default origin once you had visited ?1 — with no parameter
-// of its own the tunnel routes by the referring page's, and the sticky cookie
-// still names origin 1 besides. ?0 is what says "this one, and forget the last
-// choice": an explicit index routes and rewrites the cookie in one move.
-const page = `<!doctype html>
-<meta charset="utf-8">
-<title>%[1]s</title>
-<h1>%[1]s</h1>
-<p>served locally by <code>%[2]s</code>, reached through a tunnel</p>
-<p>you asked for <code>%[3]s</code></p>
-<p><a href="/?0">origin 0</a> &middot; <a href="/?1">origin 1</a></p>
-`

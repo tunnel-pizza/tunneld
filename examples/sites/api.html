@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>api</title>
+<style>
+  /* Nothing on this page wraps, so the tile has to scroll sideways. */
+  body { margin: 0; padding: 0 2rem 3rem; font: 16px/1.6 system-ui, sans-serif; white-space: nowrap; }
+  h1 { position: sticky; top: 0; margin: 0; padding: 1rem 0; background: #fff; border-bottom: 1px solid #ddd; }
+  h1 small { font-weight: normal; color: #666; }
+  pre { white-space: pre; overflow: visible; background: #f4f4f4; padding: 1rem; }
+</style>
+
+<h1>api <small>localhost:4000</small></h1>
+
+<p>
+  This origin answers at <code>/?1</code>. The index never reaches it — the
+  tunnel consumes it and forwards the request untouched. The bare address
+  belongs to the panel framing both origins.
+</p>
+<p>
+  Nothing on this page wraps, so the tile scrolls sideways. The overflow stays
+  inside the tile: the panel around it does not move, and neither does the
+  other origin.
+</p>
+
+<pre>
+GET /v1/tunnels                          200  {"tunnels":[{"id":"cruel-donkey","origins":2,"state":"ready"}]}
+GET /v1/tunnels/cruel-donkey             200  {"id":"cruel-donkey","hostname":"cruel-donkey.tunneled.pizza","origins":["http://localhost:3000","http://localhost:4000"]}
+GET /v1/tunnels/cruel-donkey/origins     200  [{"index":0,"local":"http://localhost:3000","route":"/?0"},{"index":1,"local":"http://localhost:4000","route":"/?1"}]
+POST /v1/tunnels                         201  {"id":"amber-forest","hostname":"amber-forest.tunneled.pizza","origins":[],"state":"pending"}
+DELETE /v1/tunnels/amber-forest          204
+GET /v1/health                           200  {"edge":"ok","origins":"ok","uptime":"1h04m12s"}
+</pre>
+
+<p>1. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>2. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>3. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>4. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>5. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>6. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>7. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+<p>8. Long enough to scroll down as well, and too wide to fit across. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.</p>
+
+<p><strong>End of api.</strong></p>
