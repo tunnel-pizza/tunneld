@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -171,10 +172,14 @@ func PublicURL(public *url.URL, i, n int) string {
 }
 
 // parseOrigins turns the settled origin values into URLs, rejecting anything
-// the tunnel could not proxy to. A bare host:port (or host) implies http,
-// matching what people type; anything else must carry an http or https scheme
-// and a host, so a typo surfaces here rather than as a public hostname that
-// answers only errors. Every failure wraps a v1 sentinel and names the
+// the tunnel could not proxy to.
+//
+// Two shorthands are filled in, both of them what people actually type: a
+// value with no scheme implies http, and a value with no host implies
+// localhost, so ":8000" and "localhost:8000" and "http://localhost:8000" are
+// one origin written three ways. Everything else must carry an http or https
+// scheme and a host, so a typo surfaces here rather than as a public hostname
+// that answers only errors. Every failure wraps a v1 sentinel and names the
 // offending value.
 //
 // The messages name the value, not the flag, because by this point a value may
@@ -198,8 +203,18 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 		if u.Scheme != "http" && u.Scheme != "https" {
 			return nil, fmt.Errorf("%w: %q has scheme %q, only http and https origins can be proxied", v1.ErrInvalidOrigin, s, u.Scheme)
 		}
-		if u.Host == "" {
-			return nil, fmt.Errorf("%w: %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
+		// A port with no host in front of it — ":8000", or the
+		// "http://:8000" the scheme default above makes of it — means the
+		// local machine, the way every dev server reads that shorthand. The
+		// test is Hostname, not Host: url.Parse keeps the colon, so ":8000"
+		// arrives as a non-empty Host with nothing before the port, and a
+		// bare Host check waves it through as the unresolvable origin
+		// "http://:8000".
+		if u.Hostname() == "" {
+			if u.Port() == "" {
+				return nil, fmt.Errorf("%w: %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
+			}
+			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
 		origins = append(origins, u)
 	}

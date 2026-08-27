@@ -161,6 +161,9 @@ type Builder interface {
 	// default origin and each later one answers on a bare ?n parameter.
 	// Repeated calls append. A --url flag on the command line replaces the
 	// whole seeded set rather than adding to it.
+	//
+	// A missing scheme implies http and a missing host implies localhost, so
+	// ":8000", "localhost:8000" and "http://localhost:8000" name one origin.
 	WithURL(urls ...string) Builder
 	// WithProvider sets the quick-tunnel provider host to mint against.
 	// Unset, the provider is DefaultProvider.

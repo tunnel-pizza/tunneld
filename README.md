@@ -21,7 +21,7 @@ go install github.com/tunnel-pizza/tunneld@latest
 ```
 
 ```sh
-tunneld --url http://localhost:3000
+tunneld --url http://localhost:3000   # or just: tunneld --url :3000
 ```
 
 ```
@@ -97,7 +97,7 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A bare `host:port` implies `http`. Required unless supplied by the variable or seeded in code. |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--open` | `TUNNELD_OPEN` | Open the default origin's public URL in a browser once the tunnel is live. **Default on** — `--open=false` on a server or in CI. |

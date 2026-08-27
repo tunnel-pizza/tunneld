@@ -125,7 +125,7 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	// as the reference for configuring a container. The registry behind those
 	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-		"local origin to expose, e.g. http://localhost:3000 (repeat for more; a bare host:port implies http) [$"+v1.URLEnv+", comma-separated]")
+		"local origin to expose, e.g. http://localhost:3000 (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,

@@ -28,6 +28,10 @@ func TestParseOriginsAccepts(t *testing.T) {
 		{"https origin", []string{"https://127.0.0.1:8443"}, []string{"https://127.0.0.1:8443"}},
 		{"bare host:port implies http", []string{"localhost:3000"}, []string{"http://localhost:3000"}},
 		{"bare host implies http", []string{"localhost"}, []string{"http://localhost"}},
+		{"bare port implies localhost", []string{":8000"}, []string{"http://localhost:8000"}},
+		{"bare port keeps an explicit scheme", []string{"https://:8443"}, []string{"https://localhost:8443"}},
+		{"scheme and bare port", []string{"http://:8000"}, []string{"http://localhost:8000"}},
+		{"bare port with a path", []string{":8000/api"}, []string{"http://localhost:8000/api"}},
 		{"surrounding space trimmed", []string{"  http://localhost:3000  "}, []string{"http://localhost:3000"}},
 		{"path preserved", []string{"http://localhost:3000/api"}, []string{"http://localhost:3000/api"}},
 		{
