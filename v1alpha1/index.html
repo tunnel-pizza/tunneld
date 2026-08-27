@@ -7,17 +7,16 @@
 <meta name="robots" content="noindex, nofollow">
 <title>{{.Host}} · multiview</title>
 
-<!-- Basecoat (Vega): shadcn/ui's components and design tokens as plain CSS, no
-     framework. Vega is the package's default theme — basecoat.cdn.min.css is
-     byte-identical — so it is named here explicitly rather than inherited. Pinned by version and checked by digest, so a change at the CDN
+<!-- Basecoat (Lyra): shadcn/ui's components and design tokens as plain CSS, no
+     framework. Pinned by version and checked by digest, so a change at the CDN
      cannot silently alter what a tunnel serves.
 
      Dark, because the tiles frame other people's pages and most of those are
      light: a dark shell keeps the boundary between chrome and content legible
      instead of letting the two bleed together. -->
 <link rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/basecoat-vega.cdn.min.css"
-      integrity="sha384-XWKdrxzE2X33lI8Q03C9fIbqdLWV11whVNycR2/3bMNJY73EEQOa7rmN+SeiSCor"
+      href="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/basecoat-lyra.cdn.min.css"
+      integrity="sha384-lbWbDDZc0lBRulCtOY3TsBD/aqRxsW0E2fSB4SdB92ulxl6EJTh4CYpNEojYQEWE"
       crossorigin="anonymous"
       referrerpolicy="no-referrer">
 <script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/js/all.min.js"
@@ -45,17 +44,6 @@
     gap: .5rem;
     padding: .375rem .625rem;
   }
-
-  /* The route link labels the tile; it should not outshout the page inside
-     it, and the CDN build has no quiet button variant to reach for. */
-  header a {
-    margin-left: auto;
-    color: var(--muted-foreground);
-    text-decoration: none;
-  }
-
-  header a:hover,
-  header a:focus-visible { color: var(--foreground); }
 
   .muted { color: var(--muted-foreground); }
 
@@ -90,20 +78,39 @@
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
-  /* The label strip floats over its own frame rather than taking a band of
-     the tile, which is the difference between a frame that fits a page and one
-     that clips it. Translucent and blurred so it stays legible over whatever
-     the origin happens to be serving underneath. */
-  .tile header {
+  /* One control per tile, in the corner: the index, the local address and the
+     route repeated the same three facts on every frame, and the frame itself
+     already says which service it is. What is left is the one thing the page
+     cannot do for itself — open this origin on its own. It rests translucent
+     so it never competes with the content, and comes forward on hover. */
+  .tile > a {
     position: absolute;
-    inset: 0 0 auto 0;
+    top: .375rem;
+    right: .375rem;
     z-index: 1;
-    /* Opaque enough that the muted label text keeps its contrast over a white
-       page underneath, translucent enough to still read as an overlay. */
-    background: color-mix(in oklab, var(--card) 88%, transparent);
-    border-bottom: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
-    backdrop-filter: blur(10px) saturate(140%);
-    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    display: grid;
+    place-items: center;
+    width: 1.625rem;
+    height: 1.625rem;
+    padding: 0;
+    opacity: .45;
+    color: var(--card-foreground);
+    background: color-mix(in oklab, var(--card) 72%, transparent);
+    border-color: color-mix(in oklab, var(--border) 60%, transparent);
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+    transition: opacity .15s ease, background-color .15s ease;
+  }
+
+  .tile > a:hover,
+  .tile > a:focus-visible {
+    opacity: 1;
+    background: var(--card);
+  }
+
+  .tile > a svg {
+    width: .8125rem;
+    height: .8125rem;
   }
 
   .tile iframe {
@@ -132,11 +139,18 @@
 <main class="grid">
   {{- range .Origins}}
   <section class="card tile">
-    <header>
-      <span class="badge">{{.Index}}</span>
-      <span class="muted">{{.Local}}</span>
-      <a href="{{.Route}}" target="_blank" rel="noopener">{{.Route}} &#8599;</a>
-    </header>
+    <!-- The label the strip used to carry lives in the tooltip now: present
+         when someone goes looking, invisible the rest of the time. -->
+    <a class="btn" href="{{.Route}}" target="_blank" rel="noopener"
+       title="Open {{.Local}} ({{.Route}}) in a new tab"
+       aria-label="Open {{.Local}} in a new tab">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 3h6v6"/>
+        <path d="M10 14 21 3"/>
+        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"/>
+      </svg>
+    </a>
     <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
   </section>
   {{- end}}
