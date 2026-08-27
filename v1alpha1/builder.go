@@ -140,7 +140,7 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	cmd.Flags().BoolVar(&b.open, "open", b.open,
 		"open a public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
 	cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
-		"serve several origins together as one panel of framed views, on ?"+MultiviewParam+" [$"+v1.MultiviewEnv+"]")
+		"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 	// Required only when nothing was seeded: an embedder that supplied an
 	// origin wants --url optional, not forbidden.
 	if len(b.urls) == 0 {

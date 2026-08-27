@@ -25,16 +25,6 @@ var shellHTML string
 // than surfacing as a 500 on somebody's first request.
 var shell = template.Must(template.New("multiview").Parse(shellHTML))
 
-// MultiviewParam is the bare query parameter that reaches the multiview shell:
-// https://<host>/?multiview.
-//
-// Bare, like the ?n routing parameters it sits beside, and non-numeric, which
-// is what keeps the two apart — the tunnel treats a bare *numeric* segment as
-// a routing directive and forwards everything else to the origin untouched. So
-// this name can never be mistaken for an origin index, and an origin that uses
-// "multiview" as a real query parameter gives it a value and is unaffected.
-const MultiviewParam = "multiview"
-
 // shellData is what index.html renders from.
 type shellData struct {
 	// Host is the public hostname, taken from the request rather than the
@@ -51,16 +41,16 @@ type shellOrigin struct {
 	Route string
 }
 
-// multiview builds the interceptor that serves the shell. It is a constructor
+// multiview builds the interceptor that serves the panel. It is a constructor
 // returning an Interceptor, the shape the tunnel library expects for anything
 // reusable.
 //
 // Priority 1 is the highest there is, so nothing registered later can shadow
-// the one path that must never reach an origin.
+// the one request that must never reach an origin.
 func multiview(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Priority: 1,
-		Match:    matchMultiview,
+		Match:    isPanelRequest,
 		Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
 			return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
 				serveShell(w, r, origins, log)
@@ -69,15 +59,47 @@ func multiview(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 	}
 }
 
-// matchMultiview reports whether a request asks for the shell: a bare
-// "multiview" segment in the query, with no value attached.
+// isPanelRequest reports whether a request is somebody arriving at the tunnel
+// itself, which is what the panel answers. With several origins the bare
+// hostname has no better meaning: every origin has its own ?n, so the address
+// with no index is the one that can show all of them.
 //
-// The scan is over the raw query rather than url.Values, because a parsed
-// value cannot tell "?multiview" from "?multiview=" — and the second belongs
-// to the origin, being an ordinary empty-valued parameter.
-func matchMultiview(r *http.Request) bool {
-	for segment := range strings.SplitSeq(r.URL.RawQuery, "&") {
-		if segment == MultiviewParam {
+// Three conditions narrow it, and each one is load-bearing:
+//
+// The path is exactly "/". An origin's own subresources — /app.js, /style.css
+// — carry no routing index either, and serving them a page of frames instead
+// of the file they asked for would break every origin that has any.
+//
+// The query carries no routing index. ?0 names an origin explicitly and must
+// reach it, even at the root.
+//
+// It is a top-level document, and it did not come from a page already on this
+// host. A frame navigating to "/" would otherwise draw the panel inside one of
+// the panel's own tiles, and a fetch() from an origin page would receive HTML
+// where it expected the origin's answer. A request with no Sec-Fetch-Dest at
+// all — curl, an older browser — counts as top-level, since nothing suggests
+// otherwise.
+func isPanelRequest(r *http.Request) bool {
+	if r.URL.Path != "/" || hasRoutingIndex(r.URL.RawQuery) {
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "document", "":
+	default:
+		return false
+	}
+	if referer, err := url.Parse(r.Header.Get("Referer")); err == nil && referer.Host == r.Host {
+		return false
+	}
+	return true
+}
+
+// hasRoutingIndex reports whether a raw query carries a bare numeric segment,
+// the parameter that names an origin. A valued parameter ("1=x") is
+// application data and never routes, so Atoi rejecting it is the test.
+func hasRoutingIndex(rawQuery string) bool {
+	for segment := range strings.SplitSeq(rawQuery, "&") {
+		if _, err := strconv.Atoi(segment); err == nil {
 			return true
 		}
 	}
@@ -117,11 +139,11 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 	}
 }
 
-// multiviewURL is the address the shell answers on, used to report it and to
-// decide what --open opens.
+// multiviewURL is the address the panel answers on: the tunnel's own URL, with
+// nothing appended. Reported and opened as-is.
 func multiviewURL(public *url.URL) string {
 	shown := *public
-	shown.RawQuery = MultiviewParam
+	shown.RawQuery = ""
 	return shown.String()
 }
 

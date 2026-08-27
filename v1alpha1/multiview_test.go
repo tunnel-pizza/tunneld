@@ -9,34 +9,68 @@ import (
 	"testing"
 )
 
-// TestMatchMultiview pins which requests reach the panel. The parameter has to
-// be bare: "?multiview=" is an ordinary empty-valued parameter that belongs to
-// the origin, and treating it as ours would quietly shadow a real one.
-func TestMatchMultiview(t *testing.T) {
+// TestIsPanelRequest pins which requests reach the panel. The narrowing is
+// the whole design: the panel answers the tunnel's own address and nothing
+// else, because everything else belongs to an origin.
+func TestIsPanelRequest(t *testing.T) {
 	cases := []struct {
-		target string
-		want   bool
+		name    string
+		target  string
+		dest    string
+		referer string
+		want    bool
 	}{
-		{"/?multiview", true},
-		{"/anything?multiview", true},
-		{"/?a=1&multiview", true},
-		{"/?multiview&a=1", true},
-		{"/", false},
-		{"/?0", false},            // a routing index, not the panel
-		{"/?multiview=", false},   // valued: the origin's parameter
-		{"/?multiview=1", false},  // valued
-		{"/?multiviews", false},   // a different name
-		{"/?notmultiview", false}, // substring, not a segment
-		{"/?a=multiview", false},  // a value that happens to match
+		{name: "the bare hostname", target: "/", want: true},
+		{name: "a typed top-level visit", target: "/", dest: "document", want: true},
+		{name: "an explicit index at the root", target: "/?0", want: false},
+		{name: "a later origin's index", target: "/?2", want: false},
+		{name: "an origin subresource", target: "/app.js", want: false},
+		{name: "an origin page below the root", target: "/dashboard", want: false},
+		{name: "a valued parameter is not an index", target: "/?page=1", want: true},
+		{name: "a frame navigating to the root", target: "/", dest: "iframe", want: false},
+		{name: "a script or fetch for the root", target: "/", dest: "empty", want: false},
+		{name: "a link from a page on this host", target: "/", dest: "document", referer: "https://foo.tunneled.pizza/?1", want: false},
+		{name: "a link from somewhere else", target: "/", dest: "document", referer: "https://example.test/", want: true},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.target, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, tc.target, nil)
-			if got := matchMultiview(r); got != tc.want {
-				t.Errorf("matchMultiview(%q) = %v, want %v", tc.target, got, tc.want)
+			r.Host = "foo.tunneled.pizza"
+			if tc.dest != "" {
+				r.Header.Set("Sec-Fetch-Dest", tc.dest)
+			}
+			if tc.referer != "" {
+				r.Header.Set("Referer", tc.referer)
+			}
+			if got := isPanelRequest(r); got != tc.want {
+				t.Errorf("isPanelRequest(%q dest=%q referer=%q) = %v, want %v",
+					tc.target, tc.dest, tc.referer, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHasRoutingIndex pins the one thing that distinguishes an origin's
+// address from the panel's: a bare numeric segment. A valued parameter is
+// application data and must not be read as a route.
+func TestHasRoutingIndex(t *testing.T) {
+	cases := map[string]bool{
+		"":          false,
+		"0":         true,
+		"1":         true,
+		"12":        true,
+		"a=1&2":     true,
+		"2&a=1":     true,
+		"page=1":    false,
+		"0=x":       false,
+		"multiview": false,
+		"x":         false,
+	}
+	for query, want := range cases {
+		if got := hasRoutingIndex(query); got != want {
+			t.Errorf("hasRoutingIndex(%q) = %v, want %v", query, got, want)
+		}
 	}
 }
 
@@ -73,14 +107,15 @@ func TestWantsMultiview(t *testing.T) {
 	}
 }
 
-// TestMultiviewURL pins the panel's address and that it leaves the tunnel URL
-// alone, since every origin address is derived from the same value.
+// TestMultiviewURL pins that the panel's address is the tunnel's own, and that
+// building it leaves the tunnel URL alone — every origin address derives from
+// the same value.
 func TestMultiviewURL(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got, want := multiviewURL(public), "https://foo.tunneled.pizza/?multiview"; got != want {
+	if got, want := multiviewURL(public), "https://foo.tunneled.pizza/"; got != want {
 		t.Errorf("multiviewURL() = %q, want %q", got, want)
 	}
 	if public.RawQuery != "" {
@@ -98,7 +133,7 @@ func TestServeShell(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/?multiview", nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneled.pizza"
 	serveShell(rec, r, origins, slog.New(slog.DiscardHandler))
 
@@ -138,7 +173,7 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/?multiview", nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = `evil"><script>alert(1)</script>`
 	serveShell(rec, r, origins, slog.New(slog.DiscardHandler))
 
@@ -160,8 +195,8 @@ func TestMultiviewInterceptorServesTheShell(t *testing.T) {
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
-	if !interceptor.Match(httptest.NewRequest(http.MethodGet, "/?multiview", nil)) {
-		t.Error("interceptor does not match its own parameter")
+	if !interceptor.Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Error("interceptor does not match the tunnel's own address")
 	}
 	if interceptor.Match(httptest.NewRequest(http.MethodGet, "/?1", nil)) {
 		t.Error("interceptor matches a routing index, which belongs to an origin")
@@ -309,7 +344,7 @@ func TestUnframeInterceptorIsBehindTheShell(t *testing.T) {
 		t.Errorf("unframe Priority = %d, want it behind the shell's %d", got, shellPriority)
 	}
 
-	panel := httptest.NewRequest(http.MethodGet, "/?multiview", nil)
+	panel := httptest.NewRequest(http.MethodGet, "/", nil)
 	if unframe().Match(panel) {
 		t.Error("the unframer matched the panel request, which it does not serve")
 	}

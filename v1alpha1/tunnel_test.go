@@ -2,14 +2,19 @@ package v1alpha1
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -200,7 +205,7 @@ func TestReportSplitsStreams(t *testing.T) {
 	}
 	for _, want := range []string{
 		VersionLine(),
-		"https://foo.tunneled.pizza/?1 -> http://localhost:4000",
+		"  https://foo.tunneled.pizza/?1\n    -> http://localhost:4000\n",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr %q does not contain %q", stderr.String(), want)
@@ -323,7 +328,93 @@ func TestReportNamesTheMultiviewPanel(t *testing.T) {
 	if stdout.String() != wantOut {
 		t.Errorf("stdout = %q, want only the origins %q", stdout.String(), wantOut)
 	}
-	if !strings.Contains(stderr.String(), "https://foo.tunneled.pizza/?multiview") {
+	if !strings.Contains(stderr.String(), "https://foo.tunneled.pizza/\n") {
 		t.Errorf("stderr %q does not name the panel", stderr.String())
 	}
+	for _, origin := range []string{"-> http://localhost:3000", "-> http://localhost:4000"} {
+		if !strings.Contains(stderr.String(), origin) {
+			t.Errorf("stderr %q does not list %q under the panel", stderr.String(), origin)
+		}
+	}
+}
+
+// TestAwaitReachable pins the wait that stands between a ready tunnel and a
+// browser. The edge answers 530 for a moment after TunnelReady fires, and a
+// tab opened into that window shows an error page for a tunnel that works.
+func TestAwaitReachable(t *testing.T) {
+	t.Run("returns once the edge stops failing", func(t *testing.T) {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if calls.Add(1) <= 3 {
+				w.WriteHeader(http.StatusBadGateway) // the edge, not the origin
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		awaitReachable(t.Context(), srv.URL, 5*time.Second, slog.New(slog.DiscardHandler))
+
+		if got := calls.Load(); got < 4 {
+			t.Errorf("gave up after %d probes, want it to keep trying until the edge answered", got)
+		}
+	})
+
+	t.Run("an origin's own error still counts as reachable", func(t *testing.T) {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			// The route is live; the app simply has nothing at this path.
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		awaitReachable(t.Context(), srv.URL, 5*time.Second, slog.New(slog.DiscardHandler))
+
+		if got := calls.Load(); got != 1 {
+			t.Errorf("probed %d times, want it to stop at the first answer from the origin", got)
+		}
+	})
+
+	t.Run("gives up rather than never opening", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+
+		var logged bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		start := time.Now()
+		awaitReachable(t.Context(), srv.URL, 600*time.Millisecond, log)
+		elapsed := time.Since(start)
+
+		if elapsed > 3*time.Second {
+			t.Errorf("waited %v, want it bounded by the timeout it was given", elapsed)
+		}
+		if !strings.Contains(logged.String(), "before the edge answered") {
+			t.Errorf("log = %q, want a warning that it opened anyway", logged.String())
+		}
+	})
+
+	t.Run("a cancelled context ends the wait", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			awaitReachable(ctx, srv.URL, time.Minute, slog.New(slog.DiscardHandler))
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("awaitReachable ignored a cancelled context; Ctrl-C would hang")
+		}
+	})
 }
