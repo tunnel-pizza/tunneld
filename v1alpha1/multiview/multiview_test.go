@@ -18,6 +18,7 @@ func TestIsPanelRequest(t *testing.T) {
 		target  string
 		dest    string
 		referer string
+		upgrade string
 		want    bool
 	}{
 		{name: "the bare hostname", target: "/", want: true},
@@ -33,6 +34,8 @@ func TestIsPanelRequest(t *testing.T) {
 		{name: "a script or fetch for the root", target: "/", dest: "empty", want: false},
 		{name: "a link from a page on this host", target: "/", dest: "document", referer: "https://foo.tunneled.pizza/?1", want: false},
 		{name: "a link from somewhere else", target: "/", dest: "document", referer: "https://example.test/", want: true},
+		{name: "a websocket handshake to the root", target: "/", upgrade: "websocket", want: false},
+		{name: "a websocket handshake with no query", target: "/?", upgrade: "websocket", want: false},
 	}
 
 	for _, tc := range cases {
@@ -44,6 +47,10 @@ func TestIsPanelRequest(t *testing.T) {
 			}
 			if tc.referer != "" {
 				r.Header.Set("Referer", tc.referer)
+			}
+			if tc.upgrade != "" {
+				r.Header.Set("Connection", "Upgrade")
+				r.Header.Set("Upgrade", tc.upgrade)
 			}
 			if got := isPanelRequest(r); got != tc.want {
 				t.Errorf("isPanelRequest(%q dest=%q referer=%q) = %v, want %v",

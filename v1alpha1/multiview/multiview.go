@@ -90,8 +90,20 @@ func Panel(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 // where it expected the origin's answer. A request with no Sec-Fetch-Dest at
 // all — curl, an older browser — counts as top-level, since nothing suggests
 // otherwise.
+//
+// And it is not an upgrade. That exception is what the empty-Sec-Fetch-Dest
+// case above costs: a WebSocket handshake sends no Sec-Fetch-Dest and no
+// Referer, so without this every handshake to the bare address matched, and an
+// app whose socket connects to "/" — xpra's client, and anything else dialing
+// the tunnel address itself rather than a subpath — was answered with the
+// panel's HTML instead of a handshake. It worked with --multiview=false and
+// failed with it on, which is not a shape anybody debugs quickly. An upgrade
+// is never a document, whatever else it omits.
 func isPanelRequest(r *http.Request) bool {
 	if r.URL.Path != "/" || r.URL.RawQuery != "" {
+		return false
+	}
+	if r.Header.Get("Upgrade") != "" {
 		return false
 	}
 	switch r.Header.Get("Sec-Fetch-Dest") {
