@@ -99,6 +99,12 @@ the browser rather than proxied:
 
   ` + name + ` --url dockerd://my-container
 
+Mark one origin http+ws (or https+ws) when a service opens its own WebSocket —
+a dev server's live reload, say. A handshake carries nothing that says which
+origin it belongs to, so without the marker it goes to the first one:
+
+  ` + name + ` --url :4000 --url http+ws://localhost:5173
+
 Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
@@ -137,7 +143,7 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	// as the reference for configuring a container. The registry behind those
 	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-		"local origin to expose, e.g. http://localhost:3000 or dockerd://my-container (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
+		"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,

@@ -267,8 +267,14 @@ func Wanted(enabled bool, origins []*url.URL) bool {
 // operator typed. Anything else keeps its scheme, so a tile framing a
 // container reads as dockerd://api rather than as a bare hostname that happens
 // to be a container name.
+//
+// A +ws / +wss marker is dropped before that test, so the origin that owns
+// WebSockets is named exactly like every other HTTP origin. The marker is
+// routing configuration, not part of the address — a tile shows what it frames,
+// and which origin sockets land on says nothing about that.
 func label(u *url.URL) string {
-	if u.Scheme == "http" || u.Scheme == "https" {
+	scheme, _, _ := strings.Cut(u.Scheme, "+")
+	if scheme == "http" || scheme == "https" {
 		return u.Host
 	}
 	return u.Scheme + "://" + u.Host
