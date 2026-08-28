@@ -10,7 +10,13 @@ examples
 
 # Never let a local secret or an editor's scratch reach the build context; the
 # repo's .gitignore covers these for git, and this covers them for docker.
+#
+# *.local is load-bearing rather than tidy: a mint leaves libtunnel.local and
+# libtunnel.owner.local in the working directory, both credentials. The final
+# image copies only the binary, so they would not ship — but COPY . . puts them
+# in a build layer, and this build pushes its layer cache to GitHub Actions.
 .env*
+*.local
 .claude
 *.log
 

@@ -35,7 +35,9 @@ agent-specific framing.
 - **Every change starts with an issue**, then a branch + PR with `Closes #<n>`.
   Don't push to `main`. Full flow in
   [CONTRIBUTING.md → Branch / PR flow](./CONTRIBUTING.md#branch--pr-flow).
-- Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`.
+- Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
+  and `*.local` — which catches the `libtunnel.local` / `libtunnel.owner.local`
+  a mint leaves in the working directory. Both are credentials.
 
 ## Ensuring a quality library
 
