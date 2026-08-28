@@ -284,6 +284,8 @@ func PublicURL(public *url.URL, i, n int) string {
 // fixes by choosing between them.
 func parseOrigins(raw []string) ([]*url.URL, error) {
 	origins := make([]*url.URL, 0, len(raw))
+	// The first origin seen carrying a +ws marker, kept to reject a second.
+	wsOrigin := ""
 	for _, s := range raw {
 		s = strings.TrimSpace(s)
 		if s == "" {
@@ -311,8 +313,24 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 			origins = append(origins, u)
 			continue
 		}
-		if u.Scheme != "http" && u.Scheme != "https" {
+		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
+		// handshake the page did not build with a routing index goes here
+		// rather than following the sticky cookie. The marker is stripped and
+		// consumed by the tunnel engine; everything below treats the origin by
+		// its base scheme, which is also how it is dialed.
+		base, marked := wsMarked(u.Scheme)
+		if base != "http" && base != "https" {
 			return nil, fmt.Errorf("%w: %q has scheme %q, want http, https or %s", v1.ErrInvalidOrigin, s, u.Scheme, v1.DockerScheme)
+		}
+		if marked {
+			// Two origins cannot both own the WebSockets — a handshake carries
+			// nothing to tell them apart, which is the whole reason the marker
+			// exists. The engine rejects this too; catching it here makes it a
+			// flag error before the mint rather than a tunnel that cancels.
+			if wsOrigin != "" {
+				return nil, fmt.Errorf("%w: %q and %q both claim the websockets, mark only one", v1.ErrInvalidOrigin, wsOrigin, s)
+			}
+			wsOrigin = s
 		}
 		// A port with no host in front of it — ":8000", or the
 		// "http://:8000" the scheme default above makes of it — means the
@@ -333,6 +351,23 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 		return nil, fmt.Errorf("%w: pass --url (or $%s) with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin, v1.URLEnv)
 	}
 	return origins, nil
+}
+
+// wsMarked splits an origin scheme into its base and whether it carries the
+// +ws / +wss marker naming the origin that owns WebSockets.
+//
+// The two spellings mean the same thing. The suffix induces the designation
+// rather than describing a transport — the origin is dialed by its base
+// scheme either way — so accepting both spares an operator from reasoning
+// about which one their service "is", which is not a question the marker asks.
+func wsMarked(scheme string) (base string, marked bool) {
+	if s, ok := strings.CutSuffix(scheme, "+wss"); ok {
+		return s, true
+	}
+	if s, ok := strings.CutSuffix(scheme, "+ws"); ok {
+		return s, true
+	}
+	return scheme, false
 }
 
 // logger resolves the tunnel's log sink from the level the command settled on

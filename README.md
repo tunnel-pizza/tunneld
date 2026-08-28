@@ -103,6 +103,41 @@ That is why the map above prints `?0` for the default origin rather than a bare
 URL: every address stays correct however much you have clicked around. A single
 `--url` has nothing to route between and prints the plain URL.
 
+### WebSockets
+
+A WebSocket handshake carries nothing that says which origin it belongs to. It
+has no `Referer` — that header is not part of the handshake — so the routing
+that works for ordinary subresources cannot work for a socket, and one that
+arrives without an index falls back to a per-browser cookie or to the first
+origin.
+
+An app you control can carry the index itself, by building the socket URL from
+the page's own:
+
+```js
+new WebSocket("wss://" + location.host + "/socket" + location.search)
+```
+
+A third-party dev server cannot be told to. Mark its origin instead, and every
+otherwise-unroutable handshake goes there:
+
+```sh
+tunneld --url :4000 --url http+ws://localhost:5173
+```
+
+`http+ws`, `http+wss`, `https+ws` and `https+wss` all work and mean the same
+thing — the suffix names the origin, it does not describe a transport, and the
+origin is dialed by its base scheme either way. It is inert with a single
+`--url`, which has nothing to route between.
+
+**Only one origin may be marked**, and that is the shape of the problem rather
+than a limit of the flag: two services opening their own sockets behind one
+hostname cannot be told apart, however they are spelled. Marking two is an
+error before the tunnel is minted.
+
+An explicit index still wins over the marker, so a page carrying its own — the
+container terminal below, and every tile of the multiview panel — is unaffected.
+
 ### Containers
 
 `--url dockerd://<container-name-or-id>` exposes a terminal attached to a
@@ -227,7 +262,7 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container-name-or-id>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches. |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container-name-or-id>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches. Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |

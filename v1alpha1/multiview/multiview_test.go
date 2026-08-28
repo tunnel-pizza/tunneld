@@ -352,6 +352,8 @@ func TestLabel(t *testing.T) {
 		{"http://localhost:3000", "localhost:3000"},
 		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
 		{"dockerd://api", "dockerd://api"},
+		{"http+ws://localhost:5173", "localhost:5173"},
+		{"https+wss://localhost:5173", "localhost:5173"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
