@@ -388,7 +388,10 @@ for routine work — PR flow gives CI + auto-release a clean audit trail. Pushin
 to `main` auto-bumps a patch tag and signs the release (see Releasing below).
 
 Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
-etc.
+etc. It also covers `*.local`, which is what catches `libtunnel.local` and
+`libtunnel.owner.local` — a pair of credentials a mint leaves in the working
+directory, so running an example here writes them without asking. They are
+ignored by that one line rather than by name; don't narrow it.
 
 ## Pull requests
 
