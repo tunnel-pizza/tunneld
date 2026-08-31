@@ -89,7 +89,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--open", "--multiview", "tunneld --url"}},
+		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--no-open", "--multiview", "tunneld --url"}},
 	}
 
 	for _, tc := range cases {
@@ -129,7 +129,7 @@ func TestRefusedInvocations(t *testing.T) {
 		{"unknown log level", []string{"--url", "http://localhost:3000", "--log-level", "loud"}, "log-level"},
 		{"positional argument", []string{"--url", "http://localhost:3000", "stray"}, "stray"},
 		{"unknown flag", []string{"--url", "http://localhost:3000", "--nope"}, "nope"},
-		{"unparsable boolean flag", []string{"--url", "http://localhost:3000", "--open=nonsense"}, "open"},
+		{"unparsable boolean flag", []string{"--url", "http://localhost:3000", "--no-open=nonsense"}, "no-open"},
 	}
 
 	for _, tc := range cases {
@@ -214,9 +214,9 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			// A typed flag is where the environment's strictness is visible:
 			// pflag refuses the value and applyEnv reports it as
 			// ErrInvalidEnv, naming the variable rather than the flag.
-			name: "TUNNELD_OPEN is validated",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_OPEN": "nonsense"},
-			want: "TUNNELD_OPEN=\"nonsense\": invalid environment value",
+			name: "TUNNELD_NO_OPEN is validated",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_NO_OPEN": "nonsense"},
+			want: "TUNNELD_NO_OPEN=\"nonsense\": invalid environment value",
 		},
 		{
 			name: "TUNNELD_MULTIVIEW is validated",
@@ -224,8 +224,8 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
 		},
 		{
-			name: "TUNNELD_OPEN accepts a boolean",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_OPEN": "false", "TUNNELD_LOG": "loud"},
+			name: "TUNNELD_NO_OPEN accepts a boolean",
+			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_NO_OPEN": "true", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 	}

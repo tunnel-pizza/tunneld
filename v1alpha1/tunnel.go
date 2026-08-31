@@ -84,7 +84,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 		view = multiview.URL(public)
 	}
 	report(stdout, stderr, public, origins, view)
-	if b.open {
+	if !b.noOpen {
 		// One page, never a fan of tabs: the panel when there is one, since it
 		// reaches every origin, and otherwise the default origin itself.
 		target := cmp.Or(view, PublicURL(public, 0, len(origins)))
@@ -219,17 +219,20 @@ func awaitReachable(ctx context.Context, addr string, within time.Duration, log 
 
 		select {
 		case <-ctx.Done():
-			log.Warn("opening a browser before the edge answered", "url", addr)
+			log.Debug("opening a browser before the edge answered", "url", addr)
 			return
 		case <-time.After(reachableEvery):
 		}
 	}
 }
 
-// openInBrowser launches a browser on addr, reporting a failure as a warning
-// rather than an error: the tunnel is up and serving either way, and a
+// openInBrowser launches a browser on addr, reporting a failure to the debug
+// log and nowhere else: the tunnel is up and serving either way, and a
 // headless host — a server, a container, CI — is a normal place to run this,
-// not a broken one. --open=false (or v1.OpenEnv) turns off the attempt.
+// not a broken one. A warning on stderr told those runs, every time, about a
+// thing they were never going to do. --no-open (or v1.NoOpenEnv) skips the
+// attempt entirely, and --log-level=debug is where to look when a browser was
+// wanted and none appeared.
 //
 // pkg/browser wires the spawned process's output to its package-level Stdout,
 // which defaults to os.Stdout — the one stream tunneld promises carries
@@ -240,7 +243,7 @@ func awaitReachable(ctx context.Context, addr string, within time.Duration, log 
 func openInBrowser(addr string, stderr io.Writer, log *slog.Logger) {
 	browser.Stdout, browser.Stderr = stderr, stderr
 	if err := openURL(addr); err != nil {
-		log.Warn("could not open a browser", "url", addr, "error", err)
+		log.Debug("could not open a browser", "url", addr, "error", err)
 	}
 }
 

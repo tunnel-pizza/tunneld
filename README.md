@@ -32,18 +32,18 @@ tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
 
 ### Container image
 
-`ghcr.io/tunnel-pizza/tunneld` is the same binary on a distroless base, running
-as `nonroot`. Every flag has an environment mirror, which is what a container
-is configured with:
+`ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
+root. Every flag has an environment mirror, which is what a container is
+configured with:
 
 ```sh
 docker run --rm -e TUNNELD_URL=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
 
-`TUNNELD_OPEN` is `false` in the image — there is no browser in a container to
-open. A `dockerd://` origin additionally needs the daemon socket, and that is a
-real grant: the container can then reach every container on the host.
+A `dockerd://` origin needs the daemon socket, which is root-equivalent on the
+host — a container holding it can start a privileged container and own the
+machine:
 
 ```sh
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
@@ -140,12 +140,26 @@ container terminal below, and every tile of the multiview panel — is unaffecte
 
 ### Containers
 
-`--url dockerd://<container-name-or-id>` exposes a terminal attached to a
-running container instead of an HTTP service:
+`--url dockerd://<container>` exposes a terminal attached to a running
+container instead of an HTTP service:
 
 ```sh
 tunneld --url dockerd://my-container
 ```
+
+`<container>` is a container name or id, or — when neither matches — a Compose
+service name. Compose calls a service `web` in project `proj` by the container
+name `proj-web-1`, so the name you wrote in the compose file is never the name
+the daemon knows; tunneld looks it up by the labels Compose already wrote:
+
+```sh
+tunneld --url dockerd://web
+```
+
+A container literally named `web` still wins. The lookup is scoped to tunneld's
+own Compose project when it is running inside one; otherwise it spans the host,
+and a service name matching more than one container is an error listing them
+rather than a guess.
 
 It is an origin like any other, so it takes an index, gets a multiview tile,
 and mixes freely with HTTP origins:
@@ -187,8 +201,8 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 
 One iframe per origin, two columns, and an odd count gives the last tile the
 full width of the final row. Each tile is labelled with its routing index and
-its local address, and links out to that origin on its own. With `--open` on,
-this is the page that opens.
+its local address, and links out to that origin on its own. Unless `--no-open`
+is passed, this is the page that opens.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
@@ -262,10 +276,10 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container-name-or-id>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches. Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches; `<container>` is a name, an id, or a Compose service name. See [Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
-| `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |
+| `--no-open` | `TUNNELD_NO_OPEN` | Do not open a public URL in a browser once the tunnel is live. Opening is **on by default** — the panel when there is one, else the default origin — so this is the flag for a server or CI. A browser that cannot be opened is not an error: the tunnel is up either way, and the failure goes to `--log-level=debug` rather than stderr. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single `--url`, which keeps the bare address for itself. |
 
 So the whole thing runs from a container with no command line at all:
@@ -376,7 +390,7 @@ var ErrNotReady        = errors.New("tunnel did not become ready")
 const LogEnv          = "TUNNELD_LOG"
 const URLEnv          = "TUNNELD_URL"
 const ProviderEnv     = "TUNNELD_PROVIDER"
-const OpenEnv         = "TUNNELD_OPEN"
+const NoOpenEnv       = "TUNNELD_NO_OPEN"
 const MultiviewEnv    = "TUNNELD_MULTIVIEW"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
@@ -404,7 +418,7 @@ after construction still lands.
 | `TUNNELD_URL` | `--url` | Local origins, comma-separated in the order the repeated flag would take them. An origin URL containing a literal comma has to use the flag, which parses no separator. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
-| `TUNNELD_OPEN` | `--open` | Whether to open a browser once the tunnel is live. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_NO_OPEN` | `--no-open` | Whether to leave the browser alone once the tunnel is live. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
@@ -456,7 +470,7 @@ pass them through `go run`, since make would read a leading `--` as one of its
 own options:
 
 ```sh
-go run ./examples/basic --url http://localhost:8080 --open=false
+go run ./examples/basic --url http://localhost:8080 --no-open
 ```
 
 ## Testing

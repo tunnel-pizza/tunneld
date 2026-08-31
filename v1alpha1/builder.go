@@ -34,7 +34,8 @@ func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
 }
 
 // WithOpen sets whether a public URL is opened in a browser once the tunnel is
-// live.
+// live. It seeds the default of --no-open, which reads inverted: WithOpen(false)
+// makes --no-open default to true.
 func (b *BuilderImpl) WithOpen(open bool) v1.Builder {
 	b.open = open
 	return b
@@ -148,8 +149,8 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
 		"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
-	cmd.Flags().BoolVar(&b.open, "open", b.open,
-		"open a public URL in a browser once the tunnel is live [$"+v1.OpenEnv+"]")
+	cmd.Flags().BoolVar(&b.noOpen, "no-open", !b.open,
+		"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
 	cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
 		"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 	// Required only when nothing was seeded: an embedder that supplied an

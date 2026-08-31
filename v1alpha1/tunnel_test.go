@@ -305,15 +305,26 @@ func TestOpenInBrowser(t *testing.T) {
 		}
 	})
 
-	t.Run("a failure warns and returns", func(t *testing.T) {
+	// A headless host — a server, a container, CI — is a normal place to run
+	// this, not a broken one, so the failure must not reach an operator who
+	// never asked about it. Both halves matter: silent at warn, and still
+	// there for somebody debugging a browser that did not appear.
+	t.Run("a failure is quiet outside the debug log", func(t *testing.T) {
 		swapOpener(t, func(string) error { return errors.New("no browser here") })
 
+		var quiet bytes.Buffer
+		openInBrowser("https://foo.tunneled.pizza/", io.Discard,
+			slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if quiet.Len() != 0 {
+			t.Errorf("log = %q, want nothing at warn level", quiet.String())
+		}
+
 		var logged bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		openInBrowser("https://foo.tunneled.pizza/", io.Discard, log)
 
 		if !strings.Contains(logged.String(), "could not open a browser") {
-			t.Errorf("log = %q, want a warning naming the failure", logged.String())
+			t.Errorf("log = %q, want the failure in the debug log", logged.String())
 		}
 	})
 }
@@ -403,7 +414,7 @@ func TestAwaitReachable(t *testing.T) {
 		defer srv.Close()
 
 		var logged bytes.Buffer
-		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 		start := time.Now()
 		awaitReachable(t.Context(), srv.URL, 600*time.Millisecond, log)
@@ -413,7 +424,7 @@ func TestAwaitReachable(t *testing.T) {
 			t.Errorf("waited %v, want it bounded by the timeout it was given", elapsed)
 		}
 		if !strings.Contains(logged.String(), "before the edge answered") {
-			t.Errorf("log = %q, want a warning that it opened anyway", logged.String())
+			t.Errorf("log = %q, want the debug log to say it opened anyway", logged.String())
 		}
 	})
 
