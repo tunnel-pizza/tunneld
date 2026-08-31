@@ -140,12 +140,26 @@ container terminal below, and every tile of the multiview panel — is unaffecte
 
 ### Containers
 
-`--url dockerd://<container-name-or-id>` exposes a terminal attached to a
-running container instead of an HTTP service:
+`--url dockerd://<container>` exposes a terminal attached to a running
+container instead of an HTTP service:
 
 ```sh
 tunneld --url dockerd://my-container
 ```
+
+`<container>` is a container name or id, or — when neither matches — a Compose
+service name. Compose calls a service `web` in project `proj` by the container
+name `proj-web-1`, so the name you wrote in the compose file is never the name
+the daemon knows; tunneld looks it up by the labels Compose already wrote:
+
+```sh
+tunneld --url dockerd://web
+```
+
+A container literally named `web` still wins. The lookup is scoped to tunneld's
+own Compose project when it is running inside one; otherwise it spans the host,
+and a service name matching more than one container is an error listing them
+rather than a guess.
 
 It is an origin like any other, so it takes an index, gets a multiview tile,
 and mixes freely with HTTP origins:
@@ -262,7 +276,7 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container-name-or-id>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches. Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
+| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches; `<container>` is a name, an id, or a Compose service name. See [Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--open` | `TUNNELD_OPEN` | Open a public URL in a browser once the tunnel is live — the multiview panel when there is one, else the default origin. **Default on** — `--open=false` on a server or in CI. |

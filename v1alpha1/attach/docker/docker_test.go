@@ -3,11 +3,13 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -154,6 +156,207 @@ func TestOpenRejects(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "shim") {
 			t.Errorf("error %q does not name the container", err)
+		}
+	})
+}
+
+// composeContainer is one container the stub daemon in composeDaemon knows
+// about, described the way Compose labels a real one.
+type composeContainer struct {
+	id, name, project, service string
+}
+
+// composeDaemon stands up a stub Docker API serving the three calls the
+// service lookup makes: the inspect that misses, the label-filtered list, and
+// the inspect of whatever that list resolved to.
+//
+// It is a stub rather than a real daemon because the case under test is a
+// *Compose* deployment — reproducing one locally means writing a compose file,
+// starting a project, and depending on the compose plugin being installed,
+// none of which the rest of this suite needs. The labels are the entire
+// mechanism, and they are ordinary strings.
+//
+// selfProject is the com.docker.compose.project label reported for this
+// process's own hostname — "" means tunneld is not running inside a project,
+// which is the host-side case.
+func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
+	t.Helper()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skipf("no hostname: %v", err)
+	}
+
+	labels := func(c composeContainer) map[string]string {
+		return map[string]string{
+			"com.docker.compose.project": c.project,
+			"com.docker.compose.service": c.service,
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Api-Version", "1.51")
+		w.Header().Set("Ostype", "linux")
+		if strings.HasSuffix(r.URL.Path, "/_ping") {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		// The label-filtered list. filters arrives as JSON in the query, and
+		// every label the caller asked for has to match for a container to.
+		if strings.HasSuffix(r.URL.Path, "/containers/json") {
+			var want map[string]map[string]bool
+			_ = json.Unmarshal([]byte(r.URL.Query().Get("filters")), &want)
+			out := []container.Summary{}
+			for _, c := range cs {
+				keep := true
+				for kv := range want["label"] {
+					k, v, _ := strings.Cut(kv, "=")
+					if labels(c)[k] != v {
+						keep = false
+					}
+				}
+				if keep {
+					out = append(out, container.Summary{
+						ID:     c.id,
+						Names:  []string{"/" + c.name},
+						Labels: labels(c),
+					})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
+
+		// Everything else is an inspect. The reference is the path element
+		// before /json.
+		ref := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/containers/"), "/json")
+		if i := strings.LastIndex(ref, "/containers/"); i >= 0 {
+			ref = ref[i+len("/containers/"):]
+		}
+
+		// This process's own container, which is how the project gets scoped.
+		if ref == host && selfProject != "" {
+			_, _ = io.WriteString(w, `{"Id":"self","State":{"Running":true},`+
+				`"Config":{"Labels":{"com.docker.compose.project":"`+selfProject+`"}}}`)
+			return
+		}
+
+		for _, c := range cs {
+			if ref == c.id || ref == c.name {
+				_, _ = io.WriteString(w, `{"Id":"`+c.id+`","State":{"Running":true},`+
+					`"Config":{"Tty":true,"OpenStdin":true}}`)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"No such container: `+ref+`"}`)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
+}
+
+// TestOpenResolvesComposeService pins the fallback that makes a Compose
+// deployment work: under Compose the name a person knows is the service, and
+// the name the daemon knows is <project>-<service>-<n>, so an inspect on the
+// service alone always misses.
+func TestOpenResolvesComposeService(t *testing.T) {
+	t.Run("service name resolves to its container", func(t *testing.T) {
+		composeDaemon(t, "", composeContainer{
+			id: "abc123", name: "containers-claude-code-1",
+			project: "containers", service: "claude-code",
+		})
+
+		got, err := Open(t.Context(), "claude-code", discard())
+		if err != nil {
+			t.Fatalf("Open on a Compose service: %v", err)
+		}
+		defer func() { _ = got.Close() }()
+		if got.id != "abc123" {
+			t.Errorf("id = %q, want %q", got.id, "abc123")
+		}
+		// The page title and the log line say what the operator typed, not
+		// the generated container name they never chose.
+		if got.Name() != "claude-code" {
+			t.Errorf("Name() = %q, want %q", got.Name(), "claude-code")
+		}
+	})
+
+	// A container literally named `web` has to keep winning, or this changes
+	// the meaning of a config that already works.
+	t.Run("a real container name still wins", func(t *testing.T) {
+		composeDaemon(t, "",
+			composeContainer{id: "plain", name: "web"},
+			composeContainer{id: "svc", name: "proj-web-1", project: "proj", service: "web"},
+		)
+
+		got, err := Open(t.Context(), "web", discard())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = got.Close() }()
+		if got.id != "plain" {
+			t.Errorf("id = %q, want the container named web (%q)", got.id, "plain")
+		}
+	})
+
+	// Two projects each running a `web` is exactly when the fallback is
+	// ambiguous, and exactly when tunneld's own project label decides it.
+	t.Run("scoped to tunneld's own project", func(t *testing.T) {
+		composeDaemon(t, "mine",
+			composeContainer{id: "mine-web", name: "mine-web-1", project: "mine", service: "web"},
+			composeContainer{id: "other-web", name: "other-web-1", project: "other", service: "web"},
+		)
+
+		got, err := Open(t.Context(), "web", discard())
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer func() { _ = got.Close() }()
+		if got.id != "mine-web" {
+			t.Errorf("id = %q, want the web in tunneld's own project (%q)", got.id, "mine-web")
+		}
+	})
+
+	// Unscoped and ambiguous: picking one silently would point the tunnel at a
+	// different replica after a restart, which is a bug nobody would find.
+	t.Run("ambiguous service is an error naming the candidates", func(t *testing.T) {
+		composeDaemon(t, "",
+			composeContainer{id: "a", name: "mine-web-1", project: "mine", service: "web"},
+			composeContainer{id: "b", name: "other-web-1", project: "other", service: "web"},
+		)
+
+		got, err := Open(t.Context(), "web", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open on an ambiguous service succeeded, want an error")
+		}
+		if !errors.Is(err, v1.ErrInvalidOrigin) {
+			t.Errorf("error = %v, want %v", err, v1.ErrInvalidOrigin)
+		}
+		for _, want := range []string{"mine-web-1", "other-web-1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name candidate %q", err, want)
+			}
+		}
+	})
+
+	// Nothing by that name and nothing with that label: the error the operator
+	// already knows, unchanged.
+	t.Run("no container and no service", func(t *testing.T) {
+		composeDaemon(t, "", composeContainer{
+			id: "abc", name: "proj-api-1", project: "proj", service: "api",
+		})
+
+		got, err := Open(t.Context(), "nope", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error")
+		}
+		if !errors.Is(err, v1.ErrInvalidOrigin) {
+			t.Errorf("error = %v, want %v", err, v1.ErrInvalidOrigin)
+		}
+		if !strings.Contains(err.Error(), "nope") {
+			t.Errorf("error %q does not name the reference", err)
 		}
 	})
 }

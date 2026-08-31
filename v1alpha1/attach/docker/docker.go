@@ -13,9 +13,13 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"slices"
+	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -33,8 +37,9 @@ type Attacher struct {
 	stdin bool
 }
 
-// Open resolves ref — a container name or id — against the daemon named by the
-// environment ($DOCKER_HOST and friends) and inspects it.
+// Open resolves ref — a container name, an id, or a Compose service — against
+// the daemon named by the environment ($DOCKER_HOST and friends) and inspects
+// it.
 //
 // Everything that can fail about a container origin fails here, before the
 // tunnel is minted. A public hostname that answers only errors is a far worse
@@ -51,9 +56,25 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 	}
 
 	info, err := cli.ContainerInspect(ctx, ref)
+	// Under Compose the name a person knows is not the name the daemon knows:
+	// service `web` in project `proj` is a container called `proj-web-1`, so
+	// the obvious TUNNELD_URL misses every time. Falling back to the labels
+	// Compose already writes costs one list call, and only on the path that
+	// has failed anyway. Name-or-id stays first: a container literally named
+	// `web` must keep winning, or this changes what an existing config means.
+	if cerrdefs.IsNotFound(err) {
+		if id, serr := resolveService(ctx, cli, ref); serr != nil {
+			err = serr
+		} else if id != "" {
+			info, err = cli.ContainerInspect(ctx, id)
+		}
+	}
 	if err != nil {
 		_ = cli.Close()
 		switch {
+		// An ambiguous service already names its candidates and the lever.
+		case errors.Is(err, v1.ErrInvalidOrigin):
+			return nil, err
 		case cerrdefs.IsNotFound(err):
 			return nil, fmt.Errorf("%w: no container named %q", v1.ErrInvalidOrigin, ref)
 		case client.IsErrConnectionFailed(err):
@@ -89,6 +110,79 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		tty:   info.Config.Tty,
 		stdin: info.Config.OpenStdin,
 	}, nil
+}
+
+// The labels Compose writes on every container it starts. They are the whole
+// mechanism here: nothing has to shell out to the compose plugin or parse a
+// compose file.
+const (
+	composeProject = "com.docker.compose.project"
+	composeService = "com.docker.compose.service"
+)
+
+// resolveService looks ref up as a Compose service name. It returns the id of
+// the single container that matches, "" when nothing does — leaving the
+// caller's original "no such container" error to stand — or an error when the
+// name is ambiguous.
+//
+// Ambiguity is an error rather than a pick, because the alternative is an
+// origin that quietly points at a different replica after a restart.
+//
+// All is set so a stopped service is found: it then fails the running check
+// with "container %q is not running", which names the lever, instead of
+// degrading to "no container named" for a container that plainly exists.
+func resolveService(ctx context.Context, cli *client.Client, ref string) (string, error) {
+	f := filters.NewArgs(filters.Arg("label", composeService+"="+ref))
+	// Scoping to tunneld's own project is what keeps `web` from being
+	// ambiguous on a machine busy enough to run two of them — which is
+	// precisely when it matters. Off the scope, an ambiguous match is still an
+	// error rather than a coin flip, so the unscoped case stays safe.
+	if project := ownProject(ctx, cli); project != "" {
+		f.Add("label", composeProject+"="+project)
+	}
+
+	found, err := cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
+	if err != nil || len(found) == 0 {
+		return "", nil
+	}
+	if len(found) == 1 {
+		return found[0].ID, nil
+	}
+
+	names := make([]string, 0, len(found))
+	for _, c := range found {
+		name := c.ID
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		if p := c.Labels[composeProject]; p != "" {
+			name += " (project " + p + ")"
+		}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return "", fmt.Errorf("%w: service %q matches %d containers: %s — name one of them instead",
+		v1.ErrInvalidOrigin, ref, len(found), strings.Join(names, ", "))
+}
+
+// ownProject names the Compose project tunneld itself belongs to, or "" if it
+// does not belong to one.
+//
+// Compose sets a container's hostname to its id unless the service overrides
+// it, so inspecting our own hostname is the cheap way to find our own labels.
+// Every way this can miss — tunneld running on the host, in a plain container,
+// or in a service that sets its own `hostname:` — returns "", which widens the
+// lookup to the whole host rather than breaking it.
+func ownProject(ctx context.Context, cli *client.Client) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return ""
+	}
+	info, err := cli.ContainerInspect(ctx, host)
+	if err != nil || info.Config == nil {
+		return ""
+	}
+	return info.Config.Labels[composeProject]
 }
 
 // Name is the reference the operator typed, not the resolved id: it is what
