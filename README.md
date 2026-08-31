@@ -32,18 +32,18 @@ tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
 
 ### Container image
 
-`ghcr.io/tunnel-pizza/tunneld` is the same binary on a distroless base, running
-as `nonroot`. Every flag has an environment mirror, which is what a container
-is configured with:
+`ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
+root. Every flag has an environment mirror, which is what a container is
+configured with:
 
 ```sh
 docker run --rm -e TUNNELD_URL=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
 
-`TUNNELD_OPEN` is `false` in the image — there is no browser in a container to
-open. A `dockerd://` origin additionally needs the daemon socket, and that is a
-real grant: the container can then reach every container on the host.
+A `dockerd://` origin needs the daemon socket, which is root-equivalent on the
+host — a container holding it can start a privileged container and own the
+machine:
 
 ```sh
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
