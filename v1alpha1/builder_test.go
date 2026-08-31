@@ -171,7 +171,8 @@ func TestHelpNamesTheCommand(t *testing.T) {
 // TestOpenDefaultsOn pins that a plain invocation opens a browser and that
 // both levers turn it off. The default is the whole point of the flag — a
 // developer exposing something is about to look at it — so a silent flip to
-// off would be a real regression.
+// off would be a real regression. want is --no-open, so it reads inverted:
+// true means no browser.
 func TestOpenDefaultsOn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -179,15 +180,15 @@ func TestOpenDefaultsOn(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{name: "default", want: true},
-		{name: "flag turns it off", args: []string{"--open=false"}, want: false},
-		{name: "variable turns it off", env: "false", want: false},
-		{name: "flag beats the variable", env: "false", args: []string{"--open=true"}, want: true},
+		{name: "default", want: false},
+		{name: "flag turns it off", args: []string{"--no-open"}, want: true},
+		{name: "variable turns it off", env: "true", want: true},
+		{name: "flag beats the variable", env: "true", args: []string{"--no-open=false"}, want: false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(v1.OpenEnv, tc.env)
+			t.Setenv(v1.NoOpenEnv, tc.env)
 
 			b := v1alpha1.New().WithURL("http://localhost:3000")
 			// A deliberately bad level stops the run once the flags have
@@ -197,37 +198,39 @@ func TestOpenDefaultsOn(t *testing.T) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 			}
 
-			got, err := b.Build().Flags().GetBool("open")
+			got, err := b.Build().Flags().GetBool("no-open")
 			if err != nil {
 				t.Fatalf("GetBool: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("--open = %v, want %v", got, tc.want)
+				t.Errorf("--no-open = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
 // TestWithOpenSeedsTheDefault pins that an embedder can flip the default
-// without forbidding the flag: WithOpen(false) makes --open default to false,
-// and a user passing --open still gets a browser.
+// without forbidding the flag: WithOpen(false) makes --no-open default to
+// true, and a user passing --no-open=false still gets a browser. The Go knob
+// stays positive while the flag reads negative, so this is also what pins the
+// two staying in step.
 func TestWithOpenSeedsTheDefault(t *testing.T) {
 	b := v1alpha1.New().WithURL("http://localhost:3000").WithOpen(false)
 
-	if got := b.Build().Flags().Lookup("open").DefValue; got != "false" {
-		t.Errorf("--open default = %q, want %q", got, "false")
+	if got := b.Build().Flags().Lookup("no-open").DefValue; got != "true" {
+		t.Errorf("--no-open default = %q, want %q", got, "true")
 	}
 
-	_, _, err := execute(t, b, "--open", "--log-level", "loud")
+	_, _, err := execute(t, b, "--no-open=false", "--log-level", "loud")
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 	}
-	got, err := b.Build().Flags().GetBool("open")
+	got, err := b.Build().Flags().GetBool("no-open")
 	if err != nil {
 		t.Fatalf("GetBool: %v", err)
 	}
-	if !got {
-		t.Error("--open = false after the flag was passed, want the flag to beat the seed")
+	if got {
+		t.Error("--no-open = true after --no-open=false was passed, want the flag to beat the seed")
 	}
 }
 

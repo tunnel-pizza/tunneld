@@ -6,7 +6,7 @@
 // own, serving the same page examples/multi-origin puts in its first tile. Every tunneld flag still works, since the seeded origin is only a
 // default:
 //
-//	go run ./examples/basic --url http://localhost:8080 --open=false
+//	go run ./examples/basic --url http://localhost:8080 --no-open
 package main
 
 import (

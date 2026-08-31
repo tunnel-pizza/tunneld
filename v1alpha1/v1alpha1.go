@@ -35,8 +35,16 @@ type BuilderImpl struct {
 	urls      []string
 	provider  string
 	logLevel  string
-	open      bool
 	multiview bool
+
+	// open is the seed WithOpen writes; noOpen is what --no-open binds over.
+	// Two fields rather than one because the command line reads negative and
+	// the Go knob reads positive: Build registers --no-open defaulting to
+	// !open, and pflag writes that default straight into noOpen, so noOpen is
+	// authoritative from Build onwards and open is only ever the seed it came
+	// from.
+	open   bool
+	noOpen bool
 
 	// stdout carries the public URLs, stderr the banner, the origin map, and
 	// the tunnel's logs. They are staging only: Build hands them to the
