@@ -1,0 +1,24 @@
+services:
+  tunneld:
+    image: tunneld:local
+    hostname: tunneld
+    ipc: shareable
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TUNNELD_LOG=debug
+      - TUNNELD_URL=http+ws://localhost:14500,dockerd://claude-code
+
+  google-chrome:
+    image: ghcr.io/cnuss/google-chrome:latest
+    network_mode: service:tunneld
+    pid: service:tunneld
+    ipc: service:tunneld
+
+  claude-code:
+    image: ghcr.io/cnuss/claude-code:latest
+    network_mode: service:tunneld
+    pid: service:tunneld
+    ipc: service:tunneld
+    stdin_open: true
+    tty: true

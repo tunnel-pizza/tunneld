@@ -201,8 +201,9 @@ func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
 
 // TestReportSplitsStreams pins the output contract: stdout is one public URL
 // per origin in order and nothing else, so `| head -1` reaches the default
-// origin and line i reaches origin i. Everything human — the banner, the
-// arrows — belongs to stderr, where it cannot corrupt that stream.
+// origin and line i reaches origin i. Everything human — the arrows — belongs
+// to stderr, where it cannot corrupt that stream. The banner is not here: run
+// prints it before minting, so report never sees it.
 //
 // Two distinct writers, which is what a redirect of either stream produces —
 // and unlike the merged case above, both halves are written.
@@ -224,12 +225,39 @@ func TestReportSplitsStreams(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout.String(), wantOut)
 	}
 	for _, want := range []string{
-		VersionLine(),
+		"  https://foo.tunneled.pizza/?0\n    -> http://localhost:3000\n",
 		"  https://foo.tunneled.pizza/?1\n    -> http://localhost:4000\n",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr %q does not contain %q", stderr.String(), want)
 		}
+	}
+}
+
+// TestRunBannersBeforeTheTunnel pins that the banner does not depend on the
+// tunnel coming up. It used to be report's first line, and report only runs
+// once a public URL exists — so a mint that failed (no trust store, no
+// network, a provider that refuses) printed nothing at all, and a program that
+// had started was indistinguishable from one that had not.
+//
+// A cancelled context is the cheapest tunnel that never comes up: libtunnel is
+// lazy until URL is called, so nothing here dials anything.
+func TestRunBannersBeforeTheTunnel(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	b := New()
+	b.WithURL("http://localhost:3000")
+
+	var stdout, stderr bytes.Buffer
+	_ = b.run(ctx, &stdout, &stderr)
+
+	if !strings.Contains(stderr.String(), VersionLine()) {
+		t.Errorf("stderr = %q, want the banner even though no tunnel came up", stderr.String())
+	}
+	// stdout is the machine interface: no tunnel, so no address to publish.
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing written", stdout.String())
 	}
 }
 

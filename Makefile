@@ -76,7 +76,7 @@ e2e:
 # so anything with flags goes through go run directly:
 #   go run ./examples/basic --url http://localhost:8080
 #   go run . --url http://localhost:3000
-run:
+run: image
 	cd examples/$(word 2,$(MAKECMDGOALS)) && go run . $(wordlist 3,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 
 # Swallow the example name and forwarded args (extra goals) so make doesn't error.

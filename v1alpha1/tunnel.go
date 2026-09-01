@@ -76,6 +76,14 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
 
+	// The banner goes out before the tunnel is asked for a URL, not after it
+	// answers. Minting is the slow part and the part that fails, and tying the
+	// banner to success meant a start that failed printed nothing at all — no
+	// version, no sign the program had run. Everything above this line is
+	// configuration, so a bad flag or an origin that cannot be reached still
+	// fails without one.
+	fmt.Fprintln(stderr, VersionLine())
+
 	public := tun.URL()
 	if public == nil {
 		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
@@ -103,7 +111,8 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 // report writes the public URLs to stdout, one per origin in order, and the
 // human-readable map to stderr. The split is what keeps the stdout stream
 // machine-consumable: a script reads line i to reach origin i, while the
-// banner and the arrows stay out of its way.
+// arrows stay out of its way. The banner is already on stderr by the time this
+// runs — run prints it before minting, so it survives a mint that fails.
 //
 // stderr gets a line per public address with the origins it reaches indented
 // beneath it. With a panel that is one address and every origin; without, one
@@ -118,7 +127,6 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 // origin it reaches. Redirect either stream and both come back, because then
 // they are going somewhere different and the machine-readable one has a reader.
 func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL, view string) {
-	fmt.Fprintln(stderr, VersionLine())
 	merged := sameStream(stdout, stderr)
 
 	if !merged {
