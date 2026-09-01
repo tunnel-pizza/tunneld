@@ -8,7 +8,7 @@ module github.com/tunnel-pizza/tunneld
 go 1.26.0
 
 require (
-	github.com/cnuss/libtunnel v0.0.53
+	github.com/cnuss/libtunnel v0.0.54
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-logr/logr v1.4.4
