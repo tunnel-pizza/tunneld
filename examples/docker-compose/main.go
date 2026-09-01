@@ -3,91 +3,88 @@ package main
 import (
 	"context"
 	_ "embed"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
-	"path"
 	"strings"
 	"syscall"
 	"time"
 )
 
+//go:embed docker-compose.yml
+var dockerComposeYml []byte
+
 func main() {
-	// os.Exit runs no deferred function, so the whole program lives in run and
-	// main does nothing but report. Exiting from inside run would skip the
-	// `compose down` and leave the whole stack standing.
-	if err := run(); err != nil {
-		log.Fatal(err)
+	// Deferred first so it runs last: os.Exit runs no defer, and the stack has
+	// to come down before this process does.
+	code := 0
+	defer func() { os.Exit(code) }()
+
+	// Ctrl-C or thirty seconds, whichever lands first. Either one cancels ctx,
+	// which interrupts `up` below and lets the teardown run — an example
+	// should not hold a stack open on someone's machine indefinitely.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Deferred before `up` blocks, so an interrupt still takes the stack down.
+	// Background, not ctx: by then ctx is cancelled — that is what ended `up` —
+	// and inheriting it would kill `down` before it started.
+	dir, teardown := setup(func(dir string) {
+		sh(context.Background(), dir,
+			"docker compose -f docker-compose.yml -p tunneld-example down --volumes --remove-orphans")
+	})
+	defer teardown()
+
+	// -p is named rather than derived from the working directory, which is a
+	// fresh temporary one every run: a name that changes strands the stack of
+	// any run that is interrupted. The teardown spells the same one.
+	if err := sh(ctx, dir, "docker compose -f docker-compose.yml -p tunneld-example up"); err != nil {
+		log.Printf("compose up: %v", err)
+		code = 1
 	}
 }
 
-func run() error {
-	// Ctrl-C is the way out, not a timeout: this brings up a stack and hands
-	// it to you, and there is no point at which it has been up long enough.
-	// The signal cancels ctx, which interrupts `compose up`.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	setup()
-
-	// Armed before `up` blocks, so an interrupt or a failure still takes the
-	// stack down — registering it afterwards would mean nothing was armed for
-	// the entire time the stack was actually up.
-	//
-	// WithoutCancel because ctx is normally already cancelled by the time this
-	// runs: that cancellation is what ended `up`, and inheriting it would kill
-	// `down` before it started.
-	defer func() {
-		if err := sh(context.WithoutCancel(ctx), "docker compose down --volumes --remove-orphans"); err != nil {
-			log.Print(err)
-		}
-	}()
-
-	return sh(ctx, "docker compose up")
+// setup writes the embedded compose file to a temporary directory — so `go run
+// ./examples/docker-compose` works from any directory — and returns it with a
+// teardown that runs down and then removes it.
+//
+// down takes the directory rather than closing over it: main declares dir with
+// the call that needs it, so it is not in scope yet inside the literal.
+//
+// Nothing is up yet if this fails, so it exits rather than returning an error
+// there would be no cleanup to pair with.
+func setup(down func(dir string)) (string, func()) {
+	dir, err := os.MkdirTemp("", "tunneld-example-")
+	if err != nil {
+		log.Fatalf("temporary directory: %v", err)
+	}
+	if err := os.WriteFile(dir+"/docker-compose.yml", dockerComposeYml, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		log.Fatalf("write the compose file: %v", err)
+	}
+	return dir, func() {
+		down(dir)
+		_ = os.RemoveAll(dir)
+	}
 }
 
-// sh runs one command with this process's stdio, the way a line of a shell
-// script would.
-//
-// Cancelling ctx interrupts the command rather than killing it: `docker
-// compose up` stops its own containers on SIGINT, while the default SIGKILL
-// would leave them running for the `down` above to find. WaitDelay bounds how
-// long it may take about it before the kill happens anyway.
-//
-// A command that ends because ctx was cancelled is not a failure — that is the
-// interrupt doing exactly what it was asked to.
-func sh(ctx context.Context, command string) error {
-	args := strings.Split(command, " ")
+// sh runs one line of a shell script in dir, on this process's stdio.
+func sh(ctx context.Context, dir, command string) error {
+	args := strings.Fields(command)
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir = dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// SIGINT, not the default SIGKILL: compose stops its own containers on an
+	// interrupt, where a kill would leave them for `down` to find.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 10 * time.Second
 
+	// A command that ended because ctx was cancelled did what it was asked.
 	if err := cmd.Run(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("%s: %w", command, err)
+		return err
 	}
 	return nil
 }
-
-func setup() {
-	if err := os.WriteFile(path.Join(workDir, "docker-compose.yml"), dockerComposeYml, 0644); err != nil {
-		log.Fatalf("failed to write docker-compose.yml: %v", err)
-	}
-	if err := os.Chdir(workDir); err != nil {
-		log.Fatalf("failed to change directory to %s: %v", workDir, err)
-	}
-}
-
-var (
-	//go:embed docker-compose.yml
-	dockerComposeYml []byte
-	workDir          = func() string {
-		tmpDir, err := os.MkdirTemp("", "tunneld-docker-compose-*")
-		if err != nil {
-			log.Fatalf("failed to create temporary directory: %v", err)
-		}
-		return tmpDir
-	}()
-)
