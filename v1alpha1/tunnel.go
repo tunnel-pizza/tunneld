@@ -17,6 +17,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/env"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/multiview"
 )
 
@@ -53,6 +54,10 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		return err
 	}
 	defer bound.Close()
+
+	if len(b.cacheDirs) > 0 {
+		env.Load(b.cacheDirs, log)
+	}
 
 	backend := libtunnel.Cloudflare()
 	if b.provider != "" {
@@ -98,6 +103,12 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		target := cmp.Or(view, PublicURL(public, 0, len(origins)))
 		awaitReachable(ctx, target, reachableWithin, log)
 		openInBrowser(target, stderr, log)
+	}
+
+	// After the URL is live, so what gets cached is a tunnel that came up
+	// rather than one that was merely asked for.
+	if len(b.cacheDirs) > 0 {
+		env.Save(b.cacheDirs, log)
 	}
 
 	select {

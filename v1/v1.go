@@ -38,9 +38,19 @@ package v1
 import (
 	"errors"
 	"io"
+	"log/slog"
 
 	"github.com/spf13/cobra"
 )
+
+// Logger is the logger the tunnel and its helpers write to — an alias for
+// *slog.Logger, so a caller names it without importing log/slog and a
+// *slog.Logger from anywhere satisfies it.
+//
+// An alias rather than an interface of our own: slog is already the standard
+// library's answer, and a narrower interface here would buy nothing except a
+// conversion at every call site.
+type Logger = *slog.Logger
 
 // The sentinel errors, centralized: declared here with errors.New, wrapped by
 // the implementation in v1alpha1, and matched by callers with errors.Is. Two
