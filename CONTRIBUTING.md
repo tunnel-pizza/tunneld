@@ -264,16 +264,15 @@ Easy to get wrong from the diff alone:
   Only an explicit index clears a previous choice. A lone origin has nothing to
   route between and keeps the plain URL — which is why `PublicURL` takes the
   origin count.
-- **stdout is a machine interface.** One public URL per origin, in order,
-  nothing else — a script reads line *i* to reach origin *i*. The banner, the
-  origin map, and every log line go to stderr. Adding a friendly line to stdout
-  breaks callers.
-- **…except when both streams share a destination**, which on a terminal they
-  do. `report` drops the bare stdout lines then, or every URL would print
-  twice. The check is `os.SameFile`, not an isatty test, because the question
-  is "would one reader see this twice" — equally true of `>out 2>&1`. A writer
-  that is not an `*os.File` (a test buffer, an embedder's writer) is never
-  merged.
+- **A running tunnel writes only to stderr** — the banner, the public
+  addresses, the origin map, every log line. stdout carries the help text and
+  `tunneld version` and nothing else, so both stay pipeable.
+- **stdout used to be a machine interface**: one bare public URL per origin,
+  for `| head -1`. It printed every address twice wherever both streams landed
+  together, and the `os.SameFile` de-duplication that hid it could only see one
+  descriptor being literally the other — which a container's two pipes are not,
+  so it never fired in the place it mattered. Don't reintroduce it without
+  solving that.
 - **`examples/` is intentionally duplicated, except for the pages.** Each
   `main.go` is a copy-pasteable starter and stays standalone — don't refactor
   the wiring into a shared helper. The sample HTML in

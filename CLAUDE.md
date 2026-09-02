@@ -15,8 +15,8 @@ agent-specific framing.
 ## Before you touch anything
 
 - File map, module layout, and the conventions that bite (`StringArray` vs
-  `StringSlice`, the bare `?n` routing parameter, stdout as a machine
-  interface, e2e `-count=1`, skip release anchoring, annotated cosign tags) are
+  `StringSlice`, the bare `?n` routing parameter, a running tunnel writing
+  only to stderr, e2e `-count=1`, skip release anchoring, annotated cosign tags) are
   all in [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the
   diff.
 - **Tests go beside their source**: `something.go` → `something_test.go`, one

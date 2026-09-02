@@ -277,10 +277,12 @@ type Builder interface {
 	// nothing to sit beside and keeps the bare address for itself. Unset, the
 	// behaviour is DefaultMultiview.
 	WithMultiview(multiview bool) Builder
-	// WithStdout redirects the public URLs, which are written one line per
-	// origin in order, along with the help text and the version banner. Build
+	// WithStdout redirects the help text and the version banner. Build
 	// passes it to the command's SetOut, so calling SetOut on the built
 	// command overrides this. Unset, output goes to the process's stdout.
+	//
+	// A running tunnel writes nothing there: its addresses go to stderr with
+	// the rest of what a person reads.
 	WithStdout(w io.Writer) Builder
 	// WithStderr redirects the banner, the origin map, and the tunnel's logs.
 	// Build passes it to the command's SetErr, so calling SetErr on the built

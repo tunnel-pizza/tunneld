@@ -8,6 +8,7 @@ services:
       - var-run-tunneld:/var/run/tunneld
     environment:
       - TUNNELD_URL=http+ws://localhost:14500,dockerd://claude-code
+
   google-chrome:
     image: ghcr.io/cnuss/google-chrome:latest
     network_mode: service:tunneld

@@ -240,26 +240,28 @@ Two things worth knowing:
 
 ## Output contract
 
-**stdout** is a machine interface: one public URL per origin, in flag order,
-and nothing else. Line *i* reaches origin *i*, so `| head -1` is the default
-origin's URL.
+**stderr** carries everything a running tunnel prints — the build banner, the
+public addresses, the origins they reach, and the tunnel's own logs at
+`--log-level`. With the panel on, stderr names the one public address and
+lists the origins beneath it.
 
-```sh
-URL=$(tunneld --url http://localhost:3000 | head -1)
+```
+tunneld v0.0.12 (libtunnel v0.0.55, built go1.26.8)
+  https://striped-worm.tunneled.pizza/?0
+    -> http://localhost:3000
+  https://striped-worm.tunneled.pizza/?1
+    -> http://localhost:4000
 ```
 
-**stderr** carries everything human — the addresses above, the origins they
-reach, and the tunnel's own logs at `--log-level`. With the panel on, stderr
-names the one public address and lists the origins beneath it; stdout is
-unchanged either way, because a script wants a particular origin rather than a
-page of frames.
+**stdout** carries the help text and `tunneld version`, so both stay pipeable.
+A running tunnel writes nothing there.
 
-On a terminal both streams land in the same place, where the split is
-invisible and every URL would simply appear twice. So when the two go to the
-same destination — a terminal, or `>out 2>&1` — the bare lines are dropped and
-only the map is printed; it shows every address anyway, and says which origin
-each one reaches. Redirect either stream and both come back, because then the
-machine-readable one has a reader of its own.
+It used to write one bare URL per origin, as a machine interface. That printed
+every address twice wherever the two streams landed together, and the
+de-duplication meant to hide it could only recognise one file descriptor being
+literally the other — which a container's two pipes are not, so it never fired
+where it was needed most. The map says which origin each address reaches,
+which the bare lines never did.
 
 The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
 fails first.

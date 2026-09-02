@@ -30,12 +30,12 @@ var openURL = browser.OpenURL
 // tunnel down during startup as well as after, so this returns rather than
 // hanging. A tunnel that fails on its own returns the cause.
 //
-// stdout and stderr come from the command's own OutOrStdout/ErrOrStderr, so
-// cobra stays the single owner of where output goes; they are never nil.
+// stderr comes from the command's own ErrOrStderr, so cobra stays the single
+// owner of where output goes; it is never nil.
 //
 // The engine is github.com/cnuss/libtunnel driving Cloudflare's edge in
 // process — no cloudflared binary, no account, no DNS to configure.
-func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
+func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	origins, err := parseOrigins(b.urls)
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	if multiview.Wanted(b.multiview, origins) {
 		view = multiview.URL(public)
 	}
-	report(stdout, stderr, public, origins, view)
+	report(stderr, public, origins, view)
 	if !b.noOpen {
 		// One page, never a fan of tabs: the panel when there is one, since it
 		// reaches every origin, and otherwise the default origin itself.
@@ -108,33 +108,19 @@ func (b *BuilderImpl) run(ctx context.Context, stdout, stderr io.Writer) error {
 	}
 }
 
-// report writes the public URLs to stdout, one per origin in order, and the
-// human-readable map to stderr. The split is what keeps the stdout stream
-// machine-consumable: a script reads line i to reach origin i, while the
-// arrows stay out of its way. The banner is already on stderr by the time this
-// runs — run prints it before minting, so it survives a mint that fails.
+// report writes the human-readable map to stderr: a line per public address
+// with the origins it reaches indented beneath it. With a panel that is one
+// address and every origin; without, one address per origin.
 //
-// stderr gets a line per public address with the origins it reaches indented
-// beneath it. With a panel that is one address and every origin; without, one
-// address per origin. stdout is unchanged either way — one line per origin, in
-// order — because a script wants the address of a particular origin, not a
-// page of frames.
-//
-// Unless the two streams land in the same place, which on a terminal they
-// normally do — and there the split is invisible, so every URL would simply
-// appear twice, once bare and once in the map. When they do, the bare lines
-// are dropped: the map already shows every address, in a form that says which
-// origin it reaches. Redirect either stream and both come back, because then
-// they are going somewhere different and the machine-readable one has a reader.
-func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL, view string) {
-	merged := sameStream(stdout, stderr)
-
-	if !merged {
-		for i := range origins {
-			fmt.Fprintln(stdout, PublicURL(public, i, len(origins)))
-		}
-	}
-
+// Nothing goes to stdout. It used to carry one bare URL per origin as a
+// machine interface, which meant every address printed twice wherever the two
+// streams landed together — a terminal, a container's logs — and the
+// de-duplication that hid it could only see the case where one file descriptor
+// was literally the other. Under Docker they are two pipes that merge
+// downstream, so it never fired where it was needed most. The banner is
+// already on stderr by the time this runs: run prints it before minting, so it
+// survives a mint that fails.
+func report(stderr io.Writer, public *url.URL, origins []*url.URL, view string) {
 	// Every public address gets a line, with what it reaches indented beneath.
 	// A panel is the case where one address reaches them all; otherwise each
 	// origin has an address of its own. One shape either way, and no column to
@@ -151,34 +137,6 @@ func report(stdout, stderr io.Writer, public *url.URL, origins []*url.URL, view 
 		fmt.Fprintf(stderr, "  %s\n", PublicURL(public, i, len(origins)))
 		fmt.Fprintf(stderr, "    -> %s\n", origin)
 	}
-}
-
-// sameStream reports whether two writers end up at the same terminal, file, or
-// pipe. Anything that is not an *os.File — a buffer in a test, a writer an
-// embedding program supplied — is never merged: it has a reader of its own by
-// construction.
-//
-// Stat rather than an isatty check, because the case is not "is this a
-// terminal" but "would the reader see this twice", which is equally true of
-// `tunneld --url ... >out 2>&1`.
-func sameStream(a, b io.Writer) bool {
-	af, ok := a.(*os.File)
-	if !ok {
-		return false
-	}
-	bf, ok := b.(*os.File)
-	if !ok {
-		return false
-	}
-	ai, err := af.Stat()
-	if err != nil {
-		return false
-	}
-	bi, err := bf.Stat()
-	if err != nil {
-		return false
-	}
-	return os.SameFile(ai, bi)
 }
 
 // The window between a tunnel being ready and the edge serving it. Ten seconds

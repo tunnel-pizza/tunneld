@@ -118,7 +118,8 @@ func (b *BuilderImpl) WithMultiview(multiview bool) v1.Builder {
 	return b
 }
 
-// WithStdout redirects the public URLs.
+// WithStdout redirects the help text and the version banner. A running
+// tunnel writes nothing to stdout.
 func (b *BuilderImpl) WithStdout(w io.Writer) v1.Builder {
 	b.stdout = w
 	return b
@@ -176,7 +177,7 @@ origin it belongs to, so without the marker it goes to the first one:
 
   ` + name + ` --url :4000 --url http+ws://localhost:5173
 
-Public URLs go to stdout, one line per origin; logs go to stderr.`,
+The public URLs, the origin map and every log line go to stderr.`,
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
 		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
@@ -187,7 +188,7 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 			return applyEnv(cmd, env)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return b.run(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return b.run(cmd.Context(), cmd.ErrOrStderr())
 		},
 	}
 

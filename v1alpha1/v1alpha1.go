@@ -52,7 +52,8 @@ type BuilderImpl struct {
 	open   bool
 	noOpen bool
 
-	// stdout carries the public URLs, stderr the banner, the origin map, and
+	// stdout carries the help text and version banner, stderr the tunnel's own
+	// banner, the origin map, and
 	// the tunnel's logs. They are staging only: Build hands them to the
 	// command with SetOut/SetErr and everything downstream reads them back
 	// through OutOrStdout/ErrOrStderr, so cobra stays the single owner of
