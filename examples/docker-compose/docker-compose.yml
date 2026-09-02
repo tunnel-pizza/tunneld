@@ -5,10 +5,9 @@ services:
     ipc: shareable
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - var-run-tunneld:/var/run/tunneld
     environment:
-      - TUNNELD_LOG=debug
       - TUNNELD_URL=http+ws://localhost:14500,dockerd://claude-code
-
   google-chrome:
     image: ghcr.io/cnuss/google-chrome:latest
     network_mode: service:tunneld
@@ -22,3 +21,6 @@ services:
     ipc: service:tunneld
     stdin_open: true
     tty: true
+
+volumes:
+  var-run-tunneld: {}

@@ -26,7 +26,7 @@ func main() {
 	// should not hold a stack open on someone's machine indefinitely.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	// Deferred before `up` blocks, so an interrupt still takes the stack down.
@@ -34,7 +34,7 @@ func main() {
 	// and inheriting it would kill `down` before it started.
 	dir, teardown := setup(func(dir string) {
 		sh(context.Background(), dir,
-			"docker compose -f docker-compose.yml -p tunneld-example down --volumes --remove-orphans")
+			"docker compose -f docker-compose.yml -p tunneld-example down --remove-orphans")
 	})
 	defer teardown()
 
