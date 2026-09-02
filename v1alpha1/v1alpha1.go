@@ -15,7 +15,7 @@ import (
 )
 
 // New returns a BuilderImpl carrying the defaults that are not the zero value.
-// The lib.New façade wraps this and returns the v1.Builder interface.
+// It is the entry point for application code, and satisfies v1.Builder.
 //
 // Only the booleans need seeding: their defaults are on, and a bool field
 // cannot express "unset" separately from "off". Setting them here rather than

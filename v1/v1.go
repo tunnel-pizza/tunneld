@@ -2,6 +2,28 @@
 // here is the contract callers depend on across releases; the implementation
 // lives in v1alpha1 and may change between alpha revisions.
 //
+// The tunneld tier is two packages:
+//
+//   - github.com/tunnel-pizza/tunneld/v1 (this package) — the Builder
+//     contract, the Err* sentinels, and the constants naming every
+//     environment knob and default. Declare types with these and match
+//     errors against them.
+//   - github.com/tunnel-pizza/tunneld/v1alpha1 — the implementation: New,
+//     the command assembly, the tunnel it runs, the version resolution.
+//
+// New lives in v1alpha1 rather than here, so application code constructs from
+// there and matches errors here:
+//
+//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
+//	if err := cmd.ExecuteContext(ctx); err != nil { ... }
+//
+// A façade package re-exporting New alongside these names would read better,
+// and cannot exist: a constructor has to import what it constructs, v1alpha1
+// already imports this package for the sentinels, and Go does not allow the
+// cycle. Anything that moved the declarations out from under v1alpha1 would
+// hit the same wall one layer down, where attach/docker reaches for
+// ErrInvalidOrigin.
+//
 // The builder assembles the `tunneld` command: a fluent chain of With* setters
 // finalized by Build, which returns a *cobra.Command ready to Execute. That
 // shape is what lets tunneld be both a binary and an embeddable subcommand —
@@ -188,9 +210,9 @@ const DefaultMultiview = true
 
 // Builder assembles the tunneld command. Configure it with the With* methods
 // (each returns the Builder for chaining), then call the terminal Build to
-// produce a *cobra.Command. Obtain one from lib.New.
+// produce a *cobra.Command. Obtain one from v1alpha1.New.
 //
-//	cmd := lib.New().WithURL("http://localhost:3000").Build()
+//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
 //	err := cmd.ExecuteContext(ctx)
 //
 // Every With* value is a default, not a fixed setting: the command's flags

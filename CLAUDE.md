@@ -21,7 +21,7 @@ agent-specific framing.
   diff.
 - **Tests go beside their source**: `something.go` → `something_test.go`, one
   file per source file, never a file named after a scenario. New cases join the
-  table in the existing file. Two exceptions only — `lib/example_test.go` and
+  table in the existing file. Two exceptions only — `v1alpha1/example_test.go` and
   `e2e/`. See
   [CONTRIBUTING.md → One test file per source file](./CONTRIBUTING.md#one-test-file-per-source-file).
 - **Examples are real programs** that open a tunnel and block, so e2e drives

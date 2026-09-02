@@ -35,7 +35,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
-	"github.com/tunnel-pizza/tunneld/lib"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
 // name is the container this example attaches to. Fixed rather than generated,
@@ -58,7 +58,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := lib.New().
+	cmd := v1alpha1.New().
 		WithURL("dockerd://" + name).
 		Build()
 

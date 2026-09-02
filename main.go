@@ -11,8 +11,8 @@
 // This package is the process shell and nothing more: it turns signals into a
 // context and hands that to the command the builder assembles. The command
 // itself — flags, help, the tunnel it runs — comes from
-// [github.com/tunnel-pizza/tunneld/lib], which is also how another program
-// embeds tunneld as a subcommand of its own.
+// [github.com/tunnel-pizza/tunneld/v1alpha1], which is also how another
+// program embeds tunneld as a subcommand of its own.
 package main
 
 import (
@@ -22,7 +22,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tunnel-pizza/tunneld/lib"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 
 	// SilenceErrors is set on the built command, so the error surfaces here
 	// exactly once, prefixed with the program name.
-	if err := lib.New().Build().ExecuteContext(ctx); err != nil {
+	if err := v1alpha1.New().Build().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
 		os.Exit(1)
 	}
