@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -74,6 +75,12 @@ func TestSave(t *testing.T) {
 	})
 
 	t.Run("an unwritable directory is skipped, not fatal", func(t *testing.T) {
+		// Windows has no mode bit that stops a directory being written to —
+		// os.Chmod there only toggles a file's read-only flag — so the
+		// condition this pins cannot be staged.
+		if runtime.GOOS == "windows" {
+			t.Skip("directory permissions are not enforceable on Windows")
+		}
 		unwritable, dir := t.TempDir(), t.TempDir()
 		if err := os.Chmod(unwritable, 0o500); err != nil {
 			t.Fatalf("chmod: %v", err)
@@ -92,6 +99,11 @@ func TestSave(t *testing.T) {
 	})
 
 	t.Run("a spec is written as a credential", func(t *testing.T) {
+		// Windows reports a fixed 0666 for every file it can write, so the
+		// mode says nothing about what was asked for.
+		if runtime.GOOS == "windows" {
+			t.Skip("file modes are not meaningful on Windows")
+		}
 		dir := t.TempDir()
 		t.Setenv(ltv1.SpecEnv, envelope)
 

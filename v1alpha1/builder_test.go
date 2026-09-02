@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -243,8 +244,12 @@ func TestWithOpenSeedsTheDefault(t *testing.T) {
 //
 // A temporary working directory stands in for the image's /var/run/tunneld —
 // a test cannot rely on that path existing, and every rule here is about the
-// working directory rather than that particular one. "." in a want is that
-// directory, written "$WD" because its real path is only known at run time.
+// working directory rather than that particular one.
+//
+// Paths are written as "$WD" (that working directory) and "$OTHER" (a second
+// one), in the inputs as well as the wants. Spelling them "/tmp" would be a
+// POSIX assumption: filepath.Abs turns a rooted path into C:\tmp on Windows,
+// so a literal want would be right on one platform and wrong on the other.
 func TestCacheDir(t *testing.T) {
 	cases := []struct {
 		name string
@@ -258,8 +263,8 @@ func TestCacheDir(t *testing.T) {
 			// The value the compose example ships. Three entries in, two out:
 			// "." and "true" are both the working directory.
 			name: "the compose value collapses to two",
-			env:  ".,true,/tmp",
-			want: []string{"$WD", "/tmp"},
+			env:  ".,true,$OTHER",
+			want: []string{"$WD", "$OTHER"},
 		},
 		{
 			name: "every spelling of true is the working directory",
@@ -284,15 +289,15 @@ func TestCacheDir(t *testing.T) {
 			// it and stops what would come after, so where in the list it
 			// appears cannot change what off means.
 			name: "a false entry disables the whole list",
-			env:  ".,false,/tmp",
+			env:  ".,false,$OTHER",
 		},
-		{name: "false first disables the rest", env: "false,/tmp"},
-		{name: "false last disables what came before", args: []string{"--cache-dir", "/a", "--cache-dir", "false"}},
+		{name: "false first disables the rest", env: "false,$OTHER"},
+		{name: "false last disables what came before", args: []string{"--cache-dir", "$OTHER", "--cache-dir", "false"}},
 		{
 			// Sticky within one source: a directory named after the switch
 			// cannot quietly turn it back on.
 			name: "a later directory cannot re-enable it",
-			args: []string{"--cache-dir", "false", "--cache-dir", "/a"},
+			args: []string{"--cache-dir", "false", "--cache-dir", "$OTHER"},
 		},
 		{
 			// Build fills an unset list with the working directory, and has
@@ -304,13 +309,13 @@ func TestCacheDir(t *testing.T) {
 		{
 			// A later source still overrides, the same as any other value.
 			name: "the flag overrides a variable that disabled it",
-			env:  "false", args: []string{"--cache-dir", "/a"},
-			want: []string{"/a"},
+			env:  "false", args: []string{"--cache-dir", "$OTHER"},
+			want: []string{"$OTHER"},
 		},
 		{
 			name: "the variable overrides a seed that disabled it",
-			seed: []string{"false"}, env: "/tmp",
-			want: []string{"/tmp"},
+			seed: []string{"false"}, env: "$OTHER",
+			want: []string{"$OTHER"},
 		},
 		{
 			// ParseBool has never accepted these, and this knob does not
@@ -323,24 +328,32 @@ func TestCacheDir(t *testing.T) {
 			// splitEnvList drops empty entries, so a stray or trailing comma
 			// is not a cache directory.
 			name: "stray commas are not entries",
-			env:  ",,/tmp,",
-			want: []string{"/tmp"},
+			env:  ",,$OTHER,",
+			want: []string{"$OTHER"},
 		},
-		{name: "repeated flags append", args: []string{"--cache-dir", "/a", "--cache-dir", "/b", "--cache-dir", "/a"}, want: []string{"/a", "/b"}},
-		{name: "the flag beats the variable", env: "/from-env", args: []string{"--cache-dir", "/from-flag"}, want: []string{"/from-flag"}},
-		{name: "a seed stands when nothing overrides it", seed: []string{"/seeded"}, want: []string{"/seeded"}},
+		{
+			name: "repeated flags append",
+			args: []string{"--cache-dir", "$OTHER/a", "--cache-dir", "$OTHER/b", "--cache-dir", "$OTHER/a"},
+			want: []string{"$OTHER/a", "$OTHER/b"},
+		},
+		{
+			name: "the flag beats the variable",
+			env:  "$OTHER/env", args: []string{"--cache-dir", "$OTHER/flag"},
+			want: []string{"$OTHER/flag"},
+		},
+		{name: "a seed stands when nothing overrides it", seed: []string{"$OTHER/seeded"}, want: []string{"$OTHER/seeded"}},
 		{
 			// Both overrides replace the seed rather than extending it, which
 			// is the rule --url follows: a command line never merges into a
 			// seeded set, and neither does the environment.
 			name: "the variable replaces a seed",
-			seed: []string{"/seeded"}, env: "/tmp",
-			want: []string{"/tmp"},
+			seed: []string{"$OTHER/seeded"}, env: "$OTHER",
+			want: []string{"$OTHER"},
 		},
 		{
 			name: "the flag replaces a seed",
-			seed: []string{"/seeded"}, args: []string{"--cache-dir", "/a", "--cache-dir", "/b"},
-			want: []string{"/a", "/b"},
+			seed: []string{"$OTHER/seeded"}, args: []string{"--cache-dir", "$OTHER/a", "--cache-dir", "$OTHER/b"},
+			want: []string{"$OTHER/a", "$OTHER/b"},
 		},
 	}
 
@@ -351,15 +364,31 @@ func TestCacheDir(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Getwd: %v", err)
 			}
-			t.Setenv(v1.CacheDirEnv, tc.env)
+			other := t.TempDir()
+
+			// The same substitution on inputs and wants, so a path is written
+			// once and means the same thing on either platform.
+			resolve := func(s string) string {
+				r := strings.NewReplacer("$WD", workdir, "$OTHER", other)
+				return filepath.FromSlash(r.Replace(s))
+			}
+			resolveAll := func(in []string) []string {
+				out := make([]string, 0, len(in))
+				for _, s := range in {
+					out = append(out, resolve(s))
+				}
+				return out
+			}
+
+			t.Setenv(v1.CacheDirEnv, resolve(tc.env))
 
 			b := v1alpha1.New().WithURL("http://localhost:3000")
 			if len(tc.seed) > 0 {
-				b.WithCacheDir(tc.seed...)
+				b.WithCacheDir(resolveAll(tc.seed)...)
 			}
 			// A deliberately bad level stops the run once the flags have
 			// settled, before anything dials.
-			args := append(append([]string{}, tc.args...), "--log-level", "loud")
+			args := append(resolveAll(tc.args), "--log-level", "loud")
 			if _, _, err := execute(t, b, args...); !errors.Is(err, v1.ErrInvalidLogLevel) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 			}
@@ -369,11 +398,7 @@ func TestCacheDir(t *testing.T) {
 			// contains a comma — and t.TempDir builds one out of the subtest
 			// name.
 			got := b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()
-			want := make([]string, 0, len(tc.want))
-			for _, dir := range tc.want {
-				want = append(want, strings.Replace(dir, "$WD", workdir, 1))
-			}
-			if !slices.Equal(got, want) {
+			if want := resolveAll(tc.want); !slices.Equal(got, want) {
 				t.Errorf("--cache-dir = %v, want %v", got, want)
 			}
 		})
