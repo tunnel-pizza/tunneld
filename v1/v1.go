@@ -153,6 +153,22 @@ const (
 	// DefaultProvider.
 	ProviderEnv = "TUNNELD_PROVIDER"
 
+	// CacheDirEnv names the directories tunnel specs are cached in, comma
+	// separated and in order — the mirror of --cache-dir, which beats it.
+	//
+	// An entry strconv.ParseBool reads as a boolean is an instruction rather
+	// than a path: true (and an empty entry) means the working directory,
+	// false turns caching off rather than caching into a directory named
+	// "false". Everything else is a path.
+	//
+	// One false entry disables the whole list, wherever it appears in it, so
+	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats collapse, so ".,true,/tmp"
+	// is the working directory and then /tmp.
+	//
+	// Unset, the cache is the working directory — the same thing setting it
+	// to true says explicitly.
+	CacheDirEnv = "TUNNELD_CACHE_DIR"
+
 	// NoOpenEnv names whether to leave the browser alone once the tunnel is
 	// live — the mirror of --no-open, which beats it. Any value
 	// strconv.ParseBool accepts works; anything else is an error. Set it to
@@ -239,6 +255,14 @@ type Builder interface {
 	// WithProvider sets the quick-tunnel provider host to mint against.
 	// Unset, the provider is DefaultProvider.
 	WithProvider(host string) Builder
+	// WithCacheDir sets the directories tunnel specs are cached in, in
+	// order, appending across calls. A boolean entry is an instruction
+	// rather than a path: true (and an empty entry) names the working
+	// directory, and one false disables the whole list wherever it appears
+	// in it. Entries become absolute and repeats
+	// collapse. Unset, they come from CacheDirEnv, and from the working
+	// directory if that is unset too.
+	WithCacheDir(dirs ...string) Builder
 	// WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
 	// stderr. Unset, the level comes from LogEnv, and silence if that is
 	// unset too.

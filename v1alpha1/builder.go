@@ -4,6 +4,11 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -18,6 +23,71 @@ func (b *BuilderImpl) WithName(name string) v1.Builder {
 // WithURL seeds the local origins to expose, appending across calls.
 func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
 	b.urls = append(b.urls, urls...)
+	return b
+}
+
+// WithCacheDir adds directories to cache tunnel specs in, in order,
+// appending across calls.
+//
+// An entry that is a boolean is an instruction rather than a path: true names
+// the working directory, false names nothing at all. That is what lets one
+// field take both a switch and a list — "on" is what an operator means by
+// setting the variable to true, and the working directory is the one answer
+// that needs no further configuration. An empty entry reads as true, since
+// nothing else it could mean is useful.
+//
+// The false half matters as much as the true half. Without it, an operator
+// turning the knob off would get a cache directory literally named "false",
+// silently, in whatever directory they happened to start from.
+//
+// False is a verdict on the whole list rather than on its own place in it: it
+// stops there, drops every directory collected so far, and holds — so
+// "/a,false,/b" caches nowhere, and so does "false,/b". A switch that only
+// cancelled the entries before it would make "off" depend on where in the list
+// somebody wrote it, and the reading where off means off is the one an
+// operator can be sure of. A later source still overrides: the flag replaces
+// what the variable said, and the variable replaces a seed.
+//
+// Entries are resolved to absolute paths, so a later chdir cannot move a cache
+// out from under the process, and that is also what makes deduplication mean
+// anything: ".", "true" and the working directory's own path are three
+// spellings of one directory, and a list that cached to it three times is not
+// a list anybody wrote on purpose.
+//
+// A directory that cannot be resolved is dropped rather than reported. The
+// only way that happens is os.Getwd failing, which is the same condition that
+// already turns an empty entry into nothing, and neither is worth failing a
+// tunnel over.
+func (b *BuilderImpl) WithCacheDir(dirs ...string) v1.Builder {
+	// A list that exists and is empty is one a false entry emptied, and
+	// nothing refills it: off holds until a later source sets the field back
+	// to nil and starts over.
+	if b.cacheDirs != nil && len(b.cacheDirs) == 0 {
+		return b
+	}
+	for _, dir := range dirs {
+		if on, ok := boolish(dir); ok {
+			if !on {
+				b.cacheDirs = []string{}
+				return b
+			}
+			dir = ""
+		}
+		if dir == "" {
+			dir, _ = os.Getwd()
+		}
+		if dir == "" {
+			continue
+		}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		if slices.Contains(b.cacheDirs, abs) {
+			continue
+		}
+		b.cacheDirs = append(b.cacheDirs, abs)
+	}
 	return b
 }
 
@@ -145,6 +215,18 @@ Public URLs go to stdout, one line per origin; logs go to stderr.`,
 	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
 		"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
+	// Unset, specs cache into the working directory. Seeded here rather than
+	// in New so that an explicit WithCacheDir replaces the default instead of
+	// appending to it: a caller naming a directory means that directory, not
+	// that one and wherever the process happened to start.
+	//
+	// Nil, not empty: an empty list is one a false entry emptied, and seeding
+	// over it would re-enable what an operator turned off.
+	if b.cacheDirs == nil {
+		b.WithCacheDir("")
+	}
+	cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
+		"directory to cache tunnel specs in (repeat for more; empty or true means the working directory) [$"+v1.CacheDirEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
@@ -179,4 +261,51 @@ func versionCommand(name string) *cobra.Command {
 			fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
 		},
 	}
+}
+
+// cacheDirValue binds --cache-dir onto WithCacheDir, so the flag, its
+// environment mirror and the Go setter resolve by one rule instead of three.
+// pflag's own stringArray would store the raw strings and leave "." and "true"
+// for whoever read them next to make sense of.
+type cacheDirValue struct {
+	b *BuilderImpl
+	// changed marks the first value the command line supplied. Until then the
+	// slice still holds whatever WithCacheDir seeded, and the first --cache-dir
+	// clears it: a command line replaces a seeded set rather than merging into
+	// one, which is the rule pflag's own stringArray applies to --url.
+	changed bool
+}
+
+func (v *cacheDirValue) Type() string   { return "stringArray" }
+func (v *cacheDirValue) String() string { return "[" + strings.Join(v.b.cacheDirs, ",") + "]" }
+
+func (v *cacheDirValue) Set(s string) error {
+	if !v.changed {
+		v.b.cacheDirs, v.changed = nil, true
+	}
+	v.b.WithCacheDir(s)
+	return nil
+}
+
+// Append, GetSlice and Replace are pflag.SliceValue, which is how applyEnv
+// hands a whole comma-separated variable over at once. Replace clears first,
+// for the same reason Set does on its first call.
+func (v *cacheDirValue) Append(s string) error { return v.Set(s) }
+func (v *cacheDirValue) GetSlice() []string    { return v.b.cacheDirs }
+
+func (v *cacheDirValue) Replace(dirs []string) error {
+	v.b.cacheDirs, v.changed = nil, true
+	v.b.WithCacheDir(dirs...)
+	return nil
+}
+
+// boolish reports whether s is a boolean rather than a path, and which one.
+// The spellings are strconv.ParseBool's — 1/t/T/TRUE/true/True and
+// 0/f/F/FALSE/false/False — so both halves of the knob are the ones an
+// operator would guess. Anything else is a path, including "yes" and "no",
+// which ParseBool has never accepted and this should not start accepting on
+// its own.
+func boolish(s string) (value, ok bool) {
+	v, err := strconv.ParseBool(s)
+	return v, err == nil
 }

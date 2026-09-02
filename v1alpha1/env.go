@@ -94,6 +94,7 @@ func Logger() *slog.Logger {
 var flagEnv = map[string]string{
 	"url":       v1.URLEnv,
 	"provider":  v1.ProviderEnv,
+	"cache-dir": v1.CacheDirEnv,
 	"log-level": v1.LogEnv,
 	"no-open":   v1.NoOpenEnv,
 	"multiview": v1.MultiviewEnv,

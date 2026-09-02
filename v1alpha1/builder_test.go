@@ -3,9 +3,12 @@ package v1alpha1_test
 import (
 	"bytes"
 	"errors"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
@@ -231,6 +234,149 @@ func TestWithOpenSeedsTheDefault(t *testing.T) {
 	}
 	if got {
 		t.Error("--no-open = true after --no-open=false was passed, want the flag to beat the seed")
+	}
+}
+
+// TestCacheDir pins how a cache directory list is read: which spellings mean
+// the working directory, that entries become absolute before repeats collapse,
+// and the flag > variable > seed precedence every other knob follows.
+//
+// A temporary working directory stands in for the image's /var/run/tunneld —
+// a test cannot rely on that path existing, and every rule here is about the
+// working directory rather than that particular one. "." in a want is that
+// directory, written "$WD" because its real path is only known at run time.
+func TestCacheDir(t *testing.T) {
+	cases := []struct {
+		name string
+		seed []string
+		env  string
+		args []string
+		want []string
+	}{
+		{name: "the working directory by default", want: []string{"$WD"}},
+		{
+			// The value the compose example ships. Three entries in, two out:
+			// "." and "true" are both the working directory.
+			name: "the compose value collapses to two",
+			env:  ".,true,/tmp",
+			want: []string{"$WD", "/tmp"},
+		},
+		{
+			name: "every spelling of true is the working directory",
+			env:  "1,t,T,TRUE,True,true",
+			want: []string{"$WD"},
+		},
+		{name: "an empty entry is the working directory too", args: []string{"--cache-dir", ""}, want: []string{"$WD"}},
+		{name: "a relative path becomes absolute", env: "sub", want: []string{"$WD/sub"}},
+		{
+			// Both halves are instructions. Without the false half, turning
+			// the knob off would silently cache into a directory named
+			// "false" in whatever directory the process started from.
+			name: "false turns it off rather than naming a directory",
+			env:  "false",
+		},
+		{
+			name: "every spelling of false turns it off",
+			env:  "0,f,F,FALSE,False,false",
+		},
+		{
+			// One false entry is a master switch: it drops what came before
+			// it and stops what would come after, so where in the list it
+			// appears cannot change what off means.
+			name: "a false entry disables the whole list",
+			env:  ".,false,/tmp",
+		},
+		{name: "false first disables the rest", env: "false,/tmp"},
+		{name: "false last disables what came before", args: []string{"--cache-dir", "/a", "--cache-dir", "false"}},
+		{
+			// Sticky within one source: a directory named after the switch
+			// cannot quietly turn it back on.
+			name: "a later directory cannot re-enable it",
+			args: []string{"--cache-dir", "false", "--cache-dir", "/a"},
+		},
+		{
+			// Build fills an unset list with the working directory, and has
+			// to tell "unset" from "emptied on purpose" to leave this one
+			// alone. Nothing else in this table separates the two.
+			name: "a seed that disabled it is not re-filled by the default",
+			seed: []string{"false"},
+		},
+		{
+			// A later source still overrides, the same as any other value.
+			name: "the flag overrides a variable that disabled it",
+			env:  "false", args: []string{"--cache-dir", "/a"},
+			want: []string{"/a"},
+		},
+		{
+			name: "the variable overrides a seed that disabled it",
+			seed: []string{"false"}, env: "/tmp",
+			want: []string{"/tmp"},
+		},
+		{
+			// ParseBool has never accepted these, and this knob does not
+			// invent them: they are paths.
+			name: "yes and no are paths",
+			env:  "yes,no",
+			want: []string{"$WD/yes", "$WD/no"},
+		},
+		{
+			// splitEnvList drops empty entries, so a stray or trailing comma
+			// is not a cache directory.
+			name: "stray commas are not entries",
+			env:  ",,/tmp,",
+			want: []string{"/tmp"},
+		},
+		{name: "repeated flags append", args: []string{"--cache-dir", "/a", "--cache-dir", "/b", "--cache-dir", "/a"}, want: []string{"/a", "/b"}},
+		{name: "the flag beats the variable", env: "/from-env", args: []string{"--cache-dir", "/from-flag"}, want: []string{"/from-flag"}},
+		{name: "a seed stands when nothing overrides it", seed: []string{"/seeded"}, want: []string{"/seeded"}},
+		{
+			// Both overrides replace the seed rather than extending it, which
+			// is the rule --url follows: a command line never merges into a
+			// seeded set, and neither does the environment.
+			name: "the variable replaces a seed",
+			seed: []string{"/seeded"}, env: "/tmp",
+			want: []string{"/tmp"},
+		},
+		{
+			name: "the flag replaces a seed",
+			seed: []string{"/seeded"}, args: []string{"--cache-dir", "/a", "--cache-dir", "/b"},
+			want: []string{"/a", "/b"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			workdir, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("Getwd: %v", err)
+			}
+			t.Setenv(v1.CacheDirEnv, tc.env)
+
+			b := v1alpha1.New().WithURL("http://localhost:3000")
+			if len(tc.seed) > 0 {
+				b.WithCacheDir(tc.seed...)
+			}
+			// A deliberately bad level stops the run once the flags have
+			// settled, before anything dials.
+			args := append(append([]string{}, tc.args...), "--log-level", "loud")
+			if _, _, err := execute(t, b, args...); !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+
+			// GetSlice rather than GetStringArray: the latter round-trips
+			// through a comma-separated String(), which splits any path that
+			// contains a comma — and t.TempDir builds one out of the subtest
+			// name.
+			got := b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()
+			want := make([]string, 0, len(tc.want))
+			for _, dir := range tc.want {
+				want = append(want, strings.Replace(dir, "$WD", workdir, 1))
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("--cache-dir = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
