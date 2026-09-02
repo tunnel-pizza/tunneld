@@ -240,26 +240,28 @@ Two things worth knowing:
 
 ## Output contract
 
-**stdout** is a machine interface: one public URL per origin, in flag order,
-and nothing else. Line *i* reaches origin *i*, so `| head -1` is the default
-origin's URL.
+**stderr** carries everything a running tunnel prints — the build banner, the
+public addresses, the origins they reach, and the tunnel's own logs at
+`--log-level`. With the panel on, stderr names the one public address and
+lists the origins beneath it.
 
-```sh
-URL=$(tunneld --url http://localhost:3000 | head -1)
+```
+tunneld v0.0.12 (libtunnel v0.0.55, built go1.26.8)
+  https://striped-worm.tunneled.pizza/?0
+    -> http://localhost:3000
+  https://striped-worm.tunneled.pizza/?1
+    -> http://localhost:4000
 ```
 
-**stderr** carries everything human — the addresses above, the origins they
-reach, and the tunnel's own logs at `--log-level`. With the panel on, stderr
-names the one public address and lists the origins beneath it; stdout is
-unchanged either way, because a script wants a particular origin rather than a
-page of frames.
+**stdout** carries the help text and `tunneld version`, so both stay pipeable.
+A running tunnel writes nothing there.
 
-On a terminal both streams land in the same place, where the split is
-invisible and every URL would simply appear twice. So when the two go to the
-same destination — a terminal, or `>out 2>&1` — the bare lines are dropped and
-only the map is printed; it shows every address anyway, and says which origin
-each one reaches. Redirect either stream and both come back, because then the
-machine-readable one has a reader of its own.
+It used to write one bare URL per origin, as a machine interface. That printed
+every address twice wherever the two streams landed together, and the
+de-duplication meant to hide it could only recognise one file descriptor being
+literally the other — which a container's two pipes are not, so it never fired
+where it was needed most. The map says which origin each address reaches,
+which the bare lines never did.
 
 The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
 fails first.
@@ -306,11 +308,11 @@ import (
 	"context"
 	"os"
 
-	"github.com/tunnel-pizza/tunneld/lib"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
 func main() {
-	cmd := lib.New().
+	cmd := v1alpha1.New().
 		WithName("expose").                  // mount under your own verb
 		WithURL("http://localhost:3000").    // a default the user can override
 		Build()
@@ -332,7 +334,6 @@ The module root is the command; the library tiers sit under it.
 ```
 github.com/tunnel-pizza/tunneld           — package main. Signals → context →
                                             Execute, and nothing else.
-github.com/tunnel-pizza/tunneld/lib       — façade: New, Version, BuilderV1.
 github.com/tunnel-pizza/tunneld/v1        — stable Builder contract, the Err*
                                             sentinels, the env/default constants.
 github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
@@ -341,28 +342,25 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             between alpha revisions.
 ```
 
-Application code imports `lib`. Import `v1` directly to implement the interface
-yourself, or to reach a symbol the façade doesn't re-export. Direct access to
-the `BuilderImpl` struct lives in `v1alpha1`.
+Application code calls `v1alpha1.New()` and matches errors against `v1`.
+There is no façade package re-exporting both, and there cannot be one: a
+constructor has to import what it constructs, `v1alpha1` already imports `v1`
+for the sentinels, and Go does not allow the cycle.
 
 For the file-by-file map, see
 [CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).
 
 ## API at a glance
 
-The façade — everything an embedding program needs:
+What an embedding program calls, in `v1alpha1`:
 
 ```go
-type BuilderV1 = v1.Builder    // alias, so callers needn't import v1
-
-func New() BuilderV1     // unconfigured builder
-func Version() string    // the release this build is
+func New() *BuilderImpl   // unconfigured builder, satisfies v1.Builder
+func Version() string     // the release this build is
 func VersionLine() string // the human-facing build banner
-
-const DefaultProvider = "tunnel.pizza"
 ```
 
-The contract itself, in `v1`:
+The contract it satisfies, in `v1`:
 
 ```go
 // Builder assembles the tunneld command. Configure with the With* methods

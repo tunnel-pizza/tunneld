@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -243,8 +244,11 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 
 		for _, c := range cs {
 			if ref == c.id || ref == c.name {
+				cfg, _ := json.Marshal(map[string]any{
+					"Tty": true, "OpenStdin": true, "Labels": labels(c),
+				})
 				_, _ = io.WriteString(w, `{"Id":"`+c.id+`","State":{"Running":true},`+
-					`"Config":{"Tty":true,"OpenStdin":true}}`)
+					`"Config":`+string(cfg)+`}`)
 				return
 			}
 		}
@@ -359,6 +363,89 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			t.Errorf("error %q does not name the reference", err)
 		}
 	})
+}
+
+// TestSelfIDs pins the candidate order mountinfo parsing produces. The ids are
+// guesses checked by being inspected, so the job here is to put the likely one
+// first and never to invent one.
+func TestSelfIDs(t *testing.T) {
+	const self = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
+	const layer = "433163a110ebac893af94c0c0f05ef45501c8ef19a93c814e109034599c5105b"
+
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"no hex at all", "24 30 0:22 / /proc rw,nosuid - proc proc rw\n", nil},
+		{
+			// The shape observed on a real daemon: the runtime's per-container
+			// directory is what bind-mounts /etc/hosts.
+			name: "the containers path wins over a layer path",
+			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/var/lib/docker/overlay2/" + layer + "/diff\n" +
+				"3 4 0:2 /" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n" +
+				"5 6 0:3 /var/lib/docker/containers/" + self + "/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n",
+			want: []string{self, layer},
+		},
+		{
+			name: "without a containers path, first seen leads",
+			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/x/" + layer + "/diff\n" +
+				"3 4 0:2 /y/" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n",
+			want: []string{layer, self},
+		},
+		{"deduplicated", "/containers/" + self + "/a\n/containers/" + self + "/b\n", []string{self}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := selfIDs(strings.NewReader(tc.in))
+			if len(got) != len(tc.want) {
+				t.Fatalf("selfIDs = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("selfIDs[%d] = %s, want %s", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestOpenScopesByMountinfo pins the fix for #28: a service that sets its own
+// hostname — which network_mode: service:<name> requires, so it is the shape
+// this feature exists to serve — used to defeat the project lookup entirely,
+// because the hostname then names nothing the daemon knows. The container id
+// is still in mountinfo, and scoping has to survive on it.
+func TestOpenScopesByMountinfo(t *testing.T) {
+	const selfID = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mountinfo")
+	body := "5 6 0:3 /var/lib/docker/containers/" + selfID + "/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write mountinfo: %v", err)
+	}
+	old := mountinfo
+	mountinfo = path
+	t.Cleanup(func() { mountinfo = old })
+
+	// selfProject "" so the hostname resolves to nothing, exactly as it does
+	// for a container whose hostname was overridden.
+	composeDaemon(t, "",
+		composeContainer{id: selfID, name: "mine-tunneld-1", project: "mine", service: "tunneld"},
+		composeContainer{id: "mine-cc", name: "mine-claude-code-1", project: "mine", service: "claude-code"},
+		composeContainer{id: "other-cc", name: "other-claude-code-1", project: "other", service: "claude-code"},
+	)
+
+	got, err := Open(t.Context(), "claude-code", discard())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = got.Close() }()
+	if got.id != "mine-cc" {
+		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", got.id, "mine-cc")
+	}
 }
 
 // TestAttach pins the round trip against a real container, both ways it can be

@@ -2,6 +2,28 @@
 // here is the contract callers depend on across releases; the implementation
 // lives in v1alpha1 and may change between alpha revisions.
 //
+// The tunneld tier is two packages:
+//
+//   - github.com/tunnel-pizza/tunneld/v1 (this package) — the Builder
+//     contract, the Err* sentinels, and the constants naming every
+//     environment knob and default. Declare types with these and match
+//     errors against them.
+//   - github.com/tunnel-pizza/tunneld/v1alpha1 — the implementation: New,
+//     the command assembly, the tunnel it runs, the version resolution.
+//
+// New lives in v1alpha1 rather than here, so application code constructs from
+// there and matches errors here:
+//
+//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
+//	if err := cmd.ExecuteContext(ctx); err != nil { ... }
+//
+// A façade package re-exporting New alongside these names would read better,
+// and cannot exist: a constructor has to import what it constructs, v1alpha1
+// already imports this package for the sentinels, and Go does not allow the
+// cycle. Anything that moved the declarations out from under v1alpha1 would
+// hit the same wall one layer down, where attach/docker reaches for
+// ErrInvalidOrigin.
+//
 // The builder assembles the `tunneld` command: a fluent chain of With* setters
 // finalized by Build, which returns a *cobra.Command ready to Execute. That
 // shape is what lets tunneld be both a binary and an embeddable subcommand —
@@ -16,9 +38,19 @@ package v1
 import (
 	"errors"
 	"io"
+	"log/slog"
 
 	"github.com/spf13/cobra"
 )
+
+// Logger is the logger the tunnel and its helpers write to — an alias for
+// *slog.Logger, so a caller names it without importing log/slog and a
+// *slog.Logger from anywhere satisfies it.
+//
+// An alias rather than an interface of our own: slog is already the standard
+// library's answer, and a narrower interface here would buy nothing except a
+// conversion at every call site.
+type Logger = *slog.Logger
 
 // The sentinel errors, centralized: declared here with errors.New, wrapped by
 // the implementation in v1alpha1, and matched by callers with errors.Is. Two
@@ -131,6 +163,22 @@ const (
 	// DefaultProvider.
 	ProviderEnv = "TUNNELD_PROVIDER"
 
+	// CacheDirEnv names the directories tunnel specs are cached in, comma
+	// separated and in order — the mirror of --cache-dir, which beats it.
+	//
+	// An entry strconv.ParseBool reads as a boolean is an instruction rather
+	// than a path: true (and an empty entry) means the working directory,
+	// false turns caching off rather than caching into a directory named
+	// "false". Everything else is a path.
+	//
+	// One false entry disables the whole list, wherever it appears in it, so
+	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats collapse, so ".,true,/tmp"
+	// is the working directory and then /tmp.
+	//
+	// Unset, the cache is the working directory — the same thing setting it
+	// to true says explicitly.
+	CacheDirEnv = "TUNNELD_CACHE_DIR"
+
 	// NoOpenEnv names whether to leave the browser alone once the tunnel is
 	// live — the mirror of --no-open, which beats it. Any value
 	// strconv.ParseBool accepts works; anything else is an error. Set it to
@@ -188,9 +236,9 @@ const DefaultMultiview = true
 
 // Builder assembles the tunneld command. Configure it with the With* methods
 // (each returns the Builder for chaining), then call the terminal Build to
-// produce a *cobra.Command. Obtain one from lib.New.
+// produce a *cobra.Command. Obtain one from v1alpha1.New.
 //
-//	cmd := lib.New().WithURL("http://localhost:3000").Build()
+//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
 //	err := cmd.ExecuteContext(ctx)
 //
 // Every With* value is a default, not a fixed setting: the command's flags
@@ -217,6 +265,14 @@ type Builder interface {
 	// WithProvider sets the quick-tunnel provider host to mint against.
 	// Unset, the provider is DefaultProvider.
 	WithProvider(host string) Builder
+	// WithCacheDir sets the directories tunnel specs are cached in, in
+	// order, appending across calls. A boolean entry is an instruction
+	// rather than a path: true (and an empty entry) names the working
+	// directory, and one false disables the whole list wherever it appears
+	// in it. Entries become absolute and repeats
+	// collapse. Unset, they come from CacheDirEnv, and from the working
+	// directory if that is unset too.
+	WithCacheDir(dirs ...string) Builder
 	// WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
 	// stderr. Unset, the level comes from LogEnv, and silence if that is
 	// unset too.
@@ -231,10 +287,12 @@ type Builder interface {
 	// nothing to sit beside and keeps the bare address for itself. Unset, the
 	// behaviour is DefaultMultiview.
 	WithMultiview(multiview bool) Builder
-	// WithStdout redirects the public URLs, which are written one line per
-	// origin in order, along with the help text and the version banner. Build
+	// WithStdout redirects the help text and the version banner. Build
 	// passes it to the command's SetOut, so calling SetOut on the built
 	// command overrides this. Unset, output goes to the process's stdout.
+	//
+	// A running tunnel writes nothing there: its addresses go to stderr with
+	// the rest of what a person reads.
 	WithStdout(w io.Writer) Builder
 	// WithStderr redirects the banner, the origin map, and the tunnel's logs.
 	// Build passes it to the command's SetErr, so calling SetErr on the built

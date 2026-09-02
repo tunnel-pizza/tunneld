@@ -15,7 +15,7 @@ import (
 )
 
 // New returns a BuilderImpl carrying the defaults that are not the zero value.
-// The lib.New façade wraps this and returns the v1.Builder interface.
+// It is the entry point for application code, and satisfies v1.Builder.
 //
 // Only the booleans need seeding: their defaults are on, and a bool field
 // cannot express "unset" separately from "off". Setting them here rather than
@@ -31,8 +31,14 @@ func New() *BuilderImpl {
 // over the field it defaults from, so an argv value simply overwrites the
 // seed and there is no second copy of the configuration to keep in sync.
 type BuilderImpl struct {
-	name      string
-	urls      []string
+	name string
+	urls []string
+	// cacheDirs distinguishes nil from empty, and that is the whole of the
+	// cache switch's state. Nil is unset, and Build fills it with the working
+	// directory. Empty but not nil is a list a false entry emptied on
+	// purpose, which Build leaves alone and WithCacheDir will not add to. A
+	// later source starts over by setting the field back to nil.
+	cacheDirs []string
 	provider  string
 	logLevel  string
 	multiview bool
@@ -46,7 +52,8 @@ type BuilderImpl struct {
 	open   bool
 	noOpen bool
 
-	// stdout carries the public URLs, stderr the banner, the origin map, and
+	// stdout carries the help text and version banner, stderr the tunnel's own
+	// banner, the origin map, and
 	// the tunnel's logs. They are staging only: Build hands them to the
 	// command with SetOut/SetErr and everything downstream reads them back
 	// through OutOrStdout/ErrOrStderr, so cobra stays the single owner of

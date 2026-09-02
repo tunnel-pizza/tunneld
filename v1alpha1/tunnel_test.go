@@ -9,8 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -155,14 +153,16 @@ func TestPublicURL(t *testing.T) {
 	}
 }
 
-// TestReportSkipsTheEchoOnOneStream pins the terminal case: when stdout and
-// stderr land in the same place the split is invisible, so printing both would
-// show every URL twice — once bare, once in the map. The map wins, because it
-// says which origin each address reaches.
+// TestReportWritesOnlyToStderr pins the output contract: a running tunnel
+// writes its addresses to stderr and nothing at all to stdout.
 //
-// One file passed as both writers is the same condition a terminal produces,
-// and the same one as `tunneld --url ... >out 2>&1`.
-func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
+// stdout used to carry one bare URL per origin as a machine interface. It
+// meant every address printed twice wherever both streams landed together,
+// and the de-duplication meant to hide that could only recognise one file
+// descriptor being literally the other — which a container's two pipes are
+// not, so it never fired there. The map says which origin each address
+// reaches, which the bare lines never did.
+func TestReportWritesOnlyToStderr(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -172,63 +172,22 @@ func TestReportSkipsTheEchoOnOneStream(t *testing.T) {
 		t.Fatalf("parseOrigins: %v", err)
 	}
 
-	path := filepath.Join(t.TempDir(), "merged")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	report(f, f, public, origins, "")
-	if err := f.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	var stderr bytes.Buffer
+	report(&stderr, public, origins, "")
 
-	merged, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	for _, addr := range []string{"https://foo.tunneled.pizza/?0", "https://foo.tunneled.pizza/?1"} {
-		got := 0
-		for line := range strings.SplitSeq(string(merged), "\n") {
-			if strings.Contains(line, addr+" ") || strings.TrimSpace(line) == addr {
-				got++
-			}
-		}
-		if got != 1 {
-			t.Errorf("%s appears on %d lines, want 1:\n%s", addr, got, merged)
-		}
-	}
-}
-
-// TestReportSplitsStreams pins the output contract: stdout is one public URL
-// per origin in order and nothing else, so `| head -1` reaches the default
-// origin and line i reaches origin i. Everything human — the banner, the
-// arrows — belongs to stderr, where it cannot corrupt that stream.
-//
-// Two distinct writers, which is what a redirect of either stream produces —
-// and unlike the merged case above, both halves are written.
-func TestReportSplitsStreams(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.pizza/")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	origins, err := parseOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
-	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	report(&stdout, &stderr, public, origins, "")
-
-	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
-	if stdout.String() != wantOut {
-		t.Errorf("stdout = %q, want %q", stdout.String(), wantOut)
-	}
 	for _, want := range []string{
-		VersionLine(),
+		"  https://foo.tunneled.pizza/?0\n    -> http://localhost:3000\n",
 		"  https://foo.tunneled.pizza/?1\n    -> http://localhost:4000\n",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("stderr %q does not contain %q", stderr.String(), want)
+		}
+	}
+
+	// Every address appears once: in the map, and nowhere else.
+	for _, addr := range []string{"https://foo.tunneled.pizza/?0", "https://foo.tunneled.pizza/?1"} {
+		if got := strings.Count(stderr.String(), addr); got != 1 {
+			t.Errorf("%s appears %d times, want 1:\n%s", addr, got, stderr.String())
 		}
 	}
 }
@@ -338,10 +297,9 @@ func swapOpener(t *testing.T, fn func(string) error) {
 	openURL = fn
 }
 
-// TestReportNamesTheMultiviewPanel pins that the panel's address reaches the
-// human on stderr and never stdout. It answers for every origin at once, so a
-// line for it on stdout would break the rule that makes that stream readable:
-// line i is origin i.
+// TestReportNamesTheMultiviewPanel pins that the panel's own address is what
+// stderr leads with when there is one: it answers for every origin at once, so
+// the per-origin addresses become the indented list beneath it.
 func TestReportNamesTheMultiviewPanel(t *testing.T) {
 	public, err := url.Parse("https://foo.tunneled.pizza/")
 	if err != nil {
@@ -352,13 +310,9 @@ func TestReportNamesTheMultiviewPanel(t *testing.T) {
 		t.Fatalf("parseOrigins: %v", err)
 	}
 
-	var stdout, stderr bytes.Buffer
-	report(&stdout, &stderr, public, origins, multiview.URL(public))
+	var stderr bytes.Buffer
+	report(&stderr, public, origins, multiview.URL(public))
 
-	wantOut := "https://foo.tunneled.pizza/?0\nhttps://foo.tunneled.pizza/?1\n"
-	if stdout.String() != wantOut {
-		t.Errorf("stdout = %q, want only the origins %q", stdout.String(), wantOut)
-	}
 	if !strings.Contains(stderr.String(), "https://foo.tunneled.pizza/\n") {
 		t.Errorf("stderr %q does not name the panel", stderr.String())
 	}

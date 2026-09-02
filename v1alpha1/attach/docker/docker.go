@@ -7,6 +7,7 @@
 package docker
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -165,24 +167,100 @@ func resolveService(ctx context.Context, cli *client.Client, ref string) (string
 		v1.ErrInvalidOrigin, ref, len(found), strings.Join(names, ", "))
 }
 
+// mountinfo is where selfRefs looks for this process's own container id. A
+// variable because the platforms this package is tested on mostly have no
+// /proc at all, and the parsing is worth pinning anyway.
+var mountinfo = "/proc/self/mountinfo"
+
+// containerID matches a 64-hex path component. Both container directories and
+// layer directories are named that way, which is why selfIDs orders its
+// answers rather than picking one.
+var containerID = regexp.MustCompile(`[0-9a-f]{64}`)
+
+// selfRefsMax bounds how many candidate ids are tried. Each one costs an
+// inspect, and a mountinfo that offers a dozen 64-hex paths is one this is not
+// reading correctly — better to widen the lookup than to interrogate the
+// daemon about layer directories.
+const selfRefsMax = 4
+
 // ownProject names the Compose project tunneld itself belongs to, or "" if it
 // does not belong to one.
 //
-// Compose sets a container's hostname to its id unless the service overrides
-// it, so inspecting our own hostname is the cheap way to find our own labels.
-// Every way this can miss — tunneld running on the host, in a plain container,
-// or in a service that sets its own `hostname:` — returns "", which widens the
-// lookup to the whole host rather than breaking it.
+// The references are guesses, checked by being inspected: one that names no
+// container answers 404 and the next is tried. Nothing found means "", which
+// widens the lookup to the whole host — the wrong project would be a far worse
+// answer than no project, so every uncertain path ends here.
 func ownProject(ctx context.Context, cli *client.Client) string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		return ""
+	for _, ref := range selfRefs() {
+		info, err := cli.ContainerInspect(ctx, ref)
+		if err != nil || info.Config == nil {
+			continue
+		}
+		if project := info.Config.Labels[composeProject]; project != "" {
+			return project
+		}
 	}
-	info, err := cli.ContainerInspect(ctx, host)
-	if err != nil || info.Config == nil {
-		return ""
+	return ""
+}
+
+// selfRefs returns what might name this process's own container, cheapest and
+// most portable first.
+//
+// The hostname is the normal case: Compose sets it to the container id. But a
+// service that sets `hostname:` makes it name nothing the daemon knows — and
+// that is not an exotic option, it is what `network_mode: service:<name>`
+// needs, which is the shape this scoping exists to serve. The id is still in
+// mountinfo, in the paths the runtime bind-mounts in, and nothing else inside
+// the container carries it: cgroup reads `0::/` under v2 in a namespace.
+func selfRefs() []string {
+	var refs []string
+	if host, err := os.Hostname(); err == nil && host != "" {
+		refs = append(refs, host)
 	}
-	return info.Config.Labels[composeProject]
+
+	f, err := os.Open(mountinfo)
+	if err != nil {
+		return refs // not Linux, or not in a container
+	}
+	defer func() { _ = f.Close() }()
+	return append(refs, selfIDs(f)...)
+}
+
+// selfIDs pulls candidate container ids out of mountinfo, most likely first.
+//
+// An id under a .../containers/<id>/... path is the runtime's own
+// per-container directory — the one that bind-mounts /etc/hosts and
+// /etc/hostname — so it leads. Anything else is most likely a layer directory
+// that merely looks the same, kept only as a fallback because the layout of
+// this file is the runtime's business rather than an interface it owes anyone.
+func selfIDs(r io.Reader) []string {
+	preferred := map[string]bool{}
+	seen := map[string]bool{}
+	var order []string
+
+	scan := bufio.NewScanner(r)
+	for scan.Scan() {
+		line := scan.Text()
+		for _, id := range containerID.FindAllString(line, -1) {
+			if !seen[id] {
+				seen[id] = true
+				order = append(order, id)
+			}
+			if strings.Contains(line, "/containers/"+id) {
+				preferred[id] = true
+			}
+		}
+	}
+
+	ids := make([]string, 0, len(order))
+	for _, want := range []bool{true, false} {
+		for _, id := range order {
+			if preferred[id] == want && len(ids) < selfRefsMax {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 // Name is the reference the operator typed, not the resolved id: it is what

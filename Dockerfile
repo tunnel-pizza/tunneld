@@ -25,4 +25,5 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 
 FROM busybox:stable
 COPY --from=build /tunneld /bin/tunneld
+WORKDIR /var/run/tunneld
 ENTRYPOINT ["tunneld"]

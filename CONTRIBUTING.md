@@ -11,7 +11,6 @@ Deep-link by filename; line numbers will drift.
 | Topic                                          | Source                                                           |
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Process shell (signals → context → Execute)    | [`main.go`](./main.go)                                           |
-| Façade (`New`, `Version`, type alias)          | [`lib/lib.go`](./lib/lib.go)                                     |
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | Implementation struct + `New` constructor      | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
@@ -20,7 +19,7 @@ Deep-link by filename; line numbers will drift.
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Multiview panel, framing headers, template     | [`v1alpha1/multiview/`](./v1alpha1/multiview)                    |
 | Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
-| godoc examples                                 | [`lib/example_test.go`](./lib/example_test.go)                   |
+| godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
@@ -40,8 +39,6 @@ stable/alpha versioning:
 ```
 github.com/tunnel-pizza/tunneld           — package main. Signals → context →
                                             Execute, and nothing else.
-github.com/tunnel-pizza/tunneld/lib       — façade. Stable surface (New,
-                                            Version, BuilderV1).
 github.com/tunnel-pizza/tunneld/v1        — stable Builder contract, Err*
                                             sentinels, env / default constants.
 github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
@@ -50,13 +47,15 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             between alpha revisions.
 ```
 
-Application code imports `lib` (`lib.New()…`). Code that needs to declare types
-against the interface imports `v1`. Direct access to the `BuilderImpl` struct
-lives in `v1alpha1`.
+Application code constructs from `v1alpha1` (`v1alpha1.New()…`) and matches
+errors against `v1`. There is no façade re-exporting both: a constructor has to
+import what it constructs, `v1alpha1` already imports `v1` for the sentinels,
+and Go does not allow the cycle.
 
 `main.go` stays thin on purpose. Everything the command *does* — flags, help
 text, validation, the tunnel — is assembled by the builder, so another program
-can embed tunneld as a subcommand of its own with `lib.New().WithName("expose")`
+can embed tunneld as a subcommand of its own with
+`v1alpha1.New().WithName("expose")`
 and get the identical behaviour. A feature that only works when tunneld is
 `os.Args[0]` is a feature in the wrong package.
 
@@ -141,7 +140,7 @@ Three tiers, each with a distinct job — don't blur them:
 
 - **`*_test.go` next to the code** — unit tests: anything with fabricated
   inputs or fakes, however elaborate. Includes fuzz targets and the godoc
-  examples in [`lib/example_test.go`](./lib/example_test.go).
+  examples in [`v1alpha1/example_test.go`](./v1alpha1/example_test.go).
 - **`examples/`** — real-world, simple-ish API usage written for humans. An
   example demonstrates; it never asserts. Assertion logic belongs in `e2e/`.
 - **`e2e/`** — the harness builds the `tunneld` binary and every example
@@ -188,7 +187,7 @@ files are for code.
 
 Two deliberate exceptions:
 
-- **`lib/example_test.go`** — godoc examples. `example_test.go` is an
+- **`v1alpha1/example_test.go`** — godoc examples. `example_test.go` is an
   established Go idiom and renders as documentation on pkg.go.dev, so it keeps
   its name.
 - **`e2e/`** — a test-only package, so there's no source file to pair with.
@@ -265,16 +264,15 @@ Easy to get wrong from the diff alone:
   Only an explicit index clears a previous choice. A lone origin has nothing to
   route between and keeps the plain URL — which is why `PublicURL` takes the
   origin count.
-- **stdout is a machine interface.** One public URL per origin, in order,
-  nothing else — a script reads line *i* to reach origin *i*. The banner, the
-  origin map, and every log line go to stderr. Adding a friendly line to stdout
-  breaks callers.
-- **…except when both streams share a destination**, which on a terminal they
-  do. `report` drops the bare stdout lines then, or every URL would print
-  twice. The check is `os.SameFile`, not an isatty test, because the question
-  is "would one reader see this twice" — equally true of `>out 2>&1`. A writer
-  that is not an `*os.File` (a test buffer, an embedder's writer) is never
-  merged.
+- **A running tunnel writes only to stderr** — the banner, the public
+  addresses, the origin map, every log line. stdout carries the help text and
+  `tunneld version` and nothing else, so both stay pipeable.
+- **stdout used to be a machine interface**: one bare public URL per origin,
+  for `| head -1`. It printed every address twice wherever both streams landed
+  together, and the `os.SameFile` de-duplication that hid it could only see one
+  descriptor being literally the other — which a container's two pipes are not,
+  so it never fired in the place it mattered. Don't reintroduce it without
+  solving that.
 - **`examples/` is intentionally duplicated, except for the pages.** Each
   `main.go` is a copy-pasteable starter and stays standalone — don't refactor
   the wiring into a shared helper. The sample HTML in

@@ -30,14 +30,14 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/tunnel-pizza/tunneld/examples/sites"
-	"github.com/tunnel-pizza/tunneld/lib"
+	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := lib.New().
+	cmd := v1alpha1.New().
 		WithURL("http://localhost:3000", "http://localhost:4000").
 		// Only the default origin would open, and this example is about
 		// seeing both. Off, so it reports the whole map and opens nothing.
