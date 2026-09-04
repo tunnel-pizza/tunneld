@@ -1,4 +1,4 @@
-.PHONY: all check fmt fmt-check vet build binary image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary image windows test race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -88,3 +88,33 @@ run: image
 # before a tag does.
 image:
 	docker build --build-arg VERSION=$$(git describe --tags --always --dirty) -t tunneld:local .
+
+# Remove what building and running leave behind.
+#
+# Everything is named, never swept: `docker system prune` would take containers
+# and volumes this repo never created, and a clean target that can ruin an
+# unrelated afternoon is one nobody runs.
+#
+# The cached tunnel spec lives under the user's cache directory, in a
+# per-project entry named the way tunneld names it — the working directory's
+# base plus the first 16 hex of its SHA-256. Only this project's entry is
+# removed; another checkout's cached tunnel is not this target's business.
+# A TUNNEL.env in the tree is removed too, for anyone who pointed --cache-dir
+# at "." on purpose.
+#
+# The compose example keeps a cache in a named volume, which is what
+# `down --volumes` removes; the example's own teardown deliberately does not
+# pass that flag, because there the point is to keep it between runs.
+#
+# Each docker line is prefixed with - so a machine without docker, or a stack
+# that was already down, still finishes the rest.
+clean:
+	rm -f tunneld tunneld.exe TUNNEL.env
+	rm -rf dist
+	@name="$$(basename "$$PWD")-$$(printf %s "$$PWD" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-16)"; \
+	  rm -rf "$$HOME/Library/Caches/tunneld/$$name" "$${XDG_CACHE_HOME:-$$HOME/.cache}/tunneld/$$name"
+	go clean -testcache
+	-docker compose -p tunneld-example down --volumes --remove-orphans 2>/dev/null
+	-docker rm -f tunneld-example 2>/dev/null
+	-docker image rm -f tunneld:local 2>/dev/null
+	rm -rf $${TMPDIR:-/tmp}/tunneld-example-*

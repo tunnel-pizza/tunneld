@@ -36,19 +36,23 @@ const File = "TUNNEL.env"
 // pin choices they made once into every run afterwards.
 var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
 
-// Load reads the first TUNNEL.env found in dirs into this process's
-// environment, and stops there. Later directories are fallbacks, not layers:
-// two files would raise the question of which tunnel is being resumed, and
-// there is no useful answer.
+// Cached returns the spec envelope from the first TUNNEL.env found in dirs,
+// and stops there. Later directories are fallbacks, not layers: two files
+// would raise the question of which tunnel is being resumed, and there is no
+// useful answer.
 //
-// A variable already set is left alone. The file is a cache and the
-// environment is an instruction, so an operator who exported LIBTUNNEL_SPEC
-// deliberately keeps it.
+// It returns the envelope rather than setting LIBTUNNEL_SPEC, which is what
+// this used to do. That variable is the parent-to-child handoff channel, where
+// the parent's tunnel is live by construction, so libtunnel adopts it pinned
+// and asks the provider nothing. A cached spec is the opposite case — the
+// tunnel it names may have been reaped hours ago — and it has to go through
+// libtunnel.From, where the spec's identity rides the mint request and the
+// provider says whether it still exists.
 //
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func Load(cacheDirs []string, log v1.Logger) {
+func Cached(cacheDirs []string, log v1.Logger) string {
 	for _, dir := range cacheDirs {
 		path := filepath.Join(dir, File)
 		if _, err := os.Stat(path); err != nil {
@@ -60,22 +64,36 @@ func Load(cacheDirs []string, log v1.Logger) {
 		v.SetConfigFile(path)
 		if err := v.ReadInConfig(); err != nil {
 			log.Warn("could not read the tunnel cache", "path", path, "error", err)
-			return
+			return ""
 		}
 
-		for _, key := range v.AllKeys() {
-			// viper lower-cases the keys it parses; an environment variable
-			// is upper by convention and LIBTUNNEL_SPEC is by contract.
-			name := strings.ToUpper(key)
-			if _, ok := os.LookupEnv(name); ok {
-				continue
-			}
-			if err := os.Setenv(name, v.GetString(key)); err != nil {
-				log.Warn("could not apply the tunnel cache", "var", name, "error", err)
-			}
+		// viper lower-cases the keys it parses.
+		spec := v.GetString(strings.ToLower(ltv1.SpecEnv))
+		if spec == "" {
+			log.Warn("the tunnel cache names no spec", "path", path)
+			return ""
 		}
-		log.Info("resumed a tunnel from cache", "path", path)
-		return
+		log.Info("resuming a tunnel from cache", "path", path)
+		return spec
+	}
+	return ""
+}
+
+// Discard removes the cache from every directory holding one, so the next run
+// mints instead of replaying.
+//
+// The caller decides when: a spec the provider refuses outright is dead and
+// keeping it would fail every run the same way, while a hostname somebody else
+// now holds is not this spec's fault and throwing it away would not win the
+// name back.
+func Discard(cacheDirs []string, log v1.Logger) {
+	for _, dir := range cacheDirs {
+		path := filepath.Join(dir, File)
+		if err := os.Remove(path); err == nil {
+			log.Info("discarded a dead tunnel cache", "path", path)
+		} else if !os.IsNotExist(err) {
+			log.Warn("could not discard the tunnel cache", "path", path, "error", err)
+		}
 	}
 }
 
@@ -90,11 +108,17 @@ func Load(cacheDirs []string, log v1.Logger) {
 // means the next run resumes from whichever it turns out to have. A directory
 // that cannot be written is skipped rather than fatal, for the same reason.
 //
-// The spec is read from the environment rather than from the tunnel. libtunnel
-// exports a freshly minted one there itself, and it is the same envelope
-// Serialize returns — while asking the backend's provider for it again would
-// mint a second tunnel, because a spec this process exported reads as absent
-// to the adopter that would otherwise replay it.
+// The spec is read from the environment rather than from the tunnel, and it
+// has to be read after the tunnel is up rather than being the one that was
+// replayed. Nothing has to fail for the two to differ: a reclaim can hold the
+// hostname and replace the tunnel behind it, and a reservation that lapsed
+// entirely is adopted on whatever hostname was minted in its place — a new
+// name, no error, and a stored spec that now points at nothing. libtunnel
+// exports whatever the chain resolved, so the environment is the current one.
+//
+// Asking the backend's provider for it instead would mint a second tunnel,
+// because a spec this process exported reads as absent to the adopter that
+// would otherwise replay it.
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
@@ -115,6 +139,15 @@ func Save(cacheDirs []string, log v1.Logger) {
 
 	var written []string
 	for _, dir := range cacheDirs {
+		// The default cache directory does not exist until the first save, so
+		// creating it is part of saving rather than something the caller was
+		// asked to arrange. 0700: it holds credentials, and a directory
+		// somebody else can list is a directory that has already leaked which
+		// projects are on this machine.
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			log.Debug("could not make a cache directory", "dir", dir, "error", err)
+			continue
+		}
 		path := filepath.Join(dir, File)
 		// 0600: a spec is the credential for a public hostname.
 		if err := os.WriteFile(path, body, 0o600); err != nil {

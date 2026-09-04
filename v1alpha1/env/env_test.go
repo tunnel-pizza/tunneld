@@ -31,9 +31,9 @@ func write(t *testing.T, dir, body string) {
 }
 
 // TestRoundTrip is the case the whole package exists for: what Save writes,
-// Load reads back byte for byte. The spec is a JSON envelope, so this is what
-// pins the quoting — a value mangled here is a tunnel that cannot be resumed,
-// and it would fail on the second run rather than the first.
+// Cached reads back byte for byte. The spec is a JSON envelope, so this is
+// what pins the quoting — a value mangled here is a tunnel that cannot be
+// resumed, and it would fail on the second run rather than the first.
 func TestRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(ltv1.SpecEnv, envelope)
@@ -41,17 +41,8 @@ func TestRoundTrip(t *testing.T) {
 
 	env.Save([]string{dir}, discard())
 
-	// A fresh process would have neither set. Unset them so Load is what puts
-	// them back rather than finding them already there.
-	os.Unsetenv(ltv1.SpecEnv)
-	os.Unsetenv(ltv1.HostnameEnv)
-	env.Load([]string{dir}, discard())
-
-	if got := os.Getenv(ltv1.SpecEnv); got != envelope {
-		t.Errorf("%s = %q, want %q", ltv1.SpecEnv, got, envelope)
-	}
-	if got, want := os.Getenv(ltv1.HostnameEnv), "brave-otter.tunneled.pizza"; got != want {
-		t.Errorf("%s = %q, want %q", ltv1.HostnameEnv, got, want)
+	if got := env.Cached([]string{dir}, discard()); got != envelope {
+		t.Errorf("Cached() = %q, want %q", got, envelope)
 	}
 }
 
@@ -71,6 +62,21 @@ func TestSave(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, env.File)); err != nil {
 				t.Errorf("nothing written to %s: %v", dir, err)
 			}
+		}
+	})
+
+	// The default cache directory does not exist until the first save, so a
+	// Save that cannot create one caches nothing — silently, since it never
+	// fails a tunnel. Every other case here hands it a directory that already
+	// exists, which is why this needs saying separately.
+	t.Run("a directory that does not exist yet is created", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "nested", "cache")
+		t.Setenv(ltv1.SpecEnv, envelope)
+
+		env.Save([]string{dir}, discard())
+
+		if got := env.Cached([]string{dir}, discard()); got != envelope {
+			t.Errorf("Cached() = %q, want the spec written into a new directory", got)
 		}
 	})
 
@@ -151,31 +157,15 @@ func TestSave(t *testing.T) {
 	})
 }
 
-// TestLoad pins which file is chosen, and that the environment outranks it.
-func TestLoad(t *testing.T) {
+// TestCached pins which file is chosen and what a broken one costs.
+func TestCached(t *testing.T) {
 	t.Run("the first directory holding one wins", func(t *testing.T) {
 		empty, first, second := t.TempDir(), t.TempDir(), t.TempDir()
 		write(t, first, ltv1.SpecEnv+"='"+envelope+"'\n")
 		write(t, second, ltv1.SpecEnv+"='wrong'\n")
-		os.Unsetenv(ltv1.SpecEnv)
 
-		env.Load([]string{empty, first, second}, discard())
-
-		if got := os.Getenv(ltv1.SpecEnv); got != envelope {
-			t.Errorf("%s = %q, want the first file's value", ltv1.SpecEnv, got)
-		}
-	})
-
-	// The file is a cache and the environment is an instruction.
-	t.Run("a variable already set is left alone", func(t *testing.T) {
-		dir := t.TempDir()
-		write(t, dir, ltv1.SpecEnv+"='"+envelope+"'\n")
-		t.Setenv(ltv1.SpecEnv, "set-by-the-operator")
-
-		env.Load([]string{dir}, discard())
-
-		if got := os.Getenv(ltv1.SpecEnv); got != "set-by-the-operator" {
-			t.Errorf("%s = %q, want the operator's value", ltv1.SpecEnv, got)
+		if got := env.Cached([]string{empty, first, second}, discard()); got != envelope {
+			t.Errorf("Cached() = %q, want the first file's value", got)
 		}
 	})
 
@@ -183,22 +173,48 @@ func TestLoad(t *testing.T) {
 	t.Run("a malformed file is survivable", func(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "this is not\x00 an env file at all")
-		os.Unsetenv(ltv1.SpecEnv)
 
-		env.Load([]string{dir}, discard())
+		if got := env.Cached([]string{dir}, discard()); got != "" {
+			t.Errorf("Cached() = %q, want nothing from a broken file", got)
+		}
+	})
 
-		if got := os.Getenv(ltv1.SpecEnv); got != "" {
-			t.Errorf("%s = %q, want nothing adopted from a broken file", ltv1.SpecEnv, got)
+	// A file naming no spec is not a cache, whatever else is in it.
+	t.Run("a file with no spec is nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
+
+		if got := env.Cached([]string{dir}, discard()); got != "" {
+			t.Errorf("Cached() = %q, want nothing", got)
 		}
 	})
 
 	t.Run("no directories and no files are both fine", func(t *testing.T) {
-		os.Unsetenv(ltv1.SpecEnv)
-		env.Load(nil, discard())
-		env.Load([]string{t.TempDir()}, discard())
-
-		if got := os.Getenv(ltv1.SpecEnv); got != "" {
-			t.Errorf("%s = %q, want nothing", ltv1.SpecEnv, got)
+		if got := env.Cached(nil, discard()); got != "" {
+			t.Errorf("Cached(nil) = %q, want nothing", got)
+		}
+		if got := env.Cached([]string{t.TempDir()}, discard()); got != "" {
+			t.Errorf("Cached() = %q, want nothing", got)
 		}
 	})
+}
+
+// TestDiscard pins that a dead cache is removed everywhere it was written,
+// since Save writes to every directory it can and one survivor would resume
+// the same dead tunnel on the next run.
+func TestDiscard(t *testing.T) {
+	first, second, empty := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv(ltv1.SpecEnv, envelope)
+	env.Save([]string{first, second}, discard())
+
+	env.Discard([]string{first, second, empty}, discard())
+
+	for _, dir := range []string{first, second} {
+		if _, err := os.Stat(filepath.Join(dir, env.File)); !os.IsNotExist(err) {
+			t.Errorf("%s still holds a cache: %v", dir, err)
+		}
+	}
+	if got := env.Cached([]string{first, second}, discard()); got != "" {
+		t.Errorf("Cached() = %q after Discard, want nothing", got)
+	}
 }
