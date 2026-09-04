@@ -31,9 +31,8 @@ import (
 	"syscall"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
@@ -102,12 +101,12 @@ func start(ctx context.Context) (func(), error) {
 	// replaced when it is not. Reusing rather than recreating means an
 	// interrupted run does not throw away a shell somebody was using; replacing
 	// a stopped one means this never attaches to a corpse.
-	switch info, err := cli.ContainerInspect(ctx, name); {
-	case err == nil && info.State != nil && info.State.Running:
+	switch res, err := cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{}); {
+	case err == nil && res.Container.State != nil && res.Container.State.Running:
 		// Somebody may be typing in it; leave it, and leave it behind too.
 		return func() { _ = cli.Close() }, nil
 	case err == nil:
-		if err := cli.ContainerRemove(ctx, info.ID, container.RemoveOptions{Force: true}); err != nil {
+		if _, err := cli.ContainerRemove(ctx, res.Container.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 			_ = cli.Close()
 			return nil, fmt.Errorf("remove the stopped %s: %w", name, err)
 		}
@@ -118,19 +117,21 @@ func start(ctx context.Context) (func(), error) {
 
 	// Tty and OpenStdin are docker run's -t and -i. They are what make the
 	// attached terminal interactive, and nothing can add them afterwards.
-	created, err := cli.ContainerCreate(ctx,
-		&container.Config{
+	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:     "alpine",
 			Cmd:       []string{"sh"},
 			Tty:       true,
 			OpenStdin: true,
 		},
-		&container.HostConfig{AutoRemove: true}, nil, nil, name)
+		HostConfig: &container.HostConfig{AutoRemove: true},
+		Name:       name,
+	})
 	if err != nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("create %s: %w", name, err)
 	}
-	if err := cli.ContainerStart(ctx, created.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
@@ -139,7 +140,7 @@ func start(ctx context.Context) (func(), error) {
 	// tunnel ending, by a signal or by failing, which would otherwise leave it
 	// running. WithoutCancel because the context is usually already done.
 	return func() {
-		_ = cli.ContainerRemove(context.WithoutCancel(ctx), created.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.WithoutCancel(ctx), created.ID, client.ContainerRemoveOptions{Force: true})
 		_ = cli.Close()
 	}, nil
 }
@@ -155,7 +156,7 @@ func ensureImage(ctx context.Context, cli *client.Client) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "attach: pulling alpine")
-	body, err := cli.ImagePull(ctx, "alpine", image.PullOptions{})
+	body, err := cli.ImagePull(ctx, "alpine", client.ImagePullOptions{})
 	if err != nil {
 		return fmt.Errorf("pull alpine: %w", err)
 	}

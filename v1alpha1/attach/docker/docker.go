@@ -20,10 +20,8 @@ import (
 	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -57,7 +55,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		return nil, fmt.Errorf("%w: %w", v1.ErrNoDocker, err)
 	}
 
-	info, err := cli.ContainerInspect(ctx, ref)
+	res, err := cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
 	// Under Compose the name a person knows is not the name the daemon knows:
 	// service `web` in project `proj` is a container called `proj-web-1`, so
 	// the obvious TUNNELD_URL misses every time. Falling back to the labels
@@ -68,7 +66,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		if id, serr := resolveService(ctx, cli, ref); serr != nil {
 			err = serr
 		} else if id != "" {
-			info, err = cli.ContainerInspect(ctx, id)
+			res, err = cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 		}
 	}
 	if err != nil {
@@ -88,6 +86,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 			return nil, fmt.Errorf("%w: inspecting %q: %w", v1.ErrNoDocker, ref, err)
 		}
 	}
+	info := res.Container
 	if info.State == nil || !info.State.Running {
 		_ = cli.Close()
 		return nil, fmt.Errorf("%w: container %q is not running", v1.ErrInvalidOrigin, ref)
@@ -134,7 +133,7 @@ const (
 // with "container %q is not running", which names the lever, instead of
 // degrading to "no container named" for a container that plainly exists.
 func resolveService(ctx context.Context, cli *client.Client, ref string) (string, error) {
-	f := filters.NewArgs(filters.Arg("label", composeService+"="+ref))
+	f := make(client.Filters).Add("label", composeService+"="+ref)
 	// Scoping to tunneld's own project is what keeps `web` from being
 	// ambiguous on a machine busy enough to run two of them — which is
 	// precisely when it matters. Off the scope, an ambiguous match is still an
@@ -143,7 +142,8 @@ func resolveService(ctx context.Context, cli *client.Client, ref string) (string
 		f.Add("label", composeProject+"="+project)
 	}
 
-	found, err := cli.ContainerList(ctx, container.ListOptions{All: true, Filters: f})
+	list, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f})
+	found := list.Items
 	if err != nil || len(found) == 0 {
 		return "", nil
 	}
@@ -192,11 +192,11 @@ const selfRefsMax = 4
 // answer than no project, so every uncertain path ends here.
 func ownProject(ctx context.Context, cli *client.Client) string {
 	for _, ref := range selfRefs() {
-		info, err := cli.ContainerInspect(ctx, ref)
-		if err != nil || info.Config == nil {
+		res, err := cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
+		if err != nil || res.Container.Config == nil {
 			continue
 		}
-		if project := info.Config.Labels[composeProject]; project != "" {
+		if project := res.Container.Config.Labels[composeProject]; project != "" {
 			return project
 		}
 	}
@@ -287,7 +287,7 @@ func (a *Attacher) Close() error { return a.cli.Close() }
 // printing. An empty terminal on a quiet container is indistinguishable from a
 // broken one, and this page is usually opened long after the container started.
 func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	resp, err := a.cli.ContainerAttach(ctx, a.id, container.AttachOptions{
+	resp, err := a.cli.ContainerAttach(ctx, a.id, client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  a.stdin,
 		Stdout: true,
@@ -361,7 +361,7 @@ func (a *Attacher) watchResize(ctx context.Context, resize <-chan remotecommand.
 		if !a.tty || size.Width == 0 || size.Height == 0 {
 			continue
 		}
-		err := a.cli.ContainerResize(ctx, a.id, container.ResizeOptions{
+		_, err := a.cli.ContainerResize(ctx, a.id, client.ContainerResizeOptions{
 			Height: uint(size.Height),
 			Width:  uint(size.Width),
 		})
