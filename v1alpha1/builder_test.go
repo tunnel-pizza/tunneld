@@ -246,8 +246,12 @@ func TestWithOpenSeedsTheDefault(t *testing.T) {
 // a test cannot rely on that path existing, and every rule here is about the
 // working directory rather than that particular one.
 //
-// Paths are written as "$WD" (that working directory) and "$OTHER" (a second
-// one), in the inputs as well as the wants. Spelling them "/tmp" would be a
+// Paths are written as "$WD" (that working directory), "$OTHER" (a second
+// one) and "$DEFAULT" (wherever an unconfigured run caches), in the inputs as
+// well as the wants. $DEFAULT is read off a builder that was asked for
+// nothing rather than recomputed here, so the table says "the same place the
+// default goes" without restating how that place is chosen —
+// TestDefaultCacheDir pins the choosing. Spelling them "/tmp" would be a
 // POSIX assumption: filepath.Abs turns a rooted path into C:\tmp on Windows,
 // so a literal want would be right on one platform and wrong on the other.
 func TestCacheDir(t *testing.T) {
@@ -258,20 +262,21 @@ func TestCacheDir(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "the working directory by default", want: []string{"$WD"}},
+		{name: "the default location when nothing asks", want: []string{"$DEFAULT"}},
 		{
-			// The value the compose example ships. Three entries in, two out:
-			// "." and "true" are both the working directory.
-			name: "the compose value collapses to two",
+			// "." is the working directory and "true" is the default, which
+			// are different places now that the default moved out of the
+			// checkout — so this collapses nothing and names three.
+			name: "a dot and a true are two different directories",
 			env:  ".,true,$OTHER",
-			want: []string{"$WD", "$OTHER"},
+			want: []string{"$WD", "$DEFAULT", "$OTHER"},
 		},
 		{
-			name: "every spelling of true is the working directory",
+			name: "every spelling of true is the default location",
 			env:  "1,t,T,TRUE,True,true",
-			want: []string{"$WD"},
+			want: []string{"$DEFAULT"},
 		},
-		{name: "an empty entry is the working directory too", args: []string{"--cache-dir", ""}, want: []string{"$WD"}},
+		{name: "an empty entry is the default too", args: []string{"--cache-dir", ""}, want: []string{"$DEFAULT"}},
 		{name: "a relative path becomes absolute", env: "sub", want: []string{"$WD/sub"}},
 		{
 			// Both halves are instructions. Without the false half, turning
@@ -366,10 +371,16 @@ func TestCacheDir(t *testing.T) {
 			}
 			other := t.TempDir()
 
+			// What an unconfigured run resolves to, from this working
+			// directory. Build seeds the default; nothing is executed, so the
+			// environment is not applied to it.
+			probe := v1alpha1.New().WithURL("http://localhost:3000")
+			dflt := probe.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
+
 			// The same substitution on inputs and wants, so a path is written
 			// once and means the same thing on either platform.
 			resolve := func(s string) string {
-				r := strings.NewReplacer("$WD", workdir, "$OTHER", other)
+				r := strings.NewReplacer("$WD", workdir, "$OTHER", other, "$DEFAULT", dflt)
 				return filepath.FromSlash(r.Replace(s))
 			}
 			resolveAll := func(in []string) []string {
@@ -450,4 +461,54 @@ func TestWithMultiviewSeedsTheDefault(t *testing.T) {
 	if got := b.Build().Flags().Lookup("multiview").DefValue; got != "false" {
 		t.Errorf("--multiview default = %q, want %q", got, "false")
 	}
+}
+
+// TestDefaultCacheDir pins where an unconfigured run caches, which is the one
+// thing the table above takes as given.
+//
+// The rule that matters is the first: a spec is credentials, and the working
+// directory is usually a repository. No filename is reliably ignored there —
+// against GitHub's 239 gitignore templates the best candidate managed 13%, and
+// against 752 real ones, 26% — so the only safe answer is not to write into a
+// checkout at all.
+func TestDefaultCacheDir(t *testing.T) {
+	dflt := func(t *testing.T) string {
+		t.Helper()
+		b := v1alpha1.New().WithURL("http://localhost:3000")
+		return b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
+	}
+
+	t.Run("is not inside the working directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		workdir, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd: %v", err)
+		}
+		got := dflt(t)
+		if rel, err := filepath.Rel(workdir, got); err == nil && !strings.HasPrefix(rel, "..") {
+			t.Errorf("default %q is inside the working directory %q", got, workdir)
+		}
+	})
+
+	t.Run("is under the user cache directory", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			t.Skipf("no user cache directory: %v", err)
+		}
+		if got := dflt(t); !strings.HasPrefix(got, cache) {
+			t.Errorf("default %q is not under %q", got, cache)
+		}
+	})
+
+	// Two projects on one machine are two tunnels, so the working directory
+	// has to reach the name — which is the whole reason it is fingerprinted
+	// rather than fixed.
+	t.Run("a different working directory is a different cache", func(t *testing.T) {
+		first := func() string { t.Chdir(t.TempDir()); return dflt(t) }
+		a, b := first(), first()
+		if a == b {
+			t.Errorf("two working directories share a cache: %q", a)
+		}
+	})
 }

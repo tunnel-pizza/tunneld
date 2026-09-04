@@ -7,6 +7,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - var-run-tunneld:/var/run/tunneld
     environment:
+      - TUNNELD_LOG=debug
+      # Named, because the default is under the user's cache directory, which
+      # in a container is /root/.cache and goes away with it. This is the
+      # mounted volume, so the tunnel keeps its hostname across a recreate.
+      - TUNNELD_CACHE_DIR=/var/run/tunneld
       - TUNNELD_URL=http+ws://localhost:14500,dockerd://claude-code
 
   google-chrome:

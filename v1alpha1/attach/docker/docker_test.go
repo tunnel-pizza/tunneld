@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -55,7 +55,7 @@ func withDaemon(t *testing.T) *client.Client {
 	if err != nil {
 		t.Skipf("no docker client: %v", err)
 	}
-	if _, err := cli.Ping(t.Context()); err != nil {
+	if _, err := cli.Ping(t.Context(), client.PingOptions{}); err != nil {
 		_ = cli.Close()
 		t.Skipf("no docker daemon: %v", err)
 	}
@@ -72,21 +72,22 @@ func withDaemon(t *testing.T) *client.Client {
 // attach can do.
 func startContainer(t *testing.T, cli *client.Client, tty, stdin bool) string {
 	t.Helper()
-	created, err := cli.ContainerCreate(t.Context(),
-		&container.Config{
+	created, err := cli.ContainerCreate(t.Context(), client.ContainerCreateOptions{
+		Config: &container.Config{
 			Image:     "alpine",
 			Cmd:       []string{"sh"},
 			Tty:       tty,
 			OpenStdin: stdin,
-		}, nil, nil, nil, "")
+		},
+	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = cli.ContainerRemove(context.WithoutCancel(t.Context()), created.ID,
-			container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(context.WithoutCancel(t.Context()), created.ID,
+			client.ContainerRemoveOptions{Force: true})
 	})
-	if err := cli.ContainerStart(t.Context(), created.ID, container.StartOptions{}); err != nil {
+	if _, err := cli.ContainerStart(t.Context(), created.ID, client.ContainerStartOptions{}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	return created.ID
@@ -115,7 +116,7 @@ func TestOpenRejects(t *testing.T) {
 	t.Run("container not running", func(t *testing.T) {
 		cli := withDaemon(t)
 		id := startContainer(t, cli, true, true)
-		if err := cli.ContainerStop(t.Context(), id, container.StopOptions{}); err != nil {
+		if _, err := cli.ContainerStop(t.Context(), id, client.ContainerStopOptions{}); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
 		got, err := Open(t.Context(), id, discard())

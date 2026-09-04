@@ -386,10 +386,15 @@ for routine work — PR flow gives CI + auto-release a clean audit trail. Pushin
 to `main` auto-bumps a patch tag and signs the release (see Releasing below).
 
 Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
-etc. It also covers `*.local`, which is what catches `libtunnel.local` and
-`libtunnel.owner.local` — a pair of credentials a mint leaves in the working
-directory, so running an example here writes them without asking. They are
-ignored by that one line rather than by name; don't narrow it.
+`*.local`, etc. Keep the `*.local` line broad rather than narrowing it to
+names.
+
+`TUNNEL.env` needs its own entry, because it is not a `*.local`. It is the
+cached tunnel spec — credentials — and the default cache directory is the
+working directory, so running anything here writes one without asking. A
+rename of that file has to update `.gitignore` in the same change, or the next
+`git add -A` commits a credential. `make clean` removes it, along with the
+compose example's volume and the local image.
 
 ## Pull requests
 

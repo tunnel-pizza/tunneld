@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -30,10 +32,10 @@ func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
 // appending across calls.
 //
 // An entry that is a boolean is an instruction rather than a path: true names
-// the working directory, false names nothing at all. That is what lets one
+// the default location, false names nothing at all. That is what lets one
 // field take both a switch and a list — "on" is what an operator means by
-// setting the variable to true, and the working directory is the one answer
-// that needs no further configuration. An empty entry reads as true, since
+// setting the variable to true, and defaultCacheDir is the answer that needs
+// no further configuration. An empty entry reads as true, since
 // nothing else it could mean is useful.
 //
 // The false half matters as much as the true half. Without it, an operator
@@ -50,9 +52,9 @@ func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
 //
 // Entries are resolved to absolute paths, so a later chdir cannot move a cache
 // out from under the process, and that is also what makes deduplication mean
-// anything: ".", "true" and the working directory's own path are three
-// spellings of one directory, and a list that cached to it three times is not
-// a list anybody wrote on purpose.
+// anything: "." and the working directory's own path are two spellings of one
+// directory, and a list that cached to it twice is not a list anybody wrote on
+// purpose.
 //
 // A directory that cannot be resolved is dropped rather than reported. The
 // only way that happens is os.Getwd failing, which is the same condition that
@@ -74,7 +76,7 @@ func (b *BuilderImpl) WithCacheDir(dirs ...string) v1.Builder {
 			dir = ""
 		}
 		if dir == "" {
-			dir, _ = os.Getwd()
+			dir = defaultCacheDir()
 		}
 		if dir == "" {
 			continue
@@ -216,8 +218,8 @@ The public URLs, the origin map and every log line go to stderr.`,
 	// names is flagEnv, in env.go.
 	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
 		"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
-	// Unset, specs cache into the working directory. Seeded here rather than
-	// in New so that an explicit WithCacheDir replaces the default instead of
+	// Unset, specs cache into defaultCacheDir. Seeded here rather than in New
+	// so that an explicit WithCacheDir replaces the default instead of
 	// appending to it: a caller naming a directory means that directory, not
 	// that one and wherever the process happened to start.
 	//
@@ -227,7 +229,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 		b.WithCacheDir("")
 	}
 	cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
-		"directory to cache tunnel specs in (repeat for more; empty or true means the working directory) [$"+v1.CacheDirEnv+", comma-separated]")
+		"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
 	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
@@ -298,6 +300,44 @@ func (v *cacheDirValue) Replace(dirs []string) error {
 	v.b.cacheDirs, v.changed = nil, true
 	v.b.WithCacheDir(dirs...)
 	return nil
+}
+
+// defaultCacheDir is where a spec goes when nothing says otherwise: a
+// per-project directory under the user's cache directory.
+//
+// Not the working directory, which is what this used to be. A spec is
+// credentials, the working directory is usually a repository, and no filename
+// avoids being committed there: measured against GitHub's 239 gitignore
+// templates and 752 real ones, the best a name managed was 13% and 26%. Nothing
+// written into somebody's checkout is safe by default, so nothing is written
+// there.
+//
+// The working directory still decides *which* cache, because two projects on
+// one machine are two tunnels. It is fingerprinted rather than mirrored: a path
+// cannot be a single path element, and hashing it sidesteps every question
+// about separators, length and case. The base name is kept as a prefix so the
+// directory is recognisable to a person looking at it, and the hash is what
+// makes it unique.
+//
+// An empty result means the user has no cache directory, which WithCacheDir
+// reads as nothing to cache — the same as any other unusable entry.
+func defaultCacheDir() string {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(wd))
+	name := hex.EncodeToString(sum[:])[:16]
+	// A readable prefix, when there is one to read: "/" and "." have no base
+	// worth showing, and the hash alone is still correct.
+	if label := filepath.Base(wd); label != "" && label != "." && label != string(filepath.Separator) {
+		name = label + "-" + name
+	}
+	return filepath.Join(base, "tunneld", name)
 }
 
 // boolish reports whether s is a boolean rather than a path, and which one.
