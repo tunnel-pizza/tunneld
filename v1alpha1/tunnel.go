@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cnuss/libtunnel"
+	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/env"
@@ -55,29 +57,30 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	}
 	defer bound.Close()
 
+	cached := ""
 	if len(b.cacheDirs) > 0 {
-		env.Load(b.cacheDirs, log)
+		cached = env.Cached(b.cacheDirs, log)
 	}
 
-	backend := libtunnel.Cloudflare()
-	if b.provider != "" {
-		backend = backend.WithProvider(b.provider)
-	}
 	// Pure-lazy: nothing dials until URL below trips the start. WithContext
 	// upgrades URL from "the hostname resolves" to "reachable end to end" and
 	// makes it return nil on cancel, so a signal during startup exits cleanly.
-	tun := libtunnel.New(backend).
-		WithLogger(log).
-		WithContext(ctx).
-		WithLocalURL(bound.dialable...)
-
-	// Served in front of the origin proxy, so the panel needs no port of its
-	// own and no origin ever sees the request.
-	view := ""
-	if multiview.Wanted(b.multiview, origins) {
-		tun.WithInterceptor(multiview.Panel(origins, log))
-		tun.WithInterceptor(multiview.Unframe())
+	start := func(spec string) libtunnel.TunnelV1 {
+		tun := b.engine(spec).
+			WithLogger(log).
+			WithContext(ctx).
+			WithLocalURL(bound.dialable...)
+		// Served in front of the origin proxy, so the panel needs no port of
+		// its own and no origin ever sees the request.
+		if multiview.Wanted(b.multiview, origins) {
+			tun.WithInterceptor(multiview.Panel(origins, log))
+			tun.WithInterceptor(multiview.Unframe())
+		}
+		return tun
 	}
+	tun := start(cached)
+
+	view := ""
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
 
@@ -91,7 +94,35 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 
 	public := tun.URL()
 	if public == nil {
-		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+		cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+
+		// The edge refused the credential this spec carries. That is the
+		// whole of the class now: a reservation that lapsed is adopted on
+		// whatever hostname the provider minted in its place, silently and
+		// without an error, so the only way a replay still fails here is the
+		// one where the provider was never reached — the spec is served as
+		// given, and the edge is where a dead one is finally found out.
+		//
+		// Which makes the file the thing at fault, and leaving it in place the
+		// real cost: every later run replays it, is served it again, and dies
+		// at the same edge. Drop it, then mint once, which is a tunnel rather
+		// than an explanation if the provider is reachable by now and the same
+		// error either way if it is not.
+		//
+		// Only this class. ErrRejected is a mint the provider refused outright
+		// or a request that could not be built at all — configuration, and
+		// nothing the stored spec had a part in. Discarding on it would throw
+		// away a good credential over an unroutable provider or a bad header.
+		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
+			return cause
+		}
+		env.Discard(b.cacheDirs, log)
+		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
+
+		tun = start("")
+		if public = tun.URL(); public == nil {
+			return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+		}
 	}
 	if multiview.Wanted(b.multiview, origins) {
 		view = multiview.URL(public)
@@ -117,6 +148,37 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	case <-tun.Done():
 		return tun.Err()
 	}
+}
+
+// engine returns the unstarted tunnel to run: a replay of spec when there is
+// one, otherwise a fresh mint.
+//
+// libtunnel.From rather than the LIBTUNNEL_SPEC variable, because From is the
+// path that asks. A replayed spec's identity rides the mint request, so a
+// tunnel reaped since it was cached still comes back on the same hostname when
+// the provider can still give that name out — which is the whole point of
+// keeping the spec. When it cannot, the mint has already happened and its
+// hostname is adopted rather than refused, so a lapsed reservation costs the
+// name and nothing else. The variable is the parent-to-child channel, where
+// the tunnel is live by construction and no question needs asking.
+//
+// From builds its own backend, so the provider host travels by environment
+// rather than through WithProvider. It is the same knob either way: libtunnel
+// reads that variable over a code-set host.
+func (b *BuilderImpl) engine(spec string) libtunnel.TunnelV1 {
+	if b.provider != "" {
+		// Best effort: a provider that cannot be set falls back to the
+		// default, which is where an unset one would have gone anyway.
+		_ = os.Setenv(ltv1.CloudflareProviderEnv, b.provider)
+	}
+	if spec != "" {
+		return libtunnel.From(spec)
+	}
+	backend := libtunnel.Cloudflare()
+	if b.provider != "" {
+		backend = backend.WithProvider(b.provider)
+	}
+	return libtunnel.New(backend)
 }
 
 // report writes the human-readable map to stderr: a line per public address

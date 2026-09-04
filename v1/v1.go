@@ -167,16 +167,19 @@ const (
 	// separated and in order — the mirror of --cache-dir, which beats it.
 	//
 	// An entry strconv.ParseBool reads as a boolean is an instruction rather
-	// than a path: true (and an empty entry) means the working directory,
+	// than a path: true (and an empty entry) means the default location,
 	// false turns caching off rather than caching into a directory named
 	// "false". Everything else is a path.
 	//
 	// One false entry disables the whole list, wherever it appears in it, so
-	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats collapse, so ".,true,/tmp"
-	// is the working directory and then /tmp.
+	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats
+	// collapse, so ".,true,/tmp" is the working directory, the default, and
+	// /tmp.
 	//
-	// Unset, the cache is the working directory — the same thing setting it
-	// to true says explicitly.
+	// Unset, the cache is that default: a per-project directory under the
+	// user's cache directory, named for the working directory it belongs to.
+	// Not the working directory itself — a spec is credentials, and a
+	// repository is the one place they must not be written by default.
 	CacheDirEnv = "TUNNELD_CACHE_DIR"
 
 	// NoOpenEnv names whether to leave the browser alone once the tunnel is
@@ -267,8 +270,8 @@ type Builder interface {
 	WithProvider(host string) Builder
 	// WithCacheDir sets the directories tunnel specs are cached in, in
 	// order, appending across calls. A boolean entry is an instruction
-	// rather than a path: true (and an empty entry) names the working
-	// directory, and one false disables the whole list wherever it appears
+	// rather than a path: true (and an empty entry) names the default
+	// location, and one false disables the whole list wherever it appears
 	// in it. Entries become absolute and repeats
 	// collapse. Unset, they come from CacheDirEnv, and from the working
 	// directory if that is unset too.

@@ -39,6 +39,11 @@ go.work.sum
 # Built by `make binary`.
 /tunneld
 
+# A cached tunnel spec, which a run writes into its working directory unless
+# --cache-dir says otherwise. Credentials, and named rather than caught by the
+# *.local line above, so it needs its own entry.
+TUNNEL.env
+
 # Subagent-driven development scratch: ledgers, briefs, review packages.
 # Regenerated per plan; the git history is the durable record.
 .superpowers/
