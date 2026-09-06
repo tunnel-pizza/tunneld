@@ -49,7 +49,7 @@ func TestRoundTrip(t *testing.T) {
 // TestSave pins where the file lands, what it holds, and that a spec is
 // written as a credential rather than as ordinary data.
 func TestSave(t *testing.T) {
-	// Every writable one, where Load takes the first it finds: which
+	// Every writable one, where Cached takes the first it finds: which
 	// directories exist depends on where the process is running, so writing to
 	// all of them is what makes the next run resume from whichever it has.
 	t.Run("every writable directory gets one", func(t *testing.T) {

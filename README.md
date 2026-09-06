@@ -341,9 +341,10 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             version resolution. May change
                                             between alpha revisions.
 github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each: engine,
-                                            counter, cache, panel, browser, attach,
-                                            attach/docker. Behind the contracts in
-                                            v1alpha1; see CONTRIBUTING.
+                                            cache, panel, browser, counter and
+                                            attach/docker sit behind the contracts
+                                            in v1alpha1; attach declares its own
+                                            (Target) and serves it. See CONTRIBUTING.
 ```
 
 Application code calls `v1alpha1.New()` and matches errors against `v1`.
@@ -375,12 +376,17 @@ func WithStdout(w io.Writer) Option      // help text and the version banner
 func WithStderr(w io.Writer) Option      // banner, origin map, logs
 ```
 
+There are no fluent setters: every knob is an option passed to `New`, and
+`v1.Builder` is only `Build` and `Name`. An embedder on the old shape changes
+`New().WithURL(u).Build()` to `New(WithURL(u)).Build()`.
+
 `BuilderImpl` also takes `WithEngine`, `WithCache`, `WithPanel`, `WithOpener`,
 `WithCounter` and `WithTargets`, which swap the collaborators the tunnel run
 composes. They are a contributor's and a test's concern, not an embedder's —
 see [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
 
-The contract it satisfies, in `v1`:
+What `v1` declares — the contract it satisfies, and the option type every
+`New` takes:
 
 ```go
 // Option configures a value while it is constructed; Apply runs a list of

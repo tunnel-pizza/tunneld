@@ -33,23 +33,13 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
-// TargetImpl is one container, resolved and inspected.
-type TargetImpl struct {
-	cli   *client.Client
-	log   *slog.Logger
-	id    string
-	ref   string
-	tty   bool
-	stdin bool
-}
+// Option configures a TargetsImpl at construction. There are none yet; the
+// signature exists so a knob added later changes no caller.
+type Option = v1.Option[*TargetsImpl]
 
 // TargetsImpl is the default source of targets: the daemon named by the
 // environment, $DOCKER_HOST and friends.
 type TargetsImpl struct{}
-
-// Option configures a TargetsImpl at construction. There are none yet; the
-// signature exists so a knob added later changes no caller.
-type Option = v1.Option[*TargetsImpl]
 
 // New returns the default source of targets, configured by opts.
 func New(opts ...Option) *TargetsImpl {
@@ -71,6 +61,16 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 
 // TargetImpl is what attach serves; a drift in either package fails here.
 var _ attach.Target = (*TargetImpl)(nil)
+
+// TargetImpl is one container, resolved and inspected.
+type TargetImpl struct {
+	cli   *client.Client
+	log   *slog.Logger
+	id    string
+	ref   string
+	tty   bool
+	stdin bool
+}
 
 // open resolves ref — a container name, an id, or a Compose service — against
 // the daemon named by the environment ($DOCKER_HOST and friends) and inspects
@@ -314,7 +314,7 @@ func (a *TargetImpl) Close() error { return a.cli.Close() }
 
 // AttachContainer attaches to PID 1 and copies until the stream ends or ctx is
 // canceled, which is what `docker attach` does. The Kubernetes-shaped name,
-// uid and container arguments are ignored: this Attacher is one container by
+// uid and container arguments are ignored: this TargetImpl is one container by
 // construction.
 //
 // Logs is on, which is the one place this departs from `docker attach`: the

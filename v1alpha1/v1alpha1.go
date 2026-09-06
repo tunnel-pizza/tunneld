@@ -126,7 +126,7 @@ var (
 //
 // Two tiers, two calls: the defaults go first, in the same vocabulary a
 // caller uses to override them, and the caller's options after so a later
-// one wins. Only the booleans need seeding here — their defaults are on, and
+// one wins. Of the flag seeds, only the booleans need seeding here — their defaults are on, and
 // a bool field cannot express "unset" separately from "off". Setting them
 // here rather than at the flag binding keeps one rule for every knob: a
 // flag's default is always the field it binds over, so WithOpen(false) is

@@ -434,7 +434,7 @@ sources through renames.
 | `v1alpha1/tunnel_test.go` (internal) | Loses `TestOpenInBrowser`, `swapOpener` and `TestAwaitReachable`. Gains `TestRun`, a table driving `run` end to end with fakes for all six contracts. |
 | `v1alpha1/env_test.go` (internal) | Four `New()` call sites take the option form. |
 | `v1alpha1/origins_test.go` (internal) | The `openTarget` swap becomes a fake `Targets` passed to `bindOrigins`. `stubTarget` already exists. |
-| `v1alpha1/v1alpha1_test.go` (external) | Adds: `New` wires every collaborator non-nil; each contract option lands where `run` reads it; a caller's option beats the default. |
+| `v1alpha1/v1alpha1_test.go` (internal — converted, so the wiring tests can read the six fields) | Adds: `New` wires every collaborator non-nil; each contract option lands where `run` reads it; a caller's option beats the default. |
 | `v1alpha1/example_test.go` (external) | The three godoc examples rewritten in the option form — they render on pkg.go.dev and are the first thing an embedder copies. |
 | `v1alpha1/engine/engine_test.go` NEW (external) | `Tunnel("", "")` returns a tunnel; `Tunnel("", host)` lands `host` in `CloudflareProviderEnv`; `Tunnel("not json", "")` returns a tunnel whose `Err` is already set — libtunnel cancels an unparsable spec at construction, so no network is touched. |
 | `v1alpha1/counter/counter_test.go` MOVE (external) | `NewCounter().WithMaxGone(n)` becomes `New(WithMaxGone(n))`. The "an unconfigured counter" case inverts: it now trips at `DefaultMaxGone`, and a case pins that number. The disable cases (−1, 0) and the bare-struct case are kept. |

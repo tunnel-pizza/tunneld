@@ -16,9 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	v1 "github.com/tunnel-pizza/tunneld/v1"
-
 	"github.com/cnuss/libtunnel"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // shellHTML is the multiview page: a rack panel of iframes, one per origin.

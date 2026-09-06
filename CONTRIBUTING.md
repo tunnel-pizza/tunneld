@@ -104,11 +104,12 @@ an embedder supply a working origin (`WithURL`) while leaving the user free to
 override it — and it is why `--url` is marked required only when nothing was
 seeded.
 
-**Implementations grow as `v1alpha1/<name>` subpackages.** When there is more
-than one way to implement the contract, each gets its own subpackage
-(`v1alpha1/redis`, `v1alpha1/memory`) and the `v1alpha1` root stays
-implementation-agnostic — shared plumbing only. The same applies to anything
-with a world of its own: [`v1alpha1/panel`](./v1alpha1/panel) is a
+**Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
+unconditionally — `engine`, `cache`, `panel`, `browser`, `counter`,
+`attach/docker` — and the `v1alpha1` root stays implementation-agnostic:
+`New`, the contracts, the options and `run`. A second implementation of a
+contract gets a subpackage of its own beside the first. The same applies to
+anything with a world of its own: [`v1alpha1/panel`](./v1alpha1/panel) is a
 panel, a template and header surgery, none of which the root needs to know
 about. A `go:embed`ed asset settles it on its own — the directive cannot reach
 outside its package, so the template has to live beside the code. This keeps a backend's
@@ -403,7 +404,8 @@ plus the assertion block catch the ones that are easy to forget:
    tunable;
 3. the field on `BuilderImpl`, in the collaborators group;
 4. `With<Name>(x <Name>) Option` in `v1alpha1.go`, and the default in `New`;
-5. a line in the assertion block, and one in `wired`;
+5. a line in the assertion block, one in `wired`, and a row in
+   `TestNewWiresEveryCollaborator`;
 6. a fake in `v1alpha1/tunnel_test.go` and a case in `TestRun` for what
    `run` does with it;
 7. a row in the file map above.
