@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cnuss/libtunnel"
@@ -48,6 +49,14 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		return err
 	}
 
+	// The handle the event listener ends the run through. A signal cancels
+	// the parent with no cause; a reap cancels this one with ErrTunnelGone,
+	// and the cause is what tells the two apart at the bottom of this
+	// function. Wrapped here so everything below — the tunnel, the attach
+	// servers, the browser probe — comes down with it.
+	ctx, gone := context.WithCancelCause(ctx)
+	defer gone(nil)
+
 	// A container is not an HTTP service, so tunneld serves one on its behalf
 	// and hands the tunnel the loopback address instead. origins stays what
 	// the operator typed — it is what the reported map and the panel show.
@@ -69,6 +78,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		tun := b.engine(spec).
 			WithLogger(log).
 			WithContext(ctx).
+			WithEventListener(b.events(log, gone)).
 			WithLocalURL(bound.dialable...)
 		// Served in front of the origin proxy, so the panel needs no port of
 		// its own and no origin ever sees the request.
@@ -144,9 +154,51 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 
 	select {
 	case <-ctx.Done():
-		return nil // signaled after the tunnel came up: clean shutdown
 	case <-tun.Done():
-		return tun.Err()
+	}
+
+	// Cancelling ctx ends the tunnel too, so a reap makes both arms above
+	// ready at once and the race would otherwise decide which error an
+	// operator is shown. The cause is the verdict either way: it outranks
+	// whatever the teardown it triggered has to say for itself.
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	if ctx.Err() != nil {
+		return nil // signaled after the tunnel came up: clean shutdown
+	}
+	return tun.Err()
+}
+
+// events is the tunnel's lifecycle listener: it logs what happened and ends
+// the run once the edge has disowned the tunnel for long enough to be sure.
+//
+// The engine keeps retrying a reaped tunnel indefinitely — that is cloudflared's
+// behaviour and libtunnel leaves it alone — so without this the process sits
+// there holding a hostname that resolves nowhere, reporting nothing. Cancelling
+// with a cause is what turns that into an exit code a supervisor can act on.
+//
+// The logger is passed rather than resolved again, because run has already
+// resolved it and refused a bad --log-level; asking a second time here would
+// have to discard that error to satisfy the listener's signature.
+func (b *BuilderImpl) events(log *slog.Logger, gone context.CancelCauseFunc) func(e libtunnel.Event) {
+	var once sync.Once
+	return func(e libtunnel.Event) {
+		log.Debug("received event", "e", e)
+		// A Builder assembled as a bare struct rather than through New has no
+		// counter, and an event is no place to panic about it.
+		if b.counter == nil {
+			return
+		}
+		if b.counter.Count(e).IsGone() {
+			// The counter stays tripped once it has been, and verdicts keep
+			// arriving while the tunnel comes down. Without the latch every
+			// one of them repeats the error and cancels again.
+			once.Do(func() {
+				log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
+				gone(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
+			})
+		}
 	}
 }
 

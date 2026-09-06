@@ -120,6 +120,20 @@ var ErrNotReady = errors.New("tunnel did not become ready")
 // $DOCKER_HOST at the socket that has it.
 var ErrNoDocker = errors.New("docker daemon unreachable")
 
+// ErrTunnelGone reports a tunnel the edge has disowned while it was running:
+// the hostname stopped resolving, or a fresh registration was refused
+// outright. It is the reaped-tunnel case, and it is terminal — the spec that
+// names the tunnel is dead, so reconnecting cannot bring it back and only a
+// new mint will.
+//
+// The engine does not end a tunnel on this by itself; cloudflared retries
+// forever either way, and stopping is a decision only the program running it
+// can make. tunneld makes it, because a process still holding a public
+// hostname that resolves nowhere is serving nobody, and a supervisor that
+// restarts it gets a working tunnel back. --cache-dir=false and a restart is
+// the whole recovery.
+var ErrTunnelGone = errors.New("tunnel gone")
+
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read
