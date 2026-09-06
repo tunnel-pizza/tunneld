@@ -2639,6 +2639,7 @@ Refs #38."
 - Modify: `CONTRIBUTING.md` (file map, module layout note, design conventions, container origins, conventions-that-bite paths, adding a flag, new "Adding a collaborator")
 - Modify: `README.md` (Layout tree, contributor note under the API block)
 - Modify: `CLAUDE.md` (read-first list)
+- Modify: `v1alpha1/attach/attach.go` (one comment reflow, Step 5b)
 
 **Interfaces:** none — prose only. Every name below exists after Task 9.
 
@@ -2777,14 +2778,36 @@ see [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-convention
 
 and renumber the two that follow (`tunnel.go` → 5, `main.go` → 6).
 
+- [ ] **Step 5b: A gopls warning in `attach.go`'s package doc**
+
+staticcheck SA9009 flags a comment line that begins `// go:` as an ineffectual compiler directive, and `v1alpha1/attach/attach.go:14` begins that way in prose. Reflow the two lines so the directive's name is never first on a line — the sentence keeps its words:
+
+```go
+// provider arrives as a Target. index.html travels with the code: go:embed
+// cannot reach outside its own package directory.
+```
+
+replacing
+
+```go
+// provider arrives as a Target. index.html travels with the code because
+// go:embed cannot reach outside its own package directory.
+```
+
+Confirm with `grep -rn '^// go:' --include='*.go' .` printing nothing. (`panel.go` mentions `go:embed` mid-line, which is fine.)
+
 - [ ] **Step 6: Check every path resolves, commit**
 
 Run: `grep -rn 'v1alpha1/multiview\|v1alpha1/env\b\|counters\.go\|docker\.Attacher\|docker\.Open\b\|NewCounter' README.md CONTRIBUTING.md CLAUDE.md`
-Expected: nothing.
+Expected: nothing. Then `gofmt -l . && go build ./...` — the attach.go edit is a comment, but the gate is cheap.
 
 ```bash
-git add README.md CONTRIBUTING.md CLAUDE.md
+git add README.md CONTRIBUTING.md CLAUDE.md v1alpha1/attach/attach.go
 git commit -m "docs: the contracts, the option convention, and where each impl lives
+
+Also reflows one sentence in attach's package doc so a line no longer
+begins with go:embed, which staticcheck (SA9009) reads as a directive
+with a stray space.
 
 Refs #38."
 ```
