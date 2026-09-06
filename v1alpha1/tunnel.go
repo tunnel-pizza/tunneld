@@ -190,7 +190,8 @@ func (b *BuilderImpl) events(log *slog.Logger, gone context.CancelCauseFunc) fun
 		if b.counter == nil {
 			return
 		}
-		if b.counter.Count(e).IsGone() {
+		b.counter.Count(e)
+		if b.counter.IsGone() {
 			// The counter stays tripped once it has been, and verdicts keep
 			// arriving while the tunnel comes down. Without the latch every
 			// one of them repeats the error and cancels again.

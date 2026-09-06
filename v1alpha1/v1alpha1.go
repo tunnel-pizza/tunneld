@@ -10,14 +10,41 @@ import (
 	"io"
 	"sync"
 
+	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
 // in builder.go seed what the command's flags default to; the contract
 // options in this file replace a collaborator run composes.
 type Option = v1.Option[*BuilderImpl]
+
+// The contracts run composes. Each is something with an external effect —
+// the edge, the disk, the daemon, the browser, an HTTP probe — implemented
+// once in a v1alpha1/<name> subpackage, seeded by New, and replaceable with
+// the matching With* option below. A function that maps a value to a value
+// gets no contract; see CONTRIBUTING.
+
+// Counter folds tunnel events into a verdict: has the edge disowned it.
+type Counter interface {
+	Count(e libtunnel.Event)
+	IsGone() bool
+}
+
+// WithCounter replaces the counter that decides when the edge has disowned
+// the tunnel. The default is counter.New(), armed at counter.DefaultMaxGone.
+func WithCounter(c Counter) Option {
+	return func(b *BuilderImpl) { b.counter = c }
+}
+
+// The defaults satisfy their contracts, checked here so a drift fails the
+// build rather than the first run.
+var (
+	_ v1.Builder = (*BuilderImpl)(nil)
+	_ Counter    = (*counter.CounterImpl)(nil)
+)
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
 // It is the entry point for application code, and satisfies v1.Builder.
@@ -30,9 +57,10 @@ type Option = v1.Option[*BuilderImpl]
 // flag's default is always the field it binds over, so WithOpen(false) is
 // honoured exactly like every other seed.
 func New(opts ...Option) *BuilderImpl {
-	b := v1.Apply(&BuilderImpl{counter: NewCounter().WithMaxGone(3)},
+	b := v1.Apply(&BuilderImpl{},
 		WithOpen(v1.DefaultOpen),
 		WithMultiview(v1.DefaultMultiview),
+		WithCounter(counter.New()),
 	)
 	return v1.Apply(b, opts...)
 }
@@ -63,8 +91,9 @@ type BuilderImpl struct {
 	open   bool
 	noOpen bool
 
-	// TODO Doc
-	counter *Counter
+	// The collaborators run composes, each behind a contract declared above.
+	// Seeded by New; a test or a contributor swaps one with its With* option.
+	counter Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
 	// banner, the origin map, and
