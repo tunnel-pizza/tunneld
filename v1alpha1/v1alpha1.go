@@ -41,18 +41,6 @@ func WithEngine(e Engine) Option {
 	return func(b *BuilderImpl) { b.engine = e }
 }
 
-// Counter folds tunnel events into a verdict: has the edge disowned it.
-type Counter interface {
-	Count(e libtunnel.Event)
-	IsGone() bool
-}
-
-// WithCounter replaces the counter that decides when the edge has disowned
-// the tunnel. The default is counter.New(), armed at counter.DefaultMaxGone.
-func WithCounter(c Counter) Option {
-	return func(b *BuilderImpl) { b.counter = c }
-}
-
 // Cache persists a tunnel's spec between runs, in the directories
 // --cache-dir settled on.
 type Cache interface {
@@ -65,6 +53,18 @@ type Cache interface {
 // is cache.New(), a TUNNEL.env in each directory.
 func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
+}
+
+// Counter folds tunnel events into a verdict: has the edge disowned it.
+type Counter interface {
+	Count(e libtunnel.Event)
+	IsGone() bool
+}
+
+// WithCounter replaces the counter that decides when the edge has disowned
+// the tunnel. The default is counter.New(), armed at counter.DefaultMaxGone.
+func WithCounter(c Counter) Option {
+	return func(b *BuilderImpl) { b.counter = c }
 }
 
 // The defaults satisfy their contracts, checked here so a drift fails the
