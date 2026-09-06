@@ -2,13 +2,19 @@ package v1alpha1
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/cnuss/libtunnel"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
 )
 
@@ -253,4 +259,331 @@ func TestReportNamesTheMultiviewPanel(t *testing.T) {
 			t.Errorf("stderr %q does not list %q under the panel", stderr.String(), origin)
 		}
 	}
+}
+
+// fakeTunnel is the tunnel run drives in these tests. It embeds the
+// interface so only the eight methods run touches are implemented; any other
+// call panics through the nil embed, which is the right outcome here.
+type fakeTunnel struct {
+	libtunnel.TunnelV1
+	url    *url.URL
+	err    error
+	done   chan struct{}
+	locals []*url.URL
+	ics    []libtunnel.Interceptor
+	listen func(libtunnel.Event)
+	order  *[]string
+}
+
+// live is a tunnel that comes up on public and stays up until the test says
+// otherwise; dead is one that fails before it has a URL.
+func live(public string) *fakeTunnel {
+	u, err := url.Parse(public)
+	if err != nil {
+		panic(err)
+	}
+	return &fakeTunnel{url: u, done: make(chan struct{})}
+}
+
+func dead(cause error) *fakeTunnel {
+	done := make(chan struct{})
+	close(done)
+	return &fakeTunnel{err: cause, done: done}
+}
+
+func (f *fakeTunnel) URL() *url.URL {
+	if f.order != nil {
+		*f.order = append(*f.order, "url")
+	}
+	return f.url
+}
+func (f *fakeTunnel) Err() error                                     { return f.err }
+func (f *fakeTunnel) Done() <-chan struct{}                          { return f.done }
+func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1     { return f }
+func (f *fakeTunnel) WithContext(context.Context) libtunnel.TunnelV1 { return f }
+func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.TunnelV1 {
+	f.listen = fn
+	return f
+}
+func (f *fakeTunnel) WithLocalURL(u ...*url.URL) libtunnel.TunnelV1 {
+	f.locals = append(f.locals, u...)
+	return f
+}
+func (f *fakeTunnel) WithInterceptor(ic libtunnel.Interceptor) libtunnel.TunnelV1 {
+	f.ics = append(f.ics, ic)
+	return f
+}
+
+// fakeEngine hands out its tunnels in order — a remint after a refused
+// replay gets the second — and records what it was asked for.
+type fakeEngine struct {
+	tunnels   []*fakeTunnel
+	specs     []string
+	providers []string
+}
+
+func (f *fakeEngine) Tunnel(spec, provider string) libtunnel.TunnelV1 {
+	f.specs = append(f.specs, spec)
+	f.providers = append(f.providers, provider)
+	tun := f.tunnels[0]
+	if len(f.tunnels) > 1 {
+		f.tunnels = f.tunnels[1:]
+	}
+	return tun
+}
+
+// fakeCache answers Cached with a fixed spec and records the rest. onSave is
+// how a case ends the run: cancelling the context, failing the tunnel, or
+// delivering verdicts, all after the URL is live.
+type fakeCache struct {
+	cached    string
+	saved     bool
+	discarded bool
+	onSave    func()
+	order     *[]string
+}
+
+func (f *fakeCache) Cached([]string, v1.Logger) string { return f.cached }
+func (f *fakeCache) Discard([]string, v1.Logger)       { f.discarded = true }
+func (f *fakeCache) Save([]string, v1.Logger) {
+	f.saved = true
+	if f.order != nil {
+		*f.order = append(*f.order, "save")
+	}
+	if f.onSave != nil {
+		f.onSave()
+	}
+}
+
+// fakeOpener records what it was asked to open and opens nothing.
+type fakeOpener struct {
+	opened []string
+	order  *[]string
+}
+
+func (f *fakeOpener) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logger) {
+	f.opened = append(f.opened, addr)
+	if f.order != nil {
+		*f.order = append(*f.order, "open")
+	}
+}
+
+// runHarness is run with every collaborator faked except the two that are
+// pure: the real panel, because its URL and interceptor order are what the
+// assertions check, and a real counter armed at one, because the verdict
+// logic is what the gone case is about. order records the effects that
+// matter in the sequence they landed.
+type runHarness struct {
+	engine *fakeEngine
+	cache  *fakeCache
+	opener *fakeOpener
+	order  []string
+	stderr bytes.Buffer
+	b      *BuilderImpl
+}
+
+func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
+	t.Helper()
+	t.Setenv(v1.LogEnv, "") // a developer's shell must not turn the log on
+	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
+	h.cache = &fakeCache{order: &h.order}
+	h.opener = &fakeOpener{order: &h.order}
+	tun.order = &h.order
+	h.b = New(
+		WithURL(urls...),
+		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
+		WithEngine(h.engine),
+		WithCache(h.cache),
+		WithOpener(h.opener),
+		WithTargets(&stubTargets{}),
+		WithCounter(counter.New(counter.WithMaxGone(1))),
+	)
+	return h
+}
+
+// run drives the builder under the test's own context, for the cases that
+// end on their own — a tunnel that fails, a verdict, a refused builder. A
+// case that has to be signalled makes its own cancelable context and hands
+// cancel to onSave.
+func (h *runHarness) run(t *testing.T) error {
+	t.Helper()
+	return h.b.run(t.Context(), &h.stderr)
+}
+
+// TestRun is the composition under test: every effect run has, against fakes
+// for the edge, the disk, the browser and the daemon. Each case asserts what
+// the code did before it was split, so a case going red is a behaviour
+// change, not a refactor.
+func TestRun(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+
+	t.Run("a mint reports, opens the panel, then saves", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel // the signal, arriving once the tunnel is live
+
+		if err := h.b.run(ctx, &h.stderr); err != nil {
+			t.Fatalf("run() = %v, want nil after a signal", err)
+		}
+		if want := []string{""}; !slices.Equal(h.engine.specs, want) {
+			t.Errorf("engine asked for specs %q, want a single mint", h.engine.specs)
+		}
+		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
+			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
+		}
+		if want := []string{public}; !slices.Equal(h.opener.opened, want) {
+			t.Errorf("opened %q, want the panel address %q", h.opener.opened, want)
+		}
+		for _, want := range []string{"  " + public + "\n", "    -> http://localhost:3000\n", "    -> http://localhost:4000\n"} {
+			if !strings.Contains(h.stderr.String(), want) {
+				t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
+			}
+		}
+		tun := h.engine.tunnels[0]
+		if len(tun.ics) != 2 || tun.ics[0].Priority >= tun.ics[1].Priority {
+			t.Errorf("registered %d interceptors, want the shell then the unframer", len(tun.ics))
+		}
+		if len(tun.locals) != 2 {
+			t.Errorf("tunnel was given %d origins, want 2", len(tun.locals))
+		}
+	})
+
+	t.Run("a cached spec is what the engine replays", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.cached = "cached-spec"
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.b.run(ctx, &h.stderr); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if want := []string{"cached-spec"}; !slices.Equal(h.engine.specs, want) {
+			t.Errorf("engine asked for %q, want the cached spec", h.engine.specs)
+		}
+	})
+
+	t.Run("a replay the edge refuses is discarded and minted again", func(t *testing.T) {
+		refused := dead(fmt.Errorf("edge: %w", libtunnel.ErrCredentialRejected))
+		h := newRunHarness(t, refused, ":3000")
+		h.engine.tunnels = append(h.engine.tunnels, live(public))
+		h.cache.cached = "stale"
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.b.run(ctx, &h.stderr); err != nil {
+			t.Fatalf("run() = %v, want the remint to succeed", err)
+		}
+		if want := []string{"stale", ""}; !slices.Equal(h.engine.specs, want) {
+			t.Errorf("engine asked for %q, want the replay then a mint", h.engine.specs)
+		}
+		if !h.cache.discarded {
+			t.Error("the refused spec was not discarded; every later run would replay it")
+		}
+		if !h.cache.saved {
+			t.Error("the remint was not cached")
+		}
+	})
+
+	t.Run("any other replay failure is returned and the cache kept", func(t *testing.T) {
+		boom := errors.New("provider unreachable")
+		h := newRunHarness(t, dead(boom), ":3000")
+		h.cache.cached = "good"
+
+		err := h.run(t)
+		if !errors.Is(err, boom) {
+			t.Fatalf("run() = %v, want the tunnel's own error", err)
+		}
+		if h.cache.discarded {
+			t.Error("a good spec was discarded over a failure that was not its fault")
+		}
+		if h.cache.saved {
+			t.Error("a tunnel that never came up was cached")
+		}
+		if want := []string{"good"}; !slices.Equal(h.engine.specs, want) {
+			t.Errorf("engine asked for %q, want one replay and no remint", h.engine.specs)
+		}
+	})
+
+	t.Run("no URL and no cause is ErrNotReady", func(t *testing.T) {
+		h := newRunHarness(t, &fakeTunnel{done: make(chan struct{})}, ":3000")
+		err := h.run(t)
+		if !errors.Is(err, v1.ErrNotReady) {
+			t.Errorf("run() = %v, want ErrNotReady", err)
+		}
+	})
+
+	t.Run("--no-open opens nothing", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		h.b.noOpen = true // what the flag binds over
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.b.run(ctx, &h.stderr); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if len(h.opener.opened) != 0 {
+			t.Errorf("opened %q, want nothing", h.opener.opened)
+		}
+		if want := []string{"url", "save"}; !slices.Equal(h.order, want) {
+			t.Errorf("effects %v, want %v", h.order, want)
+		}
+	})
+
+	t.Run("one origin keeps the bare address and no panel", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.b.run(ctx, &h.stderr); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if want := []string{public}; !slices.Equal(h.opener.opened, want) {
+			t.Errorf("opened %q, want the plain URL %q", h.opener.opened, want)
+		}
+		if n := len(h.engine.tunnels[0].ics); n != 0 {
+			t.Errorf("registered %d interceptors for one origin, want none", n)
+		}
+		if want := "  " + public + "\n    -> http://localhost:3000\n"; !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
+		}
+	})
+
+	t.Run("a tunnel that fails after coming up returns its error", func(t *testing.T) {
+		tun := live(public)
+		h := newRunHarness(t, tun, ":3000")
+		gone := errors.New("edge went away")
+		h.cache.onSave = func() {
+			tun.err = gone
+			close(tun.done)
+		}
+
+		err := h.run(t)
+		if !errors.Is(err, gone) {
+			t.Errorf("run() = %v, want the tunnel's error", err)
+		}
+	})
+
+	t.Run("enough gone verdicts end the run with ErrTunnelGone", func(t *testing.T) {
+		tun := live(public)
+		h := newRunHarness(t, tun, ":3000")
+		h.cache.onSave = func() {
+			tun.listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneled.pizza"})
+		}
+
+		err := h.run(t)
+		if !errors.Is(err, v1.ErrTunnelGone) {
+			t.Fatalf("run() = %v, want ErrTunnelGone", err)
+		}
+		if !strings.Contains(err.Error(), "foo.tunneled.pizza") {
+			t.Errorf("error %q does not name the hostname", err)
+		}
+	})
+
+	t.Run("a bare struct is refused before it touches anything", func(t *testing.T) {
+		b := &BuilderImpl{urls: []string{":3000"}}
+		err := b.run(t.Context(), io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "construct it with New") {
+			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error", err)
+		}
+	})
 }

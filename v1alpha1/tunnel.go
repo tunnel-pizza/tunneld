@@ -30,6 +30,9 @@ import (
 // The engine is github.com/cnuss/libtunnel driving Cloudflare's edge in
 // process — no cloudflared binary, no account, no DNS to configure.
 func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
+	if err := b.wired(); err != nil {
+		return err
+	}
 	origins, err := parseOrigins(b.urls)
 	if err != nil {
 		return err
@@ -160,6 +163,29 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	return tun.Err()
 }
 
+// wired reports the first collaborator New would have seeded and did not: a
+// BuilderImpl assembled as a bare struct rather than through New. One check
+// here, in the function that returns errors, rather than a nil guard in every
+// method and in a callback that cannot report one.
+func (b *BuilderImpl) wired() error {
+	for _, c := range []struct {
+		name    string
+		missing bool
+	}{
+		{"engine", b.engine == nil},
+		{"cache", b.cache == nil},
+		{"panel", b.panel == nil},
+		{"opener", b.opener == nil},
+		{"counter", b.counter == nil},
+		{"targets", b.targets == nil},
+	} {
+		if c.missing {
+			return fmt.Errorf("builder has no %s: construct it with New", c.name)
+		}
+	}
+	return nil
+}
+
 // events is the tunnel's lifecycle listener: it logs what happened and ends
 // the run once the edge has disowned the tunnel for long enough to be sure.
 //
@@ -175,11 +201,6 @@ func (b *BuilderImpl) events(log *slog.Logger, gone context.CancelCauseFunc) fun
 	var once sync.Once
 	return func(e libtunnel.Event) {
 		log.Debug("received event", "e", e)
-		// A Builder assembled as a bare struct rather than through New has no
-		// counter, and an event is no place to panic about it.
-		if b.counter == nil {
-			return
-		}
 		b.counter.Count(e)
 		if b.counter.IsGone() {
 			// The counter stays tripped once it has been, and verdicts keep
