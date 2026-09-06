@@ -32,9 +32,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := v1alpha1.New().
-		WithURL("http://localhost:3000").
-		Build()
+	cmd := v1alpha1.New(
+		v1alpha1.WithURL("http://localhost:3000"),
+	).Build()
 
 	// Build returns an ordinary *cobra.Command, so the origin hangs off its
 	// PreRunE. That hook rather than plain code before ExecuteContext because

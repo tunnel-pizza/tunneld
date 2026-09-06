@@ -1,9 +1,9 @@
 // Package v1alpha1 is the current implementation behind the v1.Builder
-// interface: the fluent command builder, the tunnel it runs, and the version
-// resolution behind the build banner. The tunneld façade in lib wraps this;
-// callers reaching directly into v1alpha1 use it for the concrete struct.
-// Anything here may change between alpha revisions — depend on the v1
-// contract, not these internals.
+// interface: the command builder, the tunnel it runs, and the version
+// resolution behind the build banner. Application code constructs from here
+// (New, configured by this package's With* options) and matches errors
+// against v1. Anything here may change between alpha revisions — depend on
+// the v1 contract, not these internals.
 package v1alpha1
 
 import (
@@ -14,17 +14,27 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// New returns a BuilderImpl carrying the defaults that are not the zero value.
+// Option configures a BuilderImpl at construction. The nine builder options
+// in builder.go seed what the command's flags default to; the contract
+// options in this file replace a collaborator run composes.
+type Option = v1.Option[*BuilderImpl]
+
+// New returns a BuilderImpl carrying its defaults, then configured by opts.
 // It is the entry point for application code, and satisfies v1.Builder.
 //
-// Only the booleans need seeding: their defaults are on, and a bool field
-// cannot express "unset" separately from "off". Setting them here rather than
-// at the flag binding keeps one rule for every knob — a flag's default is
-// always the field it binds over, so WithOpen(false) is honoured exactly like
-// every other seed.
-func New() *BuilderImpl {
-	counter := NewCounter().WithMaxGone(3) // TODO: var-ify this
-	return &BuilderImpl{open: v1.DefaultOpen, multiview: v1.DefaultMultiview, counter: counter}
+// Two tiers, two calls: the defaults go first, in the same vocabulary a
+// caller uses to override them, and the caller's options after so a later
+// one wins. Only the booleans need seeding here — their defaults are on, and
+// a bool field cannot express "unset" separately from "off". Setting them
+// here rather than at the flag binding keeps one rule for every knob: a
+// flag's default is always the field it binds over, so WithOpen(false) is
+// honoured exactly like every other seed.
+func New(opts ...Option) *BuilderImpl {
+	b := v1.Apply(&BuilderImpl{counter: NewCounter().WithMaxGone(3)},
+		WithOpen(v1.DefaultOpen),
+		WithMultiview(v1.DefaultMultiview),
+	)
+	return v1.Apply(b, opts...)
 }
 
 // BuilderImpl is the default Builder implementation. Its fields are the

@@ -312,10 +312,10 @@ import (
 )
 
 func main() {
-	cmd := v1alpha1.New().
-		WithName("expose").                  // mount under your own verb
-		WithURL("http://localhost:3000").    // a default the user can override
-		Build()
+	cmd := v1alpha1.New(
+		v1alpha1.WithName("expose"),               // mount under your own verb
+		v1alpha1.WithURL("http://localhost:3000"), // a default the user can override
+	).Build()
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		os.Exit(1)
@@ -323,7 +323,7 @@ func main() {
 }
 ```
 
-Every `With*` value is a *default*, not a fixed setting: the command's flags
+Every option's value is a *default*, not a fixed setting: the command's flags
 bind over the same fields, so an argv value wins. Seeding an origin therefore
 makes `--url` optional rather than forbidden.
 
@@ -355,27 +355,35 @@ For the file-by-file map, see
 What an embedding program calls, in `v1alpha1`:
 
 ```go
-func New() *BuilderImpl   // unconfigured builder, satisfies v1.Builder
-func Version() string     // the release this build is
-func VersionLine() string // the human-facing build banner
+func New(opts ...Option) *BuilderImpl // defaults, then opts; satisfies v1.Builder
+func Version() string                 // the release this build is
+func VersionLine() string             // the human-facing build banner
+
+// The builder's options. Each seeds a flag's default, so argv still wins.
+func WithName(name string) Option        // command name; default "tunneld"
+func WithURL(urls ...string) Option      // origins, in order; appends across options
+func WithProvider(host string) Option    // quick-tunnel host; default tunnel.pizza
+func WithCacheDir(dirs ...string) Option // spec cache directories; true/false are instructions
+func WithLogLevel(level string) Option   // debug|info|warn|error on stderr
+func WithOpen(open bool) Option          // open a browser when live; default true
+func WithMultiview(mv bool) Option       // frame the origins together; default true
+func WithStdout(w io.Writer) Option      // help text and the version banner
+func WithStderr(w io.Writer) Option      // banner, origin map, logs
 ```
 
 The contract it satisfies, in `v1`:
 
 ```go
-// Builder assembles the tunneld command. Configure with the With* methods
-// (each returns the Builder), then call the terminal Build.
+// Option configures a value while it is constructed; Apply runs a list of
+// them in order, so a later one wins.
+type Option[T any] func(T)
+func Apply[T any](t T, opts ...Option[T]) T
+
+// Builder assembles the tunneld command: what a caller calls once New has
+// configured it.
 type Builder interface {
-    WithName(name string) Builder      // command name; default "tunneld"
-    WithURL(urls ...string) Builder    // origins, in order; appends across calls
-    WithProvider(host string) Builder  // quick-tunnel host; default tunnel.pizza
-    WithLogLevel(level string) Builder // debug|info|warn|error on stderr
-    WithOpen(open bool) Builder        // open a browser when live; default true
-    WithMultiview(mv bool) Builder     // frame the origins together; default true
-    WithStdout(w io.Writer) Builder    // the public URLs
-    WithStderr(w io.Writer) Builder    // banner, origin map, logs
-    Build() *cobra.Command             // terminal: assembles and returns
-    Name() string                      // configured command name
+    Build() *cobra.Command // terminal: assembles and returns
+    Name() string          // configured command name
 }
 
 // match with errors.Is

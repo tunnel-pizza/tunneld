@@ -3,6 +3,7 @@ package v1alpha1_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,24 +29,40 @@ func execute(t *testing.T, b v1.Builder, args ...string) (stdout, stderr string,
 	return out.String(), errOut.String(), err
 }
 
-// TestWithersChain pins the fluent contract: every With* returns the Builder,
-// so a whole configuration is one expression.
-func TestWithersChain(t *testing.T) {
+// TestOptionsLand pins that every builder option reaches the field the flag
+// binds over, observed the only way an outsider can: through the built
+// command. Name through Name, the writers through cobra, the rest through
+// the flag defaults.
+func TestOptionsLand(t *testing.T) {
 	var sink bytes.Buffer
-	b := v1alpha1.New().
-		WithName("expose").
-		WithURL("http://localhost:3000").
-		WithURL("http://localhost:4000").
-		WithProvider("example.test").
-		WithLogLevel("warn").
-		WithStdout(&sink).
-		WithStderr(&sink)
+	b := v1alpha1.New(
+		v1alpha1.WithName("expose"),
+		v1alpha1.WithURL("http://localhost:3000"),
+		v1alpha1.WithURL("http://localhost:4000"),
+		v1alpha1.WithProvider("example.test"),
+		v1alpha1.WithLogLevel("warn"),
+		v1alpha1.WithStdout(&sink),
+		v1alpha1.WithStderr(&sink),
+	)
 
 	if got, want := b.Name(), "expose"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
-	if got, want := b.Build().Name(), "expose"; got != want {
+	cmd := b.Build()
+	if got, want := cmd.Name(), "expose"; got != want {
 		t.Errorf("built command Name() = %q, want %q", got, want)
+	}
+	for flag, want := range map[string]string{
+		"url":       "[http://localhost:3000,http://localhost:4000]",
+		"provider":  "example.test",
+		"log-level": "warn",
+	} {
+		if got := cmd.Flags().Lookup(flag).DefValue; got != want {
+			t.Errorf("--%s default = %q, want %q", flag, got, want)
+		}
+	}
+	if cmd.OutOrStdout() != io.Writer(&sink) || cmd.ErrOrStderr() != io.Writer(&sink) {
+		t.Error("WithStdout/WithStderr did not reach the built command")
 	}
 }
 
@@ -65,7 +82,7 @@ func TestNameDefaults(t *testing.T) {
 // would bind a second set of flags over the same fields, so the cached command
 // is correctness, not just an optimization.
 func TestBuildIsIdempotent(t *testing.T) {
-	b := v1alpha1.New().WithURL("http://localhost:3000")
+	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
 	if first, second := b.Build(), b.Build(); first != second {
 		t.Error("Build() returned a different command on the second call, want the cached one")
 	}
@@ -88,7 +105,7 @@ func TestURLRequiredWhenUnseeded(t *testing.T) {
 // past the required-flag check and fails on the deliberately bad log level,
 // which is the assertion — it never reaches the network.
 func TestURLOptionalWhenSeeded(t *testing.T) {
-	b := v1alpha1.New().WithURL("http://localhost:3000").WithLogLevel("loud")
+	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"), v1alpha1.WithLogLevel("loud"))
 	_, _, err := execute(t, b)
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("error = %v, want ErrInvalidLogLevel (proving --url was optional)", err)
@@ -100,7 +117,7 @@ func TestURLOptionalWhenSeeded(t *testing.T) {
 // flag's is fine, so an append would fail on the origin and a replace fails on
 // the log level — which is the discriminator.
 func TestFlagReplacesSeededURLs(t *testing.T) {
-	b := v1alpha1.New().WithURL("ftp://seeded.invalid")
+	b := v1alpha1.New(v1alpha1.WithURL("ftp://seeded.invalid"))
 	_, _, err := execute(t, b, "--url", "http://localhost:3000", "--log-level", "loud")
 	if errors.Is(err, v1.ErrInvalidOrigin) {
 		t.Fatal("seeded origin survived the --url flag, want the flag to replace the seed")
@@ -163,7 +180,7 @@ func TestVersionSubcommand(t *testing.T) {
 // tunneld documents itself under the verb it was mounted as rather than under
 // the binary's own name.
 func TestHelpNamesTheCommand(t *testing.T) {
-	stdout, _, err := execute(t, v1alpha1.New().WithName("expose"), "--help")
+	stdout, _, err := execute(t, v1alpha1.New(v1alpha1.WithName("expose")), "--help")
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
@@ -194,7 +211,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.NoOpenEnv, tc.env)
 
-			b := v1alpha1.New().WithURL("http://localhost:3000")
+			b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
 			// A deliberately bad level stops the run once the flags have
 			// settled, before anything dials or any window opens.
 			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
@@ -219,7 +236,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 // stays positive while the flag reads negative, so this is also what pins the
 // two staying in step.
 func TestWithOpenSeedsTheDefault(t *testing.T) {
-	b := v1alpha1.New().WithURL("http://localhost:3000").WithOpen(false)
+	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"), v1alpha1.WithOpen(false))
 
 	if got := b.Build().Flags().Lookup("no-open").DefValue; got != "true" {
 		t.Errorf("--no-open default = %q, want %q", got, "true")
@@ -374,7 +391,7 @@ func TestCacheDir(t *testing.T) {
 			// What an unconfigured run resolves to, from this working
 			// directory. Build seeds the default; nothing is executed, so the
 			// environment is not applied to it.
-			probe := v1alpha1.New().WithURL("http://localhost:3000")
+			probe := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
 			dflt := probe.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 
 			// The same substitution on inputs and wants, so a path is written
@@ -393,10 +410,11 @@ func TestCacheDir(t *testing.T) {
 
 			t.Setenv(v1.CacheDirEnv, resolve(tc.env))
 
-			b := v1alpha1.New().WithURL("http://localhost:3000")
+			opts := []v1alpha1.Option{v1alpha1.WithURL("http://localhost:3000")}
 			if len(tc.seed) > 0 {
-				b.WithCacheDir(resolveAll(tc.seed)...)
+				opts = append(opts, v1alpha1.WithCacheDir(resolveAll(tc.seed)...))
 			}
+			b := v1alpha1.New(opts...)
 			// A deliberately bad level stops the run once the flags have
 			// settled, before anything dials.
 			args := append(resolveAll(tc.args), "--log-level", "loud")
@@ -436,7 +454,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.MultiviewEnv, tc.env)
 
-			b := v1alpha1.New().WithURL("http://localhost:3000", "http://localhost:4000")
+			b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000", "http://localhost:4000"))
 			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
 			if !errors.Is(err, v1.ErrInvalidLogLevel) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
@@ -456,7 +474,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 // TestWithMultiviewSeedsTheDefault pins that an embedder can flip the default
 // without forbidding the flag.
 func TestWithMultiviewSeedsTheDefault(t *testing.T) {
-	b := v1alpha1.New().WithURL("http://localhost:3000").WithMultiview(false)
+	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"), v1alpha1.WithMultiview(false))
 
 	if got := b.Build().Flags().Lookup("multiview").DefValue; got != "false" {
 		t.Errorf("--multiview default = %q, want %q", got, "false")
@@ -474,7 +492,7 @@ func TestWithMultiviewSeedsTheDefault(t *testing.T) {
 func TestDefaultCacheDir(t *testing.T) {
 	dflt := func(t *testing.T) string {
 		t.Helper()
-		b := v1alpha1.New().WithURL("http://localhost:3000")
+		b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
 		return b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 	}
 

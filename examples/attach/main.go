@@ -57,9 +57,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := v1alpha1.New().
-		WithURL("dockerd://" + name).
-		Build()
+	cmd := v1alpha1.New(
+		v1alpha1.WithURL("dockerd://" + name),
+	).Build()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers
 	// --help before that hook runs, so `--help` stays a pure question and

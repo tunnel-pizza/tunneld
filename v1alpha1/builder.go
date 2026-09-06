@@ -16,20 +16,32 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// WithName sets the built command's name.
-func (b *BuilderImpl) WithName(name string) v1.Builder {
-	b.name = name
-	return b
+// WithName sets the built command's name — the verb in usage strings and
+// what cobra matches when the command is mounted under another root. Unset,
+// the name is v1.CommandName.
+func WithName(name string) Option {
+	return func(b *BuilderImpl) { b.name = name }
 }
 
-// WithURL seeds the local origins to expose, appending across calls.
-func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
-	b.urls = append(b.urls, urls...)
-	return b
+// WithURL seeds the local origins to expose, in order: the first is the
+// default origin and each later one answers on a bare ?n parameter. Repeated
+// options append. A --url flag on the command line replaces the whole seeded
+// set rather than adding to it.
+//
+// A missing scheme implies http and a missing host implies localhost, so
+// ":8000", "localhost:8000" and "http://localhost:8000" name one origin.
+func WithURL(urls ...string) Option {
+	return func(b *BuilderImpl) { b.urls = append(b.urls, urls...) }
+}
+
+// WithProvider sets the quick-tunnel provider host to mint against. Unset,
+// the provider is v1.DefaultProvider.
+func WithProvider(host string) Option {
+	return func(b *BuilderImpl) { b.provider = host }
 }
 
 // WithCacheDir adds directories to cache tunnel specs in, in order,
-// appending across calls.
+// appending across options.
 //
 // An entry that is a boolean is an instruction rather than a path: true names
 // the default location, false names nothing at all. That is what lets one
@@ -60,77 +72,81 @@ func (b *BuilderImpl) WithURL(urls ...string) v1.Builder {
 // only way that happens is os.Getwd failing, which is the same condition that
 // already turns an empty entry into nothing, and neither is worth failing a
 // tunnel over.
-func (b *BuilderImpl) WithCacheDir(dirs ...string) v1.Builder {
-	// A list that exists and is empty is one a false entry emptied, and
-	// nothing refills it: off holds until a later source sets the field back
-	// to nil and starts over.
-	if b.cacheDirs != nil && len(b.cacheDirs) == 0 {
-		return b
-	}
-	for _, dir := range dirs {
-		if on, ok := boolish(dir); ok {
-			if !on {
-				b.cacheDirs = []string{}
-				return b
+func WithCacheDir(dirs ...string) Option {
+	return func(b *BuilderImpl) {
+		// A list that exists and is empty is one a false entry emptied, and
+		// nothing refills it: off holds until a later source sets the field
+		// back to nil and starts over.
+		if b.cacheDirs != nil && len(b.cacheDirs) == 0 {
+			return
+		}
+		for _, dir := range dirs {
+			if on, ok := boolish(dir); ok {
+				if !on {
+					b.cacheDirs = []string{}
+					return
+				}
+				dir = ""
 			}
-			dir = ""
+			if dir == "" {
+				dir = defaultCacheDir()
+			}
+			if dir == "" {
+				continue
+			}
+			abs, err := filepath.Abs(dir)
+			if err != nil {
+				continue
+			}
+			if slices.Contains(b.cacheDirs, abs) {
+				continue
+			}
+			b.cacheDirs = append(b.cacheDirs, abs)
 		}
-		if dir == "" {
-			dir = defaultCacheDir()
-		}
-		if dir == "" {
-			continue
-		}
-		abs, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		if slices.Contains(b.cacheDirs, abs) {
-			continue
-		}
-		b.cacheDirs = append(b.cacheDirs, abs)
 	}
-	return b
 }
 
-// WithProvider sets the quick-tunnel provider host to mint against.
-func (b *BuilderImpl) WithProvider(host string) v1.Builder {
-	b.provider = host
-	return b
+// WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
+// stderr. Unset, the level comes from v1.LogEnv, and silence if that is
+// unset too.
+func WithLogLevel(level string) Option {
+	return func(b *BuilderImpl) { b.logLevel = level }
 }
 
-// WithLogLevel sets the tunnel's stderr log level.
-func (b *BuilderImpl) WithLogLevel(level string) v1.Builder {
-	b.logLevel = level
-	return b
-}
-
-// WithOpen sets whether a public URL is opened in a browser once the tunnel is
-// live. It seeds the default of --no-open, which reads inverted: WithOpen(false)
+// WithOpen sets whether a public URL is opened in a browser once the tunnel
+// is live — the multiview panel when there is one, otherwise the default
+// origin. Exactly one page is opened either way, since a fan of tabs is
+// rarely what anyone wanted. Unset, the behaviour is v1.DefaultOpen.
+//
+// It seeds the default of --no-open, which reads inverted: WithOpen(false)
 // makes --no-open default to true.
-func (b *BuilderImpl) WithOpen(open bool) v1.Builder {
-	b.open = open
-	return b
+func WithOpen(open bool) Option {
+	return func(b *BuilderImpl) { b.open = open }
 }
 
-// WithMultiview sets whether several origins are also served together as one
-// panel of framed views.
-func (b *BuilderImpl) WithMultiview(multiview bool) v1.Builder {
-	b.multiview = multiview
-	return b
+// WithMultiview sets whether the tunnel's own address answers with a panel
+// framing every origin. It does nothing with a single origin, which has
+// nothing to sit beside and keeps the bare address for itself. Unset, the
+// behaviour is v1.DefaultMultiview.
+func WithMultiview(multiview bool) Option {
+	return func(b *BuilderImpl) { b.multiview = multiview }
 }
 
-// WithStdout redirects the help text and the version banner. A running
-// tunnel writes nothing to stdout.
-func (b *BuilderImpl) WithStdout(w io.Writer) v1.Builder {
-	b.stdout = w
-	return b
+// WithStdout redirects the help text and the version banner. Build passes it
+// to the command's SetOut, so calling SetOut on the built command overrides
+// this. Unset, output goes to the process's stdout.
+//
+// A running tunnel writes nothing there: its addresses go to stderr with the
+// rest of what a person reads.
+func WithStdout(w io.Writer) Option {
+	return func(b *BuilderImpl) { b.stdout = w }
 }
 
 // WithStderr redirects the banner, the origin map, and the tunnel's logs.
-func (b *BuilderImpl) WithStderr(w io.Writer) v1.Builder {
-	b.stderr = w
-	return b
+// Build passes it to the command's SetErr, so calling SetErr on the built
+// command overrides this. Unset, output goes to the process's stderr.
+func WithStderr(w io.Writer) Option {
+	return func(b *BuilderImpl) { b.stderr = w }
 }
 
 // Name returns the configured command name, defaulting to v1.CommandName.
@@ -226,7 +242,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 	// Nil, not empty: an empty list is one a false entry emptied, and seeding
 	// over it would re-enable what an operator turned off.
 	if b.cacheDirs == nil {
-		b.WithCacheDir("")
+		WithCacheDir("")(b)
 	}
 	cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
 		"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
@@ -286,7 +302,7 @@ func (v *cacheDirValue) Set(s string) error {
 	if !v.changed {
 		v.b.cacheDirs, v.changed = nil, true
 	}
-	v.b.WithCacheDir(s)
+	WithCacheDir(s)(v.b)
 	return nil
 }
 
@@ -298,7 +314,7 @@ func (v *cacheDirValue) GetSlice() []string    { return v.b.cacheDirs }
 
 func (v *cacheDirValue) Replace(dirs []string) error {
 	v.b.cacheDirs, v.changed = nil, true
-	v.b.WithCacheDir(dirs...)
+	WithCacheDir(dirs...)(v.b)
 	return nil
 }
 

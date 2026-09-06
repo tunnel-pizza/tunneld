@@ -292,7 +292,7 @@ func TestApplyEnvPrecedence(t *testing.T) {
 func TestApplyEnvSeededDefault(t *testing.T) {
 	t.Setenv(v1.URLEnv, "http://env:1")
 
-	cmd := New().WithURL("http://seeded:1").Build()
+	cmd := New(WithURL("http://seeded:1")).Build()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--log-level", "loud"})

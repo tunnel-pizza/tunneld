@@ -37,12 +37,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cmd := v1alpha1.New().
-		WithURL("http://localhost:3000", "http://localhost:4000").
+	cmd := v1alpha1.New(
+		v1alpha1.WithURL("http://localhost:3000", "http://localhost:4000"),
 		// Only the default origin would open, and this example is about
 		// seeing both. Off, so it reports the whole map and opens nothing.
-		WithOpen(false).
-		Build()
+		v1alpha1.WithOpen(false),
+	).Build()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers
 	// --help before that hook runs, so `--help` stays a pure question and
