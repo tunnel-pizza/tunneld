@@ -1,10 +1,10 @@
-// Package multiview serves the panel that frames every origin behind a tunnel,
+// Package panel serves the page that frames every origin behind a tunnel,
 // and the header surgery that lets those frames render.
 //
 // It is an implementation subpackage: the v1alpha1 root stays plumbing, and
 // anything with a world of its own lives beside it. index.html travels with
 // the code because go:embed cannot reach outside its own package directory.
-package multiview
+package panel
 
 import (
 	_ "embed"
@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+
 	"github.com/cnuss/libtunnel"
 )
 
@@ -26,10 +28,10 @@ import (
 //go:embed index.html
 var shellHTML string
 
-// shell is parsed once at init. A template that fails to parse is a build-time
+// shellTmpl is parsed once at init. A template that fails to parse is a build-time
 // mistake in a file that ships inside the binary, so it panics here rather
 // than surfacing as a 500 on somebody's first request.
-var shell = template.Must(template.New("multiview").Parse(shellHTML))
+var shellTmpl = template.Must(template.New("multiview").Parse(shellHTML))
 
 // shellData is what index.html renders from.
 type shellData struct {
@@ -47,13 +49,32 @@ type shellOrigin struct {
 	Route string
 }
 
-// Panel builds the interceptor that serves the panel. It is a constructor
-// returning an Interceptor, the shape the tunnel library expects for anything
-// reusable.
+// Option configures a PanelImpl at construction. There are none yet; the
+// signature exists so a knob added later changes no caller.
+type Option = v1.Option[*PanelImpl]
+
+// PanelImpl is the default panel: one page of frames, and the unframer that
+// lets the frames render.
+type PanelImpl struct{}
+
+// New returns the default panel, configured by opts.
+func New(opts ...Option) *PanelImpl {
+	return v1.Apply(&PanelImpl{}, opts...)
+}
+
+// Interceptors is what the tunnel registers when the panel is wanted: the
+// shell first, at the highest priority there is, and the unframer behind it.
+// The order is the contract — run registers them in a loop and never looks
+// at a priority itself.
+func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
+	return []libtunnel.Interceptor{shell(origins, log), unframe()}
+}
+
+// shell builds the interceptor that serves the panel.
 //
 // Priority 1 is the highest there is, so nothing registered later can shadow
 // the one request that must never reach an origin.
-func Panel(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
+func shell(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Priority: 1,
 		Match:    isPanelRequest,
@@ -136,7 +157,7 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 	}
 
 	var page strings.Builder
-	if err := shell.Execute(&page, data); err != nil {
+	if err := shellTmpl.Execute(&page, data); err != nil {
 		log.Error("multiview render failed", "error", err)
 		http.Error(w, "multiview: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -152,13 +173,13 @@ func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log 
 
 // URL is the address the panel answers on: the tunnel's own URL, with nothing
 // appended. Reported and opened as-is.
-func URL(public *url.URL) string {
+func (*PanelImpl) URL(public *url.URL) string {
 	shown := *public
 	shown.RawQuery = ""
 	return shown.String()
 }
 
-// Unframe builds the interceptor that lets the panel's own frames render.
+// unframe builds the interceptor that lets the panel's own frames render.
 //
 // An origin is entitled to refuse being framed, and most that care say so with
 // X-Frame-Options: DENY or a CSP frame-ancestors directive. Through the panel
@@ -175,7 +196,7 @@ func URL(public *url.URL) string {
 //
 // Priority 2, behind the panel itself, so the shell is served before anything
 // looks at framing.
-func Unframe() libtunnel.Interceptor {
+func unframe() libtunnel.Interceptor {
 	return libtunnel.Interceptor{
 		Priority: 2,
 		Match:    isPanelFrame,
@@ -270,7 +291,7 @@ func withoutFrameAncestors(policy string) string {
 // Wanted reports whether the panel should be served at all. One origin has
 // nothing to compare against, so a lone --url keeps the bare address for
 // itself rather than framing one page in a panel.
-func Wanted(enabled bool, origins []*url.URL) bool {
+func (*PanelImpl) Wanted(enabled bool, origins []*url.URL) bool {
 	return enabled && len(origins) > 1
 }
 

@@ -1,4 +1,4 @@
-package multiview
+package panel
 
 import (
 	"log/slog"
@@ -86,7 +86,7 @@ func TestWanted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Wanted(tc.enabled, tc.origins); got != tc.want {
+			if got := New().Wanted(tc.enabled, tc.origins); got != tc.want {
 				t.Errorf("Wanted() = %v, want %v", got, tc.want)
 			}
 		})
@@ -101,7 +101,7 @@ func TestURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got, want := URL(public), "https://foo.tunneled.pizza/"; got != want {
+	if got, want := New().URL(public), "https://foo.tunneled.pizza/"; got != want {
 		t.Errorf("URL() = %q, want %q", got, want)
 	}
 	if public.RawQuery != "" {
@@ -177,7 +177,7 @@ func TestPanelInterceptorServesTheShell(t *testing.T) {
 		t.Fatalf("parseOrigins: %v", err)
 	}
 
-	interceptor := Panel(origins, slog.New(slog.DiscardHandler))
+	interceptor := shell(origins, slog.New(slog.DiscardHandler))
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
@@ -325,14 +325,30 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 // served before anything considers framing, and the unframer never matches the
 // panel's own request.
 func TestUnframeIsBehindThePanel(t *testing.T) {
-	shellPriority := Panel(nil, slog.New(slog.DiscardHandler)).Priority
-	if got := Unframe().Priority; got <= shellPriority {
+	shellPriority := shell(nil, slog.New(slog.DiscardHandler)).Priority
+	if got := unframe().Priority; got <= shellPriority {
 		t.Errorf("unframe Priority = %d, want it behind the shell's %d", got, shellPriority)
 	}
 
-	panel := httptest.NewRequest(http.MethodGet, "/", nil)
-	if Unframe().Match(panel) {
+	panelReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	if unframe().Match(panelReq) {
 		t.Error("the unframer matched the panel request, which it does not serve")
+	}
+}
+
+// TestInterceptorsOrder pins what run relies on: the shell comes first and
+// outranks the unframer, so the one request that must never reach an origin
+// is answered before anything looks at framing. Swapping the two fails this.
+func TestInterceptorsOrder(t *testing.T) {
+	got := New().Interceptors(nil, slog.New(slog.DiscardHandler))
+	if len(got) != 2 {
+		t.Fatalf("Interceptors() returned %d, want 2", len(got))
+	}
+	if !got[0].Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Error("Interceptors()[0] does not match the panel request, want the shell first")
+	}
+	if got[0].Priority >= got[1].Priority {
+		t.Errorf("shell Priority = %d, unframe = %d; want the shell ahead", got[0].Priority, got[1].Priority)
 	}
 }
 

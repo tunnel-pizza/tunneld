@@ -8,6 +8,7 @@ package v1alpha1
 
 import (
 	"io"
+	"net/url"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -16,6 +17,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -55,6 +57,19 @@ func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
 
+// Panel serves several origins as one page on the tunnel's bare address.
+type Panel interface {
+	Wanted(enabled bool, origins []*url.URL) bool
+	URL(public *url.URL) string
+	Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
+}
+
+// WithPanel replaces what answers the tunnel's bare address when there is
+// more than one origin. The default is panel.New().
+func WithPanel(p Panel) Option {
+	return func(b *BuilderImpl) { b.panel = p }
+}
+
 // Counter folds tunnel events into a verdict: has the edge disowned it.
 type Counter interface {
 	Count(e libtunnel.Event)
@@ -73,6 +88,7 @@ var (
 	_ v1.Builder = (*BuilderImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
+	_ Panel      = (*panel.PanelImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 )
 
@@ -92,6 +108,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithMultiview(v1.DefaultMultiview),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
+		WithPanel(panel.New()),
 		WithCounter(counter.New()),
 	)
 	return v1.Apply(b, opts...)
@@ -127,6 +144,7 @@ type BuilderImpl struct {
 	// Seeded by New; a test or a contributor swaps one with its With* option.
 	engine  Engine
 	cache   Cache
+	panel   Panel
 	counter Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own

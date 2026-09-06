@@ -16,7 +16,7 @@ import (
 
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/multiview"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
 )
 
 // TestParseOriginsAccepts covers the shapes a caller is allowed to type,
@@ -311,7 +311,7 @@ func TestReportNamesTheMultiviewPanel(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	report(&stderr, public, origins, multiview.URL(public))
+	report(&stderr, public, origins, panel.New().URL(public))
 
 	if !strings.Contains(stderr.String(), "https://foo.tunneled.pizza/\n") {
 		t.Errorf("stderr %q does not name the panel", stderr.String())
