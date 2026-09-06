@@ -19,29 +19,29 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// shellHTML is the multiview page: a rack panel of iframes, one per origin.
-// Embedded rather than fetched, so the shell is part of the binary and a
+// pageHTML is the panel page: a rack panel of iframes, one per origin.
+// Embedded rather than fetched, so the page is part of the binary and a
 // tunnel serves it with nothing else installed and no outbound request.
 //
 //go:embed index.html
-var shellHTML string
+var pageHTML string
 
-// shellTmpl is parsed once at init. A template that fails to parse is a build-time
+// pageTmpl is parsed once at init. A template that fails to parse is a build-time
 // mistake in a file that ships inside the binary, so it panics here rather
 // than surfacing as a 500 on somebody's first request.
-var shellTmpl = template.Must(template.New("multiview").Parse(shellHTML))
+var pageTmpl = template.Must(template.New("panel").Parse(pageHTML))
 
-// shellData is what index.html renders from.
-type shellData struct {
+// pageData is what index.html renders from.
+type pageData struct {
 	// Host is the public hostname, taken from the request rather than the
 	// tunnel, so the page names whatever address the visitor actually used.
 	Host    string
-	Origins []shellOrigin
+	Origins []tile
 }
 
-// shellOrigin is one tile: the index that routes to it, the local address it
-// forwards to, and the relative URL that reaches it.
-type shellOrigin struct {
+// tile is one origin's tile in the panel: the index that routes to it, the
+// local address it forwards to, and the relative URL that reaches it.
+type tile struct {
 	Index int
 	Local string
 	Route string
@@ -61,7 +61,7 @@ func New(opts ...Option) *PanelImpl {
 }
 
 // Interceptors is what the tunnel registers when the panel is wanted: the
-// shell first, at the highest priority there is, and the unframer behind it.
+// page first, at the highest priority there is, and the unframer behind it.
 // The order is the contract — run registers them in a loop and never looks
 // at a priority itself.
 func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
@@ -129,9 +129,9 @@ func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.In
 					// plain error rather than a half-written page: the response is
 					// buffered by the template only up to the first write, so a partial
 					// body is the one outcome worth avoiding.
-					data := shellData{
+					data := pageData{
 						Host:    r.Host,
-						Origins: make([]shellOrigin, 0, len(origins)),
+						Origins: make([]tile, 0, len(origins)),
 					}
 					for i, origin := range origins {
 						// How a tile names the origin behind it: an http origin is named
@@ -151,7 +151,7 @@ func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.In
 						if scheme != "http" && scheme != "https" {
 							local = origin.Scheme + "://" + origin.Host
 						}
-						data.Origins = append(data.Origins, shellOrigin{
+						data.Origins = append(data.Origins, tile{
 							Index: i,
 							Local: local,
 							// Relative, so the page works under whatever hostname served it.
@@ -160,7 +160,7 @@ func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.In
 					}
 
 					var page strings.Builder
-					if err := shellTmpl.Execute(&page, data); err != nil {
+					if err := pageTmpl.Execute(&page, data); err != nil {
 						log.Error("multiview render failed", "error", err)
 						http.Error(w, "multiview: "+err.Error(), http.StatusInternalServerError)
 						return
@@ -192,7 +192,7 @@ func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.In
 			// alone. A browser old enough not to send Sec-Fetch at all strips nothing,
 			// which fails closed: a blank tile rather than a quietly weakened origin.
 			//
-			// Priority 2, behind the panel itself, so the shell is served before
+			// Priority 2, behind the panel itself, so the page is served before
 			// anything looks at framing.
 			Priority: 2,
 			// Report whether a request is one of the panel's own frames.

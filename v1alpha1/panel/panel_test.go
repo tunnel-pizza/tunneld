@@ -31,9 +31,9 @@ func (f *fakeIC) WithHandler(h http.HandlerFunc) libtunnel.InterceptCtx {
 	return f
 }
 
-// shellOf returns the panel's own interceptor: the one that answers the bare
+// pageOf returns the panel's own interceptor: the one that answers the bare
 // tunnel address with the page of frames.
-func shellOf(t *testing.T, origins []*url.URL) libtunnel.Interceptor {
+func pageOf(t *testing.T, origins []*url.URL) libtunnel.Interceptor {
 	t.Helper()
 	return New().Interceptors(origins, discard)[0]
 }
@@ -88,7 +88,7 @@ func TestIsPanelRequest(t *testing.T) {
 				r.Header.Set("Connection", "Upgrade")
 				r.Header.Set("Upgrade", tc.upgrade)
 			}
-			if got := shellOf(t, nil).Match(r); got != tc.want {
+			if got := pageOf(t, nil).Match(r); got != tc.want {
 				t.Errorf("isPanelRequest(%q dest=%q referer=%q) = %v, want %v",
 					tc.target, tc.dest, tc.referer, got, tc.want)
 			}
@@ -159,7 +159,7 @@ func TestServeShell(t *testing.T) {
 	r.Host = "foo.tunneled.pizza"
 
 	ic := &fakeIC{}
-	shellOf(t, origins).Handler(ic)
+	pageOf(t, origins).Handler(ic)
 	ic.installed(rec, r)
 
 	if rec.Code != http.StatusOK {
@@ -202,7 +202,7 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 	r.Host = `evil"><script>alert(1)</script>`
 
 	ic := &fakeIC{}
-	shellOf(t, origins).Handler(ic)
+	pageOf(t, origins).Handler(ic)
 	ic.installed(rec, r)
 
 	if strings.Contains(rec.Body.String(), "<script>alert(1)</script>") {
@@ -236,7 +236,7 @@ func TestLabel(t *testing.T) {
 	r.Host = "foo.tunneled.pizza"
 
 	ic := &fakeIC{}
-	shellOf(t, origins).Handler(ic)
+	pageOf(t, origins).Handler(ic)
 	ic.installed(rec, r)
 
 	body := rec.Body.String()
@@ -261,7 +261,7 @@ func TestPanelInterceptorServesTheShell(t *testing.T) {
 		t.Fatalf("parseOrigins: %v", err)
 	}
 
-	interceptor := shellOf(t, origins)
+	interceptor := pageOf(t, origins)
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
@@ -432,9 +432,9 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 // anything considers framing, and the unframer never matches the panel's own
 // request.
 func TestUnframeIsBehindThePanel(t *testing.T) {
-	shellPriority := shellOf(t, nil).Priority
-	if got := unframeOf(t).Priority; got <= shellPriority {
-		t.Errorf("unframe Priority = %d, want it behind the shell's %d", got, shellPriority)
+	pagePriority := pageOf(t, nil).Priority
+	if got := unframeOf(t).Priority; got <= pagePriority {
+		t.Errorf("unframe Priority = %d, want it behind the page's %d", got, pagePriority)
 	}
 
 	panelReq := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -443,7 +443,7 @@ func TestUnframeIsBehindThePanel(t *testing.T) {
 	}
 }
 
-// TestInterceptorsOrder pins what run relies on: the shell comes first and
+// TestInterceptorsOrder pins what run relies on: the page comes first and
 // outranks the unframer, so the one request that must never reach an origin
 // is answered before anything looks at framing. Swapping the two fails this.
 func TestInterceptorsOrder(t *testing.T) {
@@ -452,10 +452,10 @@ func TestInterceptorsOrder(t *testing.T) {
 		t.Fatalf("Interceptors() returned %d, want 2", len(got))
 	}
 	if !got[0].Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
-		t.Error("Interceptors()[0] does not match the panel request, want the shell first")
+		t.Error("Interceptors()[0] does not match the panel request, want the page first")
 	}
 	if got[0].Priority >= got[1].Priority {
-		t.Errorf("shell Priority = %d, unframe = %d; want the shell ahead", got[0].Priority, got[1].Priority)
+		t.Errorf("page Priority = %d, unframe = %d; want the page ahead", got[0].Priority, got[1].Priority)
 	}
 }
 
