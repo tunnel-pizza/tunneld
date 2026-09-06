@@ -4,6 +4,11 @@
 // It knows nothing about HTTP or websockets: it is handed the four streams and
 // a resize channel, and it copies. The split is what keeps a second provider —
 // podman, or a local shell over a pty — from having to touch the server.
+//
+// Two types, because the root needs two things: TargetsImpl opens a
+// reference — a name, an id, a Compose service — and TargetImpl is the
+// container it found. The first is behind the root's Targets contract; the
+// second is behind attach.Target.
 package docker
 
 import (
@@ -25,10 +30,11 @@ import (
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
-// Attacher is one container, resolved and inspected.
-type Attacher struct {
+// TargetImpl is one container, resolved and inspected.
+type TargetImpl struct {
 	cli   *client.Client
 	log   *slog.Logger
 	id    string
@@ -37,7 +43,36 @@ type Attacher struct {
 	stdin bool
 }
 
-// Open resolves ref — a container name, an id, or a Compose service — against
+// TargetsImpl is the default source of targets: the daemon named by the
+// environment, $DOCKER_HOST and friends.
+type TargetsImpl struct{}
+
+// Option configures a TargetsImpl at construction. There are none yet; the
+// signature exists so a knob added later changes no caller.
+type Option = v1.Option[*TargetsImpl]
+
+// New returns the default source of targets, configured by opts.
+func New(opts ...Option) *TargetsImpl {
+	return v1.Apply(&TargetsImpl{}, opts...)
+}
+
+// Open resolves ref against the daemon and hands back the container as an
+// attach.Target. It is open with the concrete type erased — and the erasure
+// is why this is not `return open(ctx, ref, log)`: a nil *TargetImpl
+// forwarded into an interface is an interface that is not nil, and a caller
+// checking the target rather than the error would use it and panic.
+func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error) {
+	target, err := open(ctx, ref, log)
+	if err != nil {
+		return nil, err
+	}
+	return target, nil
+}
+
+// TargetImpl is what attach serves; a drift in either package fails here.
+var _ attach.Target = (*TargetImpl)(nil)
+
+// open resolves ref — a container name, an id, or a Compose service — against
 // the daemon named by the environment ($DOCKER_HOST and friends) and inspects
 // it.
 //
@@ -49,7 +84,7 @@ type Attacher struct {
 // The three failures are told apart because their levers differ: a daemon that
 // cannot be reached is ErrNoDocker (start Docker), and both a missing container
 // and a stopped one are ErrInvalidOrigin (fix the --url, or start it).
-func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) {
+func open(ctx context.Context, ref string, log *slog.Logger) (*TargetImpl, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", v1.ErrNoDocker, err)
@@ -103,7 +138,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		return nil, fmt.Errorf("%w: container %q reports no configuration", v1.ErrInvalidOrigin, ref)
 	}
 
-	return &Attacher{
+	return &TargetImpl{
 		cli:   cli,
 		log:   log,
 		id:    info.ID,
@@ -265,17 +300,17 @@ func selfIDs(r io.Reader) []string {
 
 // Name is the reference the operator typed, not the resolved id: it is what
 // they will recognize in a page title and a log line.
-func (a *Attacher) Name() string { return a.ref }
+func (a *TargetImpl) Name() string { return a.ref }
 
 // TTY reports Config.Tty — whether the container was started with -t. It is
 // fixed at docker run time and nothing here can change it.
-func (a *Attacher) TTY() bool { return a.tty }
+func (a *TargetImpl) TTY() bool { return a.tty }
 
 // Stdin reports Config.OpenStdin — whether the container was started with -i.
-func (a *Attacher) Stdin() bool { return a.stdin }
+func (a *TargetImpl) Stdin() bool { return a.stdin }
 
 // Close releases the API client.
-func (a *Attacher) Close() error { return a.cli.Close() }
+func (a *TargetImpl) Close() error { return a.cli.Close() }
 
 // AttachContainer attaches to PID 1 and copies until the stream ends or ctx is
 // canceled, which is what `docker attach` does. The Kubernetes-shaped name,
@@ -286,7 +321,7 @@ func (a *Attacher) Close() error { return a.cli.Close() }
 // backlog replays so that opening the URL shows what the container has been
 // printing. An empty terminal on a quiet container is indistinguishable from a
 // broken one, and this page is usually opened long after the container started.
-func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	resp, err := a.cli.ContainerAttach(ctx, a.id, client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  a.stdin,
@@ -356,7 +391,7 @@ func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Re
 // Without a TTY there is nothing to resize, but the channel is still drained:
 // the page sends its size as a heartbeat regardless, and a blocked send would
 // stall the whole stream.
-func (a *Attacher) watchResize(ctx context.Context, resize <-chan remotecommand.TerminalSize) {
+func (a *TargetImpl) watchResize(ctx context.Context, resize <-chan remotecommand.TerminalSize) {
 	for size := range resize {
 		if !a.tty || size.Width == 0 || size.Height == 0 {
 			continue

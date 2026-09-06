@@ -6,11 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
@@ -31,21 +33,24 @@ func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 	return nil
 }
 
-// withStubOpener swaps the docker opener for the duration of a test and
-// records every reference it was asked for.
-func withStubOpener(t *testing.T, err error) *[]string {
-	t.Helper()
-	var asked []string
-	original := openTarget
-	openTarget = func(_ context.Context, ref string, _ *slog.Logger) (attach.Target, error) {
-		asked = append(asked, ref)
-		if err != nil {
-			return nil, err
-		}
-		return &stubTarget{name: ref}, nil
+// stubTargets stands in for the daemon: it records every reference it was
+// asked for and answers with a stubTarget. failOn, when positive, makes that
+// call fail instead — the unwinding case needs one success before one
+// failure.
+type stubTargets struct {
+	asked  []string
+	failOn int
+	opened []*stubTarget
+}
+
+func (s *stubTargets) Open(_ context.Context, ref string, _ v1.Logger) (attach.Target, error) {
+	s.asked = append(s.asked, ref)
+	if s.failOn > 0 && len(s.asked) == s.failOn {
+		return nil, errors.New("no such container")
 	}
-	t.Cleanup(func() { openTarget = original })
-	return &asked
+	target := &stubTarget{name: ref}
+	s.opened = append(s.opened, target)
+	return target, nil
 }
 
 func mustURLs(t *testing.T, raw ...string) []*url.URL {
@@ -62,10 +67,10 @@ func mustURLs(t *testing.T, raw ...string) []*url.URL {
 // typed, so index n still means origin n everywhere downstream — ?n routing,
 // PublicURL, the reported map, the multiview tiles.
 func TestBindOriginsKeepsOrder(t *testing.T) {
-	asked := withStubOpener(t, nil)
+	targets := &stubTargets{}
 	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")
 
-	bound, err := bindOrigins(t.Context(), display, slog.New(slog.DiscardHandler))
+	bound, err := bindOrigins(t.Context(), targets, display, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("bindOrigins: %v", err)
 	}
@@ -85,25 +90,25 @@ func TestBindOriginsKeepsOrder(t *testing.T) {
 			t.Errorf("dialable[%d] = %q, want a loopback origin", i, bound.dialable[i])
 		}
 	}
-	if want := []string{"api", "db"}; len(*asked) != 2 || (*asked)[0] != want[0] || (*asked)[1] != want[1] {
-		t.Errorf("opened %q, want %q", *asked, want)
+	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
+		t.Errorf("opened %q, want %q", targets.asked, want)
 	}
 }
 
 // TestBindOriginsWithoutContainers pins that a command with no dockerd:// URL
 // starts nothing at all — the feature is inert until somebody asks for it.
 func TestBindOriginsWithoutContainers(t *testing.T) {
-	asked := withStubOpener(t, nil)
+	targets := &stubTargets{}
 	display := mustURLs(t, "http://localhost:3000", "http://localhost:4000")
 
-	bound, err := bindOrigins(t.Context(), display, slog.New(slog.DiscardHandler))
+	bound, err := bindOrigins(t.Context(), targets, display, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("bindOrigins: %v", err)
 	}
 	defer bound.Close()
 
-	if len(*asked) != 0 {
-		t.Errorf("opened %q, want nothing", *asked)
+	if len(targets.asked) != 0 {
+		t.Errorf("opened %q, want nothing", targets.asked)
 	}
 	for i, u := range bound.dialable {
 		if u != display[i] {
@@ -117,28 +122,16 @@ func TestBindOriginsWithoutContainers(t *testing.T) {
 // error and exit; a leaked goroutine holding a port would outlive it in an
 // embedding program.
 func TestBindOriginsUnwindsOnFailure(t *testing.T) {
-	var opened []*stubTarget
-	original := openTarget
-	calls := 0
-	openTarget = func(_ context.Context, ref string, _ *slog.Logger) (attach.Target, error) {
-		calls++
-		if calls == 2 {
-			return nil, errors.New("no such container")
-		}
-		s := &stubTarget{name: ref}
-		opened = append(opened, s)
-		return s, nil
-	}
-	t.Cleanup(func() { openTarget = original })
-
+	targets := &stubTargets{failOn: 2}
 	display := mustURLs(t, "dockerd://api", "dockerd://missing")
-	if _, err := bindOrigins(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
+
+	if _, err := bindOrigins(t.Context(), targets, display, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("bindOrigins succeeded, want an error")
 	}
-	if len(opened) != 1 {
-		t.Fatalf("opened %d targets, want 1", len(opened))
+	if len(targets.opened) != 1 {
+		t.Fatalf("opened %d targets, want 1", len(targets.opened))
 	}
-	if !opened[0].closed {
+	if !targets.opened[0].closed {
 		t.Error("the first container's target was left open")
 	}
 }

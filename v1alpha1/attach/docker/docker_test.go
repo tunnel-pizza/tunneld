@@ -36,13 +36,33 @@ func TestOpenWithoutDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	got, err := Open(ctx, "api", discard())
+	got, err := open(ctx, "api", discard())
 	if err == nil {
 		_ = got.Close()
 		t.Fatal("Open with no daemon succeeded, want an error")
 	}
 	if !errors.Is(err, v1.ErrNoDocker) {
 		t.Errorf("error = %v, want %v", err, v1.ErrNoDocker)
+	}
+}
+
+// TestOpenFailureIsNil pins the nil-interface trap. open returns a typed
+// nil on failure, and forwarding that as attach.Target would produce an
+// interface value that is not nil and panics on first use. bindOrigins checks
+// err first, so this would only surface in a caller that checked the target —
+// which is exactly the caller nobody tests.
+func TestOpenFailureIsNil(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	target, err := New().Open(ctx, "api", discard())
+	if err == nil {
+		_ = target.Close()
+		t.Fatal("Open with no daemon succeeded, want an error")
+	}
+	if target != nil {
+		t.Errorf("Open returned a non-nil Target alongside the error: %#v", target)
 	}
 }
 
@@ -100,7 +120,7 @@ func startContainer(t *testing.T, cli *client.Client, tty, stdin bool) string {
 func TestOpenRejects(t *testing.T) {
 	t.Run("no such container", func(t *testing.T) {
 		withDaemon(t)
-		got, err := Open(t.Context(), "tunneld-test-nonexistent", discard())
+		got, err := open(t.Context(), "tunneld-test-nonexistent", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -119,7 +139,7 @@ func TestOpenRejects(t *testing.T) {
 		if _, err := cli.ContainerStop(t.Context(), id, client.ContainerStopOptions{}); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
-		got, err := Open(t.Context(), id, discard())
+		got, err := open(t.Context(), id, discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a stopped container succeeded, want an error")
@@ -148,7 +168,7 @@ func TestOpenRejects(t *testing.T) {
 		t.Cleanup(srv.Close)
 		t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
 
-		got, err := Open(t.Context(), "shim", discard())
+		got, err := open(t.Context(), "shim", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a container with no config succeeded, want an error")
@@ -271,7 +291,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			project: "containers", service: "claude-code",
 		})
 
-		got, err := Open(t.Context(), "claude-code", discard())
+		got, err := open(t.Context(), "claude-code", discard())
 		if err != nil {
 			t.Fatalf("Open on a Compose service: %v", err)
 		}
@@ -294,7 +314,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "svc", name: "proj-web-1", project: "proj", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -312,7 +332,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "other-web", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -330,7 +350,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "b", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := open(t.Context(), "web", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on an ambiguous service succeeded, want an error")
@@ -352,7 +372,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			id: "abc", name: "proj-api-1", project: "proj", service: "api",
 		})
 
-		got, err := Open(t.Context(), "nope", discard())
+		got, err := open(t.Context(), "nope", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -439,7 +459,7 @@ func TestOpenScopesByMountinfo(t *testing.T) {
 		composeContainer{id: "other-cc", name: "other-claude-code-1", project: "other", service: "claude-code"},
 	)
 
-	got, err := Open(t.Context(), "claude-code", discard())
+	got, err := open(t.Context(), "claude-code", discard())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -467,7 +487,7 @@ func TestAttach(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			id := startContainer(t, cli, tc.tty, tc.stdin)
-			a, err := Open(t.Context(), id, discard())
+			a, err := open(t.Context(), id, discard())
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -543,6 +563,25 @@ func TestAttach(t *testing.T) {
 			}
 			_ = stdinW.Close()
 		})
+	}
+}
+
+// TestNewOpensTarget pins the contract the root consumes: New().Open hands
+// back an attach.Target for a running container, named by the reference it
+// was given, and closing it releases the client.
+func TestNewOpensTarget(t *testing.T) {
+	cli := withDaemon(t)
+	id := startContainer(t, cli, true, true)
+
+	target, err := New().Open(t.Context(), id, discard())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if target.Name() != id {
+		t.Errorf("Name() = %q, want the reference %q", target.Name(), id)
+	}
+	if err := target.Close(); err != nil {
+		t.Errorf("Close: %v", err)
 	}
 }
 

@@ -50,7 +50,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	// A container is not an HTTP service, so tunneld serves one on its behalf
 	// and hands the tunnel the loopback address instead. origins stays what
 	// the operator typed — it is what the reported map and the panel show.
-	bound, err := bindOrigins(ctx, origins, log)
+	bound, err := bindOrigins(ctx, b.targets, origins, log)
 	if err != nil {
 		return err
 	}

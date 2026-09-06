@@ -15,6 +15,8 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
@@ -95,6 +97,18 @@ func WithCounter(c Counter) Option {
 	return func(b *BuilderImpl) { b.counter = c }
 }
 
+// Targets opens a container reference as something attach can serve.
+type Targets interface {
+	Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error)
+}
+
+// WithTargets replaces what a dockerd:// origin is resolved against. The
+// default is docker.New(), the daemon $DOCKER_HOST names; a test hands in a
+// stub and never touches a daemon.
+func WithTargets(t Targets) Option {
+	return func(b *BuilderImpl) { b.targets = t }
+}
+
 // The defaults satisfy their contracts, checked here so a drift fails the
 // build rather than the first run.
 var (
@@ -104,6 +118,7 @@ var (
 	_ Panel      = (*panel.PanelImpl)(nil)
 	_ Opener     = (*browser.OpenerImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
+	_ Targets    = (*docker.TargetsImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -125,6 +140,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithPanel(panel.New()),
 		WithOpener(browser.New()),
 		WithCounter(counter.New()),
+		WithTargets(docker.New()),
 	)
 	return v1.Apply(b, opts...)
 }
@@ -162,6 +178,7 @@ type BuilderImpl struct {
 	panel   Panel
 	opener  Opener
 	counter Counter
+	targets Targets
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
 	// banner, the origin map, and
