@@ -7,6 +7,7 @@
 package v1alpha1
 
 import (
+	"context"
 	"io"
 	"net/url"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
@@ -70,6 +72,17 @@ func WithPanel(p Panel) Option {
 	return func(b *BuilderImpl) { b.panel = p }
 }
 
+// Opener puts a public address in front of a person once the edge serves it.
+type Opener interface {
+	Open(ctx context.Context, addr string, stderr io.Writer, log v1.Logger)
+}
+
+// WithOpener replaces what opens the public address once the tunnel is live.
+// The default is browser.New(): probe the edge, then the host's browser.
+func WithOpener(o Opener) Option {
+	return func(b *BuilderImpl) { b.opener = o }
+}
+
 // Counter folds tunnel events into a verdict: has the edge disowned it.
 type Counter interface {
 	Count(e libtunnel.Event)
@@ -89,6 +102,7 @@ var (
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Panel      = (*panel.PanelImpl)(nil)
+	_ Opener     = (*browser.OpenerImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 )
 
@@ -109,6 +123,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
 		WithPanel(panel.New()),
+		WithOpener(browser.New()),
 		WithCounter(counter.New()),
 	)
 	return v1.Apply(b, opts...)
@@ -145,6 +160,7 @@ type BuilderImpl struct {
 	engine  Engine
 	cache   Cache
 	panel   Panel
+	opener  Opener
 	counter Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own

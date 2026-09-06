@@ -8,22 +8,15 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cnuss/libtunnel"
-	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
-
-// openURL launches a browser on addr. A variable, not a direct call, so a test
-// can observe the call without a window appearing on whoever is running it.
-var openURL = browser.OpenURL
 
 // run is the built command's body: it brings the tunnel up, reports the public
 // URLs, and blocks until ctx is canceled or the tunnel fails. ctx is the
@@ -140,8 +133,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		// One page, never a fan of tabs: the panel when there is one, since it
 		// reaches every origin, and otherwise the default origin itself.
 		target := cmp.Or(view, PublicURL(public, 0, len(origins)))
-		awaitReachable(ctx, target, reachableWithin, log)
-		openInBrowser(target, stderr, log)
+		b.opener.Open(ctx, target, stderr, log)
 	}
 
 	// After the URL is live, so what gets cached is a tunnel that came up
@@ -229,80 +221,6 @@ func report(stderr io.Writer, public *url.URL, origins []*url.URL, view string) 
 	for i, origin := range origins {
 		fmt.Fprintf(stderr, "  %s\n", PublicURL(public, i, len(origins)))
 		fmt.Fprintf(stderr, "    -> %s\n", origin)
-	}
-}
-
-// The window between a tunnel being ready and the edge serving it. Ten seconds
-// is far longer than the gap has been observed to be — under a second — and it
-// only ever costs that much when something is wrong, in which case the browser
-// opens anyway rather than never.
-const (
-	reachableWithin = 10 * time.Second
-	reachableEvery  = 250 * time.Millisecond
-	reachableProbe  = 5 * time.Second
-)
-
-// awaitReachable waits for the edge to actually serve addr before a browser is
-// pointed at it.
-//
-// TunnelReady, which URL has already waited on, means the connection is up and
-// the hostname resolves. It does not mean the edge has finished registering
-// the route: for a moment after that it answers 530, and a browser opened into
-// that window shows an error page for a tunnel that is about to work. Measured
-// at roughly half a second, which is exactly long enough to be the first thing
-// somebody sees.
-//
-// Anything the origin itself produced ends the wait, 404 and 401 included —
-// the question is whether the route is live, not whether the app is happy. A
-// 5xx is the edge saying it still cannot reach the tunnel. Giving up opens the
-// browser regardless: a page that may work beats no page at all, and the
-// warning says which happened.
-func awaitReachable(ctx context.Context, addr string, within time.Duration, log *slog.Logger) {
-	ctx, cancel := context.WithTimeout(ctx, within)
-	defer cancel()
-
-	client := &http.Client{Timeout: reachableProbe}
-	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, addr, nil)
-		if err != nil {
-			return // a URL this far in is well-formed; nothing to retry
-		}
-		resp, err := client.Do(req)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode < http.StatusInternalServerError {
-				return
-			}
-			log.Debug("edge not serving yet", "url", addr, "status", resp.StatusCode)
-		}
-
-		select {
-		case <-ctx.Done():
-			log.Debug("opening a browser before the edge answered", "url", addr)
-			return
-		case <-time.After(reachableEvery):
-		}
-	}
-}
-
-// openInBrowser launches a browser on addr, reporting a failure to the debug
-// log and nowhere else: the tunnel is up and serving either way, and a
-// headless host — a server, a container, CI — is a normal place to run this,
-// not a broken one. A warning on stderr told those runs, every time, about a
-// thing they were never going to do. --no-open (or v1.NoOpenEnv) skips the
-// attempt entirely, and --log-level=debug is where to look when a browser was
-// wanted and none appeared.
-//
-// pkg/browser wires the spawned process's output to its package-level Stdout,
-// which defaults to os.Stdout — the one stream tunneld promises carries
-// nothing but public URLs. Both are pointed at stderr before the child can
-// write a word. They are package globals, so this is process-wide; tunneld
-// owns its process, and an embedding program gets the same guarantee it wants
-// anyway.
-func openInBrowser(addr string, stderr io.Writer, log *slog.Logger) {
-	browser.Stdout, browser.Stderr = stderr, stderr
-	if err := openURL(addr); err != nil {
-		log.Debug("could not open a browser", "url", addr, "error", err)
 	}
 }
 
