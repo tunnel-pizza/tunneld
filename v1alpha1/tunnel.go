@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cnuss/libtunnel"
-	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/env"
@@ -75,7 +74,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	// upgrades URL from "the hostname resolves" to "reachable end to end" and
 	// makes it return nil on cancel, so a signal during startup exits cleanly.
 	start := func(spec string) libtunnel.TunnelV1 {
-		tun := b.engine(spec).
+		tun := b.engine.Tunnel(spec, b.provider).
 			WithLogger(log).
 			WithContext(ctx).
 			WithEventListener(b.events(log, gone)).
@@ -201,37 +200,6 @@ func (b *BuilderImpl) events(log *slog.Logger, gone context.CancelCauseFunc) fun
 			})
 		}
 	}
-}
-
-// engine returns the unstarted tunnel to run: a replay of spec when there is
-// one, otherwise a fresh mint.
-//
-// libtunnel.From rather than the LIBTUNNEL_SPEC variable, because From is the
-// path that asks. A replayed spec's identity rides the mint request, so a
-// tunnel reaped since it was cached still comes back on the same hostname when
-// the provider can still give that name out — which is the whole point of
-// keeping the spec. When it cannot, the mint has already happened and its
-// hostname is adopted rather than refused, so a lapsed reservation costs the
-// name and nothing else. The variable is the parent-to-child channel, where
-// the tunnel is live by construction and no question needs asking.
-//
-// From builds its own backend, so the provider host travels by environment
-// rather than through WithProvider. It is the same knob either way: libtunnel
-// reads that variable over a code-set host.
-func (b *BuilderImpl) engine(spec string) libtunnel.TunnelV1 {
-	if b.provider != "" {
-		// Best effort: a provider that cannot be set falls back to the
-		// default, which is where an unset one would have gone anyway.
-		_ = os.Setenv(ltv1.CloudflareProviderEnv, b.provider)
-	}
-	if spec != "" {
-		return libtunnel.From(spec)
-	}
-	backend := libtunnel.Cloudflare()
-	if b.provider != "" {
-		backend = backend.WithProvider(b.provider)
-	}
-	return libtunnel.New(backend)
 }
 
 // report writes the human-readable map to stderr: a line per public address

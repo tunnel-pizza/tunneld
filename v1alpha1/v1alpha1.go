@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -26,6 +27,18 @@ type Option = v1.Option[*BuilderImpl]
 // once in a v1alpha1/<name> subpackage, seeded by New, and replaceable with
 // the matching With* option below. A function that maps a value to a value
 // gets no contract; see CONTRIBUTING.
+
+// Engine mints or replays the tunnel run drives. spec is a cached envelope to
+// replay, "" to mint; provider is the quick-tunnel host, "" for the default.
+type Engine interface {
+	Tunnel(spec, provider string) libtunnel.TunnelV1
+}
+
+// WithEngine replaces what mints or replays the tunnel. The default is
+// engine.New(), libtunnel's Cloudflare backend; a test hands in a fake.
+func WithEngine(e Engine) Option {
+	return func(b *BuilderImpl) { b.engine = e }
+}
 
 // Counter folds tunnel events into a verdict: has the edge disowned it.
 type Counter interface {
@@ -43,6 +56,7 @@ func WithCounter(c Counter) Option {
 // build rather than the first run.
 var (
 	_ v1.Builder = (*BuilderImpl)(nil)
+	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 )
 
@@ -60,6 +74,7 @@ func New(opts ...Option) *BuilderImpl {
 	b := v1.Apply(&BuilderImpl{},
 		WithOpen(v1.DefaultOpen),
 		WithMultiview(v1.DefaultMultiview),
+		WithEngine(engine.New()),
 		WithCounter(counter.New()),
 	)
 	return v1.Apply(b, opts...)
@@ -93,6 +108,7 @@ type BuilderImpl struct {
 
 	// The collaborators run composes, each behind a contract declared above.
 	// Seeded by New; a test or a contributor swaps one with its With* option.
+	engine  Engine
 	counter Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
