@@ -19,7 +19,6 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/env"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/multiview"
 )
 
@@ -67,7 +66,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 
 	cached := ""
 	if len(b.cacheDirs) > 0 {
-		cached = env.Cached(b.cacheDirs, log)
+		cached = b.cache.Cached(b.cacheDirs, log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start. WithContext
@@ -125,7 +124,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
 			return cause
 		}
-		env.Discard(b.cacheDirs, log)
+		b.cache.Discard(b.cacheDirs, log)
 		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 		tun = start("")
@@ -148,7 +147,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	// After the URL is live, so what gets cached is a tunnel that came up
 	// rather than one that was merely asked for.
 	if len(b.cacheDirs) > 0 {
-		env.Save(b.cacheDirs, log)
+		b.cache.Save(b.cacheDirs, log)
 	}
 
 	select {

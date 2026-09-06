@@ -13,6 +13,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 )
@@ -52,11 +53,26 @@ func WithCounter(c Counter) Option {
 	return func(b *BuilderImpl) { b.counter = c }
 }
 
+// Cache persists a tunnel's spec between runs, in the directories
+// --cache-dir settled on.
+type Cache interface {
+	Cached(dirs []string, log v1.Logger) string
+	Save(dirs []string, log v1.Logger)
+	Discard(dirs []string, log v1.Logger)
+}
+
+// WithCache replaces where a tunnel's spec is kept between runs. The default
+// is cache.New(), a TUNNEL.env in each directory.
+func WithCache(c Cache) Option {
+	return func(b *BuilderImpl) { b.cache = c }
+}
+
 // The defaults satisfy their contracts, checked here so a drift fails the
 // build rather than the first run.
 var (
 	_ v1.Builder = (*BuilderImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
+	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 )
 
@@ -75,6 +91,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithOpen(v1.DefaultOpen),
 		WithMultiview(v1.DefaultMultiview),
 		WithEngine(engine.New()),
+		WithCache(cache.New()),
 		WithCounter(counter.New()),
 	)
 	return v1.Apply(b, opts...)
@@ -109,6 +126,7 @@ type BuilderImpl struct {
 	// The collaborators run composes, each behind a contract declared above.
 	// Seeded by New; a test or a contributor swaps one with its With* option.
 	engine  Engine
+	cache   Cache
 	counter Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
