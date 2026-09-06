@@ -8,7 +8,7 @@ module github.com/tunnel-pizza/tunneld
 go 1.26.0
 
 require (
-	github.com/cnuss/libtunnel v0.0.60
+	github.com/cnuss/libtunnel v0.0.66
 	github.com/containerd/errdefs v1.0.0
 	github.com/go-logr/logr v1.4.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
@@ -63,6 +63,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/ncruces/go-dns v1.3.3 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect

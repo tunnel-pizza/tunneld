@@ -23,7 +23,8 @@ import (
 // always the field it binds over, so WithOpen(false) is honoured exactly like
 // every other seed.
 func New() *BuilderImpl {
-	return &BuilderImpl{open: v1.DefaultOpen, multiview: v1.DefaultMultiview}
+	counter := NewCounter().WithMaxGone(3) // TODO: var-ify this
+	return &BuilderImpl{open: v1.DefaultOpen, multiview: v1.DefaultMultiview, counter: counter}
 }
 
 // BuilderImpl is the default Builder implementation. Its fields are the
@@ -51,6 +52,9 @@ type BuilderImpl struct {
 	// from.
 	open   bool
 	noOpen bool
+
+	// TODO Doc
+	counter *Counter
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
 	// banner, the origin map, and
