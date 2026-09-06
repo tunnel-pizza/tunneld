@@ -52,6 +52,31 @@ import (
 // conversion at every call site.
 type Logger = *slog.Logger
 
+// Option configures a value of type T while it is being constructed. Every
+// New in v1alpha1 and its subpackages takes a list of them, applies its own
+// defaults first and the caller's after, so the caller's always wins. A
+// package aliases the instantiated type to its own Option and exposes With*
+// constructors returning that alias:
+//
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Build()
+//
+// One generic type rather than an Option per package, so the rule for how
+// options are applied is declared once, in Apply, and every constructor in
+// the tree reads the same way. It lives here rather than in v1alpha1 for the
+// same reason the sentinels do: the subpackages cannot import the root, and
+// every one of them needs it.
+type Option[T any] func(T)
+
+// Apply runs opts against t in order and returns t, so a constructor is one
+// expression per tier — its defaults, then the caller's. Later options
+// overwrite earlier ones, which is the whole precedence rule.
+func Apply[T any](t T, opts ...Option[T]) T {
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
 // The sentinel errors, centralized: declared here with errors.New, wrapped by
 // the implementation in v1alpha1, and matched by callers with errors.Is. Two
 // disciplines govern this block.
