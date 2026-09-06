@@ -10,7 +10,6 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -66,107 +65,152 @@ func New(opts ...Option) *PanelImpl {
 // The order is the contract — run registers them in a loop and never looks
 // at a priority itself.
 func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
-	return []libtunnel.Interceptor{shell(origins, log), unframe()}
-}
+	return []libtunnel.Interceptor{
+		{
+			// Build the interceptor that serves the panel.
+			//
+			// Priority 1 is the highest there is, so nothing registered later can
+			// shadow the one request that must never reach an origin.
+			Priority: 1,
+			// Report whether a request is somebody arriving at the tunnel itself,
+			// which is what the panel answers. With several origins the bare
+			// hostname has no better meaning: every origin has its own ?n, so the
+			// address with nothing after it is the one that can show all of them.
+			//
+			// Three conditions narrow it, and each one is load-bearing:
+			//
+			// The path is exactly "/". An origin's own subresources — /app.js, /style.css
+			// — carry no query either, and serving them a page of frames instead of the
+			// file they asked for would break every origin that has any.
+			//
+			// The query is empty. Not merely free of a routing index: an app's root
+			// legitimately takes parameters, and the caller often does not choose them.
+			// An OAuth provider redirects to /?code=…&state=…, which carries no index and
+			// would otherwise land on a page of frames with the sign-in silently lost.
+			// Exposing an app mid-auth-flow is close to the median reason to reach for a
+			// tunnel. The panel takes no parameters of its own, so it gives up nothing by
+			// answering exactly one address.
+			//
+			// It is a top-level document, and it did not come from a page already on this
+			// host. A frame navigating to "/" would otherwise draw the panel inside one of
+			// the panel's own tiles, and a fetch() from an origin page would receive HTML
+			// where it expected the origin's answer. A request with no Sec-Fetch-Dest at
+			// all — curl, an older browser — counts as top-level, since nothing suggests
+			// otherwise.
+			//
+			// And it is not an upgrade. That exception is what the empty-Sec-Fetch-Dest
+			// case above costs: a WebSocket handshake sends no Sec-Fetch-Dest and no
+			// Referer, so without this every handshake to the bare address matched, and an
+			// app whose socket connects to "/" — xpra's client, and anything else dialing
+			// the tunnel address itself rather than a subpath — was answered with the
+			// panel's HTML instead of a handshake. It worked with --multiview=false and
+			// failed with it on, which is not a shape anybody debugs quickly. An upgrade
+			// is never a document, whatever else it omits.
+			Match: func(r *http.Request) bool {
+				if r.URL.Path != "/" || r.URL.RawQuery != "" {
+					return false
+				}
+				if r.Header.Get("Upgrade") != "" {
+					return false
+				}
+				switch r.Header.Get("Sec-Fetch-Dest") {
+				case "document", "":
+				default:
+					return false
+				}
+				if referer, err := url.Parse(r.Header.Get("Referer")); err == nil && referer.Host == r.Host {
+					return false
+				}
+				return true
+			},
+			Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
+				return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+					// Render the panel. A render failure is logged and answered with a
+					// plain error rather than a half-written page: the response is
+					// buffered by the template only up to the first write, so a partial
+					// body is the one outcome worth avoiding.
+					data := shellData{
+						Host:    r.Host,
+						Origins: make([]shellOrigin, 0, len(origins)),
+					}
+					for i, origin := range origins {
+						// How a tile names the origin behind it: an http origin is named
+						// by its host, because the scheme is the assumption and the host
+						// is the thing the operator typed. Anything else keeps its
+						// scheme, so a tile framing a container reads as dockerd://api
+						// rather than as a bare hostname that happens to be a container
+						// name.
+						//
+						// A +ws / +wss marker is dropped before that test, so the origin
+						// that owns WebSockets is named exactly like every other HTTP
+						// origin. The marker is routing configuration, not part of the
+						// address — a tile shows what it frames, and which origin
+						// sockets land on says nothing about that.
+						scheme, _, _ := strings.Cut(origin.Scheme, "+")
+						local := origin.Host
+						if scheme != "http" && scheme != "https" {
+							local = origin.Scheme + "://" + origin.Host
+						}
+						data.Origins = append(data.Origins, shellOrigin{
+							Index: i,
+							Local: local,
+							// Relative, so the page works under whatever hostname served it.
+							Route: "/?" + strconv.Itoa(i),
+						})
+					}
 
-// shell builds the interceptor that serves the panel.
-//
-// Priority 1 is the highest there is, so nothing registered later can shadow
-// the one request that must never reach an origin.
-func shell(origins []*url.URL, log *slog.Logger) libtunnel.Interceptor {
-	return libtunnel.Interceptor{
-		Priority: 1,
-		Match:    isPanelRequest,
-		Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
-			return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
-				serveShell(w, r, origins, log)
-			})
+					var page strings.Builder
+					if err := shellTmpl.Execute(&page, data); err != nil {
+						log.Error("multiview render failed", "error", err)
+						http.Error(w, "multiview: "+err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					// The panel is a live view of whatever the origins are serving right now.
+					w.Header().Set("Cache-Control", "no-store")
+					if _, err := fmt.Fprint(w, page.String()); err != nil {
+						log.Debug("multiview write failed", "error", err) // visitor went away
+					}
+				})
+			},
 		},
-	}
-}
-
-// isPanelRequest reports whether a request is somebody arriving at the tunnel
-// itself, which is what the panel answers. With several origins the bare
-// hostname has no better meaning: every origin has its own ?n, so the address
-// with nothing after it is the one that can show all of them.
-//
-// Three conditions narrow it, and each one is load-bearing:
-//
-// The path is exactly "/". An origin's own subresources — /app.js, /style.css
-// — carry no query either, and serving them a page of frames instead of the
-// file they asked for would break every origin that has any.
-//
-// The query is empty. Not merely free of a routing index: an app's root
-// legitimately takes parameters, and the caller often does not choose them.
-// An OAuth provider redirects to /?code=…&state=…, which carries no index and
-// would otherwise land on a page of frames with the sign-in silently lost.
-// Exposing an app mid-auth-flow is close to the median reason to reach for a
-// tunnel. The panel takes no parameters of its own, so it gives up nothing by
-// answering exactly one address.
-//
-// It is a top-level document, and it did not come from a page already on this
-// host. A frame navigating to "/" would otherwise draw the panel inside one of
-// the panel's own tiles, and a fetch() from an origin page would receive HTML
-// where it expected the origin's answer. A request with no Sec-Fetch-Dest at
-// all — curl, an older browser — counts as top-level, since nothing suggests
-// otherwise.
-//
-// And it is not an upgrade. That exception is what the empty-Sec-Fetch-Dest
-// case above costs: a WebSocket handshake sends no Sec-Fetch-Dest and no
-// Referer, so without this every handshake to the bare address matched, and an
-// app whose socket connects to "/" — xpra's client, and anything else dialing
-// the tunnel address itself rather than a subpath — was answered with the
-// panel's HTML instead of a handshake. It worked with --multiview=false and
-// failed with it on, which is not a shape anybody debugs quickly. An upgrade
-// is never a document, whatever else it omits.
-func isPanelRequest(r *http.Request) bool {
-	if r.URL.Path != "/" || r.URL.RawQuery != "" {
-		return false
-	}
-	if r.Header.Get("Upgrade") != "" {
-		return false
-	}
-	switch r.Header.Get("Sec-Fetch-Dest") {
-	case "document", "":
-	default:
-		return false
-	}
-	if referer, err := url.Parse(r.Header.Get("Referer")); err == nil && referer.Host == r.Host {
-		return false
-	}
-	return true
-}
-
-// serveShell renders the panel. A render failure is logged and answered with a
-// plain error rather than a half-written page: the response is buffered by the
-// template only up to the first write, so a partial body is the one outcome
-// worth avoiding.
-func serveShell(w http.ResponseWriter, r *http.Request, origins []*url.URL, log *slog.Logger) {
-	data := shellData{
-		Host:    r.Host,
-		Origins: make([]shellOrigin, 0, len(origins)),
-	}
-	for i, origin := range origins {
-		data.Origins = append(data.Origins, shellOrigin{
-			Index: i,
-			Local: label(origin),
-			// Relative, so the page works under whatever hostname served it.
-			Route: "/?" + strconv.Itoa(i),
-		})
-	}
-
-	var page strings.Builder
-	if err := shellTmpl.Execute(&page, data); err != nil {
-		log.Error("multiview render failed", "error", err)
-		http.Error(w, "multiview: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The panel is a live view of whatever the origins are serving right now.
-	w.Header().Set("Cache-Control", "no-store")
-	if _, err := fmt.Fprint(w, page.String()); err != nil {
-		log.Debug("multiview write failed", "error", err) // visitor went away
+		{
+			// Build the interceptor that lets the panel's own frames render.
+			//
+			// An origin is entitled to refuse being framed, and most that care say so
+			// with X-Frame-Options: DENY or a CSP frame-ancestors directive. Through the
+			// panel that refusal produces a blank tile, so the framing headers are
+			// dropped — but only on the requests the panel itself makes, which is what
+			// keeps this from being a blanket removal of somebody's clickjacking
+			// protection.
+			//
+			// The narrowing is Sec-Fetch: the request must be a frame navigation
+			// (Sec-Fetch-Dest) originating from this same tunnel (Sec-Fetch-Site). A
+			// top-level visit keeps every header the origin sent, and so does an attempt
+			// by another site to frame the tunnel — that arrives cross-site and is left
+			// alone. A browser old enough not to send Sec-Fetch at all strips nothing,
+			// which fails closed: a blank tile rather than a quietly weakened origin.
+			//
+			// Priority 2, behind the panel itself, so the shell is served before
+			// anything looks at framing.
+			Priority: 2,
+			// Report whether a request is one of the panel's own frames.
+			Match: func(r *http.Request) bool {
+				switch r.Header.Get("Sec-Fetch-Dest") {
+				case "iframe", "frame":
+				default:
+					return false
+				}
+				return r.Header.Get("Sec-Fetch-Site") == "same-origin"
+			},
+			Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
+				next := ic.Handler()
+				return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
+					next(&unframer{ResponseWriter: w}, r)
+				})
+			},
+		},
 	}
 }
 
@@ -176,46 +220,6 @@ func (*PanelImpl) URL(public *url.URL) string {
 	shown := *public
 	shown.RawQuery = ""
 	return shown.String()
-}
-
-// unframe builds the interceptor that lets the panel's own frames render.
-//
-// An origin is entitled to refuse being framed, and most that care say so with
-// X-Frame-Options: DENY or a CSP frame-ancestors directive. Through the panel
-// that refusal produces a blank tile, so the framing headers are dropped — but
-// only on the requests the panel itself makes, which is what keeps this from
-// being a blanket removal of somebody's clickjacking protection.
-//
-// The narrowing is Sec-Fetch: the request must be a frame navigation
-// (Sec-Fetch-Dest) originating from this same tunnel (Sec-Fetch-Site). A
-// top-level visit keeps every header the origin sent, and so does an attempt by
-// another site to frame the tunnel — that arrives cross-site and is left alone.
-// A browser old enough not to send Sec-Fetch at all strips nothing, which fails
-// closed: a blank tile rather than a quietly weakened origin.
-//
-// Priority 2, behind the panel itself, so the shell is served before anything
-// looks at framing.
-func unframe() libtunnel.Interceptor {
-	return libtunnel.Interceptor{
-		Priority: 2,
-		Match:    isPanelFrame,
-		Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
-			next := ic.Handler()
-			return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
-				next(&unframer{ResponseWriter: w}, r)
-			})
-		},
-	}
-}
-
-// isPanelFrame reports whether a request is one of the panel's own frames.
-func isPanelFrame(r *http.Request) bool {
-	switch r.Header.Get("Sec-Fetch-Dest") {
-	case "iframe", "frame":
-	default:
-		return false
-	}
-	return r.Header.Get("Sec-Fetch-Site") == "same-origin"
 }
 
 // unframer drops the framing headers on the way out. It scrubs at WriteHeader
@@ -233,7 +237,42 @@ func (u *unframer) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 func (u *unframer) WriteHeader(code int) {
 	if !u.written {
 		u.written = true
-		stripFraming(u.Header())
+
+		// Remove X-Frame-Options and CSP's frame-ancestors, and nothing else.
+		// Both are dropped because frame-ancestors supersedes X-Frame-Options
+		// in every current browser, so removing one alone would leave half
+		// the origins blank; the rest of a policy — script-src, connect-src,
+		// everything the origin relies on — is preserved directive by
+		// directive.
+		h := u.Header()
+		h.Del("X-Frame-Options")
+
+		for _, key := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
+			policies := h.Values(key)
+			if len(policies) == 0 {
+				continue
+			}
+			h.Del(key)
+			for _, policy := range policies {
+				// Return policy with any frame-ancestors directive removed,
+				// or "" when that was the whole policy.
+				kept := make([]string, 0, strings.Count(policy, ";")+1)
+				for directive := range strings.SplitSeq(policy, ";") {
+					trimmed := strings.TrimSpace(directive)
+					if trimmed == "" {
+						continue
+					}
+					name, _, _ := strings.Cut(trimmed, " ")
+					if strings.EqualFold(name, "frame-ancestors") {
+						continue
+					}
+					kept = append(kept, trimmed)
+				}
+				if result := strings.Join(kept, "; "); result != "" {
+					h.Add(key, result)
+				}
+			}
+		}
 	}
 	u.ResponseWriter.WriteHeader(code)
 }
@@ -247,67 +286,9 @@ func (u *unframer) Write(b []byte) (int, error) {
 	return u.ResponseWriter.Write(b)
 }
 
-// stripFraming removes X-Frame-Options and CSP's frame-ancestors, and nothing
-// else. Both are dropped because frame-ancestors supersedes X-Frame-Options in
-// every current browser, so removing one alone would leave half the origins
-// blank; the rest of a policy — script-src, connect-src, everything the origin
-// relies on — is preserved directive by directive.
-func stripFraming(h http.Header) {
-	h.Del("X-Frame-Options")
-
-	for _, key := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
-		policies := h.Values(key)
-		if len(policies) == 0 {
-			continue
-		}
-		h.Del(key)
-		for _, policy := range policies {
-			if kept := withoutFrameAncestors(policy); kept != "" {
-				h.Add(key, kept)
-			}
-		}
-	}
-}
-
-// withoutFrameAncestors returns policy with any frame-ancestors directive
-// removed, or "" when that was the whole policy.
-func withoutFrameAncestors(policy string) string {
-	kept := make([]string, 0, strings.Count(policy, ";")+1)
-	for directive := range strings.SplitSeq(policy, ";") {
-		trimmed := strings.TrimSpace(directive)
-		if trimmed == "" {
-			continue
-		}
-		name, _, _ := strings.Cut(trimmed, " ")
-		if strings.EqualFold(name, "frame-ancestors") {
-			continue
-		}
-		kept = append(kept, trimmed)
-	}
-	return strings.Join(kept, "; ")
-}
-
 // Wanted reports whether the panel should be served at all. One origin has
 // nothing to compare against, so a lone --url keeps the bare address for
 // itself rather than framing one page in a panel.
 func (*PanelImpl) Wanted(enabled bool, origins []*url.URL) bool {
 	return enabled && len(origins) > 1
-}
-
-// label is how a tile names the origin behind it. An http origin is named by
-// its host, because the scheme is the assumption and the host is the thing the
-// operator typed. Anything else keeps its scheme, so a tile framing a
-// container reads as dockerd://api rather than as a bare hostname that happens
-// to be a container name.
-//
-// A +ws / +wss marker is dropped before that test, so the origin that owns
-// WebSockets is named exactly like every other HTTP origin. The marker is
-// routing configuration, not part of the address — a tile shows what it frames,
-// and which origin sockets land on says nothing about that.
-func label(u *url.URL) string {
-	scheme, _, _ := strings.Cut(u.Scheme, "+")
-	if scheme == "http" || scheme == "https" {
-		return u.Host
-	}
-	return u.Scheme + "://" + u.Host
 }
