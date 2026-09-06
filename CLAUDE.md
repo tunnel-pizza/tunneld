@@ -9,8 +9,10 @@ agent-specific framing.
 1. [README.md](./README.md) — what the command does + public surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
 3. [`v1/v1.go`](./v1/v1.go) — public `Builder` interface (`Build() *cobra.Command`)
-4. [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go) — the tunnel the command runs
-5. [`main.go`](./main.go) — the whole process shell, ~15 lines
+4. [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go) — `New`, the six internal
+   contracts, and their options
+5. [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go) — the tunnel the command runs
+6. [`main.go`](./main.go) — the whole process shell, ~15 lines
 
 ## Before you touch anything
 

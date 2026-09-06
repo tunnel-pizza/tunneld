@@ -10,8 +10,8 @@
 // exactly the way it treats a local web server.
 //
 // It is an implementation subpackage and knows nothing about Docker: the
-// provider arrives as a Target. index.html travels with the code because
-// go:embed cannot reach outside its own package directory.
+// provider arrives as a Target. index.html travels with the code: go:embed
+// cannot reach outside its own package directory.
 package attach
 
 import (
