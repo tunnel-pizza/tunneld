@@ -53,31 +53,6 @@ const idleTimeout = 2 * time.Minute
 // klogRouted guards the process-global redirect in routeKlog.
 var klogRouted sync.Once
 
-// routeKlog points klog at the tunnel's own logger, once per process.
-//
-// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
-// logs through klog.Background(), which writes to stderr and has never heard
-// of --log-level. That silently breaks a documented promise: the flag's
-// default is silence, and Logger really does hand back a discard handler. The
-// line it breaks on is not an exotic one either. Any abrupt disconnect prints
-//
-//	E0827 17:37:35.563392 conn.go:353] "Error on socket receive" err="read tcp ...: connection reset by peer"
-//
-// and an abrupt disconnect is how sessions normally end: a killed browser, a
-// closed laptop, a dropped network, the Cloudflare edge reaping a connection.
-//
-// klog.SetLogger is process-global, which is the cost. It is the same trade
-// tunneld already makes and documents for browser.Stdout/Stderr in
-// openInBrowser (v1alpha1/tunnel.go) — a package global set on a dependency's
-// behalf, because owning the process's output is worth more than leaving a
-// global untouched. Routed here rather than in the command so the guarantee
-// holds for an embedding program that never runs run(). The first Server's
-// logger wins, which for a process with one --log-level is the only logger
-// there is.
-func routeKlog(log *slog.Logger) {
-	klogRouted.Do(func() { klog.SetLogger(logr.FromSlogHandler(log.Handler())) })
-}
-
 // Target is one attachable thing behind a Server: it streams, it says what it
 // can do, and it releases whatever it holds.
 //
@@ -135,7 +110,28 @@ type Server struct {
 //
 // The Server takes ownership of target: Close closes both.
 func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
-	routeKlog(log)
+	// routeKlog points klog at the tunnel's own logger, once per process.
+	//
+	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
+	// logs through klog.Background(), which writes to stderr and has never heard
+	// of --log-level. That silently breaks a documented promise: the flag's
+	// default is silence, and Logger really does hand back a discard handler. The
+	// line it breaks on is not an exotic one either. Any abrupt disconnect prints
+	//
+	//	E0827 17:37:35.563392 conn.go:353] "Error on socket receive" err="read tcp ...: connection reset by peer"
+	//
+	// and an abrupt disconnect is how sessions normally end: a killed browser, a
+	// closed laptop, a dropped network, the Cloudflare edge reaping a connection.
+	//
+	// klog.SetLogger is process-global, which is the cost. It is the same trade
+	// tunneld already makes and documents for browser.Stdout/Stderr in
+	// openInBrowser (v1alpha1/tunnel.go) — a package global set on a dependency's
+	// behalf, because owning the process's output is worth more than leaving a
+	// global untouched. Routed here rather than in the command so the guarantee
+	// holds for an embedding program that never runs run(). The first Server's
+	// logger wins, which for a process with one --log-level is the only logger
+	// there is.
+	klogRouted.Do(func() { klog.SetLogger(logr.FromSlogHandler(log.Handler())) })
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -158,8 +154,109 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
 	// gets a 404 rather than the shell a second time. GET also answers HEAD,
 	// which is what the reachability probe sends.
-	mux.HandleFunc("GET /{$}", s.servePage)
-	mux.HandleFunc("GET /attach", s.serveAttach)
+	//
+	// servePage renders the terminal page. A render failure is logged and
+	// answered with a plain error rather than a half-written page.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		var rendered strings.Builder
+		// The notice is page chrome, not container output: it states how the
+		// container was started, which was already true before the socket opened
+		// and is not changed by anything printed after it. html/template escapes
+		// it like any other value — it is our own prose, but it travels next to a
+		// name the operator typed.
+		//
+		// degraded names what a container was started without, or "" when it was
+		// started with both -t and -i and there is nothing to explain.
+		//
+		// The wording names the docker run flag rather than the symptom, because
+		// that is the lever: nothing tunneld can do fixes a container already
+		// running without a TTY, and the reader's next move is to restart it.
+		var notice string
+		switch {
+		case !s.target.TTY() && !s.target.Stdin():
+			notice = "no TTY and no stdin (started without -it) — output only"
+		case !s.target.TTY():
+			notice = "no TTY (started without -t) — no line editing, no resize"
+		case !s.target.Stdin():
+			notice = "stdin closed (started without -i) — keystrokes go nowhere"
+		}
+		data := struct{ Name, Notice string }{s.target.Name(), notice}
+		if err := page.Execute(&rendered, data); err != nil {
+			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
+			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// The page is a live view of a running container.
+		w.Header().Set("Cache-Control", "no-store")
+		if _, err := io.WriteString(w, rendered.String()); err != nil {
+			s.log.Debug("attach write failed", "error", err) // visitor went away
+		}
+	})
+	// serveAttach hands the request to ServeAttach, which owns the websocket
+	// upgrade and the v4.channel.k8s.io framing on it.
+	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {
+		// Refuse a handshake that came from somewhere else. A websocket is exempt
+		// from the same-origin policy — new WebSocket() reaches any host the page
+		// can resolve, with no preflight in the way — and the Handshake wsstream
+		// installs replaces the one golang.org/x/net/websocket ships with: it
+		// negotiates a subprotocol and looks at Origin not at all.
+		//
+		// So the bind in Serve is not the whole defence. Loopback keeps this page
+		// off the local network; it does nothing about a page already running in
+		// the operator's browser, which reaches 127.0.0.1 exactly as easily as we
+		// do. Without this check, any tab they open can sweep ws://127.0.0.1:<port>
+		// for something that speaks v4.channel.k8s.io and, on the first hit, hold
+		// stdin and stdout to the container — no tunnel hostname needed.
+		//
+		// Host is what to compare against because it is the address the page was
+		// served from, in all three shapes this origin is reached in: the public
+		// hostname through the tunnel (libtunnel forwards the inbound Host rather
+		// than rewriting it to the origin's), 127.0.0.1:port on a direct visit,
+		// and the public hostname again inside a multiview frame, whose document
+		// is served from it.
+		//
+		// An absent Origin passes, deliberately. A browser always sends one on a
+		// handshake, so no Origin means a non-browser client — curl, a script, a
+		// test — which was never the thing at risk here. Refusing it would break
+		// them and buy nothing.
+		if o := r.Header.Get("Origin"); o != "" {
+			if u, err := url.Parse(o); err != nil || u.Host != r.Host {
+				http.Error(w, "attach: cross-origin websocket refused", http.StatusForbidden)
+				return
+			}
+		}
+
+		// ServeAttach hands the Target r.Context(), and on this one handler that
+		// context is a promise it cannot keep: Go cancels a request's context when
+		// its handler returns, and this handler cannot return while ServeAttach is
+		// still inside the Target. So the Target waits for a cancel that is
+		// waiting for the Target. Nothing else rescues it either — the connection
+		// is hijacked by the websocket upgrade, and http.Server.Close does not
+		// touch hijacked connections.
+		//
+		// Deriving from the Server's own lifetime instead breaks the circle: a
+		// tunnel shutting down cancels this before ServeAttach returns, which is
+		// the only moment at which cancelling it is worth anything. Please do not
+		// "simplify" this back to r.Context().
+		ctx, cancel := context.WithCancel(s.ctx)
+		defer cancel()
+		r = r.WithContext(ctx)
+
+		name := s.target.Name()
+		opts := &remotecommand.Options{
+			Stdin:  s.target.Stdin(),
+			Stdout: true,
+			// A TTY merges stdout and stderr at the source, so a second stream
+			// would only ever be empty — and Kubernetes' own clients treat a
+			// TTY session with a stderr channel as malformed.
+			Stderr: !s.target.TTY(),
+			TTY:    s.target.TTY(),
+		}
+		remotecommand.ServeAttach(w, r, bounded{s.target}, name, "", name, opts,
+			idleTimeout, remotecommand.DefaultStreamCreationTimeout,
+			remotecommand.SupportedStreamingProtocols)
+	})
 
 	s.srv = &http.Server{
 		Handler:           mux,
@@ -198,94 +295,6 @@ func (s *Server) Close() error {
 		err = terr
 	}
 	return err
-}
-
-// servePage renders the terminal page. A render failure is logged and answered
-// with a plain error rather than a half-written page.
-func (s *Server) servePage(w http.ResponseWriter, _ *http.Request) {
-	var rendered strings.Builder
-	// The notice is page chrome, not container output: it states how the
-	// container was started, which was already true before the socket opened
-	// and is not changed by anything printed after it. html/template escapes
-	// it like any other value — it is our own prose, but it travels next to a
-	// name the operator typed.
-	data := struct{ Name, Notice string }{s.target.Name(), degraded(s.target)}
-	if err := page.Execute(&rendered, data); err != nil {
-		s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
-		http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The page is a live view of a running container.
-	w.Header().Set("Cache-Control", "no-store")
-	if _, err := io.WriteString(w, rendered.String()); err != nil {
-		s.log.Debug("attach write failed", "error", err) // visitor went away
-	}
-}
-
-// serveAttach hands the request to ServeAttach, which owns the websocket
-// upgrade and the v4.channel.k8s.io framing on it.
-func (s *Server) serveAttach(w http.ResponseWriter, r *http.Request) {
-	// Refuse a handshake that came from somewhere else. A websocket is exempt
-	// from the same-origin policy — new WebSocket() reaches any host the page
-	// can resolve, with no preflight in the way — and the Handshake wsstream
-	// installs replaces the one golang.org/x/net/websocket ships with: it
-	// negotiates a subprotocol and looks at Origin not at all.
-	//
-	// So the bind in Serve is not the whole defence. Loopback keeps this page
-	// off the local network; it does nothing about a page already running in
-	// the operator's browser, which reaches 127.0.0.1 exactly as easily as we
-	// do. Without this check, any tab they open can sweep ws://127.0.0.1:<port>
-	// for something that speaks v4.channel.k8s.io and, on the first hit, hold
-	// stdin and stdout to the container — no tunnel hostname needed.
-	//
-	// Host is what to compare against because it is the address the page was
-	// served from, in all three shapes this origin is reached in: the public
-	// hostname through the tunnel (libtunnel forwards the inbound Host rather
-	// than rewriting it to the origin's), 127.0.0.1:port on a direct visit,
-	// and the public hostname again inside a multiview frame, whose document
-	// is served from it.
-	//
-	// An absent Origin passes, deliberately. A browser always sends one on a
-	// handshake, so no Origin means a non-browser client — curl, a script, a
-	// test — which was never the thing at risk here. Refusing it would break
-	// them and buy nothing.
-	if o := r.Header.Get("Origin"); o != "" {
-		if u, err := url.Parse(o); err != nil || u.Host != r.Host {
-			http.Error(w, "attach: cross-origin websocket refused", http.StatusForbidden)
-			return
-		}
-	}
-
-	// ServeAttach hands the Target r.Context(), and on this one handler that
-	// context is a promise it cannot keep: Go cancels a request's context when
-	// its handler returns, and this handler cannot return while ServeAttach is
-	// still inside the Target. So the Target waits for a cancel that is
-	// waiting for the Target. Nothing else rescues it either — the connection
-	// is hijacked by the websocket upgrade, and http.Server.Close does not
-	// touch hijacked connections.
-	//
-	// Deriving from the Server's own lifetime instead breaks the circle: a
-	// tunnel shutting down cancels this before ServeAttach returns, which is
-	// the only moment at which cancelling it is worth anything. Please do not
-	// "simplify" this back to r.Context().
-	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
-	r = r.WithContext(ctx)
-
-	name := s.target.Name()
-	opts := &remotecommand.Options{
-		Stdin:  s.target.Stdin(),
-		Stdout: true,
-		// A TTY merges stdout and stderr at the source, so a second stream
-		// would only ever be empty — and Kubernetes' own clients treat a
-		// TTY session with a stderr channel as malformed.
-		Stderr: !s.target.TTY(),
-		TTY:    s.target.TTY(),
-	}
-	remotecommand.ServeAttach(w, r, bounded{s.target}, name, "", name, opts,
-		idleTimeout, remotecommand.DefaultStreamCreationTimeout,
-		remotecommand.SupportedStreamingProtocols)
 }
 
 // bounded wraps a Target so that an attach ends when its connection does.
@@ -340,22 +349,4 @@ func (b bounded) AttachContainer(ctx context.Context, name, uid, container strin
 	}()
 
 	return b.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, forwarded)
-}
-
-// degraded names what a container was started without, or "" when it was
-// started with both -t and -i and there is nothing to explain.
-//
-// The wording names the docker run flag rather than the symptom, because that
-// is the lever: nothing tunneld can do fixes a container already running
-// without a TTY, and the reader's next move is to restart it.
-func degraded(t Target) string {
-	switch {
-	case !t.TTY() && !t.Stdin():
-		return "no TTY and no stdin (started without -it) — output only"
-	case !t.TTY():
-		return "no TTY (started without -t) — no line editing, no resize"
-	case !t.Stdin():
-		return "stdin closed (started without -i) — keystrokes go nowhere"
-	}
-	return ""
 }

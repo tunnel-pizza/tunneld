@@ -338,32 +338,6 @@ func TestResize(t *testing.T) {
 	}
 }
 
-// TestDegradedNotice pins the line a container earns by having been started
-// without -t or -i. Half of docker attach's behaviour is decided before
-// tunneld is involved, and a terminal that silently swallows keystrokes is the
-// one outcome worth spending a line to prevent.
-func TestDegradedNotice(t *testing.T) {
-	cases := []struct {
-		name  string
-		tty   bool
-		stdin bool
-		want  string
-	}{
-		{"a full terminal says nothing", true, true, ""},
-		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
-		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
-		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := degraded(newFakeTarget("api", tc.tty, tc.stdin))
-			if got != tc.want {
-				t.Errorf("degraded = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestNoticeOnThePage pins where the notice lives: in the served HTML, as an
 // element of its own, and nowhere at all for a container that has nothing
 // wrong with it.
@@ -375,6 +349,9 @@ func TestDegradedNotice(t *testing.T) {
 // is as load-bearing as the others — a container started with -it must get no
 // element and no gap, because a terminal that gives up a row to say nothing is
 // worse than no notice at all.
+//
+// It is now also the sole pin for the notice text itself, since the switch
+// that computes it lives inline in the closure and has no test of its own.
 func TestNoticeOnThePage(t *testing.T) {
 	cases := []struct {
 		name  string
