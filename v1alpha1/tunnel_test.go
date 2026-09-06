@@ -391,6 +391,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	tun.order = &h.order
 	h.b = New(
 		WithURL(urls...),
+		WithProvider("example.test"),
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
 		WithCache(h.cache),
@@ -427,6 +428,9 @@ func TestRun(t *testing.T) {
 		}
 		if want := []string{""}; !slices.Equal(h.engine.specs, want) {
 			t.Errorf("engine asked for specs %q, want a single mint", h.engine.specs)
+		}
+		if want := []string{"example.test"}; !slices.Equal(h.engine.providers, want) {
+			t.Errorf("engine was handed providers %q, want %q — --provider did not reach the mint", h.engine.providers, want)
 		}
 		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
@@ -586,4 +590,32 @@ func TestRun(t *testing.T) {
 			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error", err)
 		}
 	})
+}
+
+// TestEvents pins the latch in the lifecycle listener. Verdicts keep arriving
+// while the tunnel comes down, and without once.Do every one of them would
+// repeat the error and cancel again. Driven directly, with a buffer-backed
+// logger, because run's own logger writes to os.Stderr and the harness
+// cannot see it — which is why TestRun's gone case cannot assert "once".
+func TestEvents(t *testing.T) {
+	var logged bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelError}))
+	var causes []error
+	gone := func(cause error) { causes = append(causes, cause) }
+
+	b := New(WithCounter(counter.New(counter.WithMaxGone(1))))
+	listen := b.events(log, gone)
+	for range 3 {
+		listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneled.pizza"})
+	}
+
+	if len(causes) != 1 {
+		t.Fatalf("cancelled %d times, want once", len(causes))
+	}
+	if !errors.Is(causes[0], v1.ErrTunnelGone) {
+		t.Errorf("cause = %v, want ErrTunnelGone", causes[0])
+	}
+	if got := strings.Count(logged.String(), "disowned"); got != 1 {
+		t.Errorf("logged the verdict %d times, want once:\n%s", got, logged.String())
+	}
 }
