@@ -524,4 +524,4 @@ Tags must follow `vMAJOR.MINOR.PATCH` (Go module semver).
 ## License
 
 By contributing you agree your contributions are licensed under the
-[MIT License](./LICENSE).
+[Functional Source License, FSL-1.1-MIT](./LICENSE).
