@@ -20,6 +20,13 @@ The bell on top: **one tunnel, many origins.**
 go install github.com/tunnel-pizza/tunneld@latest
 ```
 
+Or without a Go toolchain, from npm. The package wraps the same binary, one
+build per platform, and hands it the process:
+
+```sh
+npx tunneld --url :3000
+```
+
 ```sh
 tunneld --url http://localhost:3000   # or just: tunneld --url :3000
 ```

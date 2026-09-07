@@ -1,0 +1,34 @@
+{
+  "name": "tunneld",
+  "version": "0.0.0",
+  "description": "The CLI for tunnel.pizza",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "tunneld"
+  ],
+  "homepage": "https://github.com/tunnel-pizza/tunneld#readme",
+  "bugs": {
+    "url": "https://github.com/tunnel-pizza/tunneld/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tunnel-pizza/tunneld.git"
+  },
+  "license": "MIT",
+  "author": "tunnel.pizza <help@tunnel.pizza> (https://tunnel.pizza/)",
+  "type": "commonjs",
+  "bin": "v1/v1.cjs",
+  "directories": {
+    "doc": "docs",
+    "example": "examples"
+  },
+  "files": [
+    "v1/v1.cjs",
+    "dist/*"
+  ],
+  "scripts": {
+    "prepublishOnly": "make binaries"
+  }
+}

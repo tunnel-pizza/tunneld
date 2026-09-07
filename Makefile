@@ -1,10 +1,18 @@
-.PHONY: all check clean fmt fmt-check vet build binary image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries image windows test race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
 # scratch/distroless base, and sidesteps broken toolchains (e.g. windows-11-arm
 # runners ship an x86_64 gcc that can't assemble runtime/cgo's arm64 stubs).
 export CGO_ENABLED = 0
+
+# The release a binary reports from `tunneld version`, stamped through the
+# ldflag v1alpha1/version.go documents. CI passes the exact tag; here git
+# describe gives the nearest tag, plus distance and -dirty when the build is
+# off a commit or an uncommitted tree, so the binary says so. Override on the
+# command line to stamp something else: make binaries VERSION=v0.0.19.
+# Outside a checkout it is empty and the binary falls back to build info.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 
 # Default: everything CI runs except the race lane (needs a C toolchain — run
 # `make race` for it) and the auto-bump release step.
@@ -33,6 +41,32 @@ build:
 # Build just the tunneld binary into the working directory.
 binary:
 	go build -o tunneld .
+
+# Build the tunneld binary for every platform the npm package ships, into
+# dist/. Targets are named the way node names platforms — process.platform,
+# then process.arch — so the launcher finds its binary by string
+# concatenation. The rule maps that name back to Go's: the first word is GOOS
+# once win32 becomes windows, the second is GOARCH once x64 becomes amd64,
+# and win32 carries .exe, which basename strips before the split. -trimpath
+# keeps build paths out of the binary so the same source gives the same bytes
+# on any host; VERSION is stamped so `tunneld version` names the release.
+PLATFORMS := linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64 win32-arm64
+BINARIES := $(foreach p,$(PLATFORMS),dist/tunneld-$(p)$(if $(findstring win32,$(p)),.exe))
+
+# Wipes dist/ first so nothing stale ships alongside — the npm package
+# globs dist/*, and a renamed platform would otherwise leave its old binary
+# behind. Building one binary by name does not wipe the others.
+binaries:
+	rm -rf dist
+	$(MAKE) $(BINARIES)
+
+.PHONY: $(BINARIES)
+$(BINARIES): dist/tunneld-%:
+	GOOS=$(subst win32,windows,$(word 1,$(subst -, ,$(basename $*)))) \
+	GOARCH=$(subst x64,amd64,$(word 2,$(subst -, ,$(basename $*)))) \
+	go build -trimpath \
+	  -ldflags="-s -w -X github.com/tunnel-pizza/tunneld/v1alpha1.version=$(VERSION)" \
+	  -o $@ .
 
 # Cross-compile + vet for Windows. A build-only smoke so the binary doesn't
 # quietly stop building on the other major target.
@@ -87,7 +121,7 @@ run: image
 # pushes to ghcr; this is the same Dockerfile, so a local build catches a break
 # before a tag does.
 image:
-	docker build --build-arg VERSION=$$(git describe --tags --always --dirty) -t tunneld:local .
+	docker build --build-arg VERSION=$(VERSION) -t tunneld:local .
 
 # Remove what building and running leave behind.
 #
