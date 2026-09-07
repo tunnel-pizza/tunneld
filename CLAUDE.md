@@ -39,10 +39,12 @@ agent-specific framing.
   Don't push to `main`. Full flow in
   [CONTRIBUTING.md → Branch / PR flow](./CONTRIBUTING.md#branch--pr-flow).
 - Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
-  `*.local`, and `TUNNEL.env` — the cached tunnel spec a run writes into its
-  working directory unless `--cache-dir` says otherwise. It is credentials, and
-  it is listed by name rather than caught by a wildcard, so a rename has to
-  remember it. `make clean` removes it.
+  `*.local`, and `TUNNEL.env` — the cached tunnel spec. By default a run
+  writes it to a per-project directory under the user's cache directory,
+  never the checkout; `--cache-dir .` or `TUNNELD_CACHE_DIR` can put it here,
+  which is what the entry is for. It is credentials, and it is listed by name
+  rather than caught by a wildcard, so a rename has to remember it.
+  `make clean` removes it.
 
 ## Ensuring a quality library
 

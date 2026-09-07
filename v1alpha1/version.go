@@ -25,11 +25,13 @@ var version string
 // Resolution, in order: the release stamp (set only in a build that passes the
 // ldflag); the module version recorded in build info (the `go install
 // tunneld@v0.0.5` case, following a replace directive if one redirects it);
-// the main-module version; and finally the short VCS revision of a local
-// build, with a -dirty suffix for an uncommitted tree; then "devel" for a
-// build the toolchain stamped as such but left unstamped by VCS, which is what
-// `go run` produces. A build carrying no version information at all returns
-// "unknown", never the empty string — Version always self-identifies.
+// the main-module version, which a local build carries too — since Go 1.24
+// the toolchain derives it from the git checkout as a pseudo-version, +dirty
+// for an uncommitted tree, so there is no separate VCS fallback to keep; then
+// "devel" for a build stamped "(devel)" and nothing else, which is what
+// `go run` and -buildvcs=false produce. A build carrying no version
+// information at all returns "unknown", never the empty string — Version
+// always self-identifies.
 func Version() string {
 	if version != "" {
 		return version
@@ -53,28 +55,10 @@ func Version() string {
 		}
 	}
 	// tunneld is the main module (the normal case for this binary): the main
-	// module version, then the VCS stamp.
+	// module version, which a local build from a git checkout carries as a
+	// pseudo-version.
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
-	}
-	// The local-build fallback: the short VCS revision with a -dirty suffix
-	// for an uncommitted tree. A build with no VCS stamp falls through.
-	var revision, dirty string
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			revision = s.Value
-		case "vcs.modified":
-			if s.Value == "true" {
-				dirty = "-dirty"
-			}
-		}
-	}
-	if revision != "" {
-		if len(revision) > 12 {
-			revision = revision[:12]
-		}
-		return revision + dirty
 	}
 	// A build the toolchain stamped as "(devel)" and nothing else: `go run`,
 	// which skips VCS stamping. That is still information — locally built,

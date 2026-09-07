@@ -19,7 +19,7 @@ func TestVersionStampWins(t *testing.T) {
 
 // TestVersionFallbackNonEmpty pins that Version always self-identifies: with
 // no stamp it derives an identifier from build info (module version, main
-// version, VCS revision, or "devel") and never returns "".
+// version, or "devel") and never returns "".
 func TestVersionFallbackNonEmpty(t *testing.T) {
 	old := version
 	t.Cleanup(func() { version = old })

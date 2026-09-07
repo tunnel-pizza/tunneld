@@ -16,6 +16,7 @@ import (
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
@@ -709,9 +710,9 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 }
 
 // captureStderr swaps os.Stderr for a pipe until the returned function is
-// called, which restores it and hands back what was written. run's logger
-// writes there rather than to the command's writer, so this is the only
-// window onto it.
+// called, which restores it and hands back what was written. Nothing in the
+// run is supposed to write there — its logger goes to the command's own
+// stderr — so TestLogger reads this to prove that nothing did.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	orig := os.Stderr
@@ -926,9 +927,8 @@ func TestRun(t *testing.T) {
 	// verdict would repeat the "disowned" log line and cancel again. Driven
 	// through the whole run rather than the closure directly, because
 	// events no longer exists as a callable method once it is inlined into
-	// Command's RunE; captureStderr is what makes the listener's own
-	// logger — which writes to os.Stderr rather than the command's writer —
-	// observable at all.
+	// Command's RunE; the listener's logger writes to the command's stderr,
+	// which the harness captures.
 	t.Run("enough gone verdicts end the run with ErrTunnelGone", func(t *testing.T) {
 		tun := live(public)
 		h := newRunHarness(t, tun, ":3000")
@@ -937,10 +937,8 @@ func TestRun(t *testing.T) {
 				tun.listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneled.pizza"})
 			}
 		}
-		restore := captureStderr(t)
-
 		err := h.run(t, t.Context(), "--log-level", "error")
-		logged := restore()
+		logged := h.stderr.String()
 
 		if !errors.Is(err, v1.ErrTunnelGone) {
 			t.Fatalf("run() = %v, want ErrTunnelGone", err)
@@ -1135,21 +1133,17 @@ func TestReportWritesOnlyToStderr(t *testing.T) {
 
 // TestLogger covers the level resolution: the --log-level value wins, the
 // environment mirror is the fallback, and neither being set means silence.
-// The flag is strict (an operator typo must not vanish) while the
-// environment is lenient, matching what the underlying library does with its
-// own knob.
+// The flag is strict — an operator typo must not vanish — and the
+// environment reaches RunE through that same flag, mirrored onto it by
+// PersistentPreRunE, so it is strict too; TestEnvLogLevelIsStrict pins that
+// end.
 //
-// Driven through the whole run and read back with captureStderr, because
-// logger no longer exists as a callable method once it is inlined into
-// Command's RunE, and its logger writes to os.Stderr rather than the
-// command's own writer.
-//
-// The lenient-environment case (an unparsable $TUNNELD_LOG falling back to
-// info with a warning) has no row here: through the command,
-// PersistentPreRunE mirrors $TUNNELD_LOG onto the strict --log-level flag
-// before RunE ever runs — exactly what TestEnvLogLevelIsStrict (env_test.go)
-// pins — so that path never reaches Logger()'s own fallback; TestLoggerLevels'
-// "nonsense" row (env_test.go) is what pins Logger()'s leniency directly.
+// Where the lines land is the other half: the command's own stderr writer,
+// never the process's os.Stderr. An embedding program that called SetErr is
+// watching the former, and a log line on the latter is one it cannot see.
+// Driven through the whole run, because the logger is built inside Command's
+// RunE; captureStderr guards the process stream so a leak there is a
+// failure rather than invisible.
 func TestLogger(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	cases := []struct {
@@ -1157,7 +1151,7 @@ func TestLogger(t *testing.T) {
 		level   string
 		env     string
 		wantErr error
-		want    bool // "tunneld starting" present
+		want    bool // "tunneld starting" present on the command's stderr
 	}{
 		{name: "unset is silent", want: false},
 		{name: "flag sets the level", level: "debug", want: true},
@@ -1184,10 +1178,11 @@ func TestLogger(t *testing.T) {
 			restore := captureStderr(t)
 			cmd := h.b.Command()
 			cmd.SetOut(io.Discard)
-			cmd.SetErr(io.Discard)
+			cmd.SetErr(&h.stderr)
 			cmd.SetArgs(args)
 			err := cmd.ExecuteContext(ctx)
-			logged := restore()
+			leaked := restore()
+			logged := h.stderr.String()
 
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
@@ -1199,7 +1194,10 @@ func TestLogger(t *testing.T) {
 				t.Fatalf("run() = %v, want nil", err)
 			}
 			if got := strings.Contains(logged, "tunneld starting"); got != tc.want {
-				t.Errorf("stderr contains %q = %v, want %v:\n%s", "tunneld starting", got, tc.want, logged)
+				t.Errorf("command stderr contains %q = %v, want %v:\n%s", "tunneld starting", got, tc.want, logged)
+			}
+			if strings.Contains(leaked, "tunneld starting") {
+				t.Errorf("the log reached os.Stderr instead of the command's writer:\n%s", leaked)
 			}
 		})
 	}
@@ -1238,5 +1236,257 @@ func TestPublicURL(t *testing.T) {
 	}
 	if public.RawQuery != "" {
 		t.Errorf("PublicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
+	}
+}
+
+// TestEnvErrorNamesTheLever pins the doc discipline in code: an environment
+// override that is set but unparsable must fail loudly and name the variable
+// and the offending value, since that is the whole lever an operator has to
+// recover from the error.
+func TestEnvErrorNamesTheLever(t *testing.T) {
+	t.Setenv(v1.NoOpenEnv, "maybe")
+
+	cmd := New(WithURL(":3000")).Command()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(nil)
+
+	err := cmd.ExecuteContext(t.Context())
+	if err == nil {
+		t.Fatal("ExecuteContext() = nil error for an unparsable NoOpenEnv value")
+	}
+	if !errors.Is(err, v1.ErrInvalidEnv) {
+		t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
+	}
+	for _, want := range []string{v1.NoOpenEnv, "maybe"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestFlagEnvRegistryIsComplete pins that every flag the command binds has an
+// environment mirror, and that each mirror names a v1 constant rather than a
+// string invented here. A flag added without a row is the failure mode this
+// catches: it would work on the command line and be silently unreachable from
+// a container's environment.
+func TestFlagEnvRegistryIsComplete(t *testing.T) {
+	cmd := New().Command()
+
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Name == "help" { // cobra's own, no knob behind it
+			return
+		}
+		if _, ok := flagEnv[f.Name]; !ok {
+			t.Errorf("flag --%s has no entry in flagEnv, so it cannot be set from the environment", f.Name)
+		}
+	})
+
+	want := map[string]string{
+		"url":       "TUNNELD_URL",
+		"provider":  "TUNNELD_PROVIDER",
+		"log-level": "TUNNELD_LOG",
+	}
+	for flag, env := range want {
+		if got := flagEnv[flag]; got != env {
+			t.Errorf("flagEnv[%q] = %q, want %q", flag, got, env)
+		}
+	}
+}
+
+// TestEnvListSplitting covers the list-valued TUNNELD_URL variable through
+// the built command: comma-separated, space-tolerant, and empty entries
+// dropped so a trailing comma does not become an origin nothing can proxy
+// to.
+func TestEnvListSplitting(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"single value", "http://localhost:3000", []string{"http://localhost:3000"}},
+		{"two values", "http://a:1,http://b:2", []string{"http://a:1", "http://b:2"}},
+		{"space around separators", " http://a:1 , http://b:2 ", []string{"http://a:1", "http://b:2"}},
+		{"trailing comma dropped", "http://a:1,", []string{"http://a:1"}},
+		{"empty entries dropped", "http://a:1,,http://b:2", []string{"http://a:1", "http://b:2"}},
+		{"empty string", "", []string{}},
+		{"separators only", ",,", []string{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.URLEnv, tc.in)
+
+			cmd := New().Command()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--log-level", "loud"})
+			err := cmd.ExecuteContext(t.Context())
+
+			if len(tc.want) == 0 {
+				// An empty variable reads as unset, so nothing satisfies the
+				// required --url flag and that is the error that comes back
+				// instead of an empty origin list.
+				if err == nil || !strings.Contains(err.Error(), "url") {
+					t.Fatalf("error = %v, want it to name the missing url flag", err)
+				}
+				return
+			}
+
+			// ErrInvalidLogLevel proves the environment applied and the run
+			// got past the required-flag check.
+			if !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+			got := cmd.Flags().Lookup("url").Value.(pflag.SliceValue).GetSlice()
+			if len(got) != len(tc.want) {
+				t.Fatalf("--url = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("item %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestApplyEnvPrecedence pins flag > env > default, one row per rung. The
+// command is executed rather than poked at, because the behaviour under test
+// is partly cobra's — PersistentPreRunE marking a flag changed is what stops
+// required flag validation from rejecting an origin the environment supplied.
+func TestApplyEnvPrecedence(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		args []string
+		want []string // the settled --url values
+	}{
+		{
+			name: "environment supplies the origin",
+			env:  map[string]string{"TUNNELD_URL": "http://env:1"},
+			want: []string{"http://env:1"},
+		},
+		{
+			name: "environment supplies several origins",
+			env:  map[string]string{"TUNNELD_URL": "http://env:1,http://env:2"},
+			want: []string{"http://env:1", "http://env:2"},
+		},
+		{
+			name: "flag beats environment",
+			env:  map[string]string{"TUNNELD_URL": "http://env:1"},
+			args: []string{"--url", "http://flag:1"},
+			want: []string{"http://flag:1"},
+		},
+		{
+			name: "flag replaces the whole environment list",
+			env:  map[string]string{"TUNNELD_URL": "http://env:1,http://env:2"},
+			args: []string{"--url", "http://flag:1"},
+			want: []string{"http://flag:1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			b := New()
+			cmd := b.Command()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			// A deliberately bad level stops the run after the flags settle
+			// and before anything dials, so the assertion never needs a
+			// network.
+			cmd.SetArgs(append(append([]string{}, tc.args...), "--log-level", "loud"))
+
+			if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel (the flags never settled)", err)
+			}
+
+			got, err := cmd.Flags().GetStringArray("url")
+			if err != nil {
+				t.Fatalf("GetStringArray: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("--url = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("origin %d = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestApplyEnvSeededDefault pins that the environment overrides a WithURL seed
+// rather than extending it — the same rule the command line follows, so an
+// embedder's default behaves the same whichever way a user overrides it.
+func TestApplyEnvSeededDefault(t *testing.T) {
+	t.Setenv(v1.URLEnv, "http://env:1")
+
+	cmd := New(WithURL("http://seeded:1")).Command()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--log-level", "loud"})
+
+	if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	got, err := cmd.Flags().GetStringArray("url")
+	if err != nil {
+		t.Fatalf("GetStringArray: %v", err)
+	}
+	if len(got) != 1 || got[0] != "http://env:1" {
+		t.Errorf("--url = %q, want the environment value to replace the seed", got)
+	}
+}
+
+// TestApplyEnvIsPerBuilder pins that the binding is a viper instance per
+// builder, not the package global: two commands in one process must not share
+// a key space, or an embedded tunneld would inherit its host's configuration.
+func TestApplyEnvIsPerBuilder(t *testing.T) {
+	t.Setenv(v1.URLEnv, "http://env:1")
+
+	first := New().Command()
+	first.SetOut(io.Discard)
+	first.SetErr(io.Discard)
+	first.SetArgs([]string{"--log-level", "loud"})
+	if err := first.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	second := New().Command()
+	second.SetOut(io.Discard)
+	second.SetErr(io.Discard)
+	second.SetArgs([]string{"--log-level", "loud"})
+	if err := second.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	// The global was never the binding: each builder's flags are satisfied
+	// by its own viper instance, and the package-global one stays untouched.
+	if viper.IsSet("url") {
+		t.Error("the package-global viper was bound; want one instance per builder")
+	}
+}
+
+// TestEnvLogLevelIsStrict pins that an unparsable level fails the same way
+// whichever side it came from. Env beats code, so a typo'd variable that fell
+// back silently would be indistinguishable from one that worked — the promise
+// ErrInvalidEnv already makes for the other knobs.
+func TestEnvLogLevelIsStrict(t *testing.T) {
+	t.Setenv(v1.LogEnv, "loud")
+	t.Setenv(v1.URLEnv, "http://localhost:3000")
+
+	cmd := New().Command()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(nil)
+
+	if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Errorf("error = %v, want ErrInvalidLogLevel", err)
 	}
 }

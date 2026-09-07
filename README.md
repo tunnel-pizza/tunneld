@@ -279,6 +279,7 @@ default.**
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
 | `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches; `<container>` is a name, an id, or a Compose service name. See [Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
+| `--cache-dir` | `TUNNELD_CACHE_DIR` | Directory to cache the tunnel spec in — `TUNNEL.env`, the credentials that let the next run replay the same hostname instead of minting a new one. Repeat the flag for more; comma-separated in the variable. Empty or `true` means the default: a per-project directory under the user's cache directory, named for the working directory. Never the working directory itself — a spec is credentials, and a checkout is the one place they must not land by default. `false` anywhere in the list turns caching off. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--no-open` | `TUNNELD_NO_OPEN` | Do not open a public URL in a browser once the tunnel is live. Opening is **on by default** — the panel when there is one, else the default origin — so this is the flag for a server or CI. A browser that cannot be opened is not an error: the tunnel is up either way, and the failure goes to `--log-level=debug` rather than stderr. |
@@ -414,18 +415,13 @@ var ErrNotReady        = errors.New("tunnel did not become ready")
 const LogEnv          = "TUNNELD_LOG"
 const URLEnv          = "TUNNELD_URL"
 const ProviderEnv     = "TUNNELD_PROVIDER"
+const CacheDirEnv     = "TUNNELD_CACHE_DIR"
 const NoOpenEnv       = "TUNNELD_NO_OPEN"
 const MultiviewEnv    = "TUNNELD_MULTIVIEW"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
 const DefaultOpen      = true
 const DefaultMultiview = true
-```
-
-And in `v1alpha1`:
-
-```go
-func Logger() *slog.Logger   // silent unless TUNNELD_LOG names a level
 ```
 
 ## Environment
@@ -438,6 +434,7 @@ after construction still lands.
 | Variable | Mirrors | Effect |
 | -------- | ------- | ------ |
 | `TUNNELD_URL` | `--url` | Local origins, comma-separated in the order the repeated flag would take them. An origin URL containing a literal comma has to use the flag, which parses no separator. |
+| `TUNNELD_CACHE_DIR` | `--cache-dir` | Spec cache directories, comma-separated and in order. `true` or an empty entry is the default location, `false` anywhere in the list turns caching off, anything else is a path. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_NO_OPEN` | `--no-open` | Whether to leave the browser alone once the tunnel is live. Any value `strconv.ParseBool` accepts. |
