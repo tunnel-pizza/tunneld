@@ -46,38 +46,29 @@ func TestCallerOptionBeatsDefault(t *testing.T) {
 }
 
 // TestNewWiresEveryCollaborator pins that New seeds all seven, and that each
-// With* option lands: a nil handed to one is what the wiring check inlined
-// into Command's RunE names. A bare BuilderImpl{} fails the same check on its
-// first collaborator (cacheDirs) — but see the BLOCKED subtests below: two of
-// the eight rows cannot be driven through Command as this task requires.
+// With* option lands: a nil handed to one is what the wiring check at the top
+// of Command names. A bare BuilderImpl{} fails the same check on its first
+// collaborator, cacheDirs — the check runs before Command reads any field
+// (Command needs cacheDirs itself, to seed and bind --cache-dir, so a check
+// inside RunE would always have run too late for that one), so there is no
+// panic to route around and no case left unobservable.
 //
-// wired no longer exists as a callable method once it is inlined into RunE,
-// so every row here executes the built command instead. --log-level loud
-// stops the "every collaborator seeded" case just past the wiring check and
-// well before anything touches the network, which is what proves New wired
-// every collaborator without actually minting a tunnel.
+// wired no longer exists as a callable method once it is inlined into
+// Command, so every row here executes the built command instead.
+// --log-level loud stops the "every collaborator seeded" case just past the
+// wiring check and well before anything touches the network, which is what
+// proves New wired every collaborator without actually minting a tunnel.
 func TestNewWiresEveryCollaborator(t *testing.T) {
 	_, _, err := execute(t, New(WithURL(":3000")), "--log-level", "loud")
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("New(): error = %v, want ErrInvalidLogLevel (proving every collaborator was wired)", err)
 	}
 
-	t.Run("cacheDirs", func(t *testing.T) {
-		// BLOCKED: Command unconditionally calls b.cacheDirs.GetSlice() while
-		// registering --cache-dir (a pre-existing line this task does not
-		// touch), ahead of RunE and so ahead of the wiring check. With
-		// WithCacheDirs(nil), cacheDirs is a nil interface, and calling a
-		// method on it panics — verified directly against Command() outside
-		// this harness. There is no way to reach a *cobra.Command at all in
-		// this case, so "the error names cacheDirs" cannot be observed
-		// through Command as this task requires. See task-8-report.md.
-		t.Skip("BLOCKED: New(WithCacheDirs(nil)).Command() panics on nil cacheDirs before the inlined wiring check runs; see task-8-report.md")
-	})
-
 	for _, tc := range []struct {
 		name string
 		b    *BuilderImpl
 	}{
+		{"cacheDirs", New(WithURL(":3000"), WithCacheDirs(nil))},
 		{"engine", New(WithURL(":3000"), WithEngine(nil))},
 		{"cache", New(WithURL(":3000"), WithCache(nil))},
 		{"panel", New(WithURL(":3000"), WithPanel(nil))},
@@ -94,10 +85,10 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 	}
 
 	t.Run("bare struct", func(t *testing.T) {
-		// BLOCKED: same root cause as the cacheDirs row above —
-		// (&BuilderImpl{}).Command() panics on its nil cacheDirs before the
-		// inlined wiring check ever runs. See task-8-report.md.
-		t.Skip("BLOCKED: (&BuilderImpl{}).Command() panics on nil cacheDirs before the inlined wiring check runs; see task-8-report.md")
+		_, _, err := execute(t, &BuilderImpl{})
+		if err == nil || !strings.Contains(err.Error(), "cacheDirs") {
+			t.Errorf("BuilderImpl{}: error = %v, want an error naming cacheDirs, the first missing collaborator", err)
+		}
 	})
 }
 

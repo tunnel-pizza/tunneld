@@ -953,17 +953,21 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("a bare struct is refused before it touches anything", func(t *testing.T) {
-		// BLOCKED: (&BuilderImpl{urls: []string{":3000"}}).Command() panics
-		// before RunE — and so before the inlined wiring check — ever runs.
-		// Command unconditionally calls b.cacheDirs.GetSlice() while
-		// registering --cache-dir (a pre-existing line, untouched by this
-		// task), and a bare BuilderImpl's cacheDirs is a nil interface, so
-		// that call panics on a nil method table regardless of wiring. There
-		// is no way to reach a *cobra.Command for a bare struct at all, so
-		// this assertion — "run() on a bare BuilderImpl names the missing
-		// collaborator" — cannot be observed through Command() as this task
-		// requires. See task-8-report.md.
-		t.Skip("BLOCKED: (&BuilderImpl{...}).Command() panics on nil cacheDirs before the inlined wiring check runs; see task-8-report.md")
+		// The wiring check runs at the top of Command, ahead of the
+		// cacheDirs read a few lines down that needs the field — a bare
+		// BuilderImpl never reaches that read, so Command hands back a
+		// minimal command whose only job is to report the error, rather
+		// than binding flags against a nil collaborator. cacheDirs is
+		// checked first, so a bare struct's error names it.
+		b := &BuilderImpl{urls: []string{":3000"}}
+		cmd := b.Command()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(nil)
+		err := cmd.ExecuteContext(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "cacheDirs") || !strings.Contains(err.Error(), "construct it with New") {
+			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error naming cacheDirs", err)
+		}
 	})
 }
 
@@ -1138,6 +1142,13 @@ func TestReportWritesOnlyToStderr(t *testing.T) {
 // logger no longer exists as a callable method once it is inlined into
 // Command's RunE, and its logger writes to os.Stderr rather than the
 // command's own writer.
+//
+// The lenient-environment case (an unparsable $TUNNELD_LOG falling back to
+// info with a warning) has no row here: through the command,
+// PersistentPreRunE mirrors $TUNNELD_LOG onto the strict --log-level flag
+// before RunE ever runs — exactly what TestEnvLogLevelIsStrict (env_test.go)
+// pins — so that path never reaches Logger()'s own fallback; TestLoggerLevels'
+// "nonsense" row (env_test.go) is what pins Logger()'s leniency directly.
 func TestLogger(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	cases := []struct {
@@ -1191,27 +1202,6 @@ func TestLogger(t *testing.T) {
 			}
 		})
 	}
-
-	// BLOCKED: "TUNNELD_LOG=loud" (env-only, no --log-level flag) was
-	// supposed to be lenient — parse-fail falls back to info and logs a
-	// warning, per logger's own doc ("the environment is lenient"). Driven
-	// through Command, it is not: Command's PersistentPreRunE mirrors
-	// $TUNNELD_LOG onto the (strict) --log-level flag whenever the flag
-	// itself was not passed, so an unparsable env value now reaches the
-	// inlined logger resolution already sitting on b.logLevel, which
-	// rejects it with ErrInvalidLogLevel — the same as an unparsable flag.
-	// Verified directly against Command() outside this harness: the
-	// lenient, env.go Logger() fallback this case wants to see is only
-	// reached when b.logLevel is still "" by the time RunE runs, which
-	// requires $TUNNELD_LOG to itself be unset or blank — the same
-	// condition under which Logger() reads silence, not a warning. There is
-	// no way through PersistentPreRunE to reach Logger()'s
-	// parse-fail-then-warn branch with a non-empty env value, so this
-	// assertion cannot be observed through Command() as this task requires.
-	// See task-8-report.md.
-	t.Run("unparsable environment reads as info", func(t *testing.T) {
-		t.Skip("BLOCKED: PersistentPreRunE mirrors $TUNNELD_LOG onto the strict --log-level flag before RunE runs, so this reaches ErrInvalidLogLevel rather than Logger()'s lenient fallback; see task-8-report.md")
-	})
 }
 
 // TestPublicURL pins the routing contract: with more than one origin every

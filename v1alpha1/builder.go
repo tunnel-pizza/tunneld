@@ -112,6 +112,43 @@ func (b *BuilderImpl) Command() *cobra.Command {
 	b.commandOnce.Do(func() {
 		name := b.Name()
 
+		// wired reports the first collaborator New would have seeded and did
+		// not: a BuilderImpl assembled as a bare struct rather than through
+		// New. One check, here at the top of the one place every
+		// collaborator is first needed — Command reads cacheDirs directly
+		// a few lines down, to seed and bind --cache-dir, so a check inside
+		// RunE would always have been too late for that collaborator: it
+		// would run after Command had already dereferenced a nil one.
+		//
+		// A missing collaborator short-circuits with a minimal command whose
+		// RunE returns the error and nothing else — no flag binding, no env
+		// binding, so nothing downstream ever touches the nil field either.
+		for _, c := range []struct {
+			name    string
+			missing bool
+		}{
+			{"cacheDirs", b.cacheDirs == nil},
+			{"engine", b.engine == nil},
+			{"cache", b.cache == nil},
+			{"panel", b.panel == nil},
+			{"opener", b.opener == nil},
+			{"counter", b.counter == nil},
+			{"binder", b.binder == nil},
+		} {
+			if c.missing {
+				err := fmt.Errorf("builder has no %s: construct it with New", c.name)
+				b.command = &cobra.Command{
+					Use:           name,
+					SilenceUsage:  true,
+					SilenceErrors: true,
+					RunE: func(*cobra.Command, []string) error {
+						return err
+					},
+				}
+				return
+			}
+		}
+
 		// The environment binding is per-builder, never viper's package
 		// global: two commands in one process — a host program's and an
 		// embedded tunneld's — would otherwise share one key space, and so
@@ -218,28 +255,6 @@ The public URLs, the origin map and every log line go to stderr.`,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				ctx := cmd.Context()
 				stderr := cmd.ErrOrStderr()
-
-				// wired reports the first collaborator New would have seeded and
-				// did not: a BuilderImpl assembled as a bare struct rather than
-				// through New. One check here, in the function that returns
-				// errors, rather than a nil guard in every method and in a
-				// callback that cannot report one.
-				for _, c := range []struct {
-					name    string
-					missing bool
-				}{
-					{"cacheDirs", b.cacheDirs == nil},
-					{"engine", b.engine == nil},
-					{"cache", b.cache == nil},
-					{"panel", b.panel == nil},
-					{"opener", b.opener == nil},
-					{"counter", b.counter == nil},
-					{"binder", b.binder == nil},
-				} {
-					if c.missing {
-						return fmt.Errorf("builder has no %s: construct it with New", c.name)
-					}
-				}
 
 				// parseOrigins turns the settled origin values into URLs,
 				// rejecting anything the tunnel could not proxy to.
