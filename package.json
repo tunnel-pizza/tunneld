@@ -16,7 +16,7 @@
     "type": "git",
     "url": "git+https://github.com/tunnel-pizza/tunneld.git"
   },
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "author": "tunnel.pizza <help@tunnel.pizza> (https://tunnel.pizza/)",
   "type": "commonjs",
   "bin": "v1/v1.cjs",
