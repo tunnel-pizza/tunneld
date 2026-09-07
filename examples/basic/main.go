@@ -34,6 +34,7 @@ func main() {
 
 	cmd := v1alpha1.New(
 		v1alpha1.WithURL("http://localhost:3000"),
+		v1alpha1.WithLogLevel("debug"),
 	).Command()
 
 	// Command returns an ordinary *cobra.Command, so the origin hangs off its
