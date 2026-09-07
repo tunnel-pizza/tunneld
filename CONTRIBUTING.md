@@ -359,6 +359,18 @@ Two things there will bite if you change them without knowing why:
   as the displayed one.** Index *n* means origin *n* for `?n` routing,
   `PublicURL`, the reported map and the multiview tiles. Reordering or
   filtering either list breaks all four at once.
+- **One attach per `Server`, not per page.** `attach.session` opens the target
+  once and fans it out, so a refresh is not an event the container can see.
+  Every byte goes through a terminal emulator, and a viewer arriving late is
+  handed the screen — scrollback, cells, cursor — rather than the bytes that
+  once produced it. Replaying bytes into a fresh terminal is what used to leave
+  the app and the browser disagreeing about where the cursor was, so the app's
+  next redraw landed at the wrong origin and drew over the restored screen.
+- **The emulator's replies have to be drained.** It answers a device-attributes
+  query or a cursor-position report the way a real terminal does, and those
+  answers go back to the app through the same stdin the viewers type on. Leave
+  them unread and the buffer fills, the write that fills it never returns, and
+  the terminal stops drawing for everyone — a deadlock, not a slow path.
 
 ## Adding an example
 
