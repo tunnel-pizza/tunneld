@@ -26,8 +26,6 @@ func main() {
 	// should not hold a stack open on someone's machine indefinitely.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
 
 	// Write the embedded compose file to a temporary directory — so `go run
 	// ./examples/docker-compose` works from any directory — and return it with

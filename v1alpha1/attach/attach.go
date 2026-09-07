@@ -176,6 +176,7 @@ func (c closers) Close() error {
 // Server is the loopback HTTP origin standing in for one Target.
 type Server struct {
 	target   Target
+	session  *session
 	listener net.Listener
 	srv      *http.Server
 	log      *slog.Logger
@@ -240,6 +241,11 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// cares about, keeps running.
 	sctx, cancel := context.WithCancel(ctx)
 	s := &Server{target: target, listener: listener, log: log, ctx: sctx, cancel: cancel}
+	// One attach for the life of the Server, shared by every page that opens
+	// it. Started here rather than on the first connection so a viewer never
+	// waits on the target, and so what happened before anybody looked is on
+	// the screen when they do.
+	s.session = newSession(sctx, target, log)
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
@@ -344,7 +350,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 			Stderr: !s.target.TTY(),
 			TTY:    s.target.TTY(),
 		}
-		remotecommand.ServeAttach(w, r, bounded{s.target}, name, "", name, opts,
+		remotecommand.ServeAttach(w, r, s.session, name, "", name, opts,
 			idleTimeout, remotecommand.DefaultStreamCreationTimeout,
 			remotecommand.SupportedStreamingProtocols)
 	})
@@ -382,62 +388,14 @@ func (s *Server) URL() *url.URL {
 func (s *Server) Close() error {
 	s.cancel()
 	err := s.srv.Close()
+	// The session before the target: it holds the stream the target is
+	// serving, and closing it is what lets the target's own Close finish
+	// rather than wait out an attach nobody is reading.
+	if serr := s.session.close(); err == nil {
+		err = serr
+	}
 	if terr := s.target.Close(); err == nil {
 		err = terr
 	}
 	return err
-}
-
-// bounded wraps a Target so that an attach ends when its connection does.
-//
-// A Target streaming a quiet container is blind to both exits. The context
-// the attach handler supplies covers the tunnel shutting down; the far
-// commoner exit is a visitor closing their tab, and nothing the Target holds
-// is tied to that browser — a copy parked in Read on a socket that will never
-// speak again has no way to learn the far end is gone.
-//
-// The resize channel is the one thing that does know. On the websocket path
-// this page speaks, ServeAttach opens it unconditionally — not gated on TTY,
-// not gated on stdin, unlike every other stream here — and closes it when the
-// connection ends, so ranging over it and cancelling at the end translates
-// "the socket died" into the one signal a Target already acts on. Forwarding
-// sizes through a channel of our own is what lets us watch for that end
-// without taking resize away from the Target.
-//
-// Worst case is bounded rather than instant: a clean close ends the range at
-// once, and a connection that dies without saying so waits out the websocket's
-// idle timeout first. Two minutes is the ceiling either way, which is the
-// whole point — before this, the ceiling was the life of the process.
-type bounded struct{ Target }
-
-func (b bounded) AttachContainer(ctx context.Context, name, uid, container string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	forwarded := make(chan remotecommand.TerminalSize)
-	go func() {
-		defer close(forwarded)
-		defer cancel()
-		for {
-			select {
-			case size, ok := <-resize:
-				if !ok {
-					return
-				}
-				select {
-				case forwarded <- size:
-				case <-ctx.Done():
-					return
-				}
-			case <-ctx.Done():
-				// Also the escape hatch for a resize channel that is nil,
-				// which is what a client negotiating no subprotocol over SPDY
-				// would produce. Ranging over that would park this goroutine
-				// for good; selecting on the context cannot.
-				return
-			}
-		}
-	}()
-
-	return b.Target.AttachContainer(ctx, name, uid, container, in, out, errw, tty, forwarded)
 }

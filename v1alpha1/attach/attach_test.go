@@ -295,8 +295,11 @@ func TestStdout(t *testing.T) {
 	if channel != 1 {
 		t.Errorf("channel = %d, want 1 (stdout)", channel)
 	}
-	if string(payload) != target.out {
-		t.Errorf("payload = %q, want %q", payload, target.out)
+	// The first thing a viewer receives is the screen, not the bytes that
+	// produced it: the session attached before this connection existed, so
+	// what the target wrote is already on the screen and arrives as a repaint.
+	if want := "hello from pid 1"; !strings.Contains(string(payload), want) {
+		t.Errorf("first frame %q does not show %q", payload, want)
 	}
 }
 
@@ -400,32 +403,76 @@ func TestNoticeOnThePage(t *testing.T) {
 	}
 }
 
-// TestSessionEnds pins the three ways a session is over, from the point of
-// view of a Target that is only reading output — the state a quiet container
-// leaves it in for hours at a time.
+// TestSessionOutlivesAVisitor pins the other half of the shared session: a tab
+// closing takes the viewer with it and nothing else.
 //
-// Neither route is something such a Target can see for itself. The context
-// ServeAttach hands it is the request's, and Go cancels that when the handler
-// returns, which cannot happen while the handler is still inside the Target;
-// the socket is hijacked, so shutting the HTTP server down does not touch it
-// either. Get this wrong and every abandoned tab costs a goroutine and a
-// daemon connection for the life of the process. Asserted on a deadline rather
-// than a bare receive, so a regression fails in five seconds instead of
-// hanging the lane.
+// This is what a refresh is made of. The attach the container sees is opened
+// once and never restarted, so from inside the container a page reload is not
+// an event at all — no second attach, no replayed backlog, and with OpenStdin
+// no re-attach for the app to notice. The next visitor is handed the screen
+// instead, which is why the assertion is that they can still see what was
+// written before they arrived.
+//
+// The viewer itself must still be reaped, or an abandoned tab costs a
+// goroutine and a queue for the life of the run.
+func TestSessionOutlivesAVisitor(t *testing.T) {
+	ctx, shutdown := context.WithCancel(t.Context())
+	defer shutdown()
+
+	target := newFakeTarget("api", true, true)
+	target.out = "hello from pid 1\r\n"
+	s := serveFakeOn(t, ctx, target)
+
+	first := dial(t, s)
+	readFrame(t, first) // the established frame
+	readFrame(t, first) // the screen
+	_ = first.Close()
+
+	select {
+	case <-target.done:
+		t.Fatal("closing a tab ended the shared attach, want it to outlive the viewer")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// The viewer is gone even though the session is not.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.session.mu.Lock()
+		n := len(s.session.viewers)
+		s.session.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d viewers still registered after the tab closed", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	second := dial(t, s)
+	readFrame(t, second) // the established frame
+	_, payload := readFrame(t, second)
+	if want := "hello from pid 1"; !strings.Contains(string(payload), want) {
+		t.Errorf("a later visitor got %q, want the screen still showing %q", payload, want)
+	}
+}
+
+// TestSessionEnds pins the two ways the shared attach is over, from the point
+// of view of a Target that is only reading output — the state a quiet
+// container leaves it in for hours at a time.
+//
+// Closing a tab is deliberately not one of them; TestSessionOutlivesAVisitor
+// covers that. Both routes here are the run itself ending, and neither is
+// something a Target can see for itself: the socket is hijacked, so shutting
+// the HTTP server down does not touch it, and a Target's own Close only reaps
+// what is idle. Asserted on a deadline rather than a bare receive, so a
+// regression fails in five seconds instead of hanging the lane.
 func TestSessionEnds(t *testing.T) {
-	closeTab := func(_ *Server, c *websocket.Conn, _ context.CancelFunc) { _ = c.Close() }
 	cases := []struct {
 		name  string
 		stdin bool
 		end   func(s *Server, c *websocket.Conn, shutdown context.CancelFunc)
 	}{
-		{"the visitor closes the tab", true, closeTab},
-		// The same, on a container started without -i. It earns a case of its
-		// own because the signal used to come off stdin, which such a
-		// container never negotiates: the stream is a stub that reads EOF at
-		// once. The resize channel is opened whatever the options say, which
-		// is the entire reason it replaced stdin here.
-		{"the visitor closes the tab, no stdin", false, closeTab},
 		{"the tunnel shuts down", true, func(_ *Server, _ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
 		// Close with nobody having cancelled anything, which is the shape of
 		// the tunnel failing on its own: run's defer closes what it bound and
