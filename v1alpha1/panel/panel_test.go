@@ -345,7 +345,7 @@ func TestWithoutFrameAncestors(t *testing.T) {
 			ic.installed(rec, req)
 
 			if got := rec.Header().Get("Content-Security-Policy"); got != tc.want {
-				t.Errorf("unframer(%q) = %q, want %q", tc.policy, got, tc.want)
+				t.Errorf("asTile(%q) = %q, want %q", tc.policy, got, tc.want)
 			}
 		})
 	}
@@ -388,13 +388,50 @@ func TestStripFraming(t *testing.T) {
 	}
 }
 
+// TestTileRestoresTheReferer pins that a framed origin's Referrer-Policy is
+// dropped, which is what keeps its own assets routable.
+//
+// The tunnel routes a subresource to the origin that asked for it by reading
+// the Referer its document set. An origin sending no-referrer — ordinary
+// hardening, and what xpra's HTML5 client does — leaves every asset it
+// requests with nothing to route by, so they fall back to a cookie that is
+// last-write-wins across tiles and are served by whichever origin was framed
+// most recently. The tile renders as unstyled markup, and the 404s come from
+// an origin that genuinely does not have those files, so nothing says the
+// routing went wrong.
+//
+// Dropping the header rather than rewriting it is deliberate: the browser
+// default already sends the full URL for the same-origin requests this is
+// about. The narrowing to the panel's own frames is the interceptor's Match,
+// covered by TestIsPanelFrame — a top-level visit keeps whatever the origin
+// sent.
+func TestTileRestoresTheReferer(t *testing.T) {
+	for _, policy := range []string{"no-referrer", "origin", "same-origin"} {
+		t.Run(policy, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			u := &asTile{ResponseWriter: rec}
+			u.Header().Set("Referrer-Policy", policy)
+			u.Header().Set("X-Content-Type-Options", "nosniff")
+			u.WriteHeader(http.StatusOK)
+
+			if got := rec.Header().Get("Referrer-Policy"); got != "" {
+				t.Errorf("Referrer-Policy = %q, want it removed so assets keep a Referer", got)
+			}
+			// Still none of our business.
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want it untouched", got)
+			}
+		})
+	}
+}
+
 // TestUnframerScrubsBeforeTheWrite pins that the scrub happens while headers
 // are still mutable, including for a handler that never calls WriteHeader and
 // so would otherwise have its implicit 200 written past the wrapper.
 func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 	t.Run("explicit WriteHeader", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		u := &unframer{ResponseWriter: rec}
+		u := &asTile{ResponseWriter: rec}
 		u.Header().Set("X-Frame-Options", "DENY")
 		u.WriteHeader(http.StatusOK)
 
@@ -405,7 +442,7 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 
 	t.Run("implicit 200 via Write", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		u := &unframer{ResponseWriter: rec}
+		u := &asTile{ResponseWriter: rec}
 		u.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		if _, err := u.Write([]byte("hello")); err != nil {
 			t.Fatalf("Write: %v", err)
@@ -421,7 +458,7 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 
 	t.Run("Unwrap reaches the real writer", func(t *testing.T) {
 		rec := httptest.NewRecorder()
-		u := &unframer{ResponseWriter: rec}
+		u := &asTile{ResponseWriter: rec}
 		if u.Unwrap() != http.ResponseWriter(rec) {
 			t.Error("Unwrap did not return the wrapped writer, so flush and hijack would break")
 		}
