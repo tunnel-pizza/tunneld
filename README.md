@@ -4,7 +4,7 @@
 [![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tunnel-pizza/tunneld/badge)](https://scorecard.dev/viewer/?uri=github.com/tunnel-pizza/tunneld)
-[![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](./LICENSE)
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](./LICENSE.md)
 
 `tunneld` exposes already-running local services to the public internet through
 a quick tunnel — a lite `cloudflared tunnel --url` that needs no `cloudflared`
@@ -523,6 +523,6 @@ convention, what makes a good example, and the release process.
 
 ## License
 
-[FSL-1.1-MIT](./LICENSE), the Functional Source License. Use, copy, modify,
+[FSL-1.1-MIT](./LICENSE.md), the Functional Source License. Use, copy, modify,
 and redistribute it for any purpose except a product that competes with
 tunneld. Each version becomes plain MIT two years after its release.

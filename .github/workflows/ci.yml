@@ -11,6 +11,15 @@ on:
     # keep synchronize explicit so every new commit on the PR triggers a
     # fresh run.
     types: [opened, synchronize, reopened, ready_for_review]
+  # A manual run from main releases the way a push does, with the npm
+  # dist-tag chosen up front. A push always publishes to latest.
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: npm dist-tag for this release
+        type: choice
+        options: [latest, beta]
+        default: latest
 
 permissions:
   contents: read
@@ -107,7 +116,9 @@ jobs:
 
   release:
     needs: [ci, race]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: >-
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
       contents: write   # push tag + create release
@@ -131,7 +142,8 @@ jobs:
             exit 0
           fi
 
-          # main push: skip release if the commit opted out or already has a tag.
+          # main push, or a manual run from main: skip release if the commit
+          # opted out or already has a tag.
           # Token must sit alone on its own line so prose mentioning it inline
           # (subjects, doc paragraphs) doesn't accidentally suppress the release.
           msg=$(git log -1 --pretty=%B)
@@ -280,8 +292,9 @@ jobs:
       # prepublishOnly and beats the Makefile's git describe default, which
       # would say -dirty once package.json has been edited.
       #
-      # Auto-bumps from main land on the beta dist-tag; a hand-pushed tag is
-      # latest. Promote a beta without a rebuild:
+      # A release publishes to latest. A manual run of this workflow from main
+      # can choose beta instead (the dist_tag input); a push carries no input
+      # and the fallback applies. Promote a beta without a rebuild:
       #   npm dist-tag add tunneld@<version> latest
       - name: publish to npm
         if: steps.tag.outputs.skip != 'true'
@@ -291,9 +304,4 @@ jobs:
           set -euo pipefail
           tag="${{ steps.tag.outputs.tag }}"
           npm version "${tag#v}" --no-git-tag-version
-          if [[ "${{ steps.tag.outputs.needs_push }}" == "true" ]]; then
-            dist_tag=beta
-          else
-            dist_tag=latest
-          fi
-          npm publish --tag "$dist_tag" --provenance
+          npm publish --tag "${{ inputs.dist_tag || 'latest' }}" --provenance
