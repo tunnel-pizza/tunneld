@@ -14,18 +14,17 @@ Deep-link by filename; line numbers will drift.
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
-| Builder options + command assembly             | [`v1alpha1/builder.go`](./v1alpha1/builder.go)                   |
-| Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
-| Origin binding (`dockerd://` → loopback)       | [`v1alpha1/origins.go`](./v1alpha1/origins.go)                   |
+| Builder options, `Command` (flags, env binding, the tunnel run), `PublicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Env logger (`Logger`) + flag → variable registry | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
+| `CacheDirs` contract's implementation: the --cache-dir list and its pflag value | [`v1alpha1/cachedir/`](./v1alpha1/cachedir) |
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Multiview panel, framing headers, template (`Panel`) | [`v1alpha1/panel/`](./v1alpha1/panel)                      |
 | Edge probe + browser launch (`Opener`)         | [`v1alpha1/browser/`](./v1alpha1/browser)                        |
-| Container terminal origin (`attach.Target`, `Server`) | [`v1alpha1/attach/`](./v1alpha1/attach)                   |
-| Docker provider of targets (`Targets`)         | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
+| `Target`, `Targets`, `Server`, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
+| Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -71,15 +70,22 @@ and get the identical behaviour. A feature that only works when tunneld is
 Conventions, not machinery — nothing here enforces them.
 
 **Surface/engine split.** `v1.Builder` is only what a caller calls once the
-builder exists: `Command` and `Name`. Everything `run` composes that owns an
-external effect — the edge, the disk, the daemon, the browser, an HTTP probe —
-is an internal contract in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go):
-`Engine`, `Cache`, `Panel`, `Opener`, `Counter`, `Targets`. Each has one
-implementation, named `XImpl`, in its own `v1alpha1/<name>` subpackage,
-seeded by `New` and replaceable with the matching `With*` option. A function
-that maps a value to a value (`parseOrigins`, `PublicURL`, `Version`) gets no
-interface. The assertion block in `v1alpha1.go` is where a default that drifts
-from its contract fails — at build, not at the first run.
+builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
+that owns an external effect — the edge, the disk, the daemon, the browser, an
+HTTP probe — is an internal contract in
+[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `CacheDirs`, `Engine`,
+`Cache`, `Panel`, `Opener`, `Counter`, `Binder`, implemented respectively by
+`cachedir`, `engine`, `cache`, `panel`, `browser`, `counter`, `attach`. Each
+has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
+subpackage, seeded by `New` and replaceable with the matching `With*` option.
+A function that maps a value to a value (`PublicURL`, `Version`) gets no
+interface — origin parsing, for instance, sits at the top of `Command`'s
+`RunE` rather than behind a contract of its own. The assertion block in
+`v1alpha1.go` is where a default that drifts from its contract fails — at
+build, not at the first run.
+
+A function with one caller is inlined; the doc comment stays where the body
+went.
 
 **One way to configure anything.** `v1.Option[T]` is `func(T)`. Every package
 aliases it to its own `Option`, exposes `With*` constructors returning it, and
@@ -88,7 +94,7 @@ later wins. That holds for the builder's flag seeds, the contract injectors
 and each implementation's tunables alike, and a package with no tunables still
 takes the variadic so adding one changes no caller. An option is a plain
 function, so it can be applied anywhere a setter used to be called:
-`cacheDirValue.Set` is `WithCacheDir(s)(v.b)`.
+`cachedir.ValueImpl.Set` is `WithCacheDir(s)(v.b)`.
 
 **Command assembles once.** `Command` is guarded by `commandOnce` (see
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
@@ -105,9 +111,9 @@ override it — and it is why `--url` is marked required only when nothing was
 seeded.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
-unconditionally — `engine`, `cache`, `panel`, `browser`, `counter`,
-`attach/docker` — and the `v1alpha1` root stays implementation-agnostic:
-`New`, the contracts, the options and `run`. A second implementation of a
+unconditionally — `cachedir`, `engine`, `cache`, `panel`, `browser`, `counter`,
+`attach` — and the `v1alpha1` root stays implementation-agnostic:
+`New`, the contracts, the options and `Command`. A second implementation of a
 contract gets a subpackage of its own beside the first. The same applies to
 anything with a world of its own: [`v1alpha1/panel`](./v1alpha1/panel) is a
 panel, a template and header surgery, none of which the root needs to know
@@ -216,7 +222,8 @@ One consequence worth knowing: a source file whose tests need both unexported
 access and an outside-the-package view still gets one test file, so it is
 `package <pkg>` (internal) and the external view is covered elsewhere.
 [`v1alpha1/env_test.go`](./v1alpha1/env_test.go) is that case — it reaches
-`applyEnv` and `flagEnv`, so the whole file is internal, and the genuine
+`flagEnv` and drives the environment binding in `Command`'s
+`PersistentPreRunE`, so the whole file is internal, and the genuine
 consumer's view is covered by `e2e`.
 
 ## Before you push
@@ -251,27 +258,28 @@ Easy to get wrong from the diff alone:
   limitation.
 - **The environment is applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
   that hook *before* `ValidateRequiredFlags`, which is the only reason
-  `TUNNELD_URL` alone can satisfy a required `--url`. `applyEnv` setting
-  `f.Changed` is the other half.
+  `TUNNELD_URL` alone can satisfy a required `--url`. Marking `f.Changed`
+  there is the other half.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
-  `PublicURL` in [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go).
+  `PublicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
 - **The panel answers the tunnel's bare address, and every condition narrowing
-  that is load-bearing.** `isPanelRequest` requires path `/`, an *empty* query,
-  a top-level document, and no same-host referer. Drop the path check and the
-  panel swallows every `/app.js` an origin serves; loosen the query check to
-  "no routing index" and an OAuth callback at `/?code=…` lands on a page of
-  frames; drop the Sec-Fetch check and it draws itself inside its own tiles;
-  drop the referer check and a `fetch` from an origin page gets HTML. See
-  [`v1alpha1/panel`](./v1alpha1/panel).
+  that is load-bearing.** The panel interceptor's `Match` requires path `/`,
+  an *empty* query, a top-level document, and no same-host referer. Drop the
+  path check and the panel swallows every `/app.js` an origin serves; loosen
+  the query check to "no routing index" and an OAuth callback at `/?code=…`
+  lands on a page of frames; drop the Sec-Fetch check and it draws itself
+  inside its own tiles; drop the referer check and a `fetch` from an origin
+  page gets HTML. See [`v1alpha1/panel`](./v1alpha1/panel).
 - **The framing-header removal must stay narrowed to the panel's own frames.**
-  `unframe` drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile is
-  not blank, and it is gated on `Sec-Fetch-Dest` being a frame *and*
-  `Sec-Fetch-Site` being `same-origin`. Widening either condition would strip a
-  real protection from top-level visits or hand another site the ability to
-  frame somebody's tunnel. Everything else in a policy is preserved directive
-  by directive; the scrub happens in `WriteHeader`, because headers are
-  immutable after the first write.
+  The unframer drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile
+  is not blank, and it runs only behind the second interceptor's `Match`,
+  gated on `Sec-Fetch-Dest` being a frame *and* `Sec-Fetch-Site` being
+  `same-origin`. Widening either condition would strip a real protection from
+  top-level visits or hand another site the ability to frame somebody's
+  tunnel. Everything else in a policy is preserved directive by directive;
+  the scrub happens in `WriteHeader`, because headers are immutable after the
+  first write.
 - **The shell's CSS is layout only.** Colour, type, borders and radius come
   from Basecoat; the CDN build ships component classes without Tailwind's
   utilities, so the rule of thumb is that a style earns its place only when no
@@ -320,8 +328,8 @@ implements `attach.Target` — five methods, four of its own plus the embedded
 `remotecommand.Attacher`'s `AttachContainer` — and `attach` does not change.
 
 `docker.TargetImpl` is that provider. What opens one by reference —
-`docker.TargetsImpl.Open` — sits behind the root's `Targets` contract, which is
-how `bindOrigins` is tested with a stub and no daemon.
+`docker.TargetsImpl.Open` — sits behind `attach`'s own `Targets` contract,
+which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
 
 Two things there will bite if you change them without knowing why:
 
@@ -330,10 +338,10 @@ Two things there will bite if you change them without knowing why:
   subresource and would fall back to the sticky `libtunnel-origin` cookie,
   which is last-write-wins across tabs. Drop the suffix and two container tiles
   fight over one socket.
-- **`bindOrigins` keeps the dialable list the same length and order as the
-  displayed one.** Index *n* means origin *n* for `?n` routing, `PublicURL`,
-  the reported map and the multiview tiles. Reordering or filtering either list
-  breaks all four at once.
+- **`attach.BinderImpl.Bind` keeps the dialable list the same length and order
+  as the displayed one.** Index *n* means origin *n* for `?n` routing,
+  `PublicURL`, the reported map and the multiview tiles. Reordering or
+  filtering either list breaks all four at once.
 
 ## Adding an example
 
@@ -392,9 +400,10 @@ a container's environment.
 
 ## Adding a collaborator
 
-A new thing `run` composes that has an external effect gets a contract, not
-a function. Seven things move together, and `TestNewWiresEveryCollaborator`
-plus the assertion block catch the ones that are easy to forget:
+A new thing `Command`'s `RunE` composes that has an external effect gets a
+contract, not a function. Seven things move together, and
+`TestNewWiresEveryCollaborator` plus the assertion block catch the ones that
+are easy to forget:
 
 1. the interface in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go), beside
    the others, with flag-settled configuration as method arguments rather
@@ -404,10 +413,10 @@ plus the assertion block catch the ones that are easy to forget:
    tunable;
 3. the field on `BuilderImpl`, in the collaborators group;
 4. `With<Name>(x <Name>) Option` in `v1alpha1.go`, and the default in `New`;
-5. a line in the assertion block, one in `wired`, and a row in
-   `TestNewWiresEveryCollaborator`;
-6. a fake in `v1alpha1/tunnel_test.go` and a case in `TestRun` for what
-   `run` does with it;
+5. a line in the assertion block, one in the wiring check at the top of
+   `Command`, and a row in `TestNewWiresEveryCollaborator`;
+6. a fake in `v1alpha1/builder_test.go` and a case in `TestRun` for what
+   `Command`'s `RunE` does with it;
 7. a row in the file map above.
 
 ## Branch / PR flow

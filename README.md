@@ -340,11 +340,13 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             assembly, the tunnel it runs, the
                                             version resolution. May change
                                             between alpha revisions.
-github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each: engine,
-                                            cache, panel, browser, counter and
-                                            attach/docker sit behind the contracts
-                                            in v1alpha1; attach declares its own
-                                            (Target) and serves it. See CONTRIBUTING.
+github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each:
+                                            cachedir, engine, cache, panel,
+                                            browser, counter and attach sit
+                                            behind the contracts in v1alpha1;
+                                            attach declares its own Target and
+                                            Targets, and attach/docker
+                                            implements both. See CONTRIBUTING.
 ```
 
 Application code calls `v1alpha1.New()` and matches errors against `v1`.
@@ -380,10 +382,11 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
 changes `New().WithURL(u).Build()` to `New(WithURL(u)).Command()`.
 
-`BuilderImpl` also takes `WithEngine`, `WithCache`, `WithPanel`, `WithOpener`,
-`WithCounter` and `WithTargets`, which swap the collaborators the tunnel run
-composes. They are a contributor's and a test's concern, not an embedder's —
-see [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
+`BuilderImpl` also takes `WithCacheDirs`, `WithEngine`, `WithCache`,
+`WithPanel`, `WithOpener`, `WithCounter` and `WithBinder`, which swap the
+collaborators the tunnel run composes. They are a contributor's and a test's
+concern, not an embedder's — see
+[CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
 
 What `v1` declares — the contract it satisfies, and the option type every
 `New` takes:
