@@ -48,7 +48,7 @@ func TestOpenWithoutDaemon(t *testing.T) {
 
 // TestOpenFailureIsNil pins that Open returns a literal nil Target alongside
 // its error on every failure path, not a non-nil interface wrapping a nil
-// pointer. bindOrigins checks err first, so this would only surface in a
+// pointer. attach.BinderImpl.Bind checks err first, so this would only surface in a
 // caller that checked the target instead — which is exactly the caller
 // nobody tests.
 func TestOpenFailureIsNil(t *testing.T) {
