@@ -253,3 +253,47 @@ jobs:
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.info" >/dev/null
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.mod"  >/dev/null
           curl -fsSL "https://sum.golang.org/lookup/${mod}@${tag}"    >/dev/null
+
+      # The npm package carries the same binaries, so it needs the Go
+      # toolchain the rest of this job gets from Docker. Last in the job so a
+      # registry failure never gates the image or the signatures.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.tag.outputs.skip != 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.tag.outputs.skip != 'true'
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Auth is npm trusted publishing (OIDC through id-token: write above),
+      # configured on the package's npmjs.com settings for this repo and this
+      # workflow file; no token secret. That also produces the provenance
+      # attestation.
+      #
+      # The committed package.json says 0.0.0 the way the Go module carries no
+      # version: the tag is the release. npm version rewrites it in place for
+      # this publish and nothing is committed. VERSION reaches make through
+      # prepublishOnly and beats the Makefile's git describe default, which
+      # would say -dirty once package.json has been edited.
+      #
+      # Auto-bumps from main land on the beta dist-tag; a hand-pushed tag is
+      # latest. Promote a beta without a rebuild:
+      #   npm dist-tag add tunneld@<version> latest
+      - name: publish to npm
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.tag }}"
+          npm version "${tag#v}" --no-git-tag-version
+          if [[ "${{ steps.tag.outputs.needs_push }}" == "true" ]]; then
+            dist_tag=beta
+          else
+            dist_tag=latest
+          fi
+          npm publish --tag "$dist_tag" --provenance

@@ -29,6 +29,8 @@ Deep-link by filename; line numbers will drift.
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
+| npm launcher: finds the platform binary, hands it the process | [`v1/v1.cjs`](./v1/v1.cjs)                            |
+| npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
 | OpenSSF Scorecard scan                         | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml) |
@@ -486,9 +488,15 @@ ref, then:
 - pushes the new tag,
 - creates a GitHub Release with auto-generated notes,
 - builds and pushes `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and
-  `linux/arm64`, tagged with the release and `latest`, and
+  `linux/arm64`, tagged with the release and `latest`,
 - warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
-  surfaces the new version without manual prodding.
+  surfaces the new version without manual prodding, and
+- publishes `tunneld` to npm with provenance, through npm's trusted
+  publisher binding for this repo and workflow (no token). `make binaries`
+  builds the six platform binaries into `dist/`, stamped with the tag through
+  `VERSION`, and `package.json` is rewritten to the tag for that publish only.
+  An auto-bump lands on the `beta` dist-tag; a hand-pushed tag is `latest`.
+  Promote a beta without rebuilding: `npm dist-tag add tunneld@<version> latest`.
 
 Source archives and the image are both signed with cosign in keyless mode. The
 image is signed **by digest**, not by tag: a tag can be moved to point at other
