@@ -332,7 +332,7 @@ func (f *fakeEngine) Tunnel(spec, provider string) libtunnel.TunnelV1 {
 	return tun
 }
 
-// fakeCache answers Cached with a fixed spec and records the rest. onSave is
+// fakeCache answers Load with a fixed spec and records the rest. onSave is
 // how a case ends the run: cancelling the context, failing the tunnel, or
 // delivering verdicts, all after the URL is live.
 type fakeCache struct {
@@ -343,8 +343,8 @@ type fakeCache struct {
 	order     *[]string
 }
 
-func (f *fakeCache) Cached([]string, v1.Logger) string { return f.cached }
-func (f *fakeCache) Discard([]string, v1.Logger)       { f.discarded = true }
+func (f *fakeCache) Load([]string, v1.Logger) string { return f.cached }
+func (f *fakeCache) Discard([]string, v1.Logger)     { f.discarded = true }
 func (f *fakeCache) Save([]string, v1.Logger) {
 	f.saved = true
 	if f.order != nil {

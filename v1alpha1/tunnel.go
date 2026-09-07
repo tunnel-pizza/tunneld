@@ -61,7 +61,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 
 	cached := ""
 	if len(b.cacheDirs) > 0 {
-		cached = b.cache.Cached(b.cacheDirs, log)
+		cached = b.cache.Load(b.cacheDirs, log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start. WithContext

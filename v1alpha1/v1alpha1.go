@@ -50,7 +50,7 @@ func WithEngine(e Engine) Option {
 // Cache persists a tunnel's spec between runs, in the directories
 // --cache-dir settled on.
 type Cache interface {
-	Cached(dirs []string, log v1.Logger) string
+	Load(dirs []string, log v1.Logger) string
 	Save(dirs []string, log v1.Logger)
 	Discard(dirs []string, log v1.Logger)
 }

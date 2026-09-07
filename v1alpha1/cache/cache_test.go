@@ -1,5 +1,5 @@
 // The tests for cache.go. `package cache_test` is the outside-the-package
-// view: Cached, Save and Discard are the whole surface, and the file they
+// view: Load, Save and Discard are the whole surface, and the file they
 // exchange is the contract worth pinning rather than anything unexported.
 package cache_test
 
@@ -31,7 +31,7 @@ func write(t *testing.T, dir, body string) {
 }
 
 // TestRoundTrip is the case the whole package exists for: what Save writes,
-// Cached reads back byte for byte. The spec is a JSON envelope, so this is
+// Load reads back byte for byte. The spec is a JSON envelope, so this is
 // what pins the quoting — a value mangled here is a tunnel that cannot be
 // resumed, and it would fail on the second run rather than the first.
 func TestRoundTrip(t *testing.T) {
@@ -41,8 +41,8 @@ func TestRoundTrip(t *testing.T) {
 
 	cache.New().Save([]string{dir}, discard())
 
-	if got := cache.New().Cached([]string{dir}, discard()); got != envelope {
-		t.Errorf("Cached() = %q, want %q", got, envelope)
+	if got := cache.New().Load([]string{dir}, discard()); got != envelope {
+		t.Errorf("Load() = %q, want %q", got, envelope)
 	}
 }
 
@@ -75,8 +75,8 @@ func TestSave(t *testing.T) {
 
 		cache.New().Save([]string{dir}, discard())
 
-		if got := cache.New().Cached([]string{dir}, discard()); got != envelope {
-			t.Errorf("Cached() = %q, want the spec written into a new directory", got)
+		if got := cache.New().Load([]string{dir}, discard()); got != envelope {
+			t.Errorf("Load() = %q, want the spec written into a new directory", got)
 		}
 	})
 
@@ -157,15 +157,15 @@ func TestSave(t *testing.T) {
 	})
 }
 
-// TestCached pins which file is chosen and what a broken one costs.
-func TestCached(t *testing.T) {
+// TestLoad pins which file is chosen and what a broken one costs.
+func TestLoad(t *testing.T) {
 	t.Run("the first directory holding one wins", func(t *testing.T) {
 		empty, first, second := t.TempDir(), t.TempDir(), t.TempDir()
 		write(t, first, ltv1.SpecEnv+"='"+envelope+"'\n")
 		write(t, second, ltv1.SpecEnv+"='wrong'\n")
 
-		if got := cache.New().Cached([]string{empty, first, second}, discard()); got != envelope {
-			t.Errorf("Cached() = %q, want the first file's value", got)
+		if got := cache.New().Load([]string{empty, first, second}, discard()); got != envelope {
+			t.Errorf("Load() = %q, want the first file's value", got)
 		}
 	})
 
@@ -174,8 +174,8 @@ func TestCached(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "this is not\x00 an env file at all")
 
-		if got := cache.New().Cached([]string{dir}, discard()); got != "" {
-			t.Errorf("Cached() = %q, want nothing from a broken file", got)
+		if got := cache.New().Load([]string{dir}, discard()); got != "" {
+			t.Errorf("Load() = %q, want nothing from a broken file", got)
 		}
 	})
 
@@ -184,17 +184,17 @@ func TestCached(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
 
-		if got := cache.New().Cached([]string{dir}, discard()); got != "" {
-			t.Errorf("Cached() = %q, want nothing", got)
+		if got := cache.New().Load([]string{dir}, discard()); got != "" {
+			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
 
 	t.Run("no directories and no files are both fine", func(t *testing.T) {
-		if got := cache.New().Cached(nil, discard()); got != "" {
-			t.Errorf("Cached(nil) = %q, want nothing", got)
+		if got := cache.New().Load(nil, discard()); got != "" {
+			t.Errorf("Load(nil) = %q, want nothing", got)
 		}
-		if got := cache.New().Cached([]string{t.TempDir()}, discard()); got != "" {
-			t.Errorf("Cached() = %q, want nothing", got)
+		if got := cache.New().Load([]string{t.TempDir()}, discard()); got != "" {
+			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
 }
@@ -214,7 +214,7 @@ func TestDiscard(t *testing.T) {
 			t.Errorf("%s still holds a cache: %v", dir, err)
 		}
 	}
-	if got := cache.New().Cached([]string{first, second}, discard()); got != "" {
-		t.Errorf("Cached() = %q after Discard, want nothing", got)
+	if got := cache.New().Load([]string{first, second}, discard()); got != "" {
+		t.Errorf("Load() = %q after Discard, want nothing", got)
 	}
 }

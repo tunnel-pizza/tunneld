@@ -48,7 +48,7 @@ func New(opts ...Option) *CacheImpl {
 	return v1.Apply(&CacheImpl{}, opts...)
 }
 
-// Cached returns the spec envelope from the first TUNNEL.env found in dirs,
+// Load returns the spec envelope from the first TUNNEL.env found in dirs,
 // and stops there. Later directories are fallbacks, not layers: two files
 // would raise the question of which tunnel is being resumed, and there is no
 // useful answer.
@@ -64,7 +64,7 @@ func New(opts ...Option) *CacheImpl {
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func (*CacheImpl) Cached(cacheDirs []string, log v1.Logger) string {
+func (*CacheImpl) Load(cacheDirs []string, log v1.Logger) string {
 	for _, dir := range cacheDirs {
 		path := filepath.Join(dir, File)
 		if _, err := os.Stat(path); err != nil {
@@ -113,7 +113,7 @@ func (*CacheImpl) Discard(cacheDirs []string, log v1.Logger) {
 // can write to, so the next run resumes this hostname instead of minting a new
 // one.
 //
-// Every directory rather than the first, where Cached reads the first and stops.
+// Every directory rather than the first, where Load reads the first and stops.
 // The asymmetry is the point: which directories exist is a property of where
 // the process is running — a volume that may or may not be mounted, a working
 // directory that may or may not be the same one — and writing to all of them
