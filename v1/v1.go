@@ -91,7 +91,7 @@ func Apply[T any](t T, opts ...Option[T]) T {
 // no benefit, since an unreachable errors.Is is simply never true.
 
 // ErrInvalidEnv reports an environment override that is set but unparsable —
-// see EnvBool and EnvDuration in v1alpha1. Because env beats code, a typo'd
+// the environment binding in v1alpha1 wraps it. Because env beats code, a typo'd
 // value would otherwise fall back to the code value silently and the operator
 // would never learn the knob did nothing; this surfaces it instead. The lever
 // is the variable named in the wrapped message: correct the value or unset it

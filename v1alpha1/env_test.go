@@ -5,112 +5,32 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-const boolVar = "TUNNELD__TEST_BOOL"
-
-// TestEnvBool covers the (value, fixed, err) contract: an unset knob is not
-// fixed, an explicit false is fixed (which a bare bool return could not
-// distinguish), and an unparsable value is reported rather than swallowed.
-func TestEnvBool(t *testing.T) {
-	cases := []struct {
-		name      string
-		set       bool
-		env       string
-		wantValue bool
-		wantFixed bool
-		wantErr   bool
-	}{
-		{name: "unset", set: false},
-		{name: "empty reads as unset", set: true, env: ""},
-		{name: "true", set: true, env: "true", wantValue: true, wantFixed: true},
-		{name: "explicit false is still fixed", set: true, env: "false", wantFixed: true},
-		{name: "1 parses as true", set: true, env: "1", wantValue: true, wantFixed: true},
-		{name: "garbage is fixed but errors", set: true, env: "yes-please", wantFixed: true, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(boolVar, tc.env)
-			}
-
-			value, fixed, err := EnvBool(boolVar)
-			if value != tc.wantValue {
-				t.Errorf("value = %v, want %v", value, tc.wantValue)
-			}
-			if fixed != tc.wantFixed {
-				t.Errorf("fixed = %v, want %v", fixed, tc.wantFixed)
-			}
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, want error: %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, v1.ErrInvalidEnv) {
-				t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
-			}
-		})
-	}
-}
-
-const durationVar = "TUNNELD__TEST_DURATION"
-
-// TestEnvDuration mirrors TestEnvBool for the duration knob, including the
-// zero-but-fixed case that separates "set to 0s" from "unset".
-func TestEnvDuration(t *testing.T) {
-	cases := []struct {
-		name      string
-		set       bool
-		env       string
-		wantValue time.Duration
-		wantFixed bool
-		wantErr   bool
-	}{
-		{name: "unset", set: false},
-		{name: "empty reads as unset", set: true, env: ""},
-		{name: "milliseconds", set: true, env: "500ms", wantValue: 500 * time.Millisecond, wantFixed: true},
-		{name: "explicit zero is still fixed", set: true, env: "0s", wantFixed: true},
-		{name: "bare number errors", set: true, env: "30", wantFixed: true, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(durationVar, tc.env)
-			}
-
-			value, fixed, err := EnvDuration(durationVar)
-			if value != tc.wantValue {
-				t.Errorf("value = %v, want %v", value, tc.wantValue)
-			}
-			if fixed != tc.wantFixed {
-				t.Errorf("fixed = %v, want %v", fixed, tc.wantFixed)
-			}
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, want error: %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, v1.ErrInvalidEnv) {
-				t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
-			}
-		})
-	}
-}
-
-// TestEnvErrorNamesTheLever pins the doc discipline in code: the message has
-// to name the variable and the offending value, since that is the whole lever
-// an operator has.
+// TestEnvErrorNamesTheLever pins the doc discipline in code: an environment
+// override that is set but unparsable must fail loudly and name the variable
+// and the offending value, since that is the whole lever an operator has to
+// recover from the error.
 func TestEnvErrorNamesTheLever(t *testing.T) {
-	t.Setenv(boolVar, "yes-please")
+	t.Setenv(v1.NoOpenEnv, "maybe")
 
-	_, _, err := EnvBool(boolVar)
+	cmd := New(WithURL(":3000")).Command()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(nil)
+
+	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
-		t.Fatal("EnvBool() = nil error for an unparsable value")
+		t.Fatal("ExecuteContext() = nil error for an unparsable NoOpenEnv value")
 	}
-	for _, want := range []string{boolVar, "yes-please"} {
+	if !errors.Is(err, v1.ErrInvalidEnv) {
+		t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
+	}
+	for _, want := range []string{v1.NoOpenEnv, "maybe"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}

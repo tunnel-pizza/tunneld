@@ -18,7 +18,7 @@ Deep-link by filename; line numbers will drift.
 | Tunnel run, origin parsing, output contract    | [`v1alpha1/tunnel.go`](./v1alpha1/tunnel.go)                     |
 | Origin binding (`dockerd://` → loopback)       | [`v1alpha1/origins.go`](./v1alpha1/origins.go)                   |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| Env helpers (`EnvBool`, `EnvDuration`, `Logger`) | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
+| Env logger (`Logger`) + flag → variable registry | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |

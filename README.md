@@ -419,11 +419,9 @@ const DefaultOpen      = true
 const DefaultMultiview = true
 ```
 
-And the env plumbing implementations use, in `v1alpha1`:
+And in `v1alpha1`:
 
 ```go
-func EnvBool(name string) (value, fixed bool, err error)
-func EnvDuration(name string) (value time.Duration, fixed bool, err error)
 func Logger() *slog.Logger   // silent unless TUNNELD_LOG names a level
 ```
 
@@ -454,9 +452,8 @@ each expose a `TIMEOUT` without colliding.
 An override that is set but unparsable is reported, never silently ignored — a
 typo'd knob that quietly did nothing would be indistinguishable from one that
 worked. That holds for the flag mirrors (`TUNNELD_LOG=loud` is an error, the
-same as `--log-level loud`) and for the `EnvBool`/`EnvDuration` helpers, which
-return an error wrapping `v1.ErrInvalidEnv` naming the variable and the bad
-value.
+same as `--log-level loud`), which return an error wrapping `v1.ErrInvalidEnv`
+naming the variable and the bad value.
 
 The tunnel engine carries its own `LIBTUNNEL_*` surface for everything this one
 doesn't expose. Those variables pass straight through and are documented in
