@@ -29,34 +29,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Deferred before `up` blocks, so an interrupt still takes the stack down.
-	// Background, not ctx: by then ctx is cancelled — that is what ended `up` —
-	// and inheriting it would kill `down` before it started.
-	dir, teardown := setup(func(dir string) {
-		sh(context.Background(), dir,
-			"docker compose -f docker-compose.yml -p tunneld-example down --remove-orphans")
-	})
-	defer teardown()
-
-	// -p is named rather than derived from the working directory, which is a
-	// fresh temporary one every run: a name that changes strands the stack of
-	// any run that is interrupted. The teardown spells the same one.
-	if err := sh(ctx, dir, "docker compose -f docker-compose.yml -p tunneld-example up"); err != nil {
-		log.Printf("compose up: %v", err)
-		code = 1
-	}
-}
-
-// setup writes the embedded compose file to a temporary directory — so `go run
-// ./examples/docker-compose` works from any directory — and returns it with a
-// teardown that runs down and then removes it.
-//
-// down takes the directory rather than closing over it: main declares dir with
-// the call that needs it, so it is not in scope yet inside the literal.
-//
-// Nothing is up yet if this fails, so it exits rather than returning an error
-// there would be no cleanup to pair with.
-func setup(down func(dir string)) (string, func()) {
+	// setup writes the embedded compose file to a temporary directory — so `go run
+	// ./examples/docker-compose` works from any directory — and returns it with a
+	// teardown that runs down and then removes it.
+	//
+	// Nothing is up yet if this fails, so it exits rather than returning an error
+	// there would be no cleanup to pair with.
 	dir, err := os.MkdirTemp("", "tunneld-example-")
 	if err != nil {
 		log.Fatalf("temporary directory: %v", err)
@@ -65,9 +43,23 @@ func setup(down func(dir string)) (string, func()) {
 		_ = os.RemoveAll(dir)
 		log.Fatalf("write the compose file: %v", err)
 	}
-	return dir, func() {
-		down(dir)
+
+	// Deferred before `up` blocks, so an interrupt still takes the stack down.
+	// Background, not ctx: by then ctx is cancelled — that is what ended `up` —
+	// and inheriting it would kill `down` before it started.
+	teardown := func() {
+		sh(context.Background(), dir,
+			"docker compose -f docker-compose.yml -p tunneld-example down --remove-orphans")
 		_ = os.RemoveAll(dir)
+	}
+	defer teardown()
+
+	// -p is named rather than derived from the working directory, which is a
+	// fresh temporary one every run: a name that changes strands the stack of
+	// any run that is interrupted. The teardown spells the same one.
+	if err := sh(ctx, dir, "docker compose -f docker-compose.yml -p tunneld-example up"); err != nil {
+		log.Printf("compose up: %v", err)
+		code = 1
 	}
 }
 
