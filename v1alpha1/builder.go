@@ -2,10 +2,19 @@ package v1alpha1
 
 import (
 	"cmp"
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -193,8 +202,359 @@ The public URLs, the origin map and every log line go to stderr.`,
 				})
 				return err
 			},
+			// run is the built command's body: it brings the tunnel up, reports
+			// the public URLs, and blocks until ctx is canceled or the tunnel
+			// fails. ctx is the shutdown handle — canceling it (a signal, in the
+			// binary's case) tears the tunnel down during startup as well as
+			// after, so this returns rather than hanging. A tunnel that fails on
+			// its own returns the cause.
+			//
+			// stderr comes from the command's own ErrOrStderr, so cobra stays the
+			// single owner of where output goes; it is never nil.
+			//
+			// The engine is github.com/cnuss/libtunnel driving Cloudflare's edge
+			// in process — no cloudflared binary, no account, no DNS to
+			// configure.
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return b.run(cmd.Context(), cmd.ErrOrStderr())
+				ctx := cmd.Context()
+				stderr := cmd.ErrOrStderr()
+
+				// wired reports the first collaborator New would have seeded and
+				// did not: a BuilderImpl assembled as a bare struct rather than
+				// through New. One check here, in the function that returns
+				// errors, rather than a nil guard in every method and in a
+				// callback that cannot report one.
+				for _, c := range []struct {
+					name    string
+					missing bool
+				}{
+					{"cacheDirs", b.cacheDirs == nil},
+					{"engine", b.engine == nil},
+					{"cache", b.cache == nil},
+					{"panel", b.panel == nil},
+					{"opener", b.opener == nil},
+					{"counter", b.counter == nil},
+					{"binder", b.binder == nil},
+				} {
+					if c.missing {
+						return fmt.Errorf("builder has no %s: construct it with New", c.name)
+					}
+				}
+
+				// parseOrigins turns the settled origin values into URLs,
+				// rejecting anything the tunnel could not proxy to.
+				//
+				// Two shorthands are filled in, both of them what people
+				// actually type: a value with no scheme implies http, and a
+				// value with no host implies localhost, so ":8000" and
+				// "localhost:8000" and "http://localhost:8000" are one origin
+				// written three ways. Everything else must carry an http or
+				// https scheme and a host, so a typo surfaces here rather than
+				// as a public hostname that answers only errors. Every failure
+				// wraps a v1 sentinel and names the offending value.
+				//
+				// The messages name the value, not the flag, because by this
+				// point a value may have arrived either way — through --url or
+				// through v1.URLEnv bound onto it. Only the nothing-at-all case
+				// names both, since that is the one an operator fixes by
+				// choosing between them.
+				origins := make([]*url.URL, 0, len(b.urls))
+				// The first origin seen carrying a +ws marker, kept to reject a
+				// second.
+				wsOrigin := ""
+				for _, s := range b.urls {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						return fmt.Errorf("%w: empty origin, pass a local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin)
+					}
+					if !strings.Contains(s, "://") {
+						s = "http://" + s
+					}
+					u, err := url.Parse(s)
+					if err != nil {
+						return fmt.Errorf("%w: %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
+					}
+					// A container is not proxied at all: it is served, by a
+					// loopback origin the binder stands up later. Everything the
+					// shorthands below fill in — a default scheme, a default
+					// host, a preserved path — is meaningless here, so the value
+					// is taken exactly as typed and anything extra is an error
+					// rather than a silent drop.
+					if u.Scheme == v1.DockerScheme {
+						if u.Host == "" {
+							return fmt.Errorf("%w: %q names no container, pass e.g. dockerd://my-container", v1.ErrInvalidOrigin, s)
+						}
+						if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+							return fmt.Errorf("%w: %q carries more than a container reference; pass %s://%s", v1.ErrInvalidOrigin, s, v1.DockerScheme, u.Host)
+						}
+						origins = append(origins, u)
+						continue
+					}
+					// A +ws / +wss suffix declares that this origin owns
+					// WebSockets, so a handshake the page did not build with a
+					// routing index goes here rather than following the sticky
+					// cookie. The marker is stripped and consumed by the tunnel
+					// engine; everything below treats the origin by its base
+					// scheme, which is also how it is dialed.
+					//
+					// The two spellings (+ws and +wss) mean the same thing: the
+					// suffix induces the designation rather than describing a
+					// transport — the origin is dialed by its base scheme either
+					// way — so accepting both spares an operator from reasoning
+					// about which one their service "is", which is not a
+					// question the marker asks.
+					base, marked := u.Scheme, false
+					if s, ok := strings.CutSuffix(u.Scheme, "+wss"); ok {
+						base, marked = s, true
+					} else if s, ok := strings.CutSuffix(u.Scheme, "+ws"); ok {
+						base, marked = s, true
+					}
+					if base != "http" && base != "https" {
+						return fmt.Errorf("%w: %q has scheme %q, want http, https or %s", v1.ErrInvalidOrigin, s, u.Scheme, v1.DockerScheme)
+					}
+					if marked {
+						// Two origins cannot both own the WebSockets — a
+						// handshake carries nothing to tell them apart, which is
+						// the whole reason the marker exists. The engine rejects
+						// this too; catching it here makes it a flag error
+						// before the mint rather than a tunnel that cancels.
+						if wsOrigin != "" {
+							return fmt.Errorf("%w: %q and %q both claim the websockets, mark only one", v1.ErrInvalidOrigin, wsOrigin, s)
+						}
+						wsOrigin = s
+					}
+					// A port with no host in front of it — ":8000", or the
+					// "http://:8000" the scheme default above makes of it —
+					// means the local machine, the way every dev server reads
+					// that shorthand. The test is Hostname, not Host: url.Parse
+					// keeps the colon, so ":8000" arrives as a non-empty Host
+					// with nothing before the port, and a bare Host check waves
+					// it through as the unresolvable origin "http://:8000".
+					if u.Hostname() == "" {
+						if u.Port() == "" {
+							return fmt.Errorf("%w: %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
+						}
+						u.Host = net.JoinHostPort("localhost", u.Port())
+					}
+					origins = append(origins, u)
+				}
+				if len(origins) == 0 {
+					return fmt.Errorf("%w: pass --url (or $%s) with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin, v1.URLEnv)
+				}
+
+				// logger resolves the tunnel's log sink from the level the
+				// command settled on — the --log-level flag, or v1.LogEnv bound
+				// onto it by applyEnv. An unrecognized level is an error either
+				// way: somebody typed it, and a silent downgrade to info would
+				// hide the typo. Logger is the fallback when neither was set,
+				// which is silence.
+				//
+				// The sink is stderr either way, so logs never pollute the
+				// machine-readable URLs on stdout. WithLogger below shares this
+				// logger between tunneld's own startup line and the tunnel's
+				// internals, so both share one level.
+				var log *slog.Logger
+				if b.logLevel == "" {
+					log = Logger()
+				} else {
+					var level slog.Level
+					if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
+						return fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
+					}
+					log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+				}
+
+				// The handle the event listener ends the run through. A signal
+				// cancels the parent with no cause; a reap cancels this one with
+				// ErrTunnelGone, and the cause is what tells the two apart at
+				// the bottom of this function. Wrapped here so everything below
+				// — the tunnel, the attach servers, the browser probe — comes
+				// down with it.
+				ctx, gone := context.WithCancelCause(ctx)
+				defer gone(nil)
+
+				// A container is not an HTTP service, so tunneld serves one on
+				// its behalf and hands the tunnel the loopback address instead.
+				// origins stays what the operator typed — it is what the
+				// reported map and the panel show.
+				dialable, closeOrigins, err := b.binder.Bind(ctx, origins, log)
+				if err != nil {
+					return err
+				}
+				defer closeOrigins.Close()
+
+				cached := ""
+				if len(b.cacheDirs.GetSlice()) > 0 {
+					cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
+				}
+
+				// Pure-lazy: nothing dials until URL below trips the start.
+				// WithContext upgrades URL from "the hostname resolves" to
+				// "reachable end to end" and makes it return nil on cancel, so a
+				// signal during startup exits cleanly.
+				start := func(spec string) libtunnel.TunnelV1 {
+					// events is the tunnel's lifecycle listener: it logs what
+					// happened and ends the run once the edge has disowned the
+					// tunnel for long enough to be sure.
+					//
+					// The engine keeps retrying a reaped tunnel indefinitely —
+					// that is cloudflared's behaviour and libtunnel leaves it
+					// alone — so without this the process sits there holding a
+					// hostname that resolves nowhere, reporting nothing.
+					// Cancelling with a cause is what turns that into an exit
+					// code a supervisor can act on.
+					//
+					// The logger is closed over rather than resolved again,
+					// since it was already resolved above and a bad --log-level
+					// refused; asking a second time here would have to discard
+					// that error to satisfy the listener's signature.
+					var once sync.Once
+					listen := func(e libtunnel.Event) {
+						log.Debug("received event", "e", e)
+						b.counter.Count(e)
+						if b.counter.IsGone() {
+							// The counter stays tripped once it has been, and
+							// verdicts keep arriving while the tunnel comes
+							// down. Without the latch every one of them repeats
+							// the error and cancels again.
+							once.Do(func() {
+								log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
+								gone(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
+							})
+						}
+					}
+
+					tun := b.engine.Tunnel(spec, b.provider).
+						WithLogger(log).
+						WithContext(ctx).
+						WithEventListener(listen).
+						WithLocalURL(dialable...)
+					// Served in front of the origin proxy, so the panel needs no
+					// port of its own and no origin ever sees the request.
+					if b.panel.Wanted(b.multiview, origins) {
+						for _, ic := range b.panel.Interceptors(origins, log) {
+							tun.WithInterceptor(ic)
+						}
+					}
+					return tun
+				}
+				tun := start(cached)
+
+				view := ""
+
+				log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
+
+				// The banner goes out before the tunnel is asked for a URL, not
+				// after it answers. Minting is the slow part and the part that
+				// fails, and tying the banner to success meant a start that
+				// failed printed nothing at all — no version, no sign the
+				// program had run. Everything above this line is configuration,
+				// so a bad flag or an origin that cannot be reached still fails
+				// without one.
+				fmt.Fprintln(stderr, VersionLine())
+
+				public := tun.URL()
+				if public == nil {
+					cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+
+					// The edge refused the credential this spec carries. That is
+					// the whole of the class now: a reservation that lapsed is
+					// adopted on whatever hostname the provider minted in its
+					// place, silently and without an error, so the only way a
+					// replay still fails here is the one where the provider was
+					// never reached — the spec is served as given, and the edge
+					// is where a dead one is finally found out.
+					//
+					// Which makes the file the thing at fault, and leaving it in
+					// place the real cost: every later run replays it, is served
+					// it again, and dies at the same edge. Drop it, then mint
+					// once, which is a tunnel rather than an explanation if the
+					// provider is reachable by now and the same error either way
+					// if it is not.
+					//
+					// Only this class. ErrRejected is a mint the provider
+					// refused outright or a request that could not be built at
+					// all — configuration, and nothing the stored spec had a
+					// part in. Discarding on it would throw away a good
+					// credential over an unroutable provider or a bad header.
+					if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
+						return cause
+					}
+					b.cache.Discard(b.cacheDirs.GetSlice(), log)
+					log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
+
+					tun = start("")
+					if public = tun.URL(); public == nil {
+						return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+					}
+				}
+				if b.panel.Wanted(b.multiview, origins) {
+					view = b.panel.URL(public)
+				}
+
+				// report writes the human-readable map to stderr: a line per
+				// public address with the origins it reaches indented beneath
+				// it. With a panel that is one address and every origin;
+				// without, one address per origin.
+				//
+				// Nothing goes to stdout. It used to carry one bare URL per
+				// origin as a machine interface, which meant every address
+				// printed twice wherever the two streams landed together — a
+				// terminal, a container's logs — and the de-duplication that
+				// hid it could only see the case where one file descriptor was
+				// literally the other. Under Docker they are two pipes that
+				// merge downstream, so it never fired where it was needed most.
+				// The banner is already on stderr by the time this runs: it was
+				// printed above, before minting, so it survives a mint that
+				// fails.
+				//
+				// Every public address gets a line, with what it reaches
+				// indented beneath. A panel is the case where one address
+				// reaches them all; otherwise each origin has an address of its
+				// own. One shape either way, and no column to keep aligned as
+				// hostnames change length.
+				if view != "" {
+					fmt.Fprintf(stderr, "  %s\n", view)
+					for _, origin := range origins {
+						fmt.Fprintf(stderr, "    -> %s\n", origin)
+					}
+				} else {
+					for i, origin := range origins {
+						fmt.Fprintf(stderr, "  %s\n", PublicURL(public, i, len(origins)))
+						fmt.Fprintf(stderr, "    -> %s\n", origin)
+					}
+				}
+				if !b.noOpen {
+					// One page, never a fan of tabs: the panel when there is
+					// one, since it reaches every origin, and otherwise the
+					// default origin itself.
+					target := cmp.Or(view, PublicURL(public, 0, len(origins)))
+					b.opener.Open(ctx, target, stderr, log)
+				}
+
+				// After the URL is live, so what gets cached is a tunnel that
+				// came up rather than one that was merely asked for.
+				if len(b.cacheDirs.GetSlice()) > 0 {
+					b.cache.Save(b.cacheDirs.GetSlice(), log)
+				}
+
+				select {
+				case <-ctx.Done():
+				case <-tun.Done():
+				}
+
+				// Cancelling ctx ends the tunnel too, so a reap makes both arms
+				// above ready at once and the race would otherwise decide which
+				// error an operator is shown. The cause is the verdict either
+				// way: it outranks whatever the teardown it triggered has to
+				// say for itself.
+				if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+					return cause
+				}
+				if ctx.Err() != nil {
+					return nil // signaled after the tunnel came up: clean shutdown
+				}
+				return tun.Err()
 			},
 		}
 
@@ -270,4 +630,27 @@ The public URLs, the origin map and every log line go to stderr.`,
 		b.command = cmd
 	})
 	return b.command
+}
+
+// PublicURL is the address origin i answers on, out of n origins: the tunnel's
+// URL with a bare ?i routing parameter. Bare is load-bearing — a valued
+// parameter ("?1=x") is application data the proxy forwards, while the bare
+// form is the routing directive it consumes and strips before the request
+// reaches the origin.
+//
+// The default origin is explicit too, as ?0, whenever there is more than one.
+// A bare URL routes by the referring page and then by the sticky cookie, so
+// once a browser has visited ?1 a plain address no longer reaches origin 0 —
+// only an explicit index clears a previous choice. An address that stops
+// working after someone clicks around is worse than a longer one.
+//
+// A lone origin has nothing to route between, so n of 1 gives the plain URL
+// and no parameter at all.
+func PublicURL(public *url.URL, i, n int) string {
+	if n <= 1 {
+		return public.String()
+	}
+	routed := *public
+	routed.RawQuery = strconv.Itoa(i)
+	return routed.String()
 }
