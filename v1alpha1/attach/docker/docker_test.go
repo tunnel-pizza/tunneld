@@ -203,10 +203,10 @@ type composeContainer struct {
 // process's own hostname — "" means tunneld is not running inside a project,
 // which is the host-side case.
 //
-// The returned pointer accumulates every ref this stub was asked to inspect,
+// The returned function lists every ref this stub was asked to inspect,
 // in the order the requests arrived — Open's own self-id ordering is
 // otherwise invisible from outside the package it was inlined into.
-func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) *[]string {
+func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) func() []string {
 	t.Helper()
 	host, err := os.Hostname()
 	if err != nil {
@@ -289,7 +289,11 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) *[]
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
-	return &inspected
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(inspected)
+	}
 }
 
 // TestOpenResolvesComposeService pins the fallback that makes a Compose
@@ -494,7 +498,7 @@ func TestOpenOrdersSelfIDs(t *testing.T) {
 			t.Fatal("Open succeeded, want an error (no service named target)")
 		}
 
-		got2 := candidates(*inspected)
+		got2 := candidates(inspected())
 		if len(got2) == 0 || got2[0] != self {
 			t.Fatalf("inspected order = %v, want it to start with self (%s)", got2, self)
 		}
@@ -523,7 +527,7 @@ func TestOpenOrdersSelfIDs(t *testing.T) {
 		}
 
 		want := []string{layer, self}
-		if got2 := candidates(*inspected); !slices.Equal(got2, want) {
+		if got2 := candidates(inspected()); !slices.Equal(got2, want) {
 			t.Fatalf("inspected order = %v, want %v", got2, want)
 		}
 	})
@@ -540,7 +544,7 @@ func TestOpenOrdersSelfIDs(t *testing.T) {
 		}
 
 		count := 0
-		for _, ref := range *inspected {
+		for _, ref := range inspected() {
 			if ref == self {
 				count++
 			}
