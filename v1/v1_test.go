@@ -2,6 +2,7 @@ package v1_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -50,5 +51,32 @@ func TestSentinelsAreDistinct(t *testing.T) {
 				t.Errorf("%s matches %s, want distinct sentinels", name, otherName)
 			}
 		}
+	}
+}
+
+// TestApplyOrder pins the one rule every constructor in the tree relies on:
+// options run in the order given, so a later one wins, and Apply hands back
+// what it was given so a New can be a return statement.
+func TestApplyOrder(t *testing.T) {
+	type knobs struct {
+		name string
+		seen []string
+	}
+	set := func(v string) v1.Option[*knobs] {
+		return func(k *knobs) { k.name = v; k.seen = append(k.seen, v) }
+	}
+
+	k := &knobs{}
+	if got := v1.Apply(k, set("default"), set("caller")); got != k {
+		t.Fatal("Apply returned a different value than it was given")
+	}
+	if k.name != "caller" {
+		t.Errorf("name = %q, want the later option to win", k.name)
+	}
+	if want := []string{"default", "caller"}; !slices.Equal(k.seen, want) {
+		t.Errorf("applied in order %v, want %v", k.seen, want)
+	}
+	if got := v1.Apply(&knobs{}); got.name != "" || got.seen != nil {
+		t.Error("Apply with no options changed its argument")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -36,13 +37,33 @@ func TestOpenWithoutDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	got, err := Open(ctx, "api", discard())
+	got, err := New().Open(ctx, "api", discard())
 	if err == nil {
 		_ = got.Close()
 		t.Fatal("Open with no daemon succeeded, want an error")
 	}
 	if !errors.Is(err, v1.ErrNoDocker) {
 		t.Errorf("error = %v, want %v", err, v1.ErrNoDocker)
+	}
+}
+
+// TestOpenFailureIsNil pins that Open returns a literal nil Target alongside
+// its error on every failure path, not a non-nil interface wrapping a nil
+// pointer. attach.BinderImpl.Bind checks err first, so this would only surface in a
+// caller that checked the target instead — which is exactly the caller
+// nobody tests.
+func TestOpenFailureIsNil(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	target, err := New().Open(ctx, "api", discard())
+	if err == nil {
+		_ = target.Close()
+		t.Fatal("Open with no daemon succeeded, want an error")
+	}
+	if target != nil {
+		t.Errorf("Open returned a non-nil Target alongside the error: %#v", target)
 	}
 }
 
@@ -100,7 +121,7 @@ func startContainer(t *testing.T, cli *client.Client, tty, stdin bool) string {
 func TestOpenRejects(t *testing.T) {
 	t.Run("no such container", func(t *testing.T) {
 		withDaemon(t)
-		got, err := Open(t.Context(), "tunneld-test-nonexistent", discard())
+		got, err := New().Open(t.Context(), "tunneld-test-nonexistent", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -119,7 +140,7 @@ func TestOpenRejects(t *testing.T) {
 		if _, err := cli.ContainerStop(t.Context(), id, client.ContainerStopOptions{}); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
-		got, err := Open(t.Context(), id, discard())
+		got, err := New().Open(t.Context(), id, discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a stopped container succeeded, want an error")
@@ -148,7 +169,7 @@ func TestOpenRejects(t *testing.T) {
 		t.Cleanup(srv.Close)
 		t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
 
-		got, err := Open(t.Context(), "shim", discard())
+		got, err := New().Open(t.Context(), "shim", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a container with no config succeeded, want an error")
@@ -181,7 +202,11 @@ type composeContainer struct {
 // selfProject is the com.docker.compose.project label reported for this
 // process's own hostname — "" means tunneld is not running inside a project,
 // which is the host-side case.
-func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
+//
+// The returned function lists every ref this stub was asked to inspect,
+// in the order the requests arrived — Open's own self-id ordering is
+// otherwise invisible from outside the package it was inlined into.
+func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) func() []string {
 	t.Helper()
 	host, err := os.Hostname()
 	if err != nil {
@@ -194,6 +219,9 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 			"com.docker.compose.service": c.service,
 		}
 	}
+
+	var mu sync.Mutex
+	var inspected []string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Api-Version", "1.51")
@@ -235,6 +263,9 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 		if i := strings.LastIndex(ref, "/containers/"); i >= 0 {
 			ref = ref[i+len("/containers/"):]
 		}
+		mu.Lock()
+		inspected = append(inspected, ref)
+		mu.Unlock()
 
 		// This process's own container, which is how the project gets scoped.
 		if ref == host && selfProject != "" {
@@ -258,6 +289,11 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(inspected)
+	}
 }
 
 // TestOpenResolvesComposeService pins the fallback that makes a Compose
@@ -271,13 +307,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			project: "containers", service: "claude-code",
 		})
 
-		got, err := Open(t.Context(), "claude-code", discard())
+		got, err := New().Open(t.Context(), "claude-code", discard())
 		if err != nil {
 			t.Fatalf("Open on a Compose service: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "abc123" {
-			t.Errorf("id = %q, want %q", got.id, "abc123")
+		target := got.(*TargetImpl)
+		if target.id != "abc123" {
+			t.Errorf("id = %q, want %q", target.id, "abc123")
 		}
 		// The page title and the log line say what the operator typed, not
 		// the generated container name they never chose.
@@ -294,13 +331,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "svc", name: "proj-web-1", project: "proj", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "plain" {
-			t.Errorf("id = %q, want the container named web (%q)", got.id, "plain")
+		target := got.(*TargetImpl)
+		if target.id != "plain" {
+			t.Errorf("id = %q, want the container named web (%q)", target.id, "plain")
 		}
 	})
 
@@ -312,13 +350,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "other-web", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "mine-web" {
-			t.Errorf("id = %q, want the web in tunneld's own project (%q)", got.id, "mine-web")
+		target := got.(*TargetImpl)
+		if target.id != "mine-web" {
+			t.Errorf("id = %q, want the web in tunneld's own project (%q)", target.id, "mine-web")
 		}
 	})
 
@@ -330,7 +369,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "b", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := Open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on an ambiguous service succeeded, want an error")
@@ -352,7 +391,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			id: "abc", name: "proj-api-1", project: "proj", service: "api",
 		})
 
-		got, err := Open(t.Context(), "nope", discard())
+		got, err := New().Open(t.Context(), "nope", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -364,53 +403,6 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			t.Errorf("error %q does not name the reference", err)
 		}
 	})
-}
-
-// TestSelfIDs pins the candidate order mountinfo parsing produces. The ids are
-// guesses checked by being inspected, so the job here is to put the likely one
-// first and never to invent one.
-func TestSelfIDs(t *testing.T) {
-	const self = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
-	const layer = "433163a110ebac893af94c0c0f05ef45501c8ef19a93c814e109034599c5105b"
-
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"empty", "", nil},
-		{"no hex at all", "24 30 0:22 / /proc rw,nosuid - proc proc rw\n", nil},
-		{
-			// The shape observed on a real daemon: the runtime's per-container
-			// directory is what bind-mounts /etc/hosts.
-			name: "the containers path wins over a layer path",
-			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/var/lib/docker/overlay2/" + layer + "/diff\n" +
-				"3 4 0:2 /" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n" +
-				"5 6 0:3 /var/lib/docker/containers/" + self + "/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n",
-			want: []string{self, layer},
-		},
-		{
-			name: "without a containers path, first seen leads",
-			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/x/" + layer + "/diff\n" +
-				"3 4 0:2 /y/" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n",
-			want: []string{layer, self},
-		},
-		{"deduplicated", "/containers/" + self + "/a\n/containers/" + self + "/b\n", []string{self}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := selfIDs(strings.NewReader(tc.in))
-			if len(got) != len(tc.want) {
-				t.Fatalf("selfIDs = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("selfIDs[%d] = %s, want %s", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
 }
 
 // TestOpenScopesByMountinfo pins the fix for #28: a service that sets its own
@@ -439,14 +431,128 @@ func TestOpenScopesByMountinfo(t *testing.T) {
 		composeContainer{id: "other-cc", name: "other-claude-code-1", project: "other", service: "claude-code"},
 	)
 
-	got, err := Open(t.Context(), "claude-code", discard())
+	got, err := New().Open(t.Context(), "claude-code", discard())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = got.Close() }()
-	if got.id != "mine-cc" {
-		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", got.id, "mine-cc")
+	target := got.(*TargetImpl)
+	if target.id != "mine-cc" {
+		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", target.id, "mine-cc")
 	}
+}
+
+// TestOpenOrdersSelfIDs pins the candidate order the self-id lookup inside
+// Open produces: the ids are guesses, checked by being inspected, so the job
+// is to try the likely one first and never invent one. There is no seam left
+// to call this directly — the lookup was inlined into Open — so these cases
+// go through Open itself and read the order back off composeDaemon's stub,
+// which now records every ref it was asked to inspect.
+//
+// Each case gives Open a reference no service matches, so it always ends in
+// ErrInvalidOrigin; what is under test is the order of the inspects that
+// happen on the way there, not the outcome.
+func TestOpenOrdersSelfIDs(t *testing.T) {
+	const self = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
+	const layer = "433163a110ebac893af94c0c0f05ef45501c8ef19a93c814e109034599c5105b"
+
+	setMountinfo := func(t *testing.T, body string) {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "mountinfo")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write mountinfo: %v", err)
+		}
+		old := mountinfo
+		mountinfo = path
+		t.Cleanup(func() { mountinfo = old })
+	}
+
+	// candidates filters inspected down to the self/layer entries, in the
+	// order the stub saw them — dropping the top-level reference Open starts
+	// from and the host's own hostname, neither of which this test cares
+	// about.
+	candidates := func(inspected []string) []string {
+		var got []string
+		for _, ref := range inspected {
+			if ref == self || ref == layer {
+				got = append(got, ref)
+			}
+		}
+		return got
+	}
+
+	t.Run("the containers path wins over a layer path", func(t *testing.T) {
+		// The shape observed on a real daemon: the runtime's per-container
+		// directory is what bind-mounts /etc/hosts.
+		setMountinfo(t, "1 2 0:1 / / rw - overlay overlay rw,upperdir=/var/lib/docker/overlay2/"+layer+"/diff\n"+
+			"3 4 0:2 /"+self+"/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n"+
+			"5 6 0:3 /var/lib/docker/containers/"+self+"/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n")
+
+		inspected := composeDaemon(t, "",
+			composeContainer{id: self, name: "self-container", project: "mine", service: "tunneld"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		got2 := candidates(inspected())
+		if len(got2) == 0 || got2[0] != self {
+			t.Fatalf("inspected order = %v, want it to start with self (%s)", got2, self)
+		}
+		// A self that resolves (it carries a compose project label here)
+		// means the loop breaks before it ever gets to layer.
+		for _, ref := range got2 {
+			if ref == layer {
+				t.Errorf("layer (%s) was inspected; a resolving self must short-circuit before it", layer)
+			}
+		}
+	})
+
+	t.Run("without a containers path, first seen leads", func(t *testing.T) {
+		setMountinfo(t, "1 2 0:1 / / rw - overlay overlay rw,upperdir=/x/"+layer+"/diff\n"+
+			"3 4 0:2 /y/"+self+"/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n")
+
+		// No composeContainer for layer: the daemon does not know it, so its
+		// inspect 404s and the loop moves on to self.
+		inspected := composeDaemon(t, "",
+			composeContainer{id: self, name: "self-container", project: "mine", service: "tunneld"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		want := []string{layer, self}
+		if got2 := candidates(inspected()); !slices.Equal(got2, want) {
+			t.Fatalf("inspected order = %v, want %v", got2, want)
+		}
+	})
+
+	t.Run("deduplicated", func(t *testing.T) {
+		setMountinfo(t, "/containers/"+self+"/a\n/containers/"+self+"/b\n")
+
+		inspected := composeDaemon(t, "", composeContainer{id: self, name: "self-container"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		count := 0
+		for _, ref := range inspected() {
+			if ref == self {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("self (%s) inspected %d times, want exactly once", self, count)
+		}
+	})
 }
 
 // TestAttach pins the round trip against a real container, both ways it can be
@@ -467,7 +573,7 @@ func TestAttach(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			id := startContainer(t, cli, tc.tty, tc.stdin)
-			a, err := Open(t.Context(), id, discard())
+			a, err := New().Open(t.Context(), id, discard())
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -543,6 +649,25 @@ func TestAttach(t *testing.T) {
 			}
 			_ = stdinW.Close()
 		})
+	}
+}
+
+// TestNewOpensTarget pins the contract the root consumes: New().Open hands
+// back an attach.Target for a running container, named by the reference it
+// was given, and closing it releases the client.
+func TestNewOpensTarget(t *testing.T) {
+	cli := withDaemon(t)
+	id := startContainer(t, cli, true, true)
+
+	target, err := New().Open(t.Context(), id, discard())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if target.Name() != id {
+		t.Errorf("Name() = %q, want the reference %q", target.Name(), id)
+	}
+	if err := target.Close(); err != nil {
+		t.Errorf("Close: %v", err)
 	}
 }
 

@@ -1,7 +1,7 @@
-// The tests for counters.go. `package v1alpha1_test` is the outside-the-package
-// view: Count, WithMaxGone and IsGone are the whole surface, and what the
-// counter concludes from a stream of events is the contract worth pinning.
-package v1alpha1_test
+// The tests for counter.go. `package counter_test` is the outside-the-package
+// view: New, WithMaxGone, Count and IsGone are the whole surface, and what
+// the counter concludes from a stream of events is the contract worth pinning.
+package counter_test
 
 import (
 	"math"
@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/cnuss/libtunnel"
-	"github.com/tunnel-pizza/tunneld/v1alpha1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
 
 // Shorthands for the event kinds a stream is written from, so a table row
@@ -41,7 +41,7 @@ var reap = []libtunnel.EventKind{
 }
 
 // count feeds a stream into a counter and reports what it concluded.
-func count(c *v1alpha1.Counter, stream []libtunnel.EventKind) bool {
+func count(c *counter.CounterImpl, stream []libtunnel.EventKind) bool {
 	for _, kind := range stream {
 		c.Count(libtunnel.Event{Kind: kind})
 	}
@@ -101,7 +101,7 @@ func TestCountRuns(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			c := v1alpha1.NewCounter().WithMaxGone(tt.max)
+			c := counter.New(counter.WithMaxGone(tt.max))
 			if got := count(c, tt.stream); got != tt.want {
 				t.Errorf("IsGone() = %v, want %v (max %d)", got, tt.want, tt.max)
 			}
@@ -122,29 +122,25 @@ func TestMaxGoneDisables(t *testing.T) {
 
 	for _, tt := range []struct {
 		name    string
-		counter func() *v1alpha1.Counter
+		counter func() *counter.CounterImpl
 	}{
 		{
-			// Nobody armed it.
-			name: "an unconfigured counter", counter: v1alpha1.NewCounter,
-		},
-		{
 			name:    "a negative maximum",
-			counter: func() *v1alpha1.Counter { return v1alpha1.NewCounter().WithMaxGone(-1) },
+			counter: func() *counter.CounterImpl { return counter.New(counter.WithMaxGone(-1)) },
 		},
 		{
 			// Zero has no other coherent reading: a run is never shorter than
 			// none, so a zero threshold would answer true before anything
 			// happened.
 			name:    "a zero maximum",
-			counter: func() *v1alpha1.Counter { return v1alpha1.NewCounter().WithMaxGone(0) },
+			counter: func() *counter.CounterImpl { return counter.New(counter.WithMaxGone(0)) },
 		},
 		{
-			// Not reachable through the constructor, but Counter is exported
-			// and a bare struct starts at zero. Without the guard in IsGone
-			// this one answers true before a single event arrives.
-			name:    "a bare struct that never saw NewCounter",
-			counter: func() *v1alpha1.Counter { return new(v1alpha1.Counter) },
+			// Not reachable through the constructor, but CounterImpl is
+			// exported and a bare struct starts at zero. Without the guard in
+			// IsGone this one answers true before a single event arrives.
+			name:    "a bare struct that never saw New",
+			counter: func() *counter.CounterImpl { return new(counter.CounterImpl) },
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,11 +155,27 @@ func TestMaxGoneDisables(t *testing.T) {
 	}
 }
 
+// TestNewIsArmed pins that an unconfigured counter trips, at exactly
+// DefaultMaxGone. The builder wires one in without naming a number, so this
+// is what keeps the default from silently becoming "never".
+func TestNewIsArmed(t *testing.T) {
+	c := counter.New()
+	for i := range counter.DefaultMaxGone {
+		if c.IsGone() {
+			t.Fatalf("IsGone() = true after %d verdicts, want %d", i, counter.DefaultMaxGone)
+		}
+		c.Count(libtunnel.Event{Kind: gone})
+	}
+	if !c.IsGone() {
+		t.Errorf("IsGone() = false after %d verdicts, want true", counter.DefaultMaxGone)
+	}
+}
+
 // TestMaxGoneCeiling pins that the largest threshold a caller can name is still
 // reachable in principle, so "disabled" is a ceiling nothing reaches rather
 // than a special case IsGone has to know about.
 func TestMaxGoneCeiling(t *testing.T) {
-	c := v1alpha1.NewCounter().WithMaxGone(math.MaxInt64)
+	c := counter.New(counter.WithMaxGone(math.MaxInt64))
 	if count(c, reap) {
 		t.Error("IsGone() = true at the maximum threshold")
 	}
@@ -174,7 +186,7 @@ func TestMaxGoneCeiling(t *testing.T) {
 // event, so Count is reached from several at once; the atomics are the reason
 // and this is what would notice them going away. Meaningful under -race.
 func TestCountIsConcurrent(t *testing.T) {
-	c := v1alpha1.NewCounter().WithMaxGone(1)
+	c := counter.New(counter.WithMaxGone(1))
 
 	var wg sync.WaitGroup
 	for range 8 {

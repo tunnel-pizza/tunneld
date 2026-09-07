@@ -5,111 +5,32 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-const boolVar = "TUNNELD__TEST_BOOL"
-
-// TestEnvBool covers the (value, fixed, err) contract: an unset knob is not
-// fixed, an explicit false is fixed (which a bare bool return could not
-// distinguish), and an unparsable value is reported rather than swallowed.
-func TestEnvBool(t *testing.T) {
-	cases := []struct {
-		name      string
-		set       bool
-		env       string
-		wantValue bool
-		wantFixed bool
-		wantErr   bool
-	}{
-		{name: "unset", set: false},
-		{name: "empty reads as unset", set: true, env: ""},
-		{name: "true", set: true, env: "true", wantValue: true, wantFixed: true},
-		{name: "explicit false is still fixed", set: true, env: "false", wantFixed: true},
-		{name: "1 parses as true", set: true, env: "1", wantValue: true, wantFixed: true},
-		{name: "garbage is fixed but errors", set: true, env: "yes-please", wantFixed: true, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(boolVar, tc.env)
-			}
-
-			value, fixed, err := EnvBool(boolVar)
-			if value != tc.wantValue {
-				t.Errorf("value = %v, want %v", value, tc.wantValue)
-			}
-			if fixed != tc.wantFixed {
-				t.Errorf("fixed = %v, want %v", fixed, tc.wantFixed)
-			}
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, want error: %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, v1.ErrInvalidEnv) {
-				t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
-			}
-		})
-	}
-}
-
-const durationVar = "TUNNELD__TEST_DURATION"
-
-// TestEnvDuration mirrors TestEnvBool for the duration knob, including the
-// zero-but-fixed case that separates "set to 0s" from "unset".
-func TestEnvDuration(t *testing.T) {
-	cases := []struct {
-		name      string
-		set       bool
-		env       string
-		wantValue time.Duration
-		wantFixed bool
-		wantErr   bool
-	}{
-		{name: "unset", set: false},
-		{name: "empty reads as unset", set: true, env: ""},
-		{name: "milliseconds", set: true, env: "500ms", wantValue: 500 * time.Millisecond, wantFixed: true},
-		{name: "explicit zero is still fixed", set: true, env: "0s", wantFixed: true},
-		{name: "bare number errors", set: true, env: "30", wantFixed: true, wantErr: true},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if tc.set {
-				t.Setenv(durationVar, tc.env)
-			}
-
-			value, fixed, err := EnvDuration(durationVar)
-			if value != tc.wantValue {
-				t.Errorf("value = %v, want %v", value, tc.wantValue)
-			}
-			if fixed != tc.wantFixed {
-				t.Errorf("fixed = %v, want %v", fixed, tc.wantFixed)
-			}
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, want error: %v", err, tc.wantErr)
-			}
-			if tc.wantErr && !errors.Is(err, v1.ErrInvalidEnv) {
-				t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
-			}
-		})
-	}
-}
-
-// TestEnvErrorNamesTheLever pins the doc discipline in code: the message has
-// to name the variable and the offending value, since that is the whole lever
-// an operator has.
+// TestEnvErrorNamesTheLever pins the doc discipline in code: an environment
+// override that is set but unparsable must fail loudly and name the variable
+// and the offending value, since that is the whole lever an operator has to
+// recover from the error.
 func TestEnvErrorNamesTheLever(t *testing.T) {
-	t.Setenv(boolVar, "yes-please")
+	t.Setenv(v1.NoOpenEnv, "maybe")
 
-	_, _, err := EnvBool(boolVar)
+	cmd := New(WithURL(":3000")).Command()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(nil)
+
+	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
-		t.Fatal("EnvBool() = nil error for an unparsable value")
+		t.Fatal("ExecuteContext() = nil error for an unparsable NoOpenEnv value")
 	}
-	for _, want := range []string{boolVar, "yes-please"} {
+	if !errors.Is(err, v1.ErrInvalidEnv) {
+		t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
+	}
+	for _, want := range []string{v1.NoOpenEnv, "maybe"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}
@@ -161,7 +82,7 @@ func TestLoggerLevels(t *testing.T) {
 // catches: it would work on the command line and be silently unreachable from
 // a container's environment.
 func TestFlagEnvRegistryIsComplete(t *testing.T) {
-	cmd := New().Build()
+	cmd := New().Command()
 
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if f.Name == "help" { // cobra's own, no knob behind it
@@ -184,10 +105,11 @@ func TestFlagEnvRegistryIsComplete(t *testing.T) {
 	}
 }
 
-// TestSplitEnvList covers the list-valued variable parsing: comma-separated,
-// space-tolerant, and empty entries dropped so a trailing comma does not
-// become an origin nothing can proxy to.
-func TestSplitEnvList(t *testing.T) {
+// TestEnvListSplitting covers the list-valued TUNNELD_URL variable through
+// the built command: comma-separated, space-tolerant, and empty entries
+// dropped so a trailing comma does not become an origin nothing can proxy
+// to.
+func TestEnvListSplitting(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -204,9 +126,32 @@ func TestSplitEnvList(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := splitEnvList(tc.in)
+			t.Setenv(v1.URLEnv, tc.in)
+
+			cmd := New().Command()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--log-level", "loud"})
+			err := cmd.ExecuteContext(t.Context())
+
+			if len(tc.want) == 0 {
+				// An empty variable reads as unset, so nothing satisfies the
+				// required --url flag and that is the error that comes back
+				// instead of an empty origin list.
+				if err == nil || !strings.Contains(err.Error(), "url") {
+					t.Fatalf("error = %v, want it to name the missing url flag", err)
+				}
+				return
+			}
+
+			// ErrInvalidLogLevel proves the environment applied and the run
+			// got past the required-flag check.
+			if !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+			got := cmd.Flags().Lookup("url").Value.(pflag.SliceValue).GetSlice()
 			if len(got) != len(tc.want) {
-				t.Fatalf("splitEnvList(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Fatalf("--url = %q, want %q", got, tc.want)
 			}
 			for i := range got {
 				if got[i] != tc.want[i] {
@@ -219,8 +164,8 @@ func TestSplitEnvList(t *testing.T) {
 
 // TestApplyEnvPrecedence pins flag > env > default, one row per rung. The
 // command is executed rather than poked at, because the behaviour under test
-// is partly cobra's — applyEnv marking a flag changed is what stops required
-// flag validation from rejecting an origin the environment supplied.
+// is partly cobra's — PersistentPreRunE marking a flag changed is what stops
+// required flag validation from rejecting an origin the environment supplied.
 func TestApplyEnvPrecedence(t *testing.T) {
 	cases := []struct {
 		name string
@@ -258,7 +203,7 @@ func TestApplyEnvPrecedence(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			b := New()
-			cmd := b.Build()
+			cmd := b.Command()
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			// A deliberately bad level stops the run after the flags settle
@@ -292,7 +237,7 @@ func TestApplyEnvPrecedence(t *testing.T) {
 func TestApplyEnvSeededDefault(t *testing.T) {
 	t.Setenv(v1.URLEnv, "http://env:1")
 
-	cmd := New().WithURL("http://seeded:1").Build()
+	cmd := New(WithURL("http://seeded:1")).Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--log-level", "loud"})
@@ -314,8 +259,28 @@ func TestApplyEnvSeededDefault(t *testing.T) {
 // builder, not the package global: two commands in one process must not share
 // a key space, or an embedded tunneld would inherit its host's configuration.
 func TestApplyEnvIsPerBuilder(t *testing.T) {
-	if first, second := newEnv(), newEnv(); first == second {
-		t.Error("newEnv() returned the same instance twice, want one per builder")
+	t.Setenv(v1.URLEnv, "http://env:1")
+
+	first := New().Command()
+	first.SetOut(io.Discard)
+	first.SetErr(io.Discard)
+	first.SetArgs([]string{"--log-level", "loud"})
+	if err := first.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	second := New().Command()
+	second.SetOut(io.Discard)
+	second.SetErr(io.Discard)
+	second.SetArgs([]string{"--log-level", "loud"})
+	if err := second.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	// The global was never the binding: each builder's flags are satisfied
+	// by its own viper instance, and the package-global one stays untouched.
+	if viper.IsSet("url") {
+		t.Error("the package-global viper was bound; want one instance per builder")
 	}
 }
 
@@ -327,7 +292,7 @@ func TestEnvLogLevelIsStrict(t *testing.T) {
 	t.Setenv(v1.LogEnv, "loud")
 	t.Setenv(v1.URLEnv, "http://localhost:3000")
 
-	cmd := New().Build()
+	cmd := New().Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs(nil)

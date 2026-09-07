@@ -57,23 +57,8 @@ func Version() string {
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
 	}
-	if v := vcsVersion(info); v != "unknown" {
-		return v
-	}
-	// A build the toolchain stamped as "(devel)" and nothing else: `go run`,
-	// which skips VCS stamping. That is still information — locally built,
-	// from no release — and reporting it beats "unknown", which reads as a
-	// broken build rather than an unreleased one.
-	if info.Main.Version == "(devel)" {
-		return "devel"
-	}
-	return "unknown"
-}
-
-// vcsVersion is the local-build fallback: the short VCS revision with a
-// -dirty suffix for an uncommitted tree, or "unknown" when the build carries
-// no VCS stamp.
-func vcsVersion(info *debug.BuildInfo) string {
+	// The local-build fallback: the short VCS revision with a -dirty suffix
+	// for an uncommitted tree. A build with no VCS stamp falls through.
 	var revision, dirty string
 	for _, s := range info.Settings {
 		switch s.Key {
@@ -85,13 +70,20 @@ func vcsVersion(info *debug.BuildInfo) string {
 			}
 		}
 	}
-	if revision == "" {
-		return "unknown"
+	if revision != "" {
+		if len(revision) > 12 {
+			revision = revision[:12]
+		}
+		return revision + dirty
 	}
-	if len(revision) > 12 {
-		revision = revision[:12]
+	// A build the toolchain stamped as "(devel)" and nothing else: `go run`,
+	// which skips VCS stamping. That is still information — locally built,
+	// from no release — and reporting it beats "unknown", which reads as a
+	// broken build rather than an unreleased one.
+	if info.Main.Version == "(devel)" {
+		return "devel"
 	}
-	return revision + dirty
+	return "unknown"
 }
 
 // VersionLine is the human-facing build banner printed by `tunneld version`

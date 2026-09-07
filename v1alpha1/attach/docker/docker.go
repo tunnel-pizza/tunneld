@@ -4,6 +4,11 @@
 // It knows nothing about HTTP or websockets: it is handed the four streams and
 // a resize channel, and it copies. The split is what keeps a second provider —
 // podman, or a local shell over a pty — from having to touch the server.
+//
+// Two types, because attach names two things: TargetsImpl opens a
+// reference — a name, an id, a Compose service — and TargetImpl is the
+// container it found. The first is behind attach.Targets; the second is
+// behind attach.Target.
 package docker
 
 import (
@@ -25,16 +30,20 @@ import (
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
-// Attacher is one container, resolved and inspected.
-type Attacher struct {
-	cli   *client.Client
-	log   *slog.Logger
-	id    string
-	ref   string
-	tty   bool
-	stdin bool
+// Option configures a TargetsImpl at construction. There are none yet; the
+// signature exists so a knob added later changes no caller.
+type Option = v1.Option[*TargetsImpl]
+
+// TargetsImpl is the default source of targets: the daemon named by the
+// environment, $DOCKER_HOST and friends.
+type TargetsImpl struct{}
+
+// New returns the default source of targets, configured by opts.
+func New(opts ...Option) *TargetsImpl {
+	return v1.Apply(&TargetsImpl{}, opts...)
 }
 
 // Open resolves ref — a container name, an id, or a Compose service — against
@@ -49,7 +58,7 @@ type Attacher struct {
 // The three failures are told apart because their levers differ: a daemon that
 // cannot be reached is ErrNoDocker (start Docker), and both a missing container
 // and a stopped one are ErrInvalidOrigin (fix the --url, or start it).
-func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) {
+func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", v1.ErrNoDocker, err)
@@ -63,7 +72,129 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 	// has failed anyway. Name-or-id stays first: a container literally named
 	// `web` must keep winning, or this changes what an existing config means.
 	if cerrdefs.IsNotFound(err) {
-		if id, serr := resolveService(ctx, cli, ref); serr != nil {
+		// Look ref up as a Compose service name, resolving to the id of the
+		// single container that matches, "" when nothing does — leaving the
+		// caller's original "no such container" error to stand — or an error
+		// when the name is ambiguous.
+		//
+		// Ambiguity is an error rather than a pick, because the alternative is
+		// an origin that quietly points at a different replica after a
+		// restart.
+		//
+		// All is set so a stopped service is found: it then fails the running
+		// check with "container %q is not running", which names the lever,
+		// instead of degrading to "no container named" for a container that
+		// plainly exists.
+		f := make(client.Filters).Add("label", composeService+"="+ref)
+		// Scoping to tunneld's own project is what keeps `web` from being
+		// ambiguous on a machine busy enough to run two of them — which is
+		// precisely when it matters. Off the scope, an ambiguous match is
+		// still an error rather than a coin flip, so the unscoped case stays
+		// safe.
+		//
+		// project names the Compose project tunneld itself belongs to, or ""
+		// if it does not belong to one.
+		//
+		// The references are guesses, checked by being inspected: one that
+		// names no container answers 404 and the next is tried. Nothing found
+		// means "", which widens the lookup to the whole host — the wrong
+		// project would be a far worse answer than no project, so every
+		// uncertain path ends here.
+		var project string
+		// refs holds what might name this process's own container, cheapest
+		// and most portable first.
+		//
+		// The hostname is the normal case: Compose sets it to the container
+		// id. But a service that sets `hostname:` makes it name nothing the
+		// daemon knows — and that is not an exotic option, it is what
+		// `network_mode: service:<name>` needs, which is the shape this
+		// scoping exists to serve. The id is still in mountinfo, in the paths
+		// the runtime bind-mounts in, and nothing else inside the container
+		// carries it: cgroup reads `0::/` under v2 in a namespace.
+		var refs []string
+		if host, err := os.Hostname(); err == nil && host != "" {
+			refs = append(refs, host)
+		}
+		mf, merr := os.Open(mountinfo) // not Linux, or not in a container
+		if merr == nil {
+			defer func() { _ = mf.Close() }()
+			// Pull candidate container ids out of mountinfo, most likely
+			// first.
+			//
+			// An id under a .../containers/<id>/... path is the runtime's own
+			// per-container directory — the one that bind-mounts /etc/hosts
+			// and /etc/hostname — so it leads. Anything else is most likely a
+			// layer directory that merely looks the same, kept only as a
+			// fallback because the layout of this file is the runtime's
+			// business rather than an interface it owes anyone.
+			preferred := map[string]bool{}
+			seen := map[string]bool{}
+			var order []string
+
+			scan := bufio.NewScanner(mf)
+			for scan.Scan() {
+				line := scan.Text()
+				for _, id := range containerID.FindAllString(line, -1) {
+					if !seen[id] {
+						seen[id] = true
+						order = append(order, id)
+					}
+					if strings.Contains(line, "/containers/"+id) {
+						preferred[id] = true
+					}
+				}
+			}
+
+			ids := make([]string, 0, len(order))
+			for _, want := range []bool{true, false} {
+				for _, id := range order {
+					if preferred[id] == want && len(ids) < candidateIDsMax {
+						ids = append(ids, id)
+					}
+				}
+			}
+			refs = append(refs, ids...)
+		}
+		for _, self := range refs {
+			res, err := cli.ContainerInspect(ctx, self, client.ContainerInspectOptions{})
+			if err != nil || res.Container.Config == nil {
+				continue
+			}
+			if p := res.Container.Config.Labels[composeProject]; p != "" {
+				project = p
+				break
+			}
+		}
+		if project != "" {
+			f.Add("label", composeProject+"="+project)
+		}
+
+		list, lerr := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f})
+		found := list.Items
+		var id string
+		var serr error
+		if lerr != nil || len(found) == 0 {
+			id, serr = "", nil
+		} else if len(found) == 1 {
+			id, serr = found[0].ID, nil
+		} else {
+			names := make([]string, 0, len(found))
+			for _, c := range found {
+				name := c.ID
+				if len(c.Names) > 0 {
+					name = strings.TrimPrefix(c.Names[0], "/")
+				}
+				if p := c.Labels[composeProject]; p != "" {
+					name += " (project " + p + ")"
+				}
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			id, serr = "", fmt.Errorf("%w: service %q matches %d containers: %s — name one of them instead",
+				v1.ErrInvalidOrigin, ref, len(found), strings.Join(names, ", "))
+		}
+
+		if serr != nil {
 			err = serr
 		} else if id != "" {
 			res, err = cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
@@ -103,7 +234,7 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		return nil, fmt.Errorf("%w: container %q reports no configuration", v1.ErrInvalidOrigin, ref)
 	}
 
-	return &Attacher{
+	return &TargetImpl{
 		cli:   cli,
 		log:   log,
 		id:    info.ID,
@@ -111,6 +242,23 @@ func Open(ctx context.Context, ref string, log *slog.Logger) (*Attacher, error) 
 		tty:   info.Config.Tty,
 		stdin: info.Config.OpenStdin,
 	}, nil
+}
+
+// Drift in either package fails here: TargetImpl is what attach serves,
+// TargetsImpl what the binder resolves references through.
+var (
+	_ attach.Target  = (*TargetImpl)(nil)
+	_ attach.Targets = (*TargetsImpl)(nil)
+)
+
+// TargetImpl is one container, resolved and inspected.
+type TargetImpl struct {
+	cli   *client.Client
+	log   *slog.Logger
+	id    string
+	ref   string
+	tty   bool
+	stdin bool
 }
 
 // The labels Compose writes on every container it starts. They are the whole
@@ -121,172 +269,46 @@ const (
 	composeService = "com.docker.compose.service"
 )
 
-// resolveService looks ref up as a Compose service name. It returns the id of
-// the single container that matches, "" when nothing does — leaving the
-// caller's original "no such container" error to stand — or an error when the
-// name is ambiguous.
-//
-// Ambiguity is an error rather than a pick, because the alternative is an
-// origin that quietly points at a different replica after a restart.
-//
-// All is set so a stopped service is found: it then fails the running check
-// with "container %q is not running", which names the lever, instead of
-// degrading to "no container named" for a container that plainly exists.
-func resolveService(ctx context.Context, cli *client.Client, ref string) (string, error) {
-	f := make(client.Filters).Add("label", composeService+"="+ref)
-	// Scoping to tunneld's own project is what keeps `web` from being
-	// ambiguous on a machine busy enough to run two of them — which is
-	// precisely when it matters. Off the scope, an ambiguous match is still an
-	// error rather than a coin flip, so the unscoped case stays safe.
-	if project := ownProject(ctx, cli); project != "" {
-		f.Add("label", composeProject+"="+project)
-	}
-
-	list, err := cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f})
-	found := list.Items
-	if err != nil || len(found) == 0 {
-		return "", nil
-	}
-	if len(found) == 1 {
-		return found[0].ID, nil
-	}
-
-	names := make([]string, 0, len(found))
-	for _, c := range found {
-		name := c.ID
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-		if p := c.Labels[composeProject]; p != "" {
-			name += " (project " + p + ")"
-		}
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return "", fmt.Errorf("%w: service %q matches %d containers: %s — name one of them instead",
-		v1.ErrInvalidOrigin, ref, len(found), strings.Join(names, ", "))
-}
-
-// mountinfo is where selfRefs looks for this process's own container id. A
+// mountinfo is where Open looks for this process's own container id. A
 // variable because the platforms this package is tested on mostly have no
 // /proc at all, and the parsing is worth pinning anyway.
 var mountinfo = "/proc/self/mountinfo"
 
 // containerID matches a 64-hex path component. Both container directories and
-// layer directories are named that way, which is why selfIDs orders its
-// answers rather than picking one.
+// layer directories are named that way, which is why Open orders its
+// candidates rather than picking one.
 var containerID = regexp.MustCompile(`[0-9a-f]{64}`)
 
-// selfRefsMax bounds how many candidate ids are tried. Each one costs an
+// candidateIDsMax bounds how many candidate ids are tried. Each one costs an
 // inspect, and a mountinfo that offers a dozen 64-hex paths is one this is not
 // reading correctly — better to widen the lookup than to interrogate the
 // daemon about layer directories.
-const selfRefsMax = 4
-
-// ownProject names the Compose project tunneld itself belongs to, or "" if it
-// does not belong to one.
-//
-// The references are guesses, checked by being inspected: one that names no
-// container answers 404 and the next is tried. Nothing found means "", which
-// widens the lookup to the whole host — the wrong project would be a far worse
-// answer than no project, so every uncertain path ends here.
-func ownProject(ctx context.Context, cli *client.Client) string {
-	for _, ref := range selfRefs() {
-		res, err := cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
-		if err != nil || res.Container.Config == nil {
-			continue
-		}
-		if project := res.Container.Config.Labels[composeProject]; project != "" {
-			return project
-		}
-	}
-	return ""
-}
-
-// selfRefs returns what might name this process's own container, cheapest and
-// most portable first.
-//
-// The hostname is the normal case: Compose sets it to the container id. But a
-// service that sets `hostname:` makes it name nothing the daemon knows — and
-// that is not an exotic option, it is what `network_mode: service:<name>`
-// needs, which is the shape this scoping exists to serve. The id is still in
-// mountinfo, in the paths the runtime bind-mounts in, and nothing else inside
-// the container carries it: cgroup reads `0::/` under v2 in a namespace.
-func selfRefs() []string {
-	var refs []string
-	if host, err := os.Hostname(); err == nil && host != "" {
-		refs = append(refs, host)
-	}
-
-	f, err := os.Open(mountinfo)
-	if err != nil {
-		return refs // not Linux, or not in a container
-	}
-	defer func() { _ = f.Close() }()
-	return append(refs, selfIDs(f)...)
-}
-
-// selfIDs pulls candidate container ids out of mountinfo, most likely first.
-//
-// An id under a .../containers/<id>/... path is the runtime's own
-// per-container directory — the one that bind-mounts /etc/hosts and
-// /etc/hostname — so it leads. Anything else is most likely a layer directory
-// that merely looks the same, kept only as a fallback because the layout of
-// this file is the runtime's business rather than an interface it owes anyone.
-func selfIDs(r io.Reader) []string {
-	preferred := map[string]bool{}
-	seen := map[string]bool{}
-	var order []string
-
-	scan := bufio.NewScanner(r)
-	for scan.Scan() {
-		line := scan.Text()
-		for _, id := range containerID.FindAllString(line, -1) {
-			if !seen[id] {
-				seen[id] = true
-				order = append(order, id)
-			}
-			if strings.Contains(line, "/containers/"+id) {
-				preferred[id] = true
-			}
-		}
-	}
-
-	ids := make([]string, 0, len(order))
-	for _, want := range []bool{true, false} {
-		for _, id := range order {
-			if preferred[id] == want && len(ids) < selfRefsMax {
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
-}
+const candidateIDsMax = 4
 
 // Name is the reference the operator typed, not the resolved id: it is what
 // they will recognize in a page title and a log line.
-func (a *Attacher) Name() string { return a.ref }
+func (a *TargetImpl) Name() string { return a.ref }
 
 // TTY reports Config.Tty — whether the container was started with -t. It is
 // fixed at docker run time and nothing here can change it.
-func (a *Attacher) TTY() bool { return a.tty }
+func (a *TargetImpl) TTY() bool { return a.tty }
 
 // Stdin reports Config.OpenStdin — whether the container was started with -i.
-func (a *Attacher) Stdin() bool { return a.stdin }
+func (a *TargetImpl) Stdin() bool { return a.stdin }
 
 // Close releases the API client.
-func (a *Attacher) Close() error { return a.cli.Close() }
+func (a *TargetImpl) Close() error { return a.cli.Close() }
 
 // AttachContainer attaches to PID 1 and copies until the stream ends or ctx is
 // canceled, which is what `docker attach` does. The Kubernetes-shaped name,
-// uid and container arguments are ignored: this Attacher is one container by
+// uid and container arguments are ignored: this TargetImpl is one container by
 // construction.
 //
 // Logs is on, which is the one place this departs from `docker attach`: the
 // backlog replays so that opening the URL shows what the container has been
 // printing. An empty terminal on a quiet container is indistinguishable from a
 // broken one, and this page is usually opened long after the container started.
-func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	resp, err := a.cli.ContainerAttach(ctx, a.id, client.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  a.stdin,
@@ -314,7 +336,26 @@ func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Re
 	stop := context.AfterFunc(ctx, func() { resp.Close() })
 	defer stop()
 
-	go a.watchResize(ctx, resize)
+	// This forwards terminal sizes to the container, and returns when the
+	// channel closes — which ServeAttach does when the socket ends.
+	//
+	// Without a TTY there is nothing to resize, but the channel is still
+	// drained: the page sends its size as a heartbeat regardless, and a
+	// blocked send would stall the whole stream.
+	go func() {
+		for size := range resize {
+			if !a.tty || size.Width == 0 || size.Height == 0 {
+				continue
+			}
+			_, err := a.cli.ContainerResize(ctx, a.id, client.ContainerResizeOptions{
+				Height: uint(size.Height),
+				Width:  uint(size.Width),
+			})
+			if err != nil && ctx.Err() == nil {
+				a.log.Debug("could not resize container", "container", a.ref, "error", err)
+			}
+		}
+	}()
 
 	if a.stdin && in != nil {
 		go func() {
@@ -348,25 +389,4 @@ func (a *Attacher) AttachContainer(ctx context.Context, _, _, _ string, in io.Re
 		err = nil
 	}
 	return err
-}
-
-// watchResize forwards terminal sizes to the container, and returns when the
-// channel closes — which ServeAttach does when the socket ends.
-//
-// Without a TTY there is nothing to resize, but the channel is still drained:
-// the page sends its size as a heartbeat regardless, and a blocked send would
-// stall the whole stream.
-func (a *Attacher) watchResize(ctx context.Context, resize <-chan remotecommand.TerminalSize) {
-	for size := range resize {
-		if !a.tty || size.Width == 0 || size.Height == 0 {
-			continue
-		}
-		_, err := a.cli.ContainerResize(ctx, a.id, client.ContainerResizeOptions{
-			Height: uint(size.Height),
-			Width:  uint(size.Width),
-		})
-		if err != nil && ctx.Err() == nil {
-			a.log.Debug("could not resize container", "container", a.ref, "error", err)
-		}
-	}
 }

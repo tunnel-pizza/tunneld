@@ -14,7 +14,7 @@
 // New lives in v1alpha1 rather than here, so application code constructs from
 // there and matches errors here:
 //
-//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 //	if err := cmd.ExecuteContext(ctx); err != nil { ... }
 //
 // A façade package re-exporting New alongside these names would read better,
@@ -24,8 +24,8 @@
 // hit the same wall one layer down, where attach/docker reaches for
 // ErrInvalidOrigin.
 //
-// The builder assembles the `tunneld` command: a fluent chain of With* setters
-// finalized by Build, which returns a *cobra.Command ready to Execute. That
+// The builder assembles the `tunneld` command: a New that takes options,
+// finalized by Command, which returns a *cobra.Command ready to Execute. That
 // shape is what lets tunneld be both a binary and an embeddable subcommand —
 // a host program builds the command, renames it, seeds its origins, redirects
 // its streams, and hangs it off its own root without reimplementing anything.
@@ -37,7 +37,6 @@ package v1
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 
 	"github.com/spf13/cobra"
@@ -51,6 +50,31 @@ import (
 // library's answer, and a narrower interface here would buy nothing except a
 // conversion at every call site.
 type Logger = *slog.Logger
+
+// Option configures a value of type T while it is being constructed. Every
+// New in v1alpha1 and its subpackages takes a list of them, applies its own
+// defaults first and the caller's after, so the caller's always wins. A
+// package aliases the instantiated type to its own Option and exposes With*
+// constructors returning that alias:
+//
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
+//
+// One generic type rather than an Option per package, so the rule for how
+// options are applied is declared once, in Apply, and every constructor in
+// the tree reads the same way. It lives here rather than in v1alpha1 for the
+// same reason the sentinels do: the subpackages cannot import the root, and
+// every one of them needs it.
+type Option[T any] func(T)
+
+// Apply runs opts against t in order and returns t, so a constructor is one
+// expression per tier — its defaults, then the caller's. Later options
+// overwrite earlier ones, which is the whole precedence rule.
+func Apply[T any](t T, opts ...Option[T]) T {
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
 
 // The sentinel errors, centralized: declared here with errors.New, wrapped by
 // the implementation in v1alpha1, and matched by callers with errors.Is. Two
@@ -67,7 +91,7 @@ type Logger = *slog.Logger
 // no benefit, since an unreachable errors.Is is simply never true.
 
 // ErrInvalidEnv reports an environment override that is set but unparsable —
-// see EnvBool and EnvDuration in v1alpha1. Because env beats code, a typo'd
+// the environment binding in v1alpha1 wraps it. Because env beats code, a typo'd
 // value would otherwise fall back to the code value silently and the operator
 // would never learn the knob did nothing; this surfaces it instead. The lever
 // is the variable named in the wrapped message: correct the value or unset it
@@ -251,14 +275,14 @@ const DefaultOpen = true
 // an index of its own.
 const DefaultMultiview = true
 
-// Builder assembles the tunneld command. Configure it with the With* methods
-// (each returns the Builder for chaining), then call the terminal Build to
-// produce a *cobra.Command. Obtain one from v1alpha1.New.
+// Builder assembles the tunneld command. Obtain one from v1alpha1.New,
+// configured by that package's options, and call the terminal Command to
+// produce a *cobra.Command.
 //
-//	cmd := v1alpha1.New().WithURL("http://localhost:3000").Build()
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 //	err := cmd.ExecuteContext(ctx)
 //
-// Every With* value is a default, not a fixed setting: the command's flags
+// Every option's value is a default, not a fixed setting: the command's flags
 // bind over the same fields, so an argv value wins. Seeding an origin with
 // WithURL therefore makes --url optional rather than forbidden, which is what
 // an embedding program wants — a working default the user can still override.
@@ -266,59 +290,16 @@ const DefaultMultiview = true
 // The command's context is its shutdown handle. Run it with ExecuteContext and
 // cancel that context (a signal, in the binary's case) to tear the tunnel
 // down, during startup as well as after it is live.
+//
+// The interface is only what a caller calls once the builder exists. The
+// With* configuration is construction-time and lives on the constructor,
+// which is why it is not here: a setter returning this interface would make
+// any knob the interface does not name unreachable after it.
 type Builder interface {
-	// WithName sets the built command's name — the verb in usage strings and
-	// what cobra matches when the command is mounted under another root.
-	// Unset, the name is CommandName.
-	WithName(name string) Builder
-	// WithURL seeds the local origins to expose, in order: the first is the
-	// default origin and each later one answers on a bare ?n parameter.
-	// Repeated calls append. A --url flag on the command line replaces the
-	// whole seeded set rather than adding to it.
-	//
-	// A missing scheme implies http and a missing host implies localhost, so
-	// ":8000", "localhost:8000" and "http://localhost:8000" name one origin.
-	WithURL(urls ...string) Builder
-	// WithProvider sets the quick-tunnel provider host to mint against.
-	// Unset, the provider is DefaultProvider.
-	WithProvider(host string) Builder
-	// WithCacheDir sets the directories tunnel specs are cached in, in
-	// order, appending across calls. A boolean entry is an instruction
-	// rather than a path: true (and an empty entry) names the default
-	// location, and one false disables the whole list wherever it appears
-	// in it. Entries become absolute and repeats
-	// collapse. Unset, they come from CacheDirEnv, and from the working
-	// directory if that is unset too.
-	WithCacheDir(dirs ...string) Builder
-	// WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
-	// stderr. Unset, the level comes from LogEnv, and silence if that is
-	// unset too.
-	WithLogLevel(level string) Builder
-	// WithOpen sets whether a public URL is opened in a browser once the
-	// tunnel is live — the multiview panel when there is one, otherwise the
-	// default origin. Exactly one page is opened either way, since a fan of
-	// tabs is rarely what anyone wanted. Unset, the behaviour is DefaultOpen.
-	WithOpen(open bool) Builder
-	// WithMultiview sets whether the tunnel's own address answers with a panel
-	// framing every origin. It does nothing with a single origin, which has
-	// nothing to sit beside and keeps the bare address for itself. Unset, the
-	// behaviour is DefaultMultiview.
-	WithMultiview(multiview bool) Builder
-	// WithStdout redirects the help text and the version banner. Build
-	// passes it to the command's SetOut, so calling SetOut on the built
-	// command overrides this. Unset, output goes to the process's stdout.
-	//
-	// A running tunnel writes nothing there: its addresses go to stderr with
-	// the rest of what a person reads.
-	WithStdout(w io.Writer) Builder
-	// WithStderr redirects the banner, the origin map, and the tunnel's logs.
-	// Build passes it to the command's SetErr, so calling SetErr on the built
-	// command overrides this. Unset, output goes to the process's stderr.
-	WithStderr(w io.Writer) Builder
-	// Build assembles the configured command and returns it. It is the
+	// Command assembles the configured command and returns it. It is the
 	// terminal step; calling it more than once returns the same command.
-	Build() *cobra.Command
+	Command() *cobra.Command
 	// Name returns the configured command name (CommandName if WithName was
-	// never called).
+	// never given).
 	Name() string
 }

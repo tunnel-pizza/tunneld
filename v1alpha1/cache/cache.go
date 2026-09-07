@@ -1,4 +1,4 @@
-// Package env carries a tunnel's identity between runs.
+// Package cache carries a tunnel's identity between runs.
 //
 // libtunnel mints a fresh hostname on every start unless it is handed the spec
 // of a tunnel it already has, and that handoff channel is an environment
@@ -11,7 +11,7 @@
 // a library's — a volume in a container, a working directory on a laptop —
 // which is why the directories arrive from --cache-dir rather than being
 // derived here.
-package env
+package cache
 
 import (
 	"os"
@@ -36,7 +36,19 @@ const File = "TUNNEL.env"
 // pin choices they made once into every run afterwards.
 var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
 
-// Cached returns the spec envelope from the first TUNNEL.env found in dirs,
+// Option configures a CacheImpl at construction. There are none yet; the
+// signature exists so a knob added later changes no caller.
+type Option = v1.Option[*CacheImpl]
+
+// CacheImpl is the default cache: TUNNEL.env in each directory it is given.
+type CacheImpl struct{}
+
+// New returns the default cache, configured by opts.
+func New(opts ...Option) *CacheImpl {
+	return v1.Apply(&CacheImpl{}, opts...)
+}
+
+// Load returns the spec envelope from the first TUNNEL.env found in dirs,
 // and stops there. Later directories are fallbacks, not layers: two files
 // would raise the question of which tunnel is being resumed, and there is no
 // useful answer.
@@ -52,7 +64,7 @@ var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func Cached(cacheDirs []string, log v1.Logger) string {
+func (*CacheImpl) Load(cacheDirs []string, log v1.Logger) string {
 	for _, dir := range cacheDirs {
 		path := filepath.Join(dir, File)
 		if _, err := os.Stat(path); err != nil {
@@ -86,7 +98,7 @@ func Cached(cacheDirs []string, log v1.Logger) string {
 // keeping it would fail every run the same way, while a hostname somebody else
 // now holds is not this spec's fault and throwing it away would not win the
 // name back.
-func Discard(cacheDirs []string, log v1.Logger) {
+func (*CacheImpl) Discard(cacheDirs []string, log v1.Logger) {
 	for _, dir := range cacheDirs {
 		path := filepath.Join(dir, File)
 		if err := os.Remove(path); err == nil {
@@ -122,7 +134,7 @@ func Discard(cacheDirs []string, log v1.Logger) {
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func Save(cacheDirs []string, log v1.Logger) {
+func (*CacheImpl) Save(cacheDirs []string, log v1.Logger) {
 	var lines []string
 	for _, name := range saved {
 		if value, ok := os.LookupEnv(name); ok && value != "" {

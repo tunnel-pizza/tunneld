@@ -1,4 +1,4 @@
-package multiview
+package panel
 
 import (
 	"log/slog"
@@ -7,7 +7,43 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/cnuss/libtunnel"
 )
+
+// discard is the logger every test hands to Interceptors: nothing under test
+// asserts on log output, so it stays quiet.
+var discard = slog.New(slog.DiscardHandler)
+
+// fakeIC is the interceptor context the tests hand to a Handler: it records
+// the handler installed with WithHandler and answers Handler with whatever
+// the test says the proxy would have done. The other four methods are never
+// reached and panic through the nil embed if they are.
+type fakeIC struct {
+	libtunnel.InterceptCtx
+	next      http.HandlerFunc
+	installed http.HandlerFunc
+}
+
+func (f *fakeIC) Handler() http.HandlerFunc { return f.next }
+func (f *fakeIC) WithHandler(h http.HandlerFunc) libtunnel.InterceptCtx {
+	f.installed = h
+	return f
+}
+
+// pageOf returns the panel's own interceptor: the one that answers the bare
+// tunnel address with the page of frames.
+func pageOf(t *testing.T, origins []*url.URL) libtunnel.Interceptor {
+	t.Helper()
+	return New().Interceptors(origins, discard)[0]
+}
+
+// unframeOf returns the interceptor that strips framing headers from the
+// panel's own frames.
+func unframeOf(t *testing.T) libtunnel.Interceptor {
+	t.Helper()
+	return New().Interceptors(nil, discard)[1]
+}
 
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
 // the whole design: the panel answers the tunnel's own address and nothing
@@ -52,8 +88,8 @@ func TestIsPanelRequest(t *testing.T) {
 				r.Header.Set("Connection", "Upgrade")
 				r.Header.Set("Upgrade", tc.upgrade)
 			}
-			if got := isPanelRequest(r); got != tc.want {
-				t.Errorf("isPanelRequest(%q dest=%q referer=%q) = %v, want %v",
+			if got := pageOf(t, nil).Match(r); got != tc.want {
+				t.Errorf("Match(%q dest=%q referer=%q) = %v, want %v",
 					tc.target, tc.dest, tc.referer, got, tc.want)
 			}
 		})
@@ -66,11 +102,11 @@ func TestIsPanelRequest(t *testing.T) {
 func TestWanted(t *testing.T) {
 	one, err := mustOrigins([]string{"http://localhost:3000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 	two, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	cases := []struct {
@@ -86,7 +122,7 @@ func TestWanted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Wanted(tc.enabled, tc.origins); got != tc.want {
+			if got := New().Wanted(tc.enabled, tc.origins); got != tc.want {
 				t.Errorf("Wanted() = %v, want %v", got, tc.want)
 			}
 		})
@@ -101,7 +137,7 @@ func TestURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got, want := URL(public), "https://foo.tunneled.pizza/"; got != want {
+	if got, want := New().URL(public), "https://foo.tunneled.pizza/"; got != want {
 		t.Errorf("URL() = %q, want %q", got, want)
 	}
 	if public.RawQuery != "" {
@@ -115,13 +151,16 @@ func TestURL(t *testing.T) {
 func TestServeShell(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneled.pizza"
-	serveShell(rec, r, origins, slog.New(slog.DiscardHandler))
+
+	ic := &fakeIC{}
+	pageOf(t, origins).Handler(ic)
+	ic.installed(rec, r)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -155,16 +194,61 @@ func TestServeShell(t *testing.T) {
 func TestServeShellEscapesTheHost(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = `evil"><script>alert(1)</script>`
-	serveShell(rec, r, origins, slog.New(slog.DiscardHandler))
+
+	ic := &fakeIC{}
+	pageOf(t, origins).Handler(ic)
+	ic.installed(rec, r)
 
 	if strings.Contains(rec.Body.String(), "<script>alert(1)</script>") {
 		t.Error("the Host header reached the page as markup, want it escaped")
+	}
+}
+
+// TestLabel pins how a tile names the origin behind it. An http origin is
+// named by its host, which is what the operator typed; anything else keeps its
+// scheme, so a container tile cannot be misread as a hostname.
+func TestLabel(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"http://localhost:3000", "localhost:3000"},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
+		{"dockerd://api", "dockerd://api"},
+		{"http+ws://localhost:5173", "localhost:5173"},
+		{"https+wss://localhost:5173", "localhost:5173"},
+	}
+
+	origins := make([]*url.URL, len(cases))
+	for i, tc := range cases {
+		u, err := url.Parse(tc.in)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", tc.in, err)
+		}
+		origins[i] = u
+	}
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Host = "foo.tunneled.pizza"
+
+	ic := &fakeIC{}
+	pageOf(t, origins).Handler(ic)
+	ic.installed(rec, r)
+
+	body := rec.Body.String()
+	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "dockerd://api"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page does not contain label %q", want)
+		}
+	}
+	// http+ws and https+wss both name the tile by host alone, so each gets
+	// its own iframe with that exact title: "localhost:5173" twice over.
+	if got := strings.Count(body, `title="localhost:5173"`); got != 2 {
+		t.Errorf("rendered page has %d iframes titled %q, want 2 (one per +ws/+wss origin)", got, "localhost:5173")
 	}
 }
 
@@ -174,10 +258,10 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 func TestPanelInterceptorServesTheShell(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
-	interceptor := Panel(origins, slog.New(slog.DiscardHandler))
+	interceptor := pageOf(t, origins)
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
@@ -218,8 +302,8 @@ func TestIsPanelFrame(t *testing.T) {
 			if tc.site != "" {
 				r.Header.Set("Sec-Fetch-Site", tc.site)
 			}
-			if got := isPanelFrame(r); got != tc.want {
-				t.Errorf("isPanelFrame(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
+			if got := unframeOf(t).Match(r); got != tc.want {
+				t.Errorf("Match(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
 			}
 		})
 	}
@@ -246,8 +330,22 @@ func TestWithoutFrameAncestors(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := withoutFrameAncestors(tc.policy); got != tc.want {
-				t.Errorf("withoutFrameAncestors(%q) = %q, want %q", tc.policy, got, tc.want)
+			next := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Security-Policy", tc.policy)
+				w.WriteHeader(http.StatusOK)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/?1", nil)
+			req.Header.Set("Sec-Fetch-Dest", "iframe")
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+
+			ic := &fakeIC{next: next}
+			unframeOf(t).Handler(ic)
+			ic.installed(rec, req)
+
+			if got := rec.Header().Get("Content-Security-Policy"); got != tc.want {
+				t.Errorf("unframer(%q) = %q, want %q", tc.policy, got, tc.want)
 			}
 		})
 	}
@@ -257,26 +355,35 @@ func TestWithoutFrameAncestors(t *testing.T) {
 // refusal, including the report-only variant and an origin that sends several
 // policies.
 func TestStripFraming(t *testing.T) {
-	h := http.Header{}
-	h.Set("X-Frame-Options", "DENY")
-	h.Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
-	h.Add("Content-Security-Policy", "frame-ancestors https://example.test")
-	h.Set("Content-Security-Policy-Report-Only", "frame-ancestors 'none'; img-src *")
-	h.Set("X-Content-Type-Options", "nosniff")
+	next := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Add("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
+		w.Header().Add("Content-Security-Policy", "frame-ancestors https://example.test")
+		w.Header().Set("Content-Security-Policy-Report-Only", "frame-ancestors 'none'; img-src *")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+	}
 
-	stripFraming(h)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/?1", nil)
+	req.Header.Set("Sec-Fetch-Dest", "iframe")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
-	if got := h.Get("X-Frame-Options"); got != "" {
+	ic := &fakeIC{next: next}
+	unframeOf(t).Handler(ic)
+	ic.installed(rec, req)
+
+	if got := rec.Header().Get("X-Frame-Options"); got != "" {
 		t.Errorf("X-Frame-Options = %q, want it removed", got)
 	}
-	if got := h.Values("Content-Security-Policy"); len(got) != 1 || got[0] != "default-src 'self'" {
+	if got := rec.Header().Values("Content-Security-Policy"); len(got) != 1 || got[0] != "default-src 'self'" {
 		t.Errorf("Content-Security-Policy = %q, want only the non-framing directives", got)
 	}
-	if got := h.Get("Content-Security-Policy-Report-Only"); got != "img-src *" {
+	if got := rec.Header().Get("Content-Security-Policy-Report-Only"); got != "img-src *" {
 		t.Errorf("report-only policy = %q, want only the non-framing directives", got)
 	}
 	// Everything else the origin sent is none of our business.
-	if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want it untouched", got)
 	}
 }
@@ -321,18 +428,34 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 	})
 }
 
-// TestUnframeInterceptorIsBehindTheShell pins the ordering: the panel is
-// served before anything considers framing, and the unframer never matches the
-// panel's own request.
+// TestUnframeIsBehindThePanel pins the ordering: the panel is served before
+// anything considers framing, and the unframer never matches the panel's own
+// request.
 func TestUnframeIsBehindThePanel(t *testing.T) {
-	shellPriority := Panel(nil, slog.New(slog.DiscardHandler)).Priority
-	if got := Unframe().Priority; got <= shellPriority {
-		t.Errorf("unframe Priority = %d, want it behind the shell's %d", got, shellPriority)
+	pagePriority := pageOf(t, nil).Priority
+	if got := unframeOf(t).Priority; got <= pagePriority {
+		t.Errorf("unframe Priority = %d, want it behind the page's %d", got, pagePriority)
 	}
 
-	panel := httptest.NewRequest(http.MethodGet, "/", nil)
-	if Unframe().Match(panel) {
+	panelReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	if unframeOf(t).Match(panelReq) {
 		t.Error("the unframer matched the panel request, which it does not serve")
+	}
+}
+
+// TestInterceptorsOrder pins what run relies on: the page comes first and
+// outranks the unframer, so the one request that must never reach an origin
+// is answered before anything looks at framing. Swapping the two fails this.
+func TestInterceptorsOrder(t *testing.T) {
+	got := New().Interceptors(nil, discard)
+	if len(got) != 2 {
+		t.Fatalf("Interceptors() returned %d, want 2", len(got))
+	}
+	if !got[0].Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
+		t.Error("Interceptors()[0] does not match the panel request, want the page first")
+	}
+	if got[0].Priority >= got[1].Priority {
+		t.Errorf("page Priority = %d, unframe = %d; want the page ahead", got[0].Priority, got[1].Priority)
 	}
 }
 
@@ -349,28 +472,4 @@ func mustOrigins(raw []string) ([]*url.URL, error) {
 		origins = append(origins, u)
 	}
 	return origins, nil
-}
-
-// TestLabel pins how a tile names the origin behind it. An http origin is
-// named by its host, which is what the operator typed; anything else keeps its
-// scheme, so a container tile cannot be misread as a hostname.
-func TestLabel(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"http://localhost:3000", "localhost:3000"},
-		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
-		{"dockerd://api", "dockerd://api"},
-		{"http+ws://localhost:5173", "localhost:5173"},
-		{"https+wss://localhost:5173", "localhost:5173"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			u, err := url.Parse(tc.in)
-			if err != nil {
-				t.Fatalf("url.Parse(%q): %v", tc.in, err)
-			}
-			if got := label(u); got != tc.want {
-				t.Errorf("label(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
 }
