@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
@@ -103,7 +104,7 @@ type Opener interface {
 }
 
 // WithOpener replaces what opens the public address once the tunnel is live.
-// The default is browser.New(): probe the edge, then the host's browser.
+// The default is browser.New(): the host's browser, launched as-is.
 func WithOpener(o Opener) Option {
 	return func(b *BuilderImpl) { b.opener = o }
 }
@@ -112,6 +113,21 @@ func WithOpener(o Opener) Option {
 type Counter interface {
 	Count(e libtunnel.Event)
 	IsGone() bool
+	IsEstablished() bool
+	Established(ctx context.Context, cancel context.CancelFunc) <-chan struct{}
+}
+
+// DefaultEstablishDeadline is how long New arms a builder to wait for the
+// public URL to answer before reporting addresses anyway. Ten seconds is far
+// longer than the gap has been observed to be — under a second — and it only
+// ever costs that much when something is wrong, in which case the run carries
+// on rather than never reporting at all.
+const DefaultEstablishDeadline = 10 * time.Second
+
+// WithEstablishDeadline bounds the wait for the public URL to answer. Zero
+// reports the addresses without waiting at all.
+func WithEstablishDeadline(d time.Duration) Option {
+	return func(b *BuilderImpl) { b.establishDeadline = d }
 }
 
 // WithCounter replaces the counter that decides when the edge has disowned
@@ -161,6 +177,7 @@ var (
 func New(opts ...Option) *BuilderImpl {
 	b := v1.Apply(&BuilderImpl{},
 		WithOpen(v1.DefaultOpen),
+		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
@@ -192,6 +209,13 @@ type BuilderImpl struct {
 	// came from.
 	open   bool
 	noOpen bool
+
+	// establishDeadline bounds the wait for the public URL to answer before
+	// the addresses are reported. The counter that answers that wait
+	// takes no deadline of its own — a caller that will not wait forever
+	// brings a context that will not either — so the bound lives here, where
+	// the policy is. New always seeds it.
+	establishDeadline time.Duration
 
 	// The collaborators Command's RunE composes, each behind a contract
 	// declared above. Seeded by New; a test or a contributor swaps one with

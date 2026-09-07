@@ -176,12 +176,24 @@ Three tiers, each with a distinct job — don't blur them:
   binary, and drives them. If a check can pass without executing a binary, it
   is a unit test, not e2e.
 
-No tier mints a real tunnel: that needs the public internet and a live
-provider, which would make CI flaky and slow. Everything up to the mint —
-parse, validate, refuse or proceed — is covered here; the tunnel itself is
-covered by `libtunnel`'s own live tier. It is also why e2e drives each example
-with `--help` rather than running it outright: an example is a network program
-that would otherwise mint a hostname and block forever.
+One tier mints a real tunnel, and only one row in it does. Everything up to the
+mint — parse, validate, refuse or proceed — is covered without the public
+internet, which is why most e2e cases drive a binary with `--help` or `version`
+and assert on what comes back: an example is a network program that would
+otherwise mint a hostname and block forever.
+
+The `basic` row is the exception, and it earns the hostname. It starts the
+example for real, waits for the address on stdout, fetches it back through the
+edge, and interrupts it — the one check that tunneld actually carries traffic
+rather than merely reporting that it opened something. A live row is expensive
+and can be rate limited by the provider, so it runs for whoever is developing
+and on a single CI cell. Two reasons not to mint belong to the machine and are
+applied to every live row: `-short`, which is how the race lane opts out, and
+Windows, which cannot deliver `os.Interrupt` to a child and so cannot assert
+the teardown. Anywhere else is the row's own `skip` function. Its
+assertions are a `[]func(t *testing.T, r *runner)` run in order, each reading
+what it needs out of the buffered streams, so one can be dropped or reordered
+without touching the others.
 
 Test the *thing*, not the incident: name a test after the behaviour it pins
 (`TestFlagReplacesSeededURLs`), and let its doc comment say why that behaviour
@@ -294,15 +306,18 @@ Easy to get wrong from the diff alone:
   Only an explicit index clears a previous choice. A lone origin has nothing to
   route between and keeps the plain URL — which is why `PublicURL` takes the
   origin count.
-- **A running tunnel writes only to stderr** — the banner, the public
-  addresses, the origin map, every log line. stdout carries the help text and
-  `tunneld version` and nothing else, so both stay pipeable.
-- **stdout used to be a machine interface**: one bare public URL per origin,
-  for `| head -1`. It printed every address twice wherever both streams landed
-  together, and the `os.SameFile` de-duplication that hid it could only see one
-  descriptor being literally the other — which a container's two pipes are not,
-  so it never fired in the place it mattered. Don't reintroduce it without
-  solving that.
+- **A running tunnel splits its report across both streams**: each public
+  address goes to stdout, one per line and nothing else, and the origin that
+  address reaches goes to stderr beneath it, along with the banner and every
+  log line. stdout also carries the help text and `tunneld version`, so all
+  three stay pipeable.
+- **An address reaches exactly one stream.** stdout carried bare URLs once
+  while stderr carried a full map, so every address printed twice wherever both
+  streams landed together, and the `os.SameFile` de-duplication that hid it
+  could only see one descriptor being literally the other — which a container's
+  two pipes are not, so it never fired in the place it mattered. Printing an
+  address on one stream and its origin on the other is what replaced that;
+  don't put an address back on stderr without solving the duplication first.
 - **`examples/` is intentionally duplicated, except for the pages.** Each
   `main.go` is a copy-pasteable starter and stays standalone — don't refactor
   the wiring into a shared helper. The sample HTML in
@@ -366,12 +381,19 @@ before it reaches that hook, which is what keeps `--help` from binding a port.
 `PersistentPreRunE` is already taken by the environment binding, so use the
 non-persistent one.
 
-Every example opens a tunnel and then blocks, so none can be run outright in
-CI. Give each a configuration that shows up in its own `--help` — a seeded
-origin list, a flag default it flips — then add a row to the `cases` table in
+Every example opens a tunnel and then blocks, so most are checked through their
+own `--help`. Give each a configuration that shows up there — a seeded origin
+list, a flag default it flips — then add a row to the `cases` table in
 `e2e/e2e_test.go` (name + a substring unique to that example's help) and to the
 README's example table. A substring that would also match another example is a
 case that can pass against the wrong binary.
+
+A row can instead carry `assert`, a list of checks run in order against the
+example running for real, and `skip`, which decides where minting a public
+hostname is worth it. `basic` is the one row that does; adding a second means
+a second tunnel per test run, so it wants a reason the help text cannot give.
+A row with no `assert` is never gated — `--help` costs nothing and runs
+everywhere, including the lanes that mint no tunnel.
 
 ## Adding a flag
 

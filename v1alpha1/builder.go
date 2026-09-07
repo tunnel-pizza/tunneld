@@ -277,6 +277,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 			// configure.
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				ctx := cmd.Context()
+				stdout := cmd.OutOrStdout()
 				stderr := cmd.ErrOrStderr()
 
 				// Origins: turn the settled origin values into URLs,
@@ -494,8 +495,18 @@ The public URLs, the origin map and every log line go to stderr.`,
 				// without one.
 				fmt.Fprintln(stderr, VersionLine())
 
-				public := tun.URL()
-				if public == nil {
+				// Ready delivers the tunnel once the edge connection is up
+				// and the hostname resolves publicly — reachable end to end,
+				// which is the moment an address is worth handing to anybody.
+				// The channel closing without delivering is the tunnel saying
+				// it never came up at all, and Err is why.
+				//
+				// This is the wait that used to be URL()'s alone. URL blocks
+				// on the same readiness and answers nil for the same failure,
+				// so the two are interchangeable as a signal; asking Ready
+				// says which of the two questions is being asked.
+				up, ok := <-tun.Ready()
+				if !ok {
 					cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 
 					// The edge refused the credential this spec carries. That is
@@ -525,10 +536,11 @@ The public URLs, the origin map and every log line go to stderr.`,
 					log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 					tun = start("")
-					if public = tun.URL(); public == nil {
+					if up, ok = <-tun.Ready(); !ok {
 						return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 					}
 				}
+				public := up.URL()
 				if b.panel.Wanted(b.multiview, origins) {
 					view = b.panel.URL(public)
 				}
@@ -549,20 +561,43 @@ The public URLs, the origin map and every log line go to stderr.`,
 				// printed above, before minting, so it survives a mint that
 				// fails.
 				//
+				// Wait for the public URL to answer before any of it is
+				// printed.
+				//
+				// Ready, which the tunnel above was waited on for, means the
+				// connection is up and the hostname resolves. It does not
+				// mean the edge has registered the route: for a
+				// moment after that it answers 530. An address printed inside
+				// that moment is one a script can read and cannot yet use, and
+				// a browser opened into it shows an error page for a tunnel
+				// that is about to work. Both readers are served by the same
+				// wait, so it sits above the report rather than beside the
+				// browser.
+				//
+				// The counter answers whether the edge is up; how long that
+				// is worth waiting for is this caller's policy, so the bound
+				// is a context rather than something the counter carries.
+				// Everything below is behind this wait, the cache save
+				// included, so it cannot be unbounded.
+				if !b.counter.IsEstablished() {
+					log.Info("waiting for the public address to answer")
+					<-b.counter.Established(context.WithTimeout(ctx, b.establishDeadline))
+				}
+
 				// Every public address gets a line, with what it reaches
 				// indented beneath. A panel is the case where one address
 				// reaches them all; otherwise each origin has an address of its
 				// own. One shape either way, and no column to keep aligned as
 				// hostnames change length.
 				if view != "" {
-					fmt.Fprintf(stderr, "  %s\n", view)
+					fmt.Fprintf(stdout, "%s\n", view)
 					for _, origin := range origins {
-						fmt.Fprintf(stderr, "    -> %s\n", origin)
+						fmt.Fprintf(stderr, "  -> %s\n", origin)
 					}
 				} else {
 					for i, origin := range origins {
-						fmt.Fprintf(stderr, "  %s\n", PublicURL(public, i, len(origins)))
-						fmt.Fprintf(stderr, "    -> %s\n", origin)
+						fmt.Fprintf(stdout, "%s\n", PublicURL(public, i, len(origins)))
+						fmt.Fprintf(stderr, "  -> %s\n", origin)
 					}
 				}
 				if !b.noOpen {
