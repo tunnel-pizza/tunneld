@@ -46,11 +46,11 @@ func TestOpenWithoutDaemon(t *testing.T) {
 	}
 }
 
-// TestOpenFailureIsNil pins the nil-interface trap. open returns a typed
-// nil on failure, and forwarding that as attach.Target would produce an
-// interface value that is not nil and panics on first use. bindOrigins checks
-// err first, so this would only surface in a caller that checked the target —
-// which is exactly the caller nobody tests.
+// TestOpenFailureIsNil pins that Open returns a literal nil Target alongside
+// its error on every failure path, not a non-nil interface wrapping a nil
+// pointer. bindOrigins checks err first, so this would only surface in a
+// caller that checked the target instead — which is exactly the caller
+// nobody tests.
 func TestOpenFailureIsNil(t *testing.T) {
 	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
