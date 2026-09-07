@@ -495,8 +495,10 @@ ref, then:
   publisher binding for this repo and workflow (no token). `make binaries`
   builds the six platform binaries into `dist/`, stamped with the tag through
   `VERSION`, and `package.json` is rewritten to the tag for that publish only.
-  An auto-bump lands on the `beta` dist-tag; a hand-pushed tag is `latest`.
-  Promote a beta without rebuilding: `npm dist-tag add tunneld@<version> latest`.
+  A release publishes to `latest`. For a `beta` instead, merge with
+  `[skip release]`, then run the CI workflow by hand from `main` with the
+  dist-tag input set to `beta`; that cuts the release and publishes it there.
+  Promote later without rebuilding: `npm dist-tag add tunneld@<version> latest`.
 
 Source archives and the image are both signed with cosign in keyless mode. The
 image is signed **by digest**, not by tag: a tag can be moved to point at other
@@ -524,4 +526,4 @@ Tags must follow `vMAJOR.MINOR.PATCH` (Go module semver).
 ## License
 
 By contributing you agree your contributions are licensed under the
-[Functional Source License, FSL-1.1-MIT](./LICENSE).
+[Functional Source License, FSL-1.1-MIT](./LICENSE.md).
