@@ -156,5 +156,38 @@
   {{- end}}
 </main>
 
+<script>
+  // Give a tile focus when it is clicked.
+  //
+  // The browser normally does this itself: a click inside a frame focuses that
+  // frame. It does it as the default action of the mousedown, though, so an
+  // origin that calls preventDefault on mousedown cancels the focus along with
+  // whatever else it was suppressing. Plenty do — xpra's HTML5 client is the
+  // one that surfaced this, forwarding the click to a remote desktop and
+  // wanting none of the browser's own handling. Standalone that costs nothing,
+  // because there is nothing else to focus. In a panel it means the tile can
+  // never take the keyboard, and every keystroke keeps going to whichever tile
+  // had it last, which reads as the wrong window being typed into.
+  //
+  // So the panel focuses the frame itself, in the capture phase, before the
+  // origin's handler runs and regardless of what it does afterwards. Every
+  // frame here is the tunnel's own hostname, so reaching into one is
+  // same-origin and allowed; the try/catch is for the case where it somehow is
+  // not, where the old behaviour is the right thing to fall back to.
+  //
+  // On load rather than once, because a frame that navigates — an origin
+  // redirecting, or reconnecting — replaces the window this was attached to.
+  for (const frame of document.querySelectorAll('.tile iframe')) {
+    const wire = () => {
+      try {
+        frame.contentWindow.addEventListener(
+          'pointerdown', () => frame.contentWindow.focus(), true);
+      } catch (e) { /* cross-origin: leave the browser's default alone */ }
+    };
+    frame.addEventListener('load', wire);
+    wire(); // a frame that is already there when this runs
+  }
+</script>
+
 </body>
 </html>

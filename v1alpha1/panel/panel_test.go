@@ -185,6 +185,18 @@ func TestServeShell(t *testing.T) {
 	if got, want := strings.Count(body, "<iframe"), len(origins); got != want {
 		t.Errorf("page has %d frames, want one per origin (%d)", got, want)
 	}
+
+	// The page focuses a tile itself when it is clicked, because an origin
+	// that calls preventDefault on mousedown cancels the focus the browser
+	// would otherwise have moved. Without this a tile can never take the
+	// keyboard and every keystroke keeps going to whichever tile had it last.
+	// Asserted here because the reason is invisible from the markup: nothing
+	// looks broken if it is deleted until two origins are open at once.
+	for _, want := range []string{"pointerdown", "contentWindow.focus()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page does not contain %q, so a clicked tile will not take focus", want)
+		}
+	}
 }
 
 // TestServeShellEscapesTheHost pins that the one value taken from the request
