@@ -155,8 +155,8 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 			}
 			refs = append(refs, ids...)
 		}
-		for _, ref := range refs {
-			res, err := cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
+		for _, self := range refs {
+			res, err := cli.ContainerInspect(ctx, self, client.ContainerInspectOptions{})
 			if err != nil || res.Container.Config == nil {
 				continue
 			}
@@ -244,12 +244,12 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 	}, nil
 }
 
-// TargetImpl is what attach serves; a drift in either package fails here.
-var _ attach.Target = (*TargetImpl)(nil)
-
-// TargetsImpl is what the binder depends on to resolve a reference; a drift
-// in either package fails here too.
-var _ attach.Targets = (*TargetsImpl)(nil)
+// Drift in either package fails here: TargetImpl is what attach serves,
+// TargetsImpl what the binder resolves references through.
+var (
+	_ attach.Target  = (*TargetImpl)(nil)
+	_ attach.Targets = (*TargetsImpl)(nil)
+)
 
 // TargetImpl is one container, resolved and inspected.
 type TargetImpl struct {

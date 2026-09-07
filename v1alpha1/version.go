@@ -57,9 +57,8 @@ func Version() string {
 	if v := info.Main.Version; v != "" && v != "(devel)" {
 		return v
 	}
-	// vcsVersion is the local-build fallback: the short VCS revision with a
-	// -dirty suffix for an uncommitted tree, or "unknown" when the build carries
-	// no VCS stamp.
+	// The local-build fallback: the short VCS revision with a -dirty suffix
+	// for an uncommitted tree. A build with no VCS stamp falls through.
 	var revision, dirty string
 	for _, s := range info.Settings {
 		switch s.Key {
@@ -71,17 +70,11 @@ func Version() string {
 			}
 		}
 	}
-	var vcs string
-	if revision == "" {
-		vcs = "unknown"
-	} else {
+	if revision != "" {
 		if len(revision) > 12 {
 			revision = revision[:12]
 		}
-		vcs = revision + dirty
-	}
-	if vcs != "unknown" {
-		return vcs
+		return revision + dirty
 	}
 	// A build the toolchain stamped as "(devel)" and nothing else: `go run`,
 	// which skips VCS stamping. That is still information — locally built,

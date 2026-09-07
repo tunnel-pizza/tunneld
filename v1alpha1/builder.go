@@ -49,6 +49,10 @@ func WithProvider(host string) Option {
 // appending across options. See package cachedir for what an entry means —
 // a path, or true and false as instructions — and how entries are resolved
 // and deduplicated.
+//
+// Like every option, it requires a builder from New: applied to a bare
+// BuilderImpl{}, cacheDirs is nil and this dereferences it immediately, at
+// option-apply time — before Command's wiring check ever runs.
 func WithCacheDir(dirs ...string) Option {
 	return func(b *BuilderImpl) { b.cacheDirs.Add(dirs...) }
 }
@@ -112,13 +116,17 @@ func (b *BuilderImpl) Command() *cobra.Command {
 	b.commandOnce.Do(func() {
 		name := b.Name()
 
-		// wired reports the first collaborator New would have seeded and did
-		// not: a BuilderImpl assembled as a bare struct rather than through
-		// New. One check, here at the top of the one place every
-		// collaborator is first needed — Command reads cacheDirs directly
-		// a few lines down, to seed and bind --cache-dir, so a check inside
-		// RunE would always have been too late for that collaborator: it
-		// would run after Command had already dereferenced a nil one.
+		// Report the first collaborator New would have seeded and did not: a
+		// BuilderImpl assembled as a bare struct rather than through New.
+		// One check, here at the first place Command needs every
+		// collaborator — Command reads cacheDirs directly a few lines down,
+		// to seed and bind --cache-dir, so a check inside RunE would always
+		// have been too late for that collaborator: it would run after
+		// Command had already dereferenced a nil one. WithCacheDir needs one
+		// sooner still, at option-apply time (see its doc) — like every
+		// option, it assumes a builder from New, so this check is the first
+		// place Command needs every collaborator, not the first place a nil
+		// one can bite.
 		//
 		// A missing collaborator short-circuits with a minimal command whose
 		// RunE returns the error and nothing else — no flag binding, no env

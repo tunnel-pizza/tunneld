@@ -151,11 +151,11 @@ var (
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
 // It is the entry point for application code, and satisfies v1.Builder.
 //
-// Two tiers, two calls: the defaults go first, in the same vocabulary a
-// caller uses to override them, and the caller's options after so a later
-// one wins. Of the flag seeds, only the booleans need seeding here — their defaults are on, and
-// a bool field cannot express "unset" separately from "off". Setting them
-// here rather than at the flag binding keeps one rule for every knob: a
+// Two tiers, two calls: the defaults go first, in the same vocabulary a caller
+// uses to override them, and the caller's options after so a later one wins.
+// Of the flag seeds, only the booleans need seeding here — their defaults are
+// on, and a bool field cannot express "unset" separately from "off". Setting
+// them here rather than at the flag binding keeps one rule for every knob: a
 // flag's default is always the field it binds over, so WithOpen(false) is
 // honoured exactly like every other seed.
 func New(opts ...Option) *BuilderImpl {
@@ -203,12 +203,12 @@ type BuilderImpl struct {
 	counter   Counter
 	binder    Binder
 
-	// stdout carries the help text and version banner, stderr the tunnel's own
-	// banner, the origin map, and
-	// the tunnel's logs. They are staging only: Command hands them to the
-	// command with SetOut/SetErr and everything downstream reads them back
-	// through OutOrStdout/ErrOrStderr, so cobra stays the single owner of
-	// where output goes. Nil means whatever cobra defaults to.
+	// stdout carries the help text and version banner, stderr the tunnel's
+	// own banner, the origin map, and the tunnel's logs. They are staging
+	// only: Command hands them to the command with SetOut/SetErr and
+	// everything downstream reads them back through
+	// OutOrStdout/ErrOrStderr, so cobra stays the single owner of where
+	// output goes. Nil means whatever cobra defaults to.
 	stdout, stderr io.Writer
 
 	// Command assembles once; subsequent calls return the cached command.
