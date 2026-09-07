@@ -90,8 +90,8 @@ type Server struct {
 	log      *slog.Logger
 	// ctx is this Server's lifetime — the tunnel's, narrowed by a cancel of
 	// its own — held rather than passed because the only place that needs it
-	// is a handler, and a handler's signature is fixed. serveAttach explains
-	// why a request's own context will not do.
+	// is a handler, and a handler's signature is fixed. the attach handler
+	// explains why a request's own context will not do.
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -105,8 +105,8 @@ type Server struct {
 // network is not somewhere it belongs. That is the whole of what the bind
 // buys, and it is worth being precise about the half it does not: anything
 // already running on this machine still reaches the port, a page loaded in the
-// operator's own browser included. serveAttach's origin check is what covers
-// that half, on the one route where it matters.
+// operator's own browser included. the attach handler's origin check is what
+// covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
 func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
@@ -155,8 +155,8 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// gets a 404 rather than the shell a second time. GET also answers HEAD,
 	// which is what the reachability probe sends.
 	//
-	// servePage renders the terminal page. A render failure is logged and
-	// answered with a plain error rather than a half-written page.
+	// The page handler renders the terminal page. A render failure is logged
+	// and answered with a plain error rather than a half-written page.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		var rendered strings.Builder
 		// The notice is page chrome, not container output: it states how the
@@ -193,8 +193,8 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 			s.log.Debug("attach write failed", "error", err) // visitor went away
 		}
 	})
-	// serveAttach hands the request to ServeAttach, which owns the websocket
-	// upgrade and the v4.channel.k8s.io framing on it.
+	// The attach handler hands the request to ServeAttach, which owns the
+	// websocket upgrade and the v4.channel.k8s.io framing on it.
 	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {
 		// Refuse a handshake that came from somewhere else. A websocket is exempt
 		// from the same-origin policy — new WebSocket() reaches any host the page
@@ -300,10 +300,10 @@ func (s *Server) Close() error {
 // bounded wraps a Target so that an attach ends when its connection does.
 //
 // A Target streaming a quiet container is blind to both exits. The context
-// serveAttach supplies covers the tunnel shutting down; the far commoner exit
-// is a visitor closing their tab, and nothing the Target holds is tied to that
-// browser — a copy parked in Read on a socket that will never speak again has
-// no way to learn the far end is gone.
+// the attach handler supplies covers the tunnel shutting down; the far
+// commoner exit is a visitor closing their tab, and nothing the Target holds
+// is tied to that browser — a copy parked in Read on a socket that will never
+// speak again has no way to learn the far end is gone.
 //
 // The resize channel is the one thing that does know. On the websocket path
 // this page speaks, ServeAttach opens it unconditionally — not gated on TTY,
