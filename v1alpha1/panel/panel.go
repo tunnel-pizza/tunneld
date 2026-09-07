@@ -51,8 +51,8 @@ type tile struct {
 // signature exists so a knob added later changes no caller.
 type Option = v1.Option[*PanelImpl]
 
-// PanelImpl is the default panel: one page of frames, and the unframer that
-// lets the frames render.
+// PanelImpl is the default panel: one page of frames, and the scrubber that
+// lets the frames work.
 type PanelImpl struct{}
 
 // New returns the default panel, configured by opts.
@@ -61,7 +61,7 @@ func New(opts ...Option) *PanelImpl {
 }
 
 // Interceptors is what the tunnel registers when the panel is wanted: the
-// page first, at the highest priority there is, and the unframer behind it.
+// page first, at the highest priority there is, and the scrubber behind it.
 // The order is the contract — Command's RunE registers them in a loop and
 // never looks at a priority itself.
 func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
@@ -207,7 +207,7 @@ func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.In
 			Handler: func(ic libtunnel.InterceptCtx) libtunnel.InterceptCtx {
 				next := ic.Handler()
 				return ic.WithHandler(func(w http.ResponseWriter, r *http.Request) {
-					next(&unframer{ResponseWriter: w}, r)
+					next(&asTile{ResponseWriter: w}, r)
 				})
 			},
 		},
@@ -222,9 +222,11 @@ func (*PanelImpl) URL(public *url.URL) string {
 	return shown.String()
 }
 
-// unframer drops the framing headers on the way out. It scrubs at WriteHeader
-// rather than after the fact because headers are immutable once written.
-type unframer struct {
+// asTile drops the headers that stop an origin working inside a panel frame:
+// the ones that refuse framing, and the one that suppresses the Referer its
+// own assets are routed by. It scrubs at WriteHeader rather than after the
+// fact because headers are immutable once written.
+type asTile struct {
 	http.ResponseWriter
 	written bool
 }
@@ -232,11 +234,33 @@ type unframer struct {
 // Unwrap lets http.NewResponseController reach the real writer, so flushing
 // and hijacking keep working through the wrapper — a streaming origin behind
 // the panel would otherwise stall.
-func (u *unframer) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+func (u *asTile) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 
-func (u *unframer) WriteHeader(code int) {
+func (u *asTile) WriteHeader(code int) {
 	if !u.written {
 		u.written = true
+
+		h := u.Header()
+
+		// Remove Referrer-Policy, so the framed document goes back to the
+		// browser default and its own subresources carry a Referer again.
+		//
+		// That Referer is not decoration: it is how the tunnel routes an
+		// asset to the origin that asked for it. An origin sending
+		// no-referrer — ordinary hardening, and what xpra's client does —
+		// leaves every asset it requests with nothing to route by, so they
+		// fall back to a cookie that is last-write-wins across tiles and get
+		// served by whichever origin was framed most recently. The tile then
+		// renders as unstyled markup, and the 404s come from an origin that
+		// genuinely does not have those files, so nothing anywhere says the
+		// routing went wrong.
+		//
+		// Dropped rather than rewritten because the browser default,
+		// strict-origin-when-cross-origin, already sends the full URL for the
+		// same-origin requests this is about and nothing more than the origin
+		// for anything else. Narrowed the same way as the framing headers
+		// below: only the panel's own frames, never a top-level visit.
+		h.Del("Referrer-Policy")
 
 		// Remove X-Frame-Options and CSP's frame-ancestors, and nothing else.
 		// Both are dropped because frame-ancestors supersedes X-Frame-Options
@@ -244,7 +268,6 @@ func (u *unframer) WriteHeader(code int) {
 		// the origins blank; the rest of a policy — script-src, connect-src,
 		// everything the origin relies on — is preserved directive by
 		// directive.
-		h := u.Header()
 		h.Del("X-Frame-Options")
 
 		for _, key := range []string{"Content-Security-Policy", "Content-Security-Policy-Report-Only"} {
@@ -279,7 +302,7 @@ func (u *unframer) WriteHeader(code int) {
 
 // Write covers the handler that never calls WriteHeader: without this the
 // implicit 200 would be written by the wrapped writer, past the scrub.
-func (u *unframer) Write(b []byte) (int, error) {
+func (u *asTile) Write(b []byte) (int, error) {
 	if !u.written {
 		u.WriteHeader(http.StatusOK)
 	}
