@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -106,6 +105,22 @@ func (b *BuilderImpl) Name() string {
 		return v1.CommandName
 	}
 	return b.name
+}
+
+// flagEnv is the flag → environment variable registry: every flag with an
+// env-expressible value, bound to the constant naming it in v1. Explicit
+// rather than derived — viper's AutomaticEnv would mangle a name out of each
+// flag, which puts the authority over the operator-facing strings in a key
+// replacer instead of in v1, where the rest of this package's knobs are
+// declared. It also keeps LogEnv spelled TUNNELD_LOG rather than the
+// TUNNELD_LOG_LEVEL a derivation would produce.
+var flagEnv = map[string]string{
+	"url":       v1.URLEnv,
+	"provider":  v1.ProviderEnv,
+	"cache-dir": v1.CacheDirEnv,
+	"log-level": v1.LogEnv,
+	"no-open":   v1.NoOpenEnv,
+	"multiview": v1.MultiviewEnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -369,22 +384,25 @@ The public URLs, the origin map and every log line go to stderr.`,
 				// command settled on — the --log-level flag, or v1.LogEnv bound
 				// onto it by PersistentPreRunE. An unrecognized level is an
 				// error either way: somebody typed it, and a silent downgrade
-				// to info would hide the typo. Logger is the fallback when
-				// neither was set, which is silence.
+				// to info would hide the typo. Neither set is silence: a
+				// library that logs uninvited pollutes its importer's output.
 				//
-				// The sink is stderr either way, so logs never pollute the
-				// machine-readable URLs on stdout. WithLogger below shares this
+				// The sink is the command's own stderr, so logs never pollute
+				// the machine-readable URLs on stdout, and an embedding
+				// program that called SetErr sees them where it is looking.
+				// Never os.Stderr directly — that is only where cobra falls
+				// back to when nothing was set. WithLogger below shares this
 				// logger between tunneld's own startup line and the tunnel's
 				// internals, so both share one level.
 				var log *slog.Logger
 				if b.logLevel == "" {
-					log = Logger()
+					log = slog.New(slog.DiscardHandler)
 				} else {
 					var level slog.Level
 					if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
 						return fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
 					}
-					log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+					log = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 				}
 
 				// The handle the event listener ends the run through. A signal
@@ -602,7 +620,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 		// after that, so a command line never merges into a seeded set.
 		// Each usage string names the flag's environment mirror, so --help doubles
 		// as the reference for configuring a container. The registry behind those
-		// names is flagEnv, in env.go.
+		// names is flagEnv, declared above Command.
 		cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
 			"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 		// Unset, specs cache into the default cache directory. Seeded here
