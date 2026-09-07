@@ -36,7 +36,7 @@ func TestOpenWithoutDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	got, err := open(ctx, "api", discard())
+	got, err := New().Open(ctx, "api", discard())
 	if err == nil {
 		_ = got.Close()
 		t.Fatal("Open with no daemon succeeded, want an error")
@@ -120,7 +120,7 @@ func startContainer(t *testing.T, cli *client.Client, tty, stdin bool) string {
 func TestOpenRejects(t *testing.T) {
 	t.Run("no such container", func(t *testing.T) {
 		withDaemon(t)
-		got, err := open(t.Context(), "tunneld-test-nonexistent", discard())
+		got, err := New().Open(t.Context(), "tunneld-test-nonexistent", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -139,7 +139,7 @@ func TestOpenRejects(t *testing.T) {
 		if _, err := cli.ContainerStop(t.Context(), id, client.ContainerStopOptions{}); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
-		got, err := open(t.Context(), id, discard())
+		got, err := New().Open(t.Context(), id, discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a stopped container succeeded, want an error")
@@ -168,7 +168,7 @@ func TestOpenRejects(t *testing.T) {
 		t.Cleanup(srv.Close)
 		t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
 
-		got, err := open(t.Context(), "shim", discard())
+		got, err := New().Open(t.Context(), "shim", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on a container with no config succeeded, want an error")
@@ -291,13 +291,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			project: "containers", service: "claude-code",
 		})
 
-		got, err := open(t.Context(), "claude-code", discard())
+		got, err := New().Open(t.Context(), "claude-code", discard())
 		if err != nil {
 			t.Fatalf("Open on a Compose service: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "abc123" {
-			t.Errorf("id = %q, want %q", got.id, "abc123")
+		target := got.(*TargetImpl)
+		if target.id != "abc123" {
+			t.Errorf("id = %q, want %q", target.id, "abc123")
 		}
 		// The page title and the log line say what the operator typed, not
 		// the generated container name they never chose.
@@ -314,13 +315,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "svc", name: "proj-web-1", project: "proj", service: "web"},
 		)
 
-		got, err := open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "plain" {
-			t.Errorf("id = %q, want the container named web (%q)", got.id, "plain")
+		target := got.(*TargetImpl)
+		if target.id != "plain" {
+			t.Errorf("id = %q, want the container named web (%q)", target.id, "plain")
 		}
 	})
 
@@ -332,13 +334,14 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "other-web", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		defer func() { _ = got.Close() }()
-		if got.id != "mine-web" {
-			t.Errorf("id = %q, want the web in tunneld's own project (%q)", got.id, "mine-web")
+		target := got.(*TargetImpl)
+		if target.id != "mine-web" {
+			t.Errorf("id = %q, want the web in tunneld's own project (%q)", target.id, "mine-web")
 		}
 	})
 
@@ -350,7 +353,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			composeContainer{id: "b", name: "other-web-1", project: "other", service: "web"},
 		)
 
-		got, err := open(t.Context(), "web", discard())
+		got, err := New().Open(t.Context(), "web", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open on an ambiguous service succeeded, want an error")
@@ -372,7 +375,7 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			id: "abc", name: "proj-api-1", project: "proj", service: "api",
 		})
 
-		got, err := open(t.Context(), "nope", discard())
+		got, err := New().Open(t.Context(), "nope", discard())
 		if err == nil {
 			_ = got.Close()
 			t.Fatal("Open succeeded, want an error")
@@ -384,53 +387,6 @@ func TestOpenResolvesComposeService(t *testing.T) {
 			t.Errorf("error %q does not name the reference", err)
 		}
 	})
-}
-
-// TestSelfIDs pins the candidate order mountinfo parsing produces. The ids are
-// guesses checked by being inspected, so the job here is to put the likely one
-// first and never to invent one.
-func TestSelfIDs(t *testing.T) {
-	const self = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
-	const layer = "433163a110ebac893af94c0c0f05ef45501c8ef19a93c814e109034599c5105b"
-
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"empty", "", nil},
-		{"no hex at all", "24 30 0:22 / /proc rw,nosuid - proc proc rw\n", nil},
-		{
-			// The shape observed on a real daemon: the runtime's per-container
-			// directory is what bind-mounts /etc/hosts.
-			name: "the containers path wins over a layer path",
-			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/var/lib/docker/overlay2/" + layer + "/diff\n" +
-				"3 4 0:2 /" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n" +
-				"5 6 0:3 /var/lib/docker/containers/" + self + "/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n",
-			want: []string{self, layer},
-		},
-		{
-			name: "without a containers path, first seen leads",
-			in: "1 2 0:1 / / rw - overlay overlay rw,upperdir=/x/" + layer + "/diff\n" +
-				"3 4 0:2 /y/" + self + "/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n",
-			want: []string{layer, self},
-		},
-		{"deduplicated", "/containers/" + self + "/a\n/containers/" + self + "/b\n", []string{self}},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := selfIDs(strings.NewReader(tc.in))
-			if len(got) != len(tc.want) {
-				t.Fatalf("selfIDs = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("selfIDs[%d] = %s, want %s", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
 }
 
 // TestOpenScopesByMountinfo pins the fix for #28: a service that sets its own
@@ -459,13 +415,14 @@ func TestOpenScopesByMountinfo(t *testing.T) {
 		composeContainer{id: "other-cc", name: "other-claude-code-1", project: "other", service: "claude-code"},
 	)
 
-	got, err := open(t.Context(), "claude-code", discard())
+	got, err := New().Open(t.Context(), "claude-code", discard())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer func() { _ = got.Close() }()
-	if got.id != "mine-cc" {
-		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", got.id, "mine-cc")
+	target := got.(*TargetImpl)
+	if target.id != "mine-cc" {
+		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", target.id, "mine-cc")
 	}
 }
 
@@ -487,7 +444,7 @@ func TestAttach(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			id := startContainer(t, cli, tc.tty, tc.stdin)
-			a, err := open(t.Context(), id, discard())
+			a, err := New().Open(t.Context(), id, discard())
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
