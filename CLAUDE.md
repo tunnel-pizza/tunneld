@@ -18,8 +18,9 @@ agent-specific framing.
 ## Before you touch anything
 
 - File map, module layout, and the conventions that bite (`StringArray` vs
-  `StringSlice`, the bare `?n` routing parameter, a running tunnel writing
-  only to stderr, e2e `-count=1`, skip release anchoring, annotated cosign tags) are
+  `StringSlice`, the bare `?n` routing parameter, a running tunnel splitting
+  addresses onto stdout and their origins onto stderr, e2e `-count=1`, the
+  live example row, skip release anchoring, annotated cosign tags) are
   all in [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the
   diff.
 - **Tests go beside their source**: `something.go` → `something_test.go`, one
@@ -28,7 +29,8 @@ agent-specific framing.
   `e2e/`. See
   [CONTRIBUTING.md → One test file per source file](./CONTRIBUTING.md#one-test-file-per-source-file).
 - **Examples are real programs** that open a tunnel and block, so e2e drives
-  them with `--help`. A new example needs a row in `e2e/e2e_test.go` and in the
+  most of them with `--help`; the `basic` row runs live and fetches back
+  through the edge. A new example needs a row in `e2e/e2e_test.go` and in the
   README table. See
   [CONTRIBUTING.md → Adding an example](./CONTRIBUTING.md#adding-an-example).
 - **`main.go` stays thin.** Flags, help, validation, and the tunnel belong to

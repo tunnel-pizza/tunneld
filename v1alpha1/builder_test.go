@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/pflag"
@@ -544,11 +545,15 @@ type fakeTunnel struct {
 	libtunnel.TunnelV1
 	url    *url.URL
 	err    error
-	done   chan struct{}
+	done   chan libtunnel.TunnelV1
 	locals []*url.URL
 	ics    []libtunnel.Interceptor
 	listen func(libtunnel.Event)
 	order  *[]string
+
+	// silent is a tunnel that comes up without ever announcing a connection,
+	// which is what the wait before the browser has to survive.
+	silent bool
 }
 
 // live is a tunnel that comes up on public and stays up until the test says
@@ -558,23 +563,53 @@ func live(public string) *fakeTunnel {
 	if err != nil {
 		panic(err)
 	}
-	return &fakeTunnel{url: u, done: make(chan struct{})}
+	return &fakeTunnel{url: u, done: make(chan libtunnel.TunnelV1, 1)}
 }
 
 func dead(cause error) *fakeTunnel {
-	done := make(chan struct{})
-	close(done)
-	return &fakeTunnel{err: cause, done: done}
+	f := &fakeTunnel{err: cause, done: make(chan libtunnel.TunnelV1, 1)}
+	f.end()
+	return f
+}
+
+// end ends the tunnel the way libtunnel's lifecycle does: Done delivers the
+// tunnel once and then closes, so a waiter reads it as `v, ok := <-Done()`
+// and every later waiter still sees the close.
+//
+// The real Done hands out a fresh channel per call; this one shares a single
+// channel, which is all a run needs — it holds one.
+func (f *fakeTunnel) end() {
+	f.done <- f
+	close(f.done)
 }
 
 func (f *fakeTunnel) URL() *url.URL {
 	if f.order != nil {
 		*f.order = append(*f.order, "url")
 	}
+	// A tunnel that has a URL has been accepted by the edge, so it announces
+	// the connection the run waits for before it opens a browser. A silent
+	// tunnel is the case where that announcement never comes.
+	if f.url != nil && f.listen != nil && !f.silent {
+		f.listen(libtunnel.Event{Kind: libtunnel.EventConnected, Hostname: f.url.Host})
+	}
 	return f.url
 }
+
+// Ready delivers the tunnel when it has one to serve on, and otherwise closes
+// without delivering — the lifecycle's way of saying it never came up. A fake
+// with no URL is that second case, which is what the failure paths run on.
+func (f *fakeTunnel) Ready() <-chan libtunnel.TunnelV1 {
+	ready := make(chan libtunnel.TunnelV1, 1)
+	if f.url != nil {
+		ready <- f
+	}
+	close(ready)
+	return ready
+}
+
 func (f *fakeTunnel) Err() error                                     { return f.err }
-func (f *fakeTunnel) Done() <-chan struct{}                          { return f.done }
+func (f *fakeTunnel) Done() <-chan libtunnel.TunnelV1                { return f.done }
 func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1     { return f }
 func (f *fakeTunnel) WithContext(context.Context) libtunnel.TunnelV1 { return f }
 func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.TunnelV1 {
@@ -668,6 +703,7 @@ type runHarness struct {
 	opener *fakeOpener
 	binder *fakeBinder
 	order  []string
+	stdout bytes.Buffer
 	stderr bytes.Buffer
 	b      *BuilderImpl
 }
@@ -681,6 +717,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
+		WithEstablishDeadline(50*time.Millisecond),
 		WithURL(urls...),
 		WithProvider("example.test"),
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
@@ -688,6 +725,8 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCache(h.cache),
 		WithOpener(h.opener),
 		WithBinder(h.binder),
+		// A short connect bound so no case can sit on the production default
+		// waiting for an announcement its tunnel may never make.
 		WithCounter(counter.New(counter.WithMaxGone(1))),
 	)
 	return h
@@ -703,7 +742,7 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
-	cmd.SetOut(io.Discard)
+	cmd.SetOut(&h.stdout)
 	cmd.SetErr(&h.stderr)
 	cmd.SetArgs(args)
 	return cmd.ExecuteContext(ctx)
@@ -774,11 +813,14 @@ func TestRun(t *testing.T) {
 		if want := []string{public}; !slices.Equal(h.opener.opened, want) {
 			t.Errorf("opened %q, want the panel address %q", h.opener.opened, want)
 		}
-		// TestReportNamesTheMultiviewPanel: the panel's own address is what
-		// stderr leads with when there is one — it answers for every origin
-		// at once, so the per-origin addresses become the indented list
+		// TestReportNamesTheMultiviewPanel: the panel's own address is the
+		// one stdout carries when there is one — it answers for every origin
+		// at once, so the origins it reaches are the list stderr puts
 		// beneath it.
-		for _, want := range []string{"  " + public + "\n", "    -> http://localhost:3000\n", "    -> http://localhost:4000\n"} {
+		if want := public + "\n"; h.stdout.String() != want {
+			t.Errorf("stdout = %q, want the panel address %q", h.stdout.String(), want)
+		}
+		for _, want := range []string{"  -> http://localhost:3000\n", "  -> http://localhost:4000\n"} {
 			if !strings.Contains(h.stderr.String(), want) {
 				t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 			}
@@ -865,7 +907,7 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("no URL and no cause is ErrNotReady", func(t *testing.T) {
-		h := newRunHarness(t, &fakeTunnel{done: make(chan struct{})}, ":3000")
+		h := newRunHarness(t, &fakeTunnel{done: make(chan libtunnel.TunnelV1, 1)}, ":3000")
 		err := h.run(t, t.Context())
 		if !errors.Is(err, v1.ErrNotReady) {
 			t.Errorf("run() = %v, want ErrNotReady", err)
@@ -902,7 +944,10 @@ func TestRun(t *testing.T) {
 		if n := len(h.engine.tunnels[0].ics); n != 0 {
 			t.Errorf("registered %d interceptors for one origin, want none", n)
 		}
-		if want := "  " + public + "\n    -> http://localhost:3000\n"; !strings.Contains(h.stderr.String(), want) {
+		if want := public + "\n"; h.stdout.String() != want {
+			t.Errorf("stdout = %q, want the bare address %q", h.stdout.String(), want)
+		}
+		if want := "  -> http://localhost:3000\n"; !strings.Contains(h.stderr.String(), want) {
 			t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 		}
 	})
@@ -913,7 +958,7 @@ func TestRun(t *testing.T) {
 		gone := errors.New("edge went away")
 		h.cache.onSave = func() {
 			tun.err = gone
-			close(tun.done)
+			tun.end()
 		}
 
 		err := h.run(t, t.Context())
@@ -1091,20 +1136,52 @@ func TestParseOriginsRejects(t *testing.T) {
 	}
 }
 
-// TestReportWritesOnlyToStderr pins the output contract: a running tunnel
-// writes its addresses to stderr and nothing at all to stdout.
+// TestRunOutlastsATunnelThatNeverConnects pins that the wait before the
+// browser cannot strand what comes after it.
 //
-// stdout used to carry one bare URL per origin as a machine interface. It
-// meant every address printed twice wherever both streams landed together,
-// and the de-duplication meant to hide that could only recognise one file
-// descriptor being literally the other — which a container's two pipes are
-// not, so it never fired there. The map says which origin each address
-// reaches, which the bare lines never did.
+// A run holds for the edge to accept a connection before opening a page,
+// because a tunnel is ready a moment before the edge has registered its route
+// and a browser opened into that moment shows an error for a tunnel that
+// works. Everything after that wait is behind it — the cache save, and the
+// select that keeps the process alive — so a tunnel that comes up without ever
+// announcing a connection must still reach all of it. The counter's deadline
+// is what guarantees that, and this is the run that would hang without one.
+func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	tun := live(public)
+	tun.silent = true
+
+	h := newRunHarness(t, tun, ":3000")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
+		t.Errorf("effects in order %v, want %v — the wait swallowed what follows it", h.order, want)
+	}
+	if want := []string{public}; !slices.Equal(h.opener.opened, want) {
+		t.Errorf("opened %q, want the address anyway %q", h.opener.opened, want)
+	}
+}
+
+// TestReportSplitsTheAddressFromItsOrigin pins the output contract: a running
+// tunnel writes each public address to stdout, one per line and nothing else,
+// and writes the origin that address reaches to stderr beneath it.
+//
+// stdout did carry one bare URL per origin once, alongside a full map on
+// stderr, and every address then printed twice wherever both streams landed
+// together; the de-duplication meant to hide that could only recognise one
+// file descriptor being literally the other — which a container's two pipes
+// are not, so it never fired there. A split is not that duplication: an
+// address reaches exactly one stream, which keeps `tunneld > addresses` a
+// machine interface while a terminal holding both still reads as a map.
 //
 // Multiview is turned off so the report falls into its per-origin branch —
 // TestRun's "mint" case already pins the panel branch, folding in
 // TestReportNamesTheMultiviewPanel's doc.
-func TestReportWritesOnlyToStderr(t *testing.T) {
+func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), ":3000", ":4000")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1114,19 +1191,20 @@ func TestReportWritesOnlyToStderr(t *testing.T) {
 		t.Fatalf("run() = %v", err)
 	}
 
-	for _, want := range []string{
-		"  " + public + "?0\n    -> http://localhost:3000\n",
-		"  " + public + "?1\n    -> http://localhost:4000\n",
-	} {
+	// stdout is the machine interface: the addresses, in order, alone.
+	if want := public + "?0\n" + public + "?1\n"; h.stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", h.stdout.String(), want)
+	}
+	for _, want := range []string{"  -> http://localhost:3000\n", "  -> http://localhost:4000\n"} {
 		if !strings.Contains(h.stderr.String(), want) {
 			t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 		}
 	}
 
-	// Every address appears once: in the map, and nowhere else.
+	// An address reaches one stream, so stderr names origins and no addresses.
 	for _, addr := range []string{public + "?0", public + "?1"} {
-		if got := strings.Count(h.stderr.String(), addr); got != 1 {
-			t.Errorf("%s appears %d times, want 1:\n%s", addr, got, h.stderr.String())
+		if got := strings.Count(h.stderr.String(), addr); got != 0 {
+			t.Errorf("%s appears %d times on stderr, want 0:\n%s", addr, got, h.stderr.String())
 		}
 	}
 }

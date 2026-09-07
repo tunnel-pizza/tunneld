@@ -247,28 +247,33 @@ Two things worth knowing:
 
 ## Output contract
 
-**stderr** carries everything a running tunnel prints — the build banner, the
-public addresses, the origins they reach, and the tunnel's own logs at
-`--log-level`. With the panel on, stderr names the one public address and
-lists the origins beneath it.
+**stdout** carries the public addresses, one per line and nothing else, so
+`tunneld > addresses` is a machine interface and `| head -1` is the default
+origin. It carries the help text and `tunneld version` too, which is what keeps
+those pipeable.
+
+**stderr** carries everything human: the build banner, the origin each address
+reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
+one address, and every origin it serves is listed beneath it.
+
+On a terminal holding both, that reads as a map:
 
 ```
-tunneld v0.0.12 (libtunnel v0.0.55, built go1.26.8)
-  https://striped-worm.tunneled.pizza/?0
-    -> http://localhost:3000
-  https://striped-worm.tunneled.pizza/?1
-    -> http://localhost:4000
+tunneld v0.0.21 (libtunnel v0.0.66, built go1.26.5)
+https://striped-worm.tunneled.pizza/?0
+  -> http://localhost:3000
+https://striped-worm.tunneled.pizza/?1
+  -> http://localhost:4000
 ```
 
-**stdout** carries the help text and `tunneld version`, so both stay pipeable.
-A running tunnel writes nothing there.
-
-It used to write one bare URL per origin, as a machine interface. That printed
-every address twice wherever the two streams landed together, and the
-de-duplication meant to hide it could only recognise one file descriptor being
-literally the other — which a container's two pipes are not, so it never fired
-where it was needed most. The map says which origin each address reaches,
-which the bare lines never did.
+An address reaches exactly one of the two streams. stdout did carry bare URLs
+once while stderr carried a full map, and every address then printed twice
+wherever both streams landed together; the de-duplication meant to hide that
+could only recognise one file descriptor being literally the other, which a
+container's two pipes are not, so it never fired where it was needed most.
+Splitting each address from the origin it reaches is not that duplication: the
+map still says which origin an address serves, and a script still gets the
+addresses without a parser.
 
 The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
 fails first.
@@ -375,15 +380,16 @@ func Version() string                 // the release this build is
 func VersionLine() string             // the human-facing build banner
 
 // The builder's options. Each seeds a flag's default, so argv still wins.
-func WithName(name string) Option        // command name; default "tunneld"
-func WithURL(urls ...string) Option      // origins, in order; appends across options
-func WithProvider(host string) Option    // quick-tunnel host; default tunnel.pizza
-func WithCacheDir(dirs ...string) Option // spec cache directories; true/false are instructions
-func WithLogLevel(level string) Option   // debug|info|warn|error on stderr
-func WithOpen(open bool) Option          // open a browser when live; default true
-func WithMultiview(mv bool) Option       // frame the origins together; default true
-func WithStdout(w io.Writer) Option      // help text and the version banner
-func WithStderr(w io.Writer) Option      // banner, origin map, logs
+func WithName(name string) Option                 // command name; default "tunneld"
+func WithURL(urls ...string) Option               // origins, in order; appends across options
+func WithProvider(host string) Option             // quick-tunnel host; default tunnel.pizza
+func WithCacheDir(dirs ...string) Option          // spec cache directories; true/false are instructions
+func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
+func WithOpen(open bool) Option                   // open a browser when live; default true
+func WithMultiview(mv bool) Option                // frame the origins together; default true
+func WithEstablishDeadline(d time.Duration) Option // wait for the URL to answer; default 10s
+func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
+func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
 ```
 
 There are no fluent setters: every knob is an option passed to `New`, and

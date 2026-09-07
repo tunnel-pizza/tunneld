@@ -83,16 +83,18 @@ test:
 # the global export above: the detector links through cgo. Kept out of `all`
 # for that reason — it is the one target needing a C toolchain.
 #
-# If this repo ever grows a live e2e tier gated on testing.Short() — one that
-# mints a real tunnel — this lane must pass -short too: without it the live
-# cases start running under the detector on every CI run, which is exactly the
-# traffic the tiering exists to avoid.
+# -short is what keeps the live e2e row out of this lane. That row mints a real
+# tunnel, and running it here would mint a second one per CI push to re-check
+# what the e2e lane already checked, under a detector that only slows it down.
 race:
-	CGO_ENABLED=1 go test -race ./...
+	CGO_ENABLED=1 go test -short -race ./...
 
-# End-to-end: the harness builds the tunneld binary and drives its offline
-# paths. -count=1 disables go test caching, since the harness builds the binary
+# End-to-end: the harness builds the tunneld binary and every example binary and
+# drives them. -count=1 disables go test caching, since the harness builds those
 # at runtime and the cache key wouldn't otherwise pick up source changes.
+#
+# One row runs live and mints a real tunnel, so this target needs the public
+# internet. `go test -short ./e2e` is the same lane without it.
 e2e:
 	go test -count=1 -v ./e2e
 
