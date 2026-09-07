@@ -5,12 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
-	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -98,67 +94,4 @@ var flagEnv = map[string]string{
 	"log-level": v1.LogEnv,
 	"no-open":   v1.NoOpenEnv,
 	"multiview": v1.MultiviewEnv,
-}
-
-// newEnv returns the environment binding for one command's flags.
-//
-// The instance is per-builder, never viper's package global: two commands in
-// one process — a host program's and an embedded tunneld's — would otherwise
-// share one key space, and so would two tests in one binary.
-func newEnv() *viper.Viper {
-	v := viper.New()
-	for flag, env := range flagEnv {
-		// BindEnv only errors when given no name at all, which the registry
-		// above cannot produce.
-		_ = v.BindEnv(flag, env)
-	}
-	return v
-}
-
-// applyEnv copies environment values onto the flags the command line did not
-// set, which is what makes the precedence flag > env > default. It runs from
-// PersistentPreRunE, ahead of cobra's required-flag validation, so a flag
-// satisfied by its variable counts as supplied.
-//
-// A value that the flag refuses is an error wrapping v1.ErrInvalidEnv, naming
-// the variable and the offending value: env beats code, so a typo'd override
-// that silently fell back would be indistinguishable from one that worked.
-func applyEnv(cmd *cobra.Command, v *viper.Viper) error {
-	var err error
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if err != nil || f.Changed || !v.IsSet(f.Name) {
-			return
-		}
-		value := v.GetString(f.Name)
-
-		// A repeatable flag takes the whole list at once. Replace, not
-		// Append: the flag's default may be a seeded value, and the
-		// environment overrides a seed rather than extending it — the same
-		// rule pflag's stringArray applies to the command line.
-		if slice, ok := f.Value.(pflag.SliceValue); ok {
-			err = slice.Replace(splitEnvList(value))
-		} else {
-			err = f.Value.Set(value)
-		}
-		if err != nil {
-			err = fmt.Errorf("%s=%q: %w: %w", flagEnv[f.Name], value, v1.ErrInvalidEnv, err)
-			return
-		}
-		// Marking it changed is what stops cobra from reporting a required
-		// flag as missing when its variable supplied it.
-		f.Changed = true
-	})
-	return err
-}
-
-// splitEnvList parses a list-valued variable: comma-separated, surrounding
-// space trimmed, empty entries dropped so a trailing comma is not an origin.
-func splitEnvList(value string) []string {
-	items := make([]string, 0, strings.Count(value, ",")+1)
-	for item := range strings.SplitSeq(value, ",") {
-		if item = strings.TrimSpace(item); item != "" {
-			items = append(items, item)
-		}
-	}
-	return items
 }

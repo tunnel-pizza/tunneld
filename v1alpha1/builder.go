@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -46,9 +48,9 @@ func WithProvider(host string) Option {
 // An entry that is a boolean is an instruction rather than a path: true names
 // the default location, false names nothing at all. That is what lets one
 // field take both a switch and a list — "on" is what an operator means by
-// setting the variable to true, and defaultCacheDir is the answer that needs
-// no further configuration. An empty entry reads as true, since
-// nothing else it could mean is useful.
+// setting the variable to true, and the default cache directory computed
+// below is the answer that needs no further configuration. An empty entry
+// reads as true, since nothing else it could mean is useful.
 //
 // The false half matters as much as the true half. Without it, an operator
 // turning the knob off would get a cache directory literally named "false",
@@ -81,7 +83,13 @@ func WithCacheDir(dirs ...string) Option {
 			return
 		}
 		for _, dir := range dirs {
-			if on, ok := boolish(dir); ok {
+			// Whether dir is a boolean rather than a path, and which one:
+			// the spellings are strconv.ParseBool's — 1/t/T/TRUE/true/True
+			// and 0/f/F/FALSE/false/False — so both halves of the knob are
+			// the ones an operator would guess. Anything else is a path,
+			// including "yes" and "no", which ParseBool has never accepted
+			// and this should not start accepting on its own.
+			if on, err := strconv.ParseBool(dir); err == nil {
 				if !on {
 					b.cacheDirs = []string{}
 					return
@@ -89,7 +97,42 @@ func WithCacheDir(dirs ...string) Option {
 				dir = ""
 			}
 			if dir == "" {
-				dir = defaultCacheDir()
+				// Where a spec goes when nothing says otherwise: a
+				// per-project directory under the user's cache directory.
+				//
+				// Not the working directory, which is what this used to be.
+				// A spec is credentials, the working directory is usually a
+				// repository, and no filename avoids being committed there:
+				// measured against GitHub's 239 gitignore templates and 752
+				// real ones, the best a name managed was 13% and 26%.
+				// Nothing written into somebody's checkout is safe by
+				// default, so nothing is written there.
+				//
+				// The working directory still decides *which* cache,
+				// because two projects on one machine are two tunnels. It is
+				// fingerprinted rather than mirrored: a path cannot be a
+				// single path element, and hashing it sidesteps every
+				// question about separators, length and case. The base name
+				// is kept as a prefix so the directory is recognisable to a
+				// person looking at it, and the hash is what makes it
+				// unique.
+				//
+				// An empty result means the user has no cache directory,
+				// which WithCacheDir reads as nothing to cache — the same as
+				// any other unusable entry.
+				if base, err := os.UserCacheDir(); err == nil {
+					if wd, err := os.Getwd(); err == nil {
+						sum := sha256.Sum256([]byte(wd))
+						name := hex.EncodeToString(sum[:])[:16]
+						// A readable prefix, when there is one to read: "/"
+						// and "." have no base worth showing, and the hash
+						// alone is still correct.
+						if label := filepath.Base(wd); label != "" && label != "." && label != string(filepath.Separator) {
+							name = label + "-" + name
+						}
+						dir = filepath.Join(base, "tunneld", name)
+					}
+				}
 			}
 			if dir == "" {
 				continue
@@ -160,20 +203,27 @@ func (b *BuilderImpl) Name() string {
 // Build assembles the configured command. It is the terminal step; the command
 // is built once and cached, so repeated calls return the same *cobra.Command
 // rather than a second one with a second set of flags bound to these fields.
-func (b *BuilderImpl) Build() *cobra.Command {
-	b.builtOnce.Do(func() { b.built = b.command() })
-	return b.built
-}
-
+//
 // command is the one-shot assembly behind Build.
-func (b *BuilderImpl) command() *cobra.Command {
-	name := b.Name()
-	env := newEnv()
+func (b *BuilderImpl) Build() *cobra.Command {
+	b.builtOnce.Do(func() {
+		name := b.Name()
 
-	cmd := &cobra.Command{
-		Use:   name + " --url <local-url> [--url <local-url> ...]",
-		Short: "Expose local origins to the public internet through a quick tunnel",
-		Long: name + ` exposes already-running local services to the public internet
+		// The environment binding is per-builder, never viper's package
+		// global: two commands in one process — a host program's and an
+		// embedded tunneld's — would otherwise share one key space, and so
+		// would two tests in one binary.
+		env := viper.New()
+		for flag, envVar := range flagEnv {
+			// BindEnv only errors when given no name at all, which the
+			// registry above cannot produce.
+			_ = env.BindEnv(flag, envVar)
+		}
+
+		cmd := &cobra.Command{
+			Use:   name + " --url <local-url> [--url <local-url> ...]",
+			Short: "Expose local origins to the public internet through a quick tunnel",
+			Long: name + ` exposes already-running local services to the public internet
 through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
 
 Repeat --url per origin. They share one hostname: the first is the default,
@@ -196,90 +246,136 @@ origin it belongs to, so without the marker it goes to the first one:
   ` + name + ` --url :4000 --url http+ws://localhost:5173
 
 The public URLs, the origin map and every log line go to stderr.`,
-		Args:          cobra.NoArgs,
-		SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
-		SilenceErrors: true, // the caller prints the error, prefixed, exactly once
-		// Persistent, so it also covers a subcommand — and placed here rather
-		// than in RunE because cobra runs this hook ahead of required-flag
-		// validation, which is what lets TUNNELD_URL satisfy --url.
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return applyEnv(cmd, env)
-		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return b.run(cmd.Context(), cmd.ErrOrStderr())
-		},
-	}
+			Args:          cobra.NoArgs,
+			SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
+			SilenceErrors: true, // the caller prints the error, prefixed, exactly once
+			// Persistent, so it also covers a subcommand — and placed here rather
+			// than in RunE because cobra runs this hook ahead of required-flag
+			// validation, which is what lets TUNNELD_URL satisfy --url.
+			PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+				// Environment values are copied onto the flags the command
+				// line did not set, which is what makes the precedence
+				// flag > env > default. This runs from PersistentPreRunE,
+				// ahead of cobra's required-flag validation, so a flag
+				// satisfied by its variable counts as supplied.
+				//
+				// A value that the flag refuses is an error wrapping
+				// v1.ErrInvalidEnv, naming the variable and the offending
+				// value: env beats code, so a typo'd override that silently
+				// fell back would be indistinguishable from one that worked.
+				var err error
+				cmd.Flags().VisitAll(func(f *pflag.Flag) {
+					if err != nil || f.Changed || !env.IsSet(f.Name) {
+						return
+					}
+					value := env.GetString(f.Name)
 
-	// Hand the configured writers to cobra rather than keeping a second
-	// mechanism beside its own: SetOut/SetErr is where a *cobra.Command
-	// records this, and OutOrStdout/ErrOrStderr then answer for the whole
-	// command — help, usage, and the version banner as well as the URLs. A
-	// caller that would rather set them on the built command still can, and
-	// wins, being the later and more specific call.
-	if b.stdout != nil {
-		cmd.SetOut(b.stdout)
-	}
-	if b.stderr != nil {
-		cmd.SetErr(b.stderr)
-	}
+					// A repeatable flag takes the whole list at once.
+					// Replace, not Append: the flag's default may be a
+					// seeded value, and the environment overrides a seed
+					// rather than extending it — the same rule pflag's
+					// stringArray applies to the command line.
+					if slice, ok := f.Value.(pflag.SliceValue); ok {
+						// A list-valued variable is comma-separated,
+						// surrounding space trimmed, empty entries dropped
+						// so a trailing comma is not an origin.
+						items := make([]string, 0, strings.Count(value, ",")+1)
+						for item := range strings.SplitSeq(value, ",") {
+							if item = strings.TrimSpace(item); item != "" {
+								items = append(items, item)
+							}
+						}
+						err = slice.Replace(items)
+					} else {
+						err = f.Value.Set(value)
+					}
+					if err != nil {
+						err = fmt.Errorf("%s=%q: %w: %w", flagEnv[f.Name], value, v1.ErrInvalidEnv, err)
+						return
+					}
+					// Marking it changed is what stops cobra from reporting a
+					// required flag as missing when its variable supplied it.
+					f.Changed = true
+				})
+				return err
+			},
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				return b.run(cmd.Context(), cmd.ErrOrStderr())
+			},
+		}
 
-	// Each flag binds over the field it defaults from, so a seeded value is a
-	// default and an argv value overwrites it. StringArray, not StringSlice:
-	// a repeated flag must collect values verbatim, and StringSlice splits on
-	// commas, which would silently shred a URL carrying one in its query.
-	// pflag's stringArray replaces the default on the first --url and appends
-	// after that, so a command line never merges into a seeded set.
-	// Each usage string names the flag's environment mirror, so --help doubles
-	// as the reference for configuring a container. The registry behind those
-	// names is flagEnv, in env.go.
-	cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-		"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
-	// Unset, specs cache into defaultCacheDir. Seeded here rather than in New
-	// so that an explicit WithCacheDir replaces the default instead of
-	// appending to it: a caller naming a directory means that directory, not
-	// that one and wherever the process happened to start.
-	//
-	// Nil, not empty: an empty list is one a false entry emptied, and seeding
-	// over it would re-enable what an operator turned off.
-	if b.cacheDirs == nil {
-		WithCacheDir("")(b)
-	}
-	cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
-		"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
-	cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
-		"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
-	cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
-		"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
-	cmd.Flags().BoolVar(&b.noOpen, "no-open", !b.open,
-		"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
-	cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
-		"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
-	// Required only when nothing was seeded: an embedder that supplied an
-	// origin wants --url optional, not forbidden.
-	if len(b.urls) == 0 {
-		_ = cmd.MarkFlagRequired("url")
-	}
+		// Hand the configured writers to cobra rather than keeping a second
+		// mechanism beside its own: SetOut/SetErr is where a *cobra.Command
+		// records this, and OutOrStdout/ErrOrStderr then answer for the whole
+		// command — help, usage, and the version banner as well as the URLs. A
+		// caller that would rather set them on the built command still can, and
+		// wins, being the later and more specific call.
+		if b.stdout != nil {
+			cmd.SetOut(b.stdout)
+		}
+		if b.stderr != nil {
+			cmd.SetErr(b.stderr)
+		}
 
-	cmd.AddCommand(versionCommand(name))
-	return cmd
-}
+		// Each flag binds over the field it defaults from, so a seeded value is a
+		// default and an argv value overwrites it. StringArray, not StringSlice:
+		// a repeated flag must collect values verbatim, and StringSlice splits on
+		// commas, which would silently shred a URL carrying one in its query.
+		// pflag's stringArray replaces the default on the first --url and appends
+		// after that, so a command line never merges into a seeded set.
+		// Each usage string names the flag's environment mirror, so --help doubles
+		// as the reference for configuring a container. The registry behind those
+		// names is flagEnv, in env.go.
+		cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
+			"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
+		// Unset, specs cache into the default cache directory. Seeded here
+		// rather than in New so that an explicit WithCacheDir replaces the
+		// default instead of appending to it: a caller naming a directory
+		// means that directory, not that one and wherever the process
+		// happened to start.
+		//
+		// Nil, not empty: an empty list is one a false entry emptied, and seeding
+		// over it would re-enable what an operator turned off.
+		if b.cacheDirs == nil {
+			WithCacheDir("")(b)
+		}
+		cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
+			"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
+		cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
+			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
+		cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
+			"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
+		cmd.Flags().BoolVar(&b.noOpen, "no-open", !b.open,
+			"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
+		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
+			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
+		// Required only when nothing was seeded: an embedder that supplied an
+		// origin wants --url optional, not forbidden.
+		if len(b.urls) == 0 {
+			_ = cmd.MarkFlagRequired("url")
+		}
 
-// versionCommand prints the build banner and exits — the build id of the
-// binary plus the tunnel library it links against, since that library is what
-// actually speaks to the edge and a bug report needs both numbers.
-//
-// The banner is written to OutOrStdout explicitly. cmd.Print and friends route
-// through OutOrStderr, which falls back to os.Stderr, and a version a script
-// cannot read off stdout is a version nobody can pipe.
-func versionCommand(name string) *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Print the " + name + " build identifier and exit",
-		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
-		},
-	}
+		// The version subcommand prints the build banner and exits — the
+		// build id of the binary plus the tunnel library it links against,
+		// since that library is what actually speaks to the edge and a bug
+		// report needs both numbers.
+		//
+		// The banner is written to OutOrStdout explicitly. cmd.Print and
+		// friends route through OutOrStderr, which falls back to os.Stderr,
+		// and a version a script cannot read off stdout is a version nobody
+		// can pipe.
+		cmd.AddCommand(&cobra.Command{
+			Use:   "version",
+			Short: "Print the " + name + " build identifier and exit",
+			Args:  cobra.NoArgs,
+			Run: func(cmd *cobra.Command, _ []string) {
+				fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
+			},
+		})
+
+		b.built = cmd
+	})
+	return b.built
 }
 
 // cacheDirValue binds --cache-dir onto WithCacheDir, so the flag, its
@@ -306,9 +402,10 @@ func (v *cacheDirValue) Set(s string) error {
 	return nil
 }
 
-// Append, GetSlice and Replace are pflag.SliceValue, which is how applyEnv
-// hands a whole comma-separated variable over at once. Replace clears first,
-// for the same reason Set does on its first call.
+// Append, GetSlice and Replace are pflag.SliceValue, which is how the
+// environment binding in Build hands a whole comma-separated variable over
+// at once. Replace clears first, for the same reason Set does on its first
+// call.
 func (v *cacheDirValue) Append(s string) error { return v.Set(s) }
 func (v *cacheDirValue) GetSlice() []string    { return v.b.cacheDirs }
 
@@ -316,53 +413,4 @@ func (v *cacheDirValue) Replace(dirs []string) error {
 	v.b.cacheDirs, v.changed = nil, true
 	WithCacheDir(dirs...)(v.b)
 	return nil
-}
-
-// defaultCacheDir is where a spec goes when nothing says otherwise: a
-// per-project directory under the user's cache directory.
-//
-// Not the working directory, which is what this used to be. A spec is
-// credentials, the working directory is usually a repository, and no filename
-// avoids being committed there: measured against GitHub's 239 gitignore
-// templates and 752 real ones, the best a name managed was 13% and 26%. Nothing
-// written into somebody's checkout is safe by default, so nothing is written
-// there.
-//
-// The working directory still decides *which* cache, because two projects on
-// one machine are two tunnels. It is fingerprinted rather than mirrored: a path
-// cannot be a single path element, and hashing it sidesteps every question
-// about separators, length and case. The base name is kept as a prefix so the
-// directory is recognisable to a person looking at it, and the hash is what
-// makes it unique.
-//
-// An empty result means the user has no cache directory, which WithCacheDir
-// reads as nothing to cache — the same as any other unusable entry.
-func defaultCacheDir() string {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(wd))
-	name := hex.EncodeToString(sum[:])[:16]
-	// A readable prefix, when there is one to read: "/" and "." have no base
-	// worth showing, and the hash alone is still correct.
-	if label := filepath.Base(wd); label != "" && label != "." && label != string(filepath.Separator) {
-		name = label + "-" + name
-	}
-	return filepath.Join(base, "tunneld", name)
-}
-
-// boolish reports whether s is a boolean rather than a path, and which one.
-// The spellings are strconv.ParseBool's — 1/t/T/TRUE/true/True and
-// 0/f/F/FALSE/false/False — so both halves of the knob are the ones an
-// operator would guess. Anything else is a path, including "yes" and "no",
-// which ParseBool has never accepted and this should not start accepting on
-// its own.
-func boolish(s string) (value, ok bool) {
-	v, err := strconv.ParseBool(s)
-	return v, err == nil
 }

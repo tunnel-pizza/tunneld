@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -184,10 +185,11 @@ func TestFlagEnvRegistryIsComplete(t *testing.T) {
 	}
 }
 
-// TestSplitEnvList covers the list-valued variable parsing: comma-separated,
-// space-tolerant, and empty entries dropped so a trailing comma does not
-// become an origin nothing can proxy to.
-func TestSplitEnvList(t *testing.T) {
+// TestEnvListSplitting covers the list-valued TUNNELD_URL variable through
+// the built command: comma-separated, space-tolerant, and empty entries
+// dropped so a trailing comma does not become an origin nothing can proxy
+// to.
+func TestEnvListSplitting(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -204,9 +206,32 @@ func TestSplitEnvList(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := splitEnvList(tc.in)
+			t.Setenv(v1.URLEnv, tc.in)
+
+			cmd := New().Build()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--log-level", "loud"})
+			err := cmd.ExecuteContext(t.Context())
+
+			if len(tc.want) == 0 {
+				// An empty variable reads as unset, so nothing satisfies the
+				// required --url flag and that is the error that comes back
+				// instead of an empty origin list.
+				if err == nil || !strings.Contains(err.Error(), "url") {
+					t.Fatalf("error = %v, want it to name the missing url flag", err)
+				}
+				return
+			}
+
+			// ErrInvalidLogLevel proves the environment applied and the run
+			// got past the required-flag check.
+			if !errors.Is(err, v1.ErrInvalidLogLevel) {
+				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			}
+			got := cmd.Flags().Lookup("url").Value.(pflag.SliceValue).GetSlice()
 			if len(got) != len(tc.want) {
-				t.Fatalf("splitEnvList(%q) = %q, want %q", tc.in, got, tc.want)
+				t.Fatalf("--url = %q, want %q", got, tc.want)
 			}
 			for i := range got {
 				if got[i] != tc.want[i] {
@@ -314,8 +339,28 @@ func TestApplyEnvSeededDefault(t *testing.T) {
 // builder, not the package global: two commands in one process must not share
 // a key space, or an embedded tunneld would inherit its host's configuration.
 func TestApplyEnvIsPerBuilder(t *testing.T) {
-	if first, second := newEnv(), newEnv(); first == second {
-		t.Error("newEnv() returned the same instance twice, want one per builder")
+	t.Setenv(v1.URLEnv, "http://env:1")
+
+	first := New().Build()
+	first.SetOut(io.Discard)
+	first.SetErr(io.Discard)
+	first.SetArgs([]string{"--log-level", "loud"})
+	if err := first.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	second := New().Build()
+	second.SetOut(io.Discard)
+	second.SetErr(io.Discard)
+	second.SetArgs([]string{"--log-level", "loud"})
+	if err := second.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
+		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	}
+
+	// The global was never the binding: each builder's flags are satisfied
+	// by its own viper instance, and the package-global one stays untouched.
+	if viper.IsSet("url") {
+		t.Error("the package-global viper was bound; want one instance per builder")
 	}
 }
 
