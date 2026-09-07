@@ -235,7 +235,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// connections) reaches a live session. Without this, a Close on that path
 	// leaves the session's goroutines and its daemon connection running until
 	// the websocket idle timeout unwinds them. The binary exits and never
-	// notices; an embedding program, which is the case bindOrigins says it
+	// notices; an embedding program, which is the case Bind says it
 	// cares about, keeps running.
 	sctx, cancel := context.WithCancel(ctx)
 	s := &Server{target: target, listener: listener, log: log, ctx: sctx, cancel: cancel}
