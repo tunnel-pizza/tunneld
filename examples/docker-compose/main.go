@@ -29,9 +29,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// setup writes the embedded compose file to a temporary directory — so `go run
-	// ./examples/docker-compose` works from any directory — and returns it with a
-	// teardown that runs down and then removes it.
+	// Write the embedded compose file to a temporary directory — so `go run
+	// ./examples/docker-compose` works from any directory — and return it with
+	// a teardown that runs down and then removes it.
 	//
 	// Nothing is up yet if this fails, so it exits rather than returning an error
 	// there would be no cleanup to pair with.

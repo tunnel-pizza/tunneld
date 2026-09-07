@@ -28,20 +28,20 @@ import (
 
 // Option configures a BuilderImpl at construction. The nine builder options
 // in builder.go seed what the command's flags default to; the contract
-// options in this file replace a collaborator run composes.
+// options in this file replace a collaborator Command's RunE composes.
 type Option = v1.Option[*BuilderImpl]
 
-// The contracts run composes. Each is something with an external effect —
-// the edge, the disk, the daemon, the browser, an HTTP probe — implemented
-// once in a v1alpha1/<name> subpackage, seeded by New, and replaceable with
-// the matching With* option below. A function that maps a value to a value
-// gets no contract; see CONTRIBUTING.
+// The contracts Command's RunE composes. Each is something with an external
+// effect — the edge, the disk, the daemon, the browser, an HTTP probe —
+// implemented once in a v1alpha1/<name> subpackage, seeded by New, and
+// replaceable with the matching With* option below. A function that maps a
+// value to a value gets no contract; see CONTRIBUTING.
 
 // CacheDirs is the --cache-dir list: the directories tunnel specs are
-// cached in, with the boolean-entry and absolute-path rules WithCacheDir
-// documents, bound onto the flag as a pflag value. GetSlice is nil until
-// something is added and empty after a false entry, which is how Command
-// tells "unset" from "turned off".
+// cached in, with the boolean-entry and absolute-path rules
+// cachedir.ValueImpl.Add documents, bound onto the flag as a pflag value.
+// GetSlice is nil until something is added and empty after a false entry,
+// which is how Command tells "unset" from "turned off".
 type CacheDirs interface {
 	pflag.Value
 	pflag.SliceValue
@@ -193,8 +193,9 @@ type BuilderImpl struct {
 	open   bool
 	noOpen bool
 
-	// The collaborators run composes, each behind a contract declared above.
-	// Seeded by New; a test or a contributor swaps one with its With* option.
+	// The collaborators Command's RunE composes, each behind a contract
+	// declared above. Seeded by New; a test or a contributor swaps one with
+	// its With* option.
 	cacheDirs CacheDirs
 	engine    Engine
 	cache     Cache

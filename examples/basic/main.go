@@ -41,9 +41,9 @@ func main() {
 	// cobra answers --help before it runs, so `--help` stays a pure question:
 	// it prints and exits without binding a port.
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
-		// serve starts an HTTP server on addr answering with the named page, and
-		// returns once it is listening, so the tunnel never proxies to a socket that is
-		// not up yet. It shuts down with ctx.
+		// Start an HTTP server on :3000, returning once it is listening so the
+		// tunnel never proxies to a socket that is not up yet. It shuts down
+		// with ctx.
 		//
 		// Every path gets the same page: this is a stand-in for a real service, and a
 		// router would only be scenery.

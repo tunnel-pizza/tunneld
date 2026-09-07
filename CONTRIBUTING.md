@@ -93,8 +93,10 @@ its `New(opts ...Option)` applies its defaults first and the caller's after —
 later wins. That holds for the builder's flag seeds, the contract injectors
 and each implementation's tunables alike, and a package with no tunables still
 takes the variadic so adding one changes no caller. An option is a plain
-function, so it can be applied anywhere a setter used to be called:
-`cachedir.ValueImpl.Set` is `WithCacheDir(s)(v.b)`.
+function, so it can be applied anywhere a setter used to be called: `New`
+seeds its own defaults with the same `With*` options a caller passes —
+`WithOpen(v1.DefaultOpen)` goes through the same `v1.Apply` call as a
+caller's own `WithOpen(false)`.
 
 **Command assembles once.** `Command` is guarded by `commandOnce` (see
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
@@ -280,7 +282,7 @@ Easy to get wrong from the diff alone:
   tunnel. Everything else in a policy is preserved directive by directive;
   the scrub happens in `WriteHeader`, because headers are immutable after the
   first write.
-- **The shell's CSS is layout only.** Colour, type, borders and radius come
+- **The page's CSS is layout only.** Colour, type, borders and radius come
   from Basecoat; the CDN build ships component classes without Tailwind's
   utilities, so the rule of thumb is that a style earns its place only when no
   class can supply it. Both CDN URLs carry a subresource-integrity digest —

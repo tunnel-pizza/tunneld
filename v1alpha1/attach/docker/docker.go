@@ -5,7 +5,7 @@
 // a resize channel, and it copies. The split is what keeps a second provider —
 // podman, or a local shell over a pty — from having to touch the server.
 //
-// Two types, because the root needs two things: TargetsImpl opens a
+// Two types, because attach names two things: TargetsImpl opens a
 // reference — a name, an id, a Compose service — and TargetImpl is the
 // container it found. The first is behind attach.Targets; the second is
 // behind attach.Target.
@@ -72,10 +72,10 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 	// has failed anyway. Name-or-id stays first: a container literally named
 	// `web` must keep winning, or this changes what an existing config means.
 	if cerrdefs.IsNotFound(err) {
-		// resolveService looks ref up as a Compose service name. It returns
-		// the id of the single container that matches, "" when nothing does —
-		// leaving the caller's original "no such container" error to stand —
-		// or an error when the name is ambiguous.
+		// Look ref up as a Compose service name, resolving to the id of the
+		// single container that matches, "" when nothing does — leaving the
+		// caller's original "no such container" error to stand — or an error
+		// when the name is ambiguous.
 		//
 		// Ambiguity is an error rather than a pick, because the alternative is
 		// an origin that quietly points at a different replica after a
@@ -92,8 +92,8 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 		// still an error rather than a coin flip, so the unscoped case stays
 		// safe.
 		//
-		// ownProject names the Compose project tunneld itself belongs to, or
-		// "" if it does not belong to one.
+		// project names the Compose project tunneld itself belongs to, or ""
+		// if it does not belong to one.
 		//
 		// The references are guesses, checked by being inspected: one that
 		// names no container answers 404 and the next is tried. Nothing found
@@ -101,8 +101,8 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 		// project would be a far worse answer than no project, so every
 		// uncertain path ends here.
 		var project string
-		// selfRefs returns what might name this process's own container,
-		// cheapest and most portable first.
+		// refs holds what might name this process's own container, cheapest
+		// and most portable first.
 		//
 		// The hostname is the normal case: Compose sets it to the container
 		// id. But a service that sets `hostname:` makes it name nothing the
@@ -118,8 +118,8 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 		mf, merr := os.Open(mountinfo) // not Linux, or not in a container
 		if merr == nil {
 			defer func() { _ = mf.Close() }()
-			// selfIDs pulls candidate container ids out of mountinfo, most
-			// likely first.
+			// Pull candidate container ids out of mountinfo, most likely
+			// first.
 			//
 			// An id under a .../containers/<id>/... path is the runtime's own
 			// per-container directory — the one that bind-mounts /etc/hosts
@@ -269,14 +269,14 @@ const (
 	composeService = "com.docker.compose.service"
 )
 
-// mountinfo is where selfRefs looks for this process's own container id. A
+// mountinfo is where Open looks for this process's own container id. A
 // variable because the platforms this package is tested on mostly have no
 // /proc at all, and the parsing is worth pinning anyway.
 var mountinfo = "/proc/self/mountinfo"
 
 // containerID matches a 64-hex path component. Both container directories and
-// layer directories are named that way, which is why selfIDs orders its
-// answers rather than picking one.
+// layer directories are named that way, which is why Open orders its
+// candidates rather than picking one.
 var containerID = regexp.MustCompile(`[0-9a-f]{64}`)
 
 // candidateIDsMax bounds how many candidate ids are tried. Each one costs an

@@ -89,7 +89,7 @@ func TestIsPanelRequest(t *testing.T) {
 				r.Header.Set("Upgrade", tc.upgrade)
 			}
 			if got := pageOf(t, nil).Match(r); got != tc.want {
-				t.Errorf("isPanelRequest(%q dest=%q referer=%q) = %v, want %v",
+				t.Errorf("Match(%q dest=%q referer=%q) = %v, want %v",
 					tc.target, tc.dest, tc.referer, got, tc.want)
 			}
 		})
@@ -102,11 +102,11 @@ func TestIsPanelRequest(t *testing.T) {
 func TestWanted(t *testing.T) {
 	one, err := mustOrigins([]string{"http://localhost:3000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 	two, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	cases := []struct {
@@ -151,7 +151,7 @@ func TestURL(t *testing.T) {
 func TestServeShell(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -194,7 +194,7 @@ func TestServeShell(t *testing.T) {
 func TestServeShellEscapesTheHost(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	rec := httptest.NewRecorder()
@@ -258,7 +258,7 @@ func TestLabel(t *testing.T) {
 func TestPanelInterceptorServesTheShell(t *testing.T) {
 	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
-		t.Fatalf("parseOrigins: %v", err)
+		t.Fatalf("origins: %v", err)
 	}
 
 	interceptor := pageOf(t, origins)
@@ -303,7 +303,7 @@ func TestIsPanelFrame(t *testing.T) {
 				r.Header.Set("Sec-Fetch-Site", tc.site)
 			}
 			if got := unframeOf(t).Match(r); got != tc.want {
-				t.Errorf("isPanelFrame(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
+				t.Errorf("Match(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
 			}
 		})
 	}
@@ -345,7 +345,7 @@ func TestWithoutFrameAncestors(t *testing.T) {
 			ic.installed(rec, req)
 
 			if got := rec.Header().Get("Content-Security-Policy"); got != tc.want {
-				t.Errorf("withoutFrameAncestors(%q) = %q, want %q", tc.policy, got, tc.want)
+				t.Errorf("unframer(%q) = %q, want %q", tc.policy, got, tc.want)
 			}
 		})
 	}

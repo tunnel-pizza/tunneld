@@ -247,12 +247,12 @@ The public URLs, the origin map and every log line go to stderr.`,
 				})
 				return err
 			},
-			// run is the built command's body: it brings the tunnel up, reports
-			// the public URLs, and blocks until ctx is canceled or the tunnel
-			// fails. ctx is the shutdown handle — canceling it (a signal, in the
-			// binary's case) tears the tunnel down during startup as well as
-			// after, so this returns rather than hanging. A tunnel that fails on
-			// its own returns the cause.
+			// RunE is the built command's body: it brings the tunnel up,
+			// reports the public URLs, and blocks until ctx is canceled or
+			// the tunnel fails. ctx is the shutdown handle — canceling it (a
+			// signal, in the binary's case) tears the tunnel down during
+			// startup as well as after, so this returns rather than hanging.
+			// A tunnel that fails on its own returns the cause.
 			//
 			// stderr comes from the command's own ErrOrStderr, so cobra stays the
 			// single owner of where output goes; it is never nil.
@@ -264,7 +264,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 				ctx := cmd.Context()
 				stderr := cmd.ErrOrStderr()
 
-				// parseOrigins turns the settled origin values into URLs,
+				// Origins: turn the settled origin values into URLs,
 				// rejecting anything the tunnel could not proxy to.
 				//
 				// Two shorthands are filled in, both of them what people
@@ -365,12 +365,12 @@ The public URLs, the origin map and every log line go to stderr.`,
 					return fmt.Errorf("%w: pass --url (or $%s) with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin, v1.URLEnv)
 				}
 
-				// logger resolves the tunnel's log sink from the level the
+				// The logger: resolve the tunnel's log sink from the level the
 				// command settled on — the --log-level flag, or v1.LogEnv bound
-				// onto it by applyEnv. An unrecognized level is an error either
-				// way: somebody typed it, and a silent downgrade to info would
-				// hide the typo. Logger is the fallback when neither was set,
-				// which is silence.
+				// onto it by PersistentPreRunE. An unrecognized level is an
+				// error either way: somebody typed it, and a silent downgrade
+				// to info would hide the typo. Logger is the fallback when
+				// neither was set, which is silence.
 				//
 				// The sink is stderr either way, so logs never pollute the
 				// machine-readable URLs on stdout. WithLogger below shares this
@@ -416,7 +416,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 				// "reachable end to end" and makes it return nil on cancel, so a
 				// signal during startup exits cleanly.
 				start := func(spec string) libtunnel.TunnelV1 {
-					// events is the tunnel's lifecycle listener: it logs what
+					// Events: the tunnel's lifecycle listener. It logs what
 					// happened and ends the run once the edge has disowned the
 					// tunnel for long enough to be sure.
 					//
@@ -515,10 +515,10 @@ The public URLs, the origin map and every log line go to stderr.`,
 					view = b.panel.URL(public)
 				}
 
-				// report writes the human-readable map to stderr: a line per
-				// public address with the origins it reaches indented beneath
-				// it. With a panel that is one address and every origin;
-				// without, one address per origin.
+				// The report: write the human-readable map to stderr, a line
+				// per public address with the origins it reaches indented
+				// beneath it. With a panel that is one address and every
+				// origin; without, one address per origin.
 				//
 				// Nothing goes to stdout. It used to carry one bare URL per
 				// origin as a machine interface, which meant every address

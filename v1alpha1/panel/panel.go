@@ -62,8 +62,8 @@ func New(opts ...Option) *PanelImpl {
 
 // Interceptors is what the tunnel registers when the panel is wanted: the
 // page first, at the highest priority there is, and the unframer behind it.
-// The order is the contract — run registers them in a loop and never looks
-// at a priority itself.
+// The order is the contract — Command's RunE registers them in a loop and
+// never looks at a priority itself.
 func (*PanelImpl) Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
 	return []libtunnel.Interceptor{
 		{

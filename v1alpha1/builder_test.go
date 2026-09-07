@@ -352,8 +352,8 @@ func TestCacheDir(t *testing.T) {
 			want: []string{"$WD/yes", "$WD/no"},
 		},
 		{
-			// splitEnvList drops empty entries, so a stray or trailing comma
-			// is not a cache directory.
+			// Splitting a comma-separated environment value drops empty
+			// entries, so a stray or trailing comma is not a cache directory.
 			name: "stray commas are not entries",
 			env:  ",,$OTHER,",
 			want: []string{"$OTHER"},
@@ -784,13 +784,13 @@ func TestRun(t *testing.T) {
 		}
 		tun := h.engine.tunnels[0]
 		if len(tun.ics) != 2 || tun.ics[0].Priority >= tun.ics[1].Priority {
-			t.Errorf("registered %d interceptors, want the shell then the unframer", len(tun.ics))
+			t.Errorf("registered %d interceptors, want the page then the unframer", len(tun.ics))
 		}
 		if len(tun.locals) != 2 {
 			t.Errorf("tunnel was given %d origins, want 2", len(tun.locals))
 		}
 		if !h.binder.closed {
-			t.Error("the binder's closer was never called; run's defer did not run")
+			t.Error("the binder's closer was never called; RunE's defer did not run")
 		}
 	})
 
@@ -975,7 +975,7 @@ func TestRun(t *testing.T) {
 // TestParseOriginsAccepts covers the shapes a caller is allowed to type,
 // including the bare host:port that implies http — the affordance that lets
 // `--url localhost:3000` work the way people expect. Driven through the
-// whole run (parseOrigins no longer exists on its own to call directly), so
+// whole run (the origin parsing has no seam of its own to call directly), so
 // what is pinned is what the tunnel is actually given: tun.locals, in order.
 func TestParseOriginsAccepts(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"

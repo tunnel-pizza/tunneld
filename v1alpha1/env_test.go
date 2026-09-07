@@ -164,8 +164,8 @@ func TestEnvListSplitting(t *testing.T) {
 
 // TestApplyEnvPrecedence pins flag > env > default, one row per rung. The
 // command is executed rather than poked at, because the behaviour under test
-// is partly cobra's — applyEnv marking a flag changed is what stops required
-// flag validation from rejecting an origin the environment supplied.
+// is partly cobra's — PersistentPreRunE marking a flag changed is what stops
+// required flag validation from rejecting an origin the environment supplied.
 func TestApplyEnvPrecedence(t *testing.T) {
 	cases := []struct {
 		name string

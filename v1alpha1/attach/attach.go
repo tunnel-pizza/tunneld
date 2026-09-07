@@ -10,8 +10,9 @@
 // exactly the way it treats a local web server.
 //
 // It is an implementation subpackage and knows nothing about Docker: the
-// provider arrives as a Target. index.html travels with the code: go:embed
-// cannot reach outside its own package directory.
+// provider arrives as a Targets that opens Target values, and this package
+// hosts the binder that resolves an origin through it. index.html travels
+// with the code: go:embed cannot reach outside its own package directory.
 package attach
 
 import (
@@ -119,7 +120,7 @@ func WithTargets(t Targets) Option {
 	return func(b *BinderImpl) { b.targets = t }
 }
 
-// Bind is BinderImpl's half of the Binder contract.
+// Bind implements Binder.
 //
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
@@ -215,12 +216,12 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	//
 	// klog.SetLogger is process-global, which is the cost. It is the same trade
 	// tunneld already makes and documents for browser.Stdout/Stderr in
-	// openInBrowser (v1alpha1/tunnel.go) — a package global set on a dependency's
+	// browser.Open (v1alpha1/browser) — a package global set on a dependency's
 	// behalf, because owning the process's output is worth more than leaving a
 	// global untouched. Routed here rather than in the command so the guarantee
-	// holds for an embedding program that never runs run(). The first Server's
-	// logger wins, which for a process with one --log-level is the only logger
-	// there is.
+	// holds for an embedding program that never executes the command. The
+	// first Server's logger wins, which for a process with one --log-level is
+	// the only logger there is.
 	klogRouted.Do(func() { klog.SetLogger(logr.FromSlogHandler(log.Handler())) })
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -255,7 +256,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 		// it like any other value — it is our own prose, but it travels next to a
 		// name the operator typed.
 		//
-		// degraded names what a container was started without, or "" when it was
+		// notice names what a container was started without, or "" when it was
 		// started with both -t and -i and there is nothing to explain.
 		//
 		// The wording names the docker run flag rather than the symptom, because

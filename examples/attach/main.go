@@ -54,9 +54,9 @@ func main() {
 	// touches no daemon.
 	var remove func()
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
-		// start brings up the container this example exposes and returns once it is
-		// running, so the tunnel never attaches to something that is not there yet,
-		// along with the function that takes it down again.
+		// Bring up the container this example exposes, returning once it is
+		// running, so the tunnel never attaches to something that is not there
+		// yet, along with the function that takes it down again.
 		//
 		// The teardown is returned rather than hung on ctx because it has to survive
 		// ctx: by the time the caller wants it, the context that started the container
@@ -68,8 +68,8 @@ func main() {
 			return fmt.Errorf("docker client: %w", err)
 		}
 
-		// ensureImage pulls alpine if it is not already local. Inspect first, because
-		// the common case is that it is, and a pull that only prints "up to date" is
+		// Pull alpine if it is not already local. Inspect first, because the
+		// common case is that it is, and a pull that only prints "up to date" is
 		// still a round trip to a registry the example does not need.
 		if _, err := cli.ImageInspect(ctx, "alpine"); err != nil {
 			if !cerrdefs.IsNotFound(err) {
