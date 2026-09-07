@@ -50,7 +50,7 @@ var page = template.Must(template.New("attach").Parse(pageHTML))
 // told us about.
 const idleTimeout = 2 * time.Minute
 
-// klogRouted guards the process-global redirect in routeKlog.
+// klogRouted guards the process-global redirect Serve performs.
 var klogRouted sync.Once
 
 // Target is one attachable thing behind a Server: it streams, it says what it
@@ -110,7 +110,7 @@ type Server struct {
 //
 // The Server takes ownership of target: Close closes both.
 func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
-	// routeKlog points klog at the tunnel's own logger, once per process.
+	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
 	// logs through klog.Background(), which writes to stderr and has never heard
