@@ -59,8 +59,8 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	defer closeOrigins.Close()
 
 	cached := ""
-	if len(b.cacheDirs) > 0 {
-		cached = b.cache.Load(b.cacheDirs, log)
+	if len(b.cacheDirs.GetSlice()) > 0 {
+		cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start. WithContext
@@ -119,7 +119,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
 			return cause
 		}
-		b.cache.Discard(b.cacheDirs, log)
+		b.cache.Discard(b.cacheDirs.GetSlice(), log)
 		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 		tun = start("")
@@ -140,8 +140,8 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 
 	// After the URL is live, so what gets cached is a tunnel that came up
 	// rather than one that was merely asked for.
-	if len(b.cacheDirs) > 0 {
-		b.cache.Save(b.cacheDirs, log)
+	if len(b.cacheDirs.GetSlice()) > 0 {
+		b.cache.Save(b.cacheDirs.GetSlice(), log)
 	}
 
 	select {
@@ -171,6 +171,7 @@ func (b *BuilderImpl) wired() error {
 		name    string
 		missing bool
 	}{
+		{"cacheDirs", b.cacheDirs == nil},
 		{"engine", b.engine == nil},
 		{"cache", b.cache == nil},
 		{"panel", b.panel == nil},

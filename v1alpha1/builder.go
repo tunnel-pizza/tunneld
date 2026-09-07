@@ -2,14 +2,8 @@ package v1alpha1
 
 import (
 	"cmp"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,110 +37,11 @@ func WithProvider(host string) Option {
 }
 
 // WithCacheDir adds directories to cache tunnel specs in, in order,
-// appending across options.
-//
-// An entry that is a boolean is an instruction rather than a path: true names
-// the default location, false names nothing at all. That is what lets one
-// field take both a switch and a list — "on" is what an operator means by
-// setting the variable to true, and the default cache directory computed
-// below is the answer that needs no further configuration. An empty entry
-// reads as true, since nothing else it could mean is useful.
-//
-// The false half matters as much as the true half. Without it, an operator
-// turning the knob off would get a cache directory literally named "false",
-// silently, in whatever directory they happened to start from.
-//
-// False is a verdict on the whole list rather than on its own place in it: it
-// stops there, drops every directory collected so far, and holds — so
-// "/a,false,/b" caches nowhere, and so does "false,/b". A switch that only
-// cancelled the entries before it would make "off" depend on where in the list
-// somebody wrote it, and the reading where off means off is the one an
-// operator can be sure of. A later source still overrides: the flag replaces
-// what the variable said, and the variable replaces a seed.
-//
-// Entries are resolved to absolute paths, so a later chdir cannot move a cache
-// out from under the process, and that is also what makes deduplication mean
-// anything: "." and the working directory's own path are two spellings of one
-// directory, and a list that cached to it twice is not a list anybody wrote on
-// purpose.
-//
-// A directory that cannot be resolved is dropped rather than reported. The
-// only way that happens is os.Getwd failing, which is the same condition that
-// already turns an empty entry into nothing, and neither is worth failing a
-// tunnel over.
+// appending across options. See package cachedir for what an entry means —
+// a path, or true and false as instructions — and how entries are resolved
+// and deduplicated.
 func WithCacheDir(dirs ...string) Option {
-	return func(b *BuilderImpl) {
-		// A list that exists and is empty is one a false entry emptied, and
-		// nothing refills it: off holds until a later source sets the field
-		// back to nil and starts over.
-		if b.cacheDirs != nil && len(b.cacheDirs) == 0 {
-			return
-		}
-		for _, dir := range dirs {
-			// Whether dir is a boolean rather than a path, and which one:
-			// the spellings are strconv.ParseBool's — 1/t/T/TRUE/true/True
-			// and 0/f/F/FALSE/false/False — so both halves of the knob are
-			// the ones an operator would guess. Anything else is a path,
-			// including "yes" and "no", which ParseBool has never accepted
-			// and this should not start accepting on its own.
-			if on, err := strconv.ParseBool(dir); err == nil {
-				if !on {
-					b.cacheDirs = []string{}
-					return
-				}
-				dir = ""
-			}
-			if dir == "" {
-				// Where a spec goes when nothing says otherwise: a
-				// per-project directory under the user's cache directory.
-				//
-				// Not the working directory, which is what this used to be.
-				// A spec is credentials, the working directory is usually a
-				// repository, and no filename avoids being committed there:
-				// measured against GitHub's 239 gitignore templates and 752
-				// real ones, the best a name managed was 13% and 26%.
-				// Nothing written into somebody's checkout is safe by
-				// default, so nothing is written there.
-				//
-				// The working directory still decides *which* cache,
-				// because two projects on one machine are two tunnels. It is
-				// fingerprinted rather than mirrored: a path cannot be a
-				// single path element, and hashing it sidesteps every
-				// question about separators, length and case. The base name
-				// is kept as a prefix so the directory is recognisable to a
-				// person looking at it, and the hash is what makes it
-				// unique.
-				//
-				// An empty result means the user has no cache directory,
-				// which WithCacheDir reads as nothing to cache — the same as
-				// any other unusable entry.
-				if base, err := os.UserCacheDir(); err == nil {
-					if wd, err := os.Getwd(); err == nil {
-						sum := sha256.Sum256([]byte(wd))
-						name := hex.EncodeToString(sum[:])[:16]
-						// A readable prefix, when there is one to read: "/"
-						// and "." have no base worth showing, and the hash
-						// alone is still correct.
-						if label := filepath.Base(wd); label != "" && label != "." && label != string(filepath.Separator) {
-							name = label + "-" + name
-						}
-						dir = filepath.Join(base, "tunneld", name)
-					}
-				}
-			}
-			if dir == "" {
-				continue
-			}
-			abs, err := filepath.Abs(dir)
-			if err != nil {
-				continue
-			}
-			if slices.Contains(b.cacheDirs, abs) {
-				continue
-			}
-			b.cacheDirs = append(b.cacheDirs, abs)
-		}
-	}
+	return func(b *BuilderImpl) { b.cacheDirs.Add(dirs...) }
 }
 
 // WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
@@ -335,10 +230,10 @@ The public URLs, the origin map and every log line go to stderr.`,
 		//
 		// Nil, not empty: an empty list is one a false entry emptied, and seeding
 		// over it would re-enable what an operator turned off.
-		if b.cacheDirs == nil {
-			WithCacheDir("")(b)
+		if b.cacheDirs.GetSlice() == nil {
+			b.cacheDirs.Add("")
 		}
-		cmd.Flags().Var(&cacheDirValue{b: b}, "cache-dir",
+		cmd.Flags().Var(b.cacheDirs, "cache-dir",
 			"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
 		cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
@@ -375,41 +270,4 @@ The public URLs, the origin map and every log line go to stderr.`,
 		b.command = cmd
 	})
 	return b.command
-}
-
-// cacheDirValue binds --cache-dir onto WithCacheDir, so the flag, its
-// environment mirror and the Go setter resolve by one rule instead of three.
-// pflag's own stringArray would store the raw strings and leave "." and "true"
-// for whoever read them next to make sense of.
-type cacheDirValue struct {
-	b *BuilderImpl
-	// changed marks the first value the command line supplied. Until then the
-	// slice still holds whatever WithCacheDir seeded, and the first --cache-dir
-	// clears it: a command line replaces a seeded set rather than merging into
-	// one, which is the rule pflag's own stringArray applies to --url.
-	changed bool
-}
-
-func (v *cacheDirValue) Type() string   { return "stringArray" }
-func (v *cacheDirValue) String() string { return "[" + strings.Join(v.b.cacheDirs, ",") + "]" }
-
-func (v *cacheDirValue) Set(s string) error {
-	if !v.changed {
-		v.b.cacheDirs, v.changed = nil, true
-	}
-	WithCacheDir(s)(v.b)
-	return nil
-}
-
-// Append, GetSlice and Replace are pflag.SliceValue, which is how the
-// environment binding in Command hands a whole comma-separated variable over
-// at once. Replace clears first, for the same reason Set does on its first
-// call.
-func (v *cacheDirValue) Append(s string) error { return v.Set(s) }
-func (v *cacheDirValue) GetSlice() []string    { return v.b.cacheDirs }
-
-func (v *cacheDirValue) Replace(dirs []string) error {
-	v.b.cacheDirs, v.changed = nil, true
-	WithCacheDir(dirs...)(v.b)
-	return nil
 }

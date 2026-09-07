@@ -14,11 +14,13 @@ import (
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
@@ -34,6 +36,27 @@ type Option = v1.Option[*BuilderImpl]
 // once in a v1alpha1/<name> subpackage, seeded by New, and replaceable with
 // the matching With* option below. A function that maps a value to a value
 // gets no contract; see CONTRIBUTING.
+
+// CacheDirs is the --cache-dir list: the directories tunnel specs are
+// cached in, with the boolean-entry and absolute-path rules WithCacheDir
+// documents, bound onto the flag as a pflag value. GetSlice is nil until
+// something is added and empty after a false entry, which is how Command
+// tells "unset" from "turned off".
+type CacheDirs interface {
+	pflag.Value
+	pflag.SliceValue
+	// Add appends directories by the list's rules: a boolean entry is an
+	// instruction, entries become absolute, repeats collapse, and a false
+	// entry empties the list and holds it empty.
+	Add(dirs ...string)
+}
+
+// WithCacheDirs replaces the list implementation. The default is
+// cachedir.New(). Not to be confused with WithCacheDir, which adds entries
+// to whichever list is there.
+func WithCacheDirs(c CacheDirs) Option {
+	return func(b *BuilderImpl) { b.cacheDirs = c }
+}
 
 // Engine mints or replays the tunnel run drives. spec is a cached envelope to
 // replay, "" to mint; provider is the quick-tunnel host, "" for the default.
@@ -116,6 +139,7 @@ func WithBinder(binder Binder) Option {
 // build rather than the first run.
 var (
 	_ v1.Builder = (*BuilderImpl)(nil)
+	_ CacheDirs  = (*cachedir.ValueImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Panel      = (*panel.PanelImpl)(nil)
@@ -138,6 +162,7 @@ func New(opts ...Option) *BuilderImpl {
 	b := v1.Apply(&BuilderImpl{},
 		WithOpen(v1.DefaultOpen),
 		WithMultiview(v1.DefaultMultiview),
+		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
 		WithPanel(panel.New()),
@@ -153,14 +178,8 @@ func New(opts ...Option) *BuilderImpl {
 // flag over the field it defaults from, so an argv value simply overwrites
 // the seed and there is no second copy of the configuration to keep in sync.
 type BuilderImpl struct {
-	name string
-	urls []string
-	// cacheDirs distinguishes nil from empty, and that is the whole of the
-	// cache switch's state. Nil is unset, and Command fills it with the
-	// working directory. Empty but not nil is a list a false entry emptied on
-	// purpose, which Command leaves alone and WithCacheDir will not add to. A
-	// later source starts over by setting the field back to nil.
-	cacheDirs []string
+	name      string
+	urls      []string
 	provider  string
 	logLevel  string
 	multiview bool
@@ -176,12 +195,13 @@ type BuilderImpl struct {
 
 	// The collaborators run composes, each behind a contract declared above.
 	// Seeded by New; a test or a contributor swaps one with its With* option.
-	engine  Engine
-	cache   Cache
-	panel   Panel
-	opener  Opener
-	counter Counter
-	binder  Binder
+	cacheDirs CacheDirs
+	engine    Engine
+	cache     Cache
+	panel     Panel
+	opener    Opener
+	counter   Counter
+	binder    Binder
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
 	// banner, the origin map, and
