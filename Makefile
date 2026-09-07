@@ -111,8 +111,7 @@ image:
 clean:
 	rm -f tunneld tunneld.exe TUNNEL.env
 	rm -rf dist
-	@name="$$(basename "$$PWD")-$$(printf %s "$$PWD" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-16)"; \
-	  rm -rf "$$HOME/Library/Caches/tunneld/$$name" "$${XDG_CACHE_HOME:-$$HOME/.cache}/tunneld/$$name"
+	rm -rf "$$HOME/Library/Caches/tunneld" "$${XDG_CACHE_HOME:-$$HOME/.cache}/tunneld"
 	go clean -testcache
 	-docker compose -p tunneld-example down --volumes --remove-orphans 2>/dev/null
 	-docker rm -f tunneld-example 2>/dev/null
