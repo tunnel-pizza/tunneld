@@ -97,16 +97,19 @@ func WithCounter(c Counter) Option {
 	return func(b *BuilderImpl) { b.counter = c }
 }
 
-// Targets opens a container reference as something attach can serve.
-type Targets interface {
-	Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error)
+// Binder turns the origins the operator typed into the origins the tunnel
+// dials, standing a loopback server in for each container. The dialable list
+// keeps display's length and order — index n means origin n everywhere
+// downstream — and the closer shuts every server the binding started.
+type Binder interface {
+	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, close io.Closer, err error)
 }
 
-// WithTargets replaces what a dockerd:// origin is resolved against. The
-// default is docker.New(), the daemon $DOCKER_HOST names; a test hands in a
-// stub and never touches a daemon.
-func WithTargets(t Targets) Option {
-	return func(b *BuilderImpl) { b.targets = t }
+// WithBinder replaces what stands a loopback origin in for a container. The
+// default is attach.New(attach.WithTargets(docker.New())): attach serves,
+// docker resolves.
+func WithBinder(binder Binder) Option {
+	return func(b *BuilderImpl) { b.binder = binder }
 }
 
 // The defaults satisfy their contracts, checked here so a drift fails the
@@ -118,7 +121,7 @@ var (
 	_ Panel      = (*panel.PanelImpl)(nil)
 	_ Opener     = (*browser.OpenerImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
-	_ Targets    = (*docker.TargetsImpl)(nil)
+	_ Binder     = (*attach.BinderImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -140,7 +143,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithPanel(panel.New()),
 		WithOpener(browser.New()),
 		WithCounter(counter.New()),
-		WithTargets(docker.New()),
+		WithBinder(attach.New(attach.WithTargets(docker.New()))),
 	)
 	return v1.Apply(b, opts...)
 }
@@ -178,7 +181,7 @@ type BuilderImpl struct {
 	panel   Panel
 	opener  Opener
 	counter Counter
-	targets Targets
+	binder  Binder
 
 	// stdout carries the help text and version banner, stderr the tunnel's own
 	// banner, the origin map, and

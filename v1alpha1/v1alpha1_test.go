@@ -63,7 +63,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		{"panel", New(WithPanel(nil))},
 		{"opener", New(WithOpener(nil))},
 		{"counter", New(WithCounter(nil))},
-		{"targets", New(WithTargets(nil))},
+		{"binder", New(WithBinder(nil))},
 	} {
 		err := tc.b.wired()
 		if err == nil || !strings.Contains(err.Error(), tc.name) {
@@ -75,11 +75,11 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	e, c, p, o, n, g := &fakeEngine{}, &fakeCache{}, panel.New(), &fakeOpener{}, counter.New(), &stubTargets{}
-	b := New(WithEngine(e), WithCache(c), WithPanel(p), WithOpener(o), WithCounter(n), WithTargets(g))
+	e, c, p, o, n, g := &fakeEngine{}, &fakeCache{}, panel.New(), &fakeOpener{}, counter.New(), &fakeBinder{}
+	b := New(WithEngine(e), WithCache(c), WithPanel(p), WithOpener(o), WithCounter(n), WithBinder(g))
 
 	if b.engine != Engine(e) || b.cache != Cache(c) || b.panel != Panel(p) ||
-		b.opener != Opener(o) || b.counter != Counter(n) || b.targets != Targets(g) {
+		b.opener != Opener(o) || b.counter != Counter(n) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}
 }

@@ -2,9 +2,12 @@ package attach
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -451,5 +454,145 @@ func TestSessionEnds(t *testing.T) {
 				t.Fatal("AttachContainer never returned after the session ended")
 			}
 		})
+	}
+}
+
+// stubTarget is a container that never says anything. Bind only needs a
+// Target to stand a server on; what the stream does is tested elsewhere in
+// this package.
+type stubTarget struct {
+	name   string
+	closed bool
+}
+
+func (s *stubTarget) Name() string { return s.name }
+func (s *stubTarget) TTY() bool    { return true }
+func (s *stubTarget) Stdin() bool  { return true }
+func (s *stubTarget) Close() error { s.closed = true; return nil }
+func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.Reader, _, _ io.WriteCloser, _ bool, _ <-chan remotecommand.TerminalSize) error {
+	<-ctx.Done()
+	return nil
+}
+
+// stubTargets stands in for the daemon: it records every reference it was
+// asked for and answers with a stubTarget. failOn, when positive, makes that
+// call fail instead — the unwinding case needs one success before one
+// failure.
+type stubTargets struct {
+	asked  []string
+	failOn int
+	opened []*stubTarget
+}
+
+func (s *stubTargets) Open(_ context.Context, ref string, _ *slog.Logger) (Target, error) {
+	s.asked = append(s.asked, ref)
+	if s.failOn > 0 && len(s.asked) == s.failOn {
+		return nil, errors.New("no such container")
+	}
+	target := &stubTarget{name: ref}
+	s.opened = append(s.opened, target)
+	return target, nil
+}
+
+// mustURLs parses raw as URLs, failing the test on the first one that is not.
+func mustURLs(t *testing.T, raw ...string) []*url.URL {
+	t.Helper()
+	got := make([]*url.URL, 0, len(raw))
+	for _, s := range raw {
+		u, err := url.Parse(s)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", s, err)
+		}
+		got = append(got, u)
+	}
+	return got
+}
+
+// TestBindKeepsOrder pins the invariant the whole feature rests on: the
+// dialable list is the same length and the same order as what the operator
+// typed, so index n still means origin n everywhere downstream — ?n routing,
+// PublicURL, the reported map, the multiview tiles.
+func TestBindKeepsOrder(t *testing.T) {
+	targets := &stubTargets{}
+	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")
+
+	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+
+	if len(dialable) != len(display) {
+		t.Fatalf("dialable has %d entries, want %d", len(dialable), len(display))
+	}
+	if got := dialable[0].String(); got != "http://localhost:3000" {
+		t.Errorf("dialable[0] = %q, want the http origin unchanged", got)
+	}
+	if got := dialable[2].String(); got != "http://localhost:4000" {
+		t.Errorf("dialable[2] = %q, want the http origin unchanged", got)
+	}
+	for _, i := range []int{1, 3} {
+		if !strings.HasPrefix(dialable[i].Host, "127.0.0.1:") {
+			t.Errorf("dialable[%d] = %q, want a loopback origin", i, dialable[i])
+		}
+	}
+	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
+		t.Errorf("opened %q, want %q", targets.asked, want)
+	}
+}
+
+// TestBindWithoutContainers pins that a command with no dockerd:// URL starts
+// nothing at all — the feature is inert until somebody asks for it.
+func TestBindWithoutContainers(t *testing.T) {
+	targets := &stubTargets{}
+	display := mustURLs(t, "http://localhost:3000", "http://localhost:4000")
+
+	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+
+	if len(targets.asked) != 0 {
+		t.Errorf("opened %q, want nothing", targets.asked)
+	}
+	for i, u := range dialable {
+		if u != display[i] {
+			t.Errorf("dialable[%d] = %q, want the original origin", i, u)
+		}
+	}
+}
+
+// TestBindUnwindsOnFailure pins that a later container failing does not leave
+// an earlier one's server listening. The command is about to return an error
+// and exit; a leaked goroutine holding a port would outlive it in an
+// embedding program.
+func TestBindUnwindsOnFailure(t *testing.T) {
+	targets := &stubTargets{failOn: 2}
+	display := mustURLs(t, "dockerd://api", "dockerd://missing")
+
+	if _, _, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
+		t.Fatal("Bind succeeded, want an error")
+	}
+	if len(targets.opened) != 1 {
+		t.Fatalf("opened %d targets, want 1", len(targets.opened))
+	}
+	if !targets.opened[0].closed {
+		t.Error("the first container's target was left open")
+	}
+}
+
+// TestBindWithoutTargets pins that a dockerd:// origin met with no Targets
+// configured fails with a message naming the missing dependency, rather than
+// panicking on a nil interface.
+func TestBindWithoutTargets(t *testing.T) {
+	display := mustURLs(t, "dockerd://api")
+
+	_, _, err := New().Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err == nil {
+		t.Fatal("Bind succeeded, want an error")
+	}
+	if want := "attach: no Targets configured to open dockerd://api"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
 	}
 }

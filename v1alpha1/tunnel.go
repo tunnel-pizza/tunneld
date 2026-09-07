@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -53,11 +52,11 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 	// A container is not an HTTP service, so tunneld serves one on its behalf
 	// and hands the tunnel the loopback address instead. origins stays what
 	// the operator typed — it is what the reported map and the panel show.
-	bound, err := bindOrigins(ctx, b.targets, origins, log)
+	dialable, closeOrigins, err := b.binder.Bind(ctx, origins, log)
 	if err != nil {
 		return err
 	}
-	defer bound.Close()
+	defer closeOrigins.Close()
 
 	cached := ""
 	if len(b.cacheDirs) > 0 {
@@ -72,7 +71,7 @@ func (b *BuilderImpl) run(ctx context.Context, stderr io.Writer) error {
 			WithLogger(log).
 			WithContext(ctx).
 			WithEventListener(b.events(log, gone)).
-			WithLocalURL(bound.dialable...)
+			WithLocalURL(dialable...)
 		// Served in front of the origin proxy, so the panel needs no port of
 		// its own and no origin ever sees the request.
 		if b.panel.Wanted(b.multiview, origins) {
@@ -177,7 +176,7 @@ func (b *BuilderImpl) wired() error {
 		{"panel", b.panel == nil},
 		{"opener", b.opener == nil},
 		{"counter", b.counter == nil},
-		{"targets", b.targets == nil},
+		{"binder", b.binder == nil},
 	} {
 		if c.missing {
 			return fmt.Errorf("builder has no %s: construct it with New", c.name)
@@ -245,29 +244,6 @@ func report(stderr io.Writer, public *url.URL, origins []*url.URL, view string) 
 	}
 }
 
-// PublicURL is the address origin i answers on, out of n origins: the tunnel's
-// URL with a bare ?i routing parameter. Bare is load-bearing — a valued
-// parameter ("?1=x") is application data the proxy forwards, while the bare
-// form is the routing directive it consumes and strips before the request
-// reaches the origin.
-//
-// The default origin is explicit too, as ?0, whenever there is more than one.
-// A bare URL routes by the referring page and then by the sticky cookie, so
-// once a browser has visited ?1 a plain address no longer reaches origin 0 —
-// only an explicit index clears a previous choice. An address that stops
-// working after someone clicks around is worse than a longer one.
-//
-// A lone origin has nothing to route between, so n of 1 gives the plain URL
-// and no parameter at all.
-func PublicURL(public *url.URL, i, n int) string {
-	if n <= 1 {
-		return public.String()
-	}
-	routed := *public
-	routed.RawQuery = strconv.Itoa(i)
-	return routed.String()
-}
-
 // parseOrigins turns the settled origin values into URLs, rejecting anything
 // the tunnel could not proxy to.
 //
@@ -300,7 +276,7 @@ func parseOrigins(raw []string) ([]*url.URL, error) {
 			return nil, fmt.Errorf("%w: %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
 		}
 		// A container is not proxied at all: it is served, by a loopback
-		// origin bindOrigins stands up later. Everything the shorthands below
+		// origin the binder stands up later. Everything the shorthands below
 		// fill in — a default scheme, a default host, a preserved path — is
 		// meaningless here, so the value is taken exactly as typed and
 		// anything extra is an error rather than a silent drop.

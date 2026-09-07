@@ -7,8 +7,8 @@
 //
 // Two types, because the root needs two things: TargetsImpl opens a
 // reference — a name, an id, a Compose service — and TargetImpl is the
-// container it found. The first is behind the root's Targets contract; the
-// second is behind attach.Target.
+// container it found. The first is behind attach.Targets; the second is
+// behind attach.Target.
 package docker
 
 import (
@@ -246,6 +246,10 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 
 // TargetImpl is what attach serves; a drift in either package fails here.
 var _ attach.Target = (*TargetImpl)(nil)
+
+// TargetsImpl is what the binder depends on to resolve a reference; a drift
+// in either package fails here too.
+var _ attach.Targets = (*TargetsImpl)(nil)
 
 // TargetImpl is one container, resolved and inspected.
 type TargetImpl struct {

@@ -31,6 +31,8 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 	"k8s.io/klog/v2"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // pageHTML is the terminal page. Embedded rather than fetched, so a tunnel
@@ -80,6 +82,94 @@ type Target interface {
 	// defer, so an implementation that cannot survive being closed twice will
 	// break at shutdown.
 	Close() error
+}
+
+// Targets opens a container reference as a Target. It is the half of the
+// provider contract the binder depends on — resolving what the operator
+// typed — where Target is the half Server depends on. One provider
+// implements both, which is why both live here.
+type Targets interface {
+	Open(ctx context.Context, ref string, log *slog.Logger) (Target, error)
+}
+
+// Option configures a BinderImpl at construction.
+type Option = v1.Option[*BinderImpl]
+
+// BinderImpl turns the origins the operator typed into the origins libtunnel
+// can proxy to.
+//
+// An http or https origin passes through untouched; a dockerd:// origin is
+// served here, by a loopback attach server that takes its place in the list.
+// The two lists share a length and an order, which is the whole point: index n
+// still means origin n for the bare ?n routing parameter, for PublicURL, for
+// the reported map and for the multiview tiles, so a container is an origin
+// like any other and nothing downstream learns a second shape.
+type BinderImpl struct{ targets Targets }
+
+// New returns a BinderImpl, configured by opts. It carries no Targets until
+// WithTargets sets one; a dockerd:// origin met without one fails at Bind
+// rather than at construction.
+func New(opts ...Option) *BinderImpl {
+	return v1.Apply(&BinderImpl{}, opts...)
+}
+
+// WithTargets sets what turns a container reference into something attach can
+// serve. The default is the Docker daemon, and a test hands in a stub.
+func WithTargets(t Targets) Option {
+	return func(b *BinderImpl) { b.targets = t }
+}
+
+// Bind is BinderImpl's half of the Binder contract.
+//
+// A failure unwinds everything already bound. The command is about to return
+// an error, and a listener left behind would outlive it inside an embedding
+// program.
+func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, io.Closer, error) {
+	dialable := make([]*url.URL, 0, len(display))
+	var servers closers
+	for _, origin := range display {
+		if origin.Scheme != v1.DockerScheme {
+			dialable = append(dialable, origin)
+			continue
+		}
+
+		if b.targets == nil {
+			_ = servers.Close()
+			return nil, nil, fmt.Errorf("attach: no Targets configured to open %s://%s", v1.DockerScheme, origin.Host)
+		}
+
+		target, err := b.targets.Open(ctx, origin.Host, log)
+		if err != nil {
+			_ = servers.Close()
+			return nil, nil, err
+		}
+		server, err := Serve(ctx, target, log)
+		if err != nil {
+			_ = target.Close()
+			_ = servers.Close()
+			return nil, nil, err
+		}
+		servers = append(servers, server)
+		dialable = append(dialable, server.URL())
+		log.Info("serving a container as an origin", "container", origin.Host, "origin", server.URL())
+	}
+	return dialable, servers, nil
+}
+
+// closers is every attach server a Bind call started, closed together.
+type closers []io.Closer
+
+// Close shuts every attach server down, and with it every container client
+// they own. The first error is returned and the rest still close: a partial
+// shutdown is worse than a lost error message.
+func (c closers) Close() error {
+	var err error
+	for _, closer := range c {
+		if cerr := closer.Close(); err == nil {
+			err = cerr
+		}
+	}
+	return err
 }
 
 // Server is the loopback HTTP origin standing in for one Target.

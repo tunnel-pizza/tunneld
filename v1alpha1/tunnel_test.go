@@ -116,42 +116,6 @@ func TestParseOriginsRejects(t *testing.T) {
 	}
 }
 
-// TestPublicURL pins the routing contract: with more than one origin every
-// address carries a bare ?i, the parameter the tunnel's proxy consumes — the
-// default origin included, since a plain URL routes by referer and cookie and
-// so stops reaching origin 0 once a browser has visited ?1. A valued parameter
-// ("?1=x") would be application data and route nowhere, so the bareness is
-// half the assertion and the explicit ?0 is the other half.
-//
-// A lone origin has nothing to route between and gets the plain URL. The
-// tunnel URL itself must survive unmodified either way, since every later call
-// derives from it.
-func TestPublicURL(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.pizza/")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cases := []struct {
-		name string
-		i, n int
-		want string
-	}{
-		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
-		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
-		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
-		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
-	}
-	for _, tc := range cases {
-		if got := PublicURL(public, tc.i, tc.n); got != tc.want {
-			t.Errorf("%s: PublicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
-		}
-	}
-	if public.RawQuery != "" {
-		t.Errorf("PublicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
-	}
-}
-
 // TestReportWritesOnlyToStderr pins the output contract: a running tunnel
 // writes its addresses to stderr and nothing at all to stdout.
 //
@@ -368,6 +332,19 @@ func (f *fakeOpener) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logg
 	}
 }
 
+// fakeBinder stands in for the attach package: it hands display back
+// unchanged and closes nothing, so TestRun never stands up a real listener.
+type fakeBinder struct {
+	err    error
+	closed bool
+}
+
+func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, io.Closer, error) {
+	return display, f, f.err
+}
+
+func (f *fakeBinder) Close() error { f.closed = true; return nil }
+
 // runHarness is run with every collaborator faked except the two that are
 // pure: the real panel, because its URL and interceptor order are what the
 // assertions check, and a real counter armed at one, because the verdict
@@ -377,6 +354,7 @@ type runHarness struct {
 	engine *fakeEngine
 	cache  *fakeCache
 	opener *fakeOpener
+	binder *fakeBinder
 	order  []string
 	stderr bytes.Buffer
 	b      *BuilderImpl
@@ -388,6 +366,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
 	h.cache = &fakeCache{order: &h.order}
 	h.opener = &fakeOpener{order: &h.order}
+	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
 		WithURL(urls...),
@@ -396,7 +375,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithEngine(h.engine),
 		WithCache(h.cache),
 		WithOpener(h.opener),
-		WithTargets(&stubTargets{}),
+		WithBinder(h.binder),
 		WithCounter(counter.New(counter.WithMaxGone(1))),
 	)
 	return h
@@ -449,6 +428,22 @@ func TestRun(t *testing.T) {
 		}
 		if len(tun.locals) != 2 {
 			t.Errorf("tunnel was given %d origins, want 2", len(tun.locals))
+		}
+		if !h.binder.closed {
+			t.Error("the binder's closer was never called; run's defer did not run")
+		}
+	})
+
+	t.Run("a binder failure is returned before the engine is asked for anything", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.binder.err = errors.New("no such container")
+
+		err := h.run(t)
+		if !errors.Is(err, h.binder.err) {
+			t.Errorf("run() = %v, want the binder's own error", err)
+		}
+		if len(h.engine.specs) != 0 {
+			t.Errorf("engine was asked for %d specs, want none", len(h.engine.specs))
 		}
 	})
 
