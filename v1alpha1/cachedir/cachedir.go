@@ -34,7 +34,7 @@ type ValueImpl struct {
 	// changed marks the first value the command line supplied. Until then the
 	// slice still holds whatever Add seeded, and the first --cache-dir clears
 	// it: a command line replaces a seeded set rather than merging into one,
-	// which is the rule pflag's own stringArray applies to --url.
+	// which is the rule origins follow as arguments.
 	changed bool
 }
 

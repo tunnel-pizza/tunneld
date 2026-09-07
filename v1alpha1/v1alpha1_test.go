@@ -39,7 +39,7 @@ func TestNewIsUnconfigured(t *testing.T) {
 // overwritten by the seeded DefaultOpen. Swapping the two Apply calls in New
 // fails this.
 func TestCallerOptionBeatsDefault(t *testing.T) {
-	b := New(WithURL("http://localhost:3000"), WithOpen(false))
+	b := New(WithOrigin("http://localhost:3000"), WithOpen(false))
 	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
 		t.Errorf("--no-open default = %q, want %q (WithOpen(false) lost to the default)", got, "true")
 	}
@@ -59,7 +59,7 @@ func TestCallerOptionBeatsDefault(t *testing.T) {
 // wiring check and well before anything touches the network, which is what
 // proves New wired every collaborator without actually minting a tunnel.
 func TestNewWiresEveryCollaborator(t *testing.T) {
-	_, _, err := execute(t, New(WithURL(":3000")), "--log-level", "loud")
+	_, _, err := execute(t, New(WithOrigin(":3000")), "--log-level", "loud")
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("New(): error = %v, want ErrInvalidLogLevel (proving every collaborator was wired)", err)
 	}
@@ -68,13 +68,13 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		name string
 		b    *BuilderImpl
 	}{
-		{"cacheDirs", New(WithURL(":3000"), WithCacheDirs(nil))},
-		{"engine", New(WithURL(":3000"), WithEngine(nil))},
-		{"cache", New(WithURL(":3000"), WithCache(nil))},
-		{"panel", New(WithURL(":3000"), WithPanel(nil))},
-		{"opener", New(WithURL(":3000"), WithOpener(nil))},
-		{"counter", New(WithURL(":3000"), WithCounter(nil))},
-		{"binder", New(WithURL(":3000"), WithBinder(nil))},
+		{"cacheDirs", New(WithOrigin(":3000"), WithCacheDirs(nil))},
+		{"engine", New(WithOrigin(":3000"), WithEngine(nil))},
+		{"cache", New(WithOrigin(":3000"), WithCache(nil))},
+		{"panel", New(WithOrigin(":3000"), WithPanel(nil))},
+		{"opener", New(WithOrigin(":3000"), WithOpener(nil))},
+		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
+		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := execute(t, tc.b)

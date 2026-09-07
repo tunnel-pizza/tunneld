@@ -38,7 +38,7 @@ func main() {
 	defer stop()
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithURL("http://localhost:3000", "http://localhost:4000"),
+		v1alpha1.WithOrigin("http://localhost:3000", "http://localhost:4000"),
 		// Only the default origin would open, and this example is about
 		// seeing both. Off, so it reports the whole map and opens nothing.
 		v1alpha1.WithOpen(false),

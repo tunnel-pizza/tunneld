@@ -37,15 +37,15 @@ func execute(t *testing.T, b v1.Builder, args ...string) (stdout, stderr string,
 }
 
 // TestOptionsLand pins that every builder option reaches the field the flag
-// binds over, observed the only way an outsider can: through the built
-// command. Name through Name, the writers through cobra, the rest through
-// the flag defaults.
+// binds over. Name through Name, the writers through cobra, the flag-backed
+// knobs through their defaults, and the origins through the field they seed —
+// origins are arguments now, so there is no flag default to read them from.
 func TestOptionsLand(t *testing.T) {
 	var sink bytes.Buffer
 	b := New(
 		WithName("expose"),
-		WithURL("http://localhost:3000"),
-		WithURL("http://localhost:4000"),
+		WithOrigin("http://localhost:3000"),
+		WithOrigin("http://localhost:4000"),
 		WithProvider("example.test"),
 		WithLogLevel("warn"),
 		WithStdout(&sink),
@@ -59,8 +59,10 @@ func TestOptionsLand(t *testing.T) {
 	if got, want := cmd.Name(), "expose"; got != want {
 		t.Errorf("built command Name() = %q, want %q", got, want)
 	}
+	if got, want := strings.Join(b.origins, ","), "http://localhost:3000,http://localhost:4000"; got != want {
+		t.Errorf("seeded origins = %q, want %q — repeated options must append", got, want)
+	}
 	for flag, want := range map[string]string{
-		"url":       "[http://localhost:3000,http://localhost:4000]",
 		"provider":  "example.test",
 		"log-level": "warn",
 	} {
@@ -89,45 +91,47 @@ func TestNameDefaults(t *testing.T) {
 // assembly would bind a second set of flags over the same fields, so the
 // cached command is correctness, not just an optimization.
 func TestCommandIsIdempotent(t *testing.T) {
-	b := New(WithURL("http://localhost:3000"))
+	b := New(WithOrigin("http://localhost:3000"))
 	if first, second := b.Command(), b.Command(); first != second {
 		t.Error("Command() returned a different command on the second call, want the cached one")
 	}
 }
 
-// TestURLRequiredWhenUnseeded pins that a bare command refuses to run rather
-// than minting a tunnel with nothing behind it.
-func TestURLRequiredWhenUnseeded(t *testing.T) {
+// TestOriginRequiredWhenUnseeded pins that a bare command refuses to run
+// rather than minting a tunnel with nothing behind it, and that its message
+// names both ways of supplying one — that is the choice an operator makes to
+// fix it.
+func TestOriginRequiredWhenUnseeded(t *testing.T) {
 	_, _, err := execute(t, New())
-	if err == nil {
-		t.Fatal("running with no --url = nil error, want a rejection")
+	if !errors.Is(err, v1.ErrNoOrigin) {
+		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
 	}
-	if !strings.Contains(err.Error(), "url") {
-		t.Errorf("error %q does not name the missing flag", err)
+	if !strings.Contains(err.Error(), v1.OriginsEnv) {
+		t.Errorf("error %q does not name %s", err, v1.OriginsEnv)
 	}
 }
 
-// TestURLOptionalWhenSeeded pins the embedding case: an origin supplied
-// through WithURL makes --url optional rather than forbidden. The command gets
-// past the required-flag check and fails on the deliberately bad log level,
-// which is the assertion — it never reaches the network.
-func TestURLOptionalWhenSeeded(t *testing.T) {
-	b := New(WithURL("http://localhost:3000"), WithLogLevel("loud"))
+// TestOriginOptionalWhenSeeded pins the embedding case: an origin supplied
+// through WithOrigin lets the command run with no arguments at all. It gets
+// past the nothing-to-expose check and fails on the deliberately bad log
+// level, which is the assertion — it never reaches the network.
+func TestOriginOptionalWhenSeeded(t *testing.T) {
+	b := New(WithOrigin("http://localhost:3000"), WithLogLevel("loud"))
 	_, _, err := execute(t, b)
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
-		t.Fatalf("error = %v, want ErrInvalidLogLevel (proving --url was optional)", err)
+		t.Fatalf("error = %v, want ErrInvalidLogLevel (proving the seed stood in for an argument)", err)
 	}
 }
 
-// TestFlagReplacesSeededURLs pins that a command line overrides the seed
-// wholesale instead of merging into it. The seeded origin is unusable and the
-// flag's is fine, so an append would fail on the origin and a replace fails on
-// the log level — which is the discriminator.
-func TestFlagReplacesSeededURLs(t *testing.T) {
-	b := New(WithURL("ftp://seeded.invalid"))
-	_, _, err := execute(t, b, "--url", "http://localhost:3000", "--log-level", "loud")
+// TestArgumentReplacesSeededOrigins pins that a command line overrides the
+// seed wholesale instead of merging into it. The seeded origin is unusable and
+// the argument's is fine, so an append would fail on the origin and a replace
+// fails on the log level — which is the discriminator.
+func TestArgumentReplacesSeededOrigins(t *testing.T) {
+	b := New(WithOrigin("ftp://seeded.invalid"))
+	_, _, err := execute(t, b, "http://localhost:3000", "--log-level", "loud")
 	if errors.Is(err, v1.ErrInvalidOrigin) {
-		t.Fatal("seeded origin survived the --url flag, want the flag to replace the seed")
+		t.Fatal("seeded origin survived an argument, want the argument to replace the seed")
 	}
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
@@ -143,10 +147,10 @@ func TestRejectsUnusableFlags(t *testing.T) {
 		args []string
 		want error
 	}{
-		{"unproxyable scheme", []string{"--url", "ftp://localhost:21"}, v1.ErrInvalidOrigin},
-		{"no host", []string{"--url", "http://"}, v1.ErrInvalidOrigin},
-		{"empty origin", []string{"--url", "  "}, v1.ErrNoOrigin},
-		{"unknown log level", []string{"--url", "http://localhost:3000", "--log-level", "loud"}, v1.ErrInvalidLogLevel},
+		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrInvalidOrigin},
+		{"no host", []string{"http://"}, v1.ErrInvalidOrigin},
+		{"empty origin", []string{"  "}, v1.ErrNoOrigin},
+		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, v1.ErrInvalidLogLevel},
 	}
 
 	for _, tc := range cases {
@@ -159,12 +163,13 @@ func TestRejectsUnusableFlags(t *testing.T) {
 	}
 }
 
-// TestRejectsPositionalArgs pins that the command takes no bare arguments —
-// origins arrive through --url, so a stray word is a mistake worth naming
-// rather than something to ignore.
-func TestRejectsPositionalArgs(t *testing.T) {
-	if _, _, err := execute(t, New(), "--url", "http://localhost:3000", "stray"); err == nil {
-		t.Fatal("running with a positional argument = nil error, want a rejection")
+// TestArgumentsAreOrigins pins that bare arguments are the origins, and that
+// every one of them is parsed rather than the first taken and the rest
+// ignored. A word that is not an origin fails as an origin, which is the
+// message that tells somebody what they actually typed wrong.
+func TestArgumentsAreOrigins(t *testing.T) {
+	if _, _, err := execute(t, New(), "http://localhost:3000", "ftp://nope"); !errors.Is(err, v1.ErrInvalidOrigin) {
+		t.Fatalf("running with a second, bad origin = %v, want ErrInvalidOrigin", err)
 	}
 }
 
@@ -191,7 +196,7 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	if !strings.Contains(stdout, "expose --url") {
+	if !strings.Contains(stdout, "expose <origin>") {
 		t.Errorf("help %q does not use the configured command name", stdout)
 	}
 }
@@ -218,7 +223,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.NoOpenEnv, tc.env)
 
-			b := New(WithURL("http://localhost:3000"))
+			b := New(WithOrigin("http://localhost:3000"))
 			// A deliberately bad level stops the run once the flags have
 			// settled, before anything dials or any window opens.
 			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
@@ -243,7 +248,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 // stays positive while the flag reads negative, so this is also what pins the
 // two staying in step.
 func TestWithOpenSeedsTheDefault(t *testing.T) {
-	b := New(WithURL("http://localhost:3000"), WithOpen(false))
+	b := New(WithOrigin("http://localhost:3000"), WithOpen(false))
 
 	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
 		t.Errorf("--no-open default = %q, want %q", got, "true")
@@ -373,7 +378,7 @@ func TestCacheDir(t *testing.T) {
 		{name: "a seed stands when nothing overrides it", seed: []string{"$OTHER/seeded"}, want: []string{"$OTHER/seeded"}},
 		{
 			// Both overrides replace the seed rather than extending it, which
-			// is the rule --url follows: a command line never merges into a
+			// is the rule origins follow: a command line never merges into a
 			// seeded set, and neither does the environment.
 			name: "the variable replaces a seed",
 			seed: []string{"$OTHER/seeded"}, env: "$OTHER",
@@ -398,7 +403,7 @@ func TestCacheDir(t *testing.T) {
 			// What an unconfigured run resolves to, from this working
 			// directory. Command seeds the default; nothing is executed, so
 			// the environment is not applied to it.
-			probe := New(WithURL("http://localhost:3000"))
+			probe := New(WithOrigin("http://localhost:3000"))
 			dflt := probe.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 
 			// The same substitution on inputs and wants, so a path is written
@@ -417,7 +422,7 @@ func TestCacheDir(t *testing.T) {
 
 			t.Setenv(v1.CacheDirEnv, resolve(tc.env))
 
-			opts := []Option{WithURL("http://localhost:3000")}
+			opts := []Option{WithOrigin("http://localhost:3000")}
 			if len(tc.seed) > 0 {
 				opts = append(opts, WithCacheDir(resolveAll(tc.seed)...))
 			}
@@ -461,7 +466,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.MultiviewEnv, tc.env)
 
-			b := New(WithURL("http://localhost:3000", "http://localhost:4000"))
+			b := New(WithOrigin("http://localhost:3000", "http://localhost:4000"))
 			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
 			if !errors.Is(err, v1.ErrInvalidLogLevel) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
@@ -481,7 +486,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 // TestWithMultiviewSeedsTheDefault pins that an embedder can flip the default
 // without forbidding the flag.
 func TestWithMultiviewSeedsTheDefault(t *testing.T) {
-	b := New(WithURL("http://localhost:3000"), WithMultiview(false))
+	b := New(WithOrigin("http://localhost:3000"), WithMultiview(false))
 
 	if got := b.Command().Flags().Lookup("multiview").DefValue; got != "false" {
 		t.Errorf("--multiview default = %q, want %q", got, "false")
@@ -499,7 +504,7 @@ func TestWithMultiviewSeedsTheDefault(t *testing.T) {
 func TestDefaultCacheDir(t *testing.T) {
 	dflt := func(t *testing.T) string {
 		t.Helper()
-		b := New(WithURL("http://localhost:3000"))
+		b := New(WithOrigin("http://localhost:3000"))
 		return b.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 	}
 
@@ -718,7 +723,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	tun.order = &h.order
 	h.b = New(
 		WithEstablishDeadline(50*time.Millisecond),
-		WithURL(urls...),
+		WithOrigin(urls...),
 		WithProvider("example.test"),
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
@@ -738,7 +743,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.URLEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
@@ -1003,7 +1008,7 @@ func TestRun(t *testing.T) {
 		// minimal command whose only job is to report the error, rather
 		// than binding flags against a nil collaborator. cacheDirs is
 		// checked first, so a bare struct's error names it.
-		b := &BuilderImpl{urls: []string{":3000"}}
+		b := &BuilderImpl{origins: []string{":3000"}}
 		cmd := b.Command()
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
@@ -1017,7 +1022,7 @@ func TestRun(t *testing.T) {
 
 // TestParseOriginsAccepts covers the shapes a caller is allowed to type,
 // including the bare host:port that implies http — the affordance that lets
-// `--url localhost:3000` work the way people expect. Driven through the
+// `tunneld localhost:3000` work the way people expect. Driven through the
 // whole run (the origin parsing has no seam of its own to call directly), so
 // what is pinned is what the tunnel is actually given: tun.locals, in order.
 func TestParseOriginsAccepts(t *testing.T) {
@@ -1085,11 +1090,10 @@ func TestParseOriginsAccepts(t *testing.T) {
 //
 // Driven through execute rather than the harness's run: every row here fails
 // before the tunnel is ever touched, so the default (non-faked) collaborators
-// are fine and nothing dials out. "no origins at all" is the one row that
-// cannot be seeded with WithURL — an empty seed makes Command mark --url
-// required, so the row instead seeds a placeholder (keeping --url optional)
-// and empties it via $TUNNELD_URL, the one path left to reach the
-// after-the-loop case at all.
+// are fine and nothing dials out. "no origins at all" reaches the
+// after-the-loop case by passing nothing at all: with origins as arguments
+// there is no required flag to satisfy, so an empty run gets that far on its
+// own.
 func TestParseOriginsRejects(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1116,10 +1120,10 @@ func TestParseOriginsRejects(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var b *BuilderImpl
 			if tc.in == nil {
-				t.Setenv(v1.URLEnv, ",")
-				b = New(WithURL("http://placeholder.invalid"))
+				t.Setenv(v1.OriginsEnv, ",")
+				b = New(WithOrigin("http://placeholder.invalid"))
 			} else {
-				b = New(WithURL(tc.in...))
+				b = New(WithOrigin(tc.in...))
 			}
 
 			_, _, err := execute(t, b)
@@ -1324,7 +1328,7 @@ func TestPublicURL(t *testing.T) {
 func TestEnvErrorNamesTheLever(t *testing.T) {
 	t.Setenv(v1.NoOpenEnv, "maybe")
 
-	cmd := New(WithURL(":3000")).Command()
+	cmd := New(WithOrigin(":3000")).Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs(nil)
@@ -1361,7 +1365,6 @@ func TestFlagEnvRegistryIsComplete(t *testing.T) {
 	})
 
 	want := map[string]string{
-		"url":       "TUNNELD_URL",
 		"provider":  "TUNNELD_PROVIDER",
 		"log-level": "TUNNELD_LOG",
 	}
@@ -1372,10 +1375,13 @@ func TestFlagEnvRegistryIsComplete(t *testing.T) {
 	}
 }
 
-// TestEnvListSplitting covers the list-valued TUNNELD_URL variable through
-// the built command: comma-separated, space-tolerant, and empty entries
-// dropped so a trailing comma does not become an origin nothing can proxy
-// to.
+// TestEnvListSplitting covers the parsing behind a list-valued variable:
+// comma-separated, surrounding space trimmed, and empty entries dropped so a
+// trailing comma does not become an origin nothing can proxy to.
+//
+// It exercises the function rather than a built command. Origins are arguments
+// now, so there is no flag holding the parsed list to read back;
+// TestApplyEnvPrecedence covers the variable reaching a run.
 func TestEnvListSplitting(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1393,32 +1399,10 @@ func TestEnvListSplitting(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(v1.URLEnv, tc.in)
-
-			cmd := New().Command()
-			cmd.SetOut(io.Discard)
-			cmd.SetErr(io.Discard)
-			cmd.SetArgs([]string{"--log-level", "loud"})
-			err := cmd.ExecuteContext(t.Context())
-
-			if len(tc.want) == 0 {
-				// An empty variable reads as unset, so nothing satisfies the
-				// required --url flag and that is the error that comes back
-				// instead of an empty origin list.
-				if err == nil || !strings.Contains(err.Error(), "url") {
-					t.Fatalf("error = %v, want it to name the missing url flag", err)
-				}
-				return
-			}
-
-			// ErrInvalidLogLevel proves the environment applied and the run
-			// got past the required-flag check.
-			if !errors.Is(err, v1.ErrInvalidLogLevel) {
-				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
-			}
-			got := cmd.Flags().Lookup("url").Value.(pflag.SliceValue).GetSlice()
+			t.Parallel()
+			got := splitList(tc.in)
 			if len(got) != len(tc.want) {
-				t.Fatalf("--url = %q, want %q", got, tc.want)
+				t.Fatalf("splitList(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 			for i := range got {
 				if got[i] != tc.want[i] {
@@ -1429,96 +1413,78 @@ func TestEnvListSplitting(t *testing.T) {
 	}
 }
 
-// TestApplyEnvPrecedence pins flag > env > default, one row per rung. The
-// command is executed rather than poked at, because the behaviour under test
-// is partly cobra's — PersistentPreRunE marking a flag changed is what stops
-// required flag validation from rejecting an origin the environment supplied.
+// TestApplyEnvPrecedence pins argv > environment > seed, one row per rung.
+//
+// The settled list has no flag to read it back from any more, so each row
+// proves which layer won by what fails: an origin the parser refuses names
+// itself in the error, and a row where argv wins never reaches that refusal
+// at all. A deliberately bad log level stops every row before anything dials.
 func TestApplyEnvPrecedence(t *testing.T) {
 	cases := []struct {
-		name string
-		env  map[string]string
-		args []string
-		want []string // the settled --url values
+		name    string
+		env     string
+		args    []string
+		wantErr error
+		mention string
 	}{
 		{
-			name: "environment supplies the origin",
-			env:  map[string]string{"TUNNELD_URL": "http://env:1"},
-			want: []string{"http://env:1"},
+			name: "the environment supplies the origin",
+			env:  "ftp://env:1", wantErr: v1.ErrInvalidOrigin, mention: "ftp://env:1",
 		},
 		{
-			name: "environment supplies several origins",
-			env:  map[string]string{"TUNNELD_URL": "http://env:1,http://env:2"},
-			want: []string{"http://env:1", "http://env:2"},
+			// The second entry is the one that fails, so reaching it proves
+			// the whole variable was split and parsed rather than its first
+			// value taken.
+			name: "the environment supplies several origins",
+			env:  "http://env:1,ftp://env:2", wantErr: v1.ErrInvalidOrigin, mention: "ftp://env:2",
 		},
 		{
-			name: "flag beats environment",
-			env:  map[string]string{"TUNNELD_URL": "http://env:1"},
-			args: []string{"--url", "http://flag:1"},
-			want: []string{"http://flag:1"},
+			name: "an argument beats the environment",
+			env:  "ftp://env:1", args: []string{"http://flag:1"}, wantErr: v1.ErrInvalidLogLevel,
 		},
 		{
-			name: "flag replaces the whole environment list",
-			env:  map[string]string{"TUNNELD_URL": "http://env:1,http://env:2"},
-			args: []string{"--url", "http://flag:1"},
-			want: []string{"http://flag:1"},
+			name: "an argument replaces the whole environment list",
+			env:  "http://env:1,ftp://env:2", args: []string{"http://flag:1"}, wantErr: v1.ErrInvalidLogLevel,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			b := New()
-			cmd := b.Command()
+			t.Setenv(v1.OriginsEnv, tc.env)
+
+			cmd := New().Command()
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
-			// A deliberately bad level stops the run after the flags settle
-			// and before anything dials, so the assertion never needs a
-			// network.
 			cmd.SetArgs(append(append([]string{}, tc.args...), "--log-level", "loud"))
 
-			if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
-				t.Fatalf("error = %v, want ErrInvalidLogLevel (the flags never settled)", err)
+			err := cmd.ExecuteContext(t.Context())
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
 			}
-
-			got, err := cmd.Flags().GetStringArray("url")
-			if err != nil {
-				t.Fatalf("GetStringArray: %v", err)
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("--url = %q, want %q", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("origin %d = %q, want %q", i, got[i], tc.want[i])
-				}
+			if tc.mention != "" && !strings.Contains(err.Error(), tc.mention) {
+				t.Errorf("error %q does not name %q, so a different origin was parsed", err, tc.mention)
 			}
 		})
 	}
 }
 
-// TestApplyEnvSeededDefault pins that the environment overrides a WithURL seed
-// rather than extending it — the same rule the command line follows, so an
-// embedder's default behaves the same whichever way a user overrides it.
 func TestApplyEnvSeededDefault(t *testing.T) {
-	t.Setenv(v1.URLEnv, "http://env:1")
+	t.Setenv(v1.OriginsEnv, "ftp://env:1")
 
-	cmd := New(WithURL("http://seeded:1")).Command()
+	// The seed is a perfectly good origin and the variable is not, so the
+	// refusal naming the variable's value is the proof that it replaced the
+	// seed rather than being ignored behind it.
+	cmd := New(WithOrigin("http://seeded:1")).Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--log-level", "loud"})
 
-	if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
-		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	err := cmd.ExecuteContext(t.Context())
+	if !errors.Is(err, v1.ErrInvalidOrigin) {
+		t.Fatalf("error = %v, want ErrInvalidOrigin", err)
 	}
-
-	got, err := cmd.Flags().GetStringArray("url")
-	if err != nil {
-		t.Fatalf("GetStringArray: %v", err)
-	}
-	if len(got) != 1 || got[0] != "http://env:1" {
-		t.Errorf("--url = %q, want the environment value to replace the seed", got)
+	if !strings.Contains(err.Error(), "ftp://env:1") {
+		t.Errorf("error %q does not name the environment value, so the seed won", err)
 	}
 }
 
@@ -1526,7 +1492,7 @@ func TestApplyEnvSeededDefault(t *testing.T) {
 // builder, not the package global: two commands in one process must not share
 // a key space, or an embedded tunneld would inherit its host's configuration.
 func TestApplyEnvIsPerBuilder(t *testing.T) {
-	t.Setenv(v1.URLEnv, "http://env:1")
+	t.Setenv(v1.OriginsEnv, "http://env:1")
 
 	first := New().Command()
 	first.SetOut(io.Discard)
@@ -1557,7 +1523,7 @@ func TestApplyEnvIsPerBuilder(t *testing.T) {
 // ErrInvalidEnv already makes for the other knobs.
 func TestEnvLogLevelIsStrict(t *testing.T) {
 	t.Setenv(v1.LogEnv, "loud")
-	t.Setenv(v1.URLEnv, "http://localhost:3000")
+	t.Setenv(v1.OriginsEnv, "http://localhost:3000")
 
 	cmd := New().Command()
 	cmd.SetOut(io.Discard)

@@ -27,15 +27,15 @@ func WithName(name string) Option {
 	return func(b *BuilderImpl) { b.name = name }
 }
 
-// WithURL seeds the local origins to expose, in order: the first is the
+// WithOrigin seeds the local origins to expose, in order: the first is the
 // default origin and each later one answers on a bare ?n parameter. Repeated
-// options append. A --url flag on the command line replaces the whole seeded
-// set rather than adding to it.
+// options append. An origin argument on the command line replaces the whole
+// seeded set rather than adding to it.
 //
 // A missing scheme implies http and a missing host implies localhost, so
 // ":8000", "localhost:8000" and "http://localhost:8000" name one origin.
-func WithURL(urls ...string) Option {
-	return func(b *BuilderImpl) { b.urls = append(b.urls, urls...) }
+func WithOrigin(origins ...string) Option {
+	return func(b *BuilderImpl) { b.origins = append(b.origins, origins...) }
 }
 
 // WithProvider sets the quick-tunnel provider host to mint against. Unset,
@@ -114,8 +114,26 @@ func (b *BuilderImpl) Name() string {
 // replacer instead of in v1, where the rest of this package's knobs are
 // declared. It also keeps LogEnv spelled TUNNELD_LOG rather than the
 // TUNNELD_LOG_LEVEL a derivation would produce.
+// originsKey is what the origins variable binds to in the per-builder
+// environment. It is not a flag name — origins have no flag — so it is spelled
+// here rather than in flagEnv, which exists to pair flags with variables.
+const originsKey = "origins"
+
+// splitList parses a list-valued variable: comma-separated, surrounding space
+// trimmed, empty entries dropped so a trailing comma is not an origin. Comma
+// is the separator the tunnel engine uses for its own list variables, and the
+// reason an origin carrying one has to arrive as an argument instead.
+func splitList(value string) []string {
+	items := make([]string, 0, strings.Count(value, ",")+1)
+	for item := range strings.SplitSeq(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 var flagEnv = map[string]string{
-	"url":       v1.URLEnv,
 	"provider":  v1.ProviderEnv,
 	"cache-dir": v1.CacheDirEnv,
 	"log-level": v1.LogEnv,
@@ -182,17 +200,31 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			// registry above cannot produce.
 			_ = env.BindEnv(flag, envVar)
 		}
+		// Origins are arguments rather than a flag, so they have no entry in
+		// flagEnv and no flag for the hook below to copy a value onto. They
+		// get a key of their own, which RunE reads them back by.
+		_ = env.BindEnv(originsKey, v1.OriginsEnv)
+
+		// An embedder that seeded origins made them this command's default, so
+		// help says which — otherwise the one thing a seeded build does
+		// differently from a bare one is the one thing --help does not
+		// mention. Origins have no flag any more, and a flag's default is
+		// where this used to be visible.
+		var seeded string
+		if len(b.origins) > 0 {
+			seeded = "\n\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ")
+		}
 
 		cmd := &cobra.Command{
-			Use:   name + " --url <local-url> [--url <local-url> ...]",
+			Use:   name + " <origin> [origin ...]",
 			Short: "Expose local origins to the public internet through a quick tunnel",
 			Long: name + ` exposes already-running local services to the public internet
 through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
 
-Repeat --url per origin. They share one hostname: the first is the default,
-each later one answers on a bare ?n parameter (n is that flag's position).
+Pass an origin per argument. They share one hostname: the first is the default,
+each later one answers on a bare ?n parameter (n is that argument's position).
 
-  ` + name + ` --url http://localhost:3000 --url http://localhost:4000
+  ` + name + ` http://localhost:3000 http://localhost:4000
 
     https://<host>/?0   -> http://localhost:3000
     https://<host>/?1   -> http://localhost:4000
@@ -200,21 +232,24 @@ each later one answers on a bare ?n parameter (n is that flag's position).
 An origin can also be a running container, which is served as a terminal in
 the browser rather than proxied:
 
-  ` + name + ` --url dockerd://my-container
+  ` + name + ` dockerd://my-container
 
 Mark one origin http+ws (or https+ws) when a service opens its own WebSocket —
 a dev server's live reload, say. A handshake carries nothing that says which
 origin it belongs to, so without the marker it goes to the first one:
 
-  ` + name + ` --url :4000 --url http+ws://localhost:5173
+  ` + name + ` :4000 http+ws://localhost:5173
 
-The public URLs, the origin map and every log line go to stderr.`,
-			Args:          cobra.NoArgs,
+The public URLs go to stdout, the origin map and every log line to stderr.` + seeded,
+			// Origins are the arguments, so any number is accepted here and
+			// the count is judged in RunE, where a value from the environment
+			// or a seed counts as well as one from argv.
+			Args:          cobra.ArbitraryArgs,
 			SilenceUsage:  true, // usage answers a flag error, not a tunnel failure
 			SilenceErrors: true, // the caller prints the error, prefixed, exactly once
 			// Persistent, so it also covers a subcommand — and placed here rather
 			// than in RunE because cobra runs this hook ahead of required-flag
-			// validation, which is what lets TUNNELD_URL satisfy --url.
+			// validation, which is what lets a variable satisfy a required flag.
 			PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 				// Environment values are copied onto the flags the command
 				// line did not set, which is what makes the precedence
@@ -239,16 +274,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 					// rather than extending it — the same rule pflag's
 					// stringArray applies to the command line.
 					if slice, ok := f.Value.(pflag.SliceValue); ok {
-						// A list-valued variable is comma-separated,
-						// surrounding space trimmed, empty entries dropped
-						// so a trailing comma is not an origin.
-						items := make([]string, 0, strings.Count(value, ",")+1)
-						for item := range strings.SplitSeq(value, ",") {
-							if item = strings.TrimSpace(item); item != "" {
-								items = append(items, item)
-							}
-						}
-						err = slice.Replace(items)
+						err = slice.Replace(splitList(value))
 					} else {
 						err = f.Value.Set(value)
 					}
@@ -275,10 +301,23 @@ The public URLs, the origin map and every log line go to stderr.`,
 			// The engine is github.com/cnuss/libtunnel driving Cloudflare's edge
 			// in process — no cloudflared binary, no account, no DNS to
 			// configure.
-			RunE: func(cmd *cobra.Command, _ []string) error {
+			RunE: func(cmd *cobra.Command, args []string) error {
 				ctx := cmd.Context()
 				stdout := cmd.OutOrStdout()
 				stderr := cmd.ErrOrStderr()
+
+				// Origins settle argv > environment > seed, which is the
+				// precedence a flag has over its variable over its default.
+				// Each layer replaces the one under it rather than extending
+				// it: a caller that names origins means those origins, not
+				// those plus whatever the program was built with.
+				settled := b.origins
+				if env.IsSet(originsKey) {
+					settled = splitList(env.GetString(originsKey))
+				}
+				if len(args) > 0 {
+					settled = args
+				}
 
 				// Origins: turn the settled origin values into URLs,
 				// rejecting anything the tunnel could not proxy to.
@@ -292,16 +331,16 @@ The public URLs, the origin map and every log line go to stderr.`,
 				// as a public hostname that answers only errors. Every failure
 				// wraps a v1 sentinel and names the offending value.
 				//
-				// The messages name the value, not the flag, because by this
-				// point a value may have arrived either way — through --url or
-				// through v1.URLEnv bound onto it. Only the nothing-at-all case
-				// names both, since that is the one an operator fixes by
-				// choosing between them.
-				origins := make([]*url.URL, 0, len(b.urls))
+				// The messages name the value, not where it came from,
+				// because by this point it may have arrived as an argument,
+				// through v1.OriginsEnv, or from a seed. Only the
+				// nothing-at-all case names them, since that is the one an
+				// operator fixes by choosing between them.
+				origins := make([]*url.URL, 0, len(settled))
 				// The first origin seen carrying a +ws marker, kept to reject a
 				// second.
 				wsOrigin := ""
-				for _, s := range b.urls {
+				for _, s := range settled {
 					s = strings.TrimSpace(s)
 					if s == "" {
 						return fmt.Errorf("%w: empty origin, pass a local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin)
@@ -378,7 +417,7 @@ The public URLs, the origin map and every log line go to stderr.`,
 					origins = append(origins, u)
 				}
 				if len(origins) == 0 {
-					return fmt.Errorf("%w: pass --url (or $%s) with the local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin, v1.URLEnv)
+					return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, name, v1.OriginsEnv)
 				}
 
 				// The logger: resolve the tunnel's log sink from the level the
@@ -648,16 +687,10 @@ The public URLs, the origin map and every log line go to stderr.`,
 		}
 
 		// Each flag binds over the field it defaults from, so a seeded value is a
-		// default and an argv value overwrites it. StringArray, not StringSlice:
-		// a repeated flag must collect values verbatim, and StringSlice splits on
-		// commas, which would silently shred a URL carrying one in its query.
-		// pflag's stringArray replaces the default on the first --url and appends
-		// after that, so a command line never merges into a seeded set.
+		// default and an argv value overwrites it.
 		// Each usage string names the flag's environment mirror, so --help doubles
 		// as the reference for configuring a container. The registry behind those
 		// names is flagEnv, declared above Command.
-		cmd.Flags().StringArrayVarP(&b.urls, "url", "u", b.urls,
-			"local origin to expose, e.g. http://localhost:3000, dockerd://my-container, or http+ws://localhost:5173 for the one that owns websockets (repeat for more; :8000 and localhost:8000 also work) [$"+v1.URLEnv+", comma-separated]")
 		// Unset, specs cache into the default cache directory. Seeded here
 		// rather than in New so that an explicit WithCacheDir replaces the
 		// default instead of appending to it: a caller naming a directory
@@ -679,12 +712,6 @@ The public URLs, the origin map and every log line go to stderr.`,
 			"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
 		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
-		// Required only when nothing was seeded: an embedder that supplied an
-		// origin wants --url optional, not forbidden.
-		if len(b.urls) == 0 {
-			_ = cmd.MarkFlagRequired("url")
-		}
-
 		// The version subcommand prints the build banner and exits — the
 		// build id of the binary plus the tunnel library it links against,
 		// since that library is what actually speaks to the edge and a bug

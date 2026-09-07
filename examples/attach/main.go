@@ -46,7 +46,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithURL("dockerd://" + name),
+		v1alpha1.WithOrigin("dockerd://" + name),
 	).Command()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers

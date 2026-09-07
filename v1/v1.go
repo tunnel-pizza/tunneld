@@ -14,7 +14,7 @@
 // New lives in v1alpha1 rather than here, so application code constructs from
 // there and matches errors here:
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
+//	cmd := v1alpha1.New(v1alpha1.WithOrigin("http://localhost:3000")).Command()
 //	if err := cmd.ExecuteContext(ctx); err != nil { ... }
 //
 // A façade package re-exporting New alongside these names would read better,
@@ -57,7 +57,7 @@ type Logger = *slog.Logger
 // package aliases the instantiated type to its own Option and exposes With*
 // constructors returning that alias:
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
+//	cmd := v1alpha1.New(v1alpha1.WithOrigin("http://localhost:3000")).Command()
 //
 // One generic type rather than an Option per package, so the rule for how
 // options are applied is declared once, in Apply, and every constructor in
@@ -99,13 +99,14 @@ func Apply[T any](t T, opts ...Option[T]) T {
 var ErrInvalidEnv = errors.New("invalid environment value")
 
 // ErrNoOrigin reports a command built and run with nothing to expose: no
-// --url flag and no WithURL seed. A tunnel with no origin would come up
-// pointing at a loopback socket nobody serves on — a public hostname that
-// answers only errors — so this fails before the mint instead. The lever is
-// --url (repeatable), or WithURL when embedding.
+// origin argument, no OriginsEnv, and no WithOrigin seed. A tunnel with no
+// origin would come up pointing at a loopback socket nobody serves on — a
+// public hostname that answers only errors — so this fails before the mint
+// instead. The lever is an argument, OriginsEnv, or WithOrigin when
+// embedding.
 var ErrNoOrigin = errors.New("no origin")
 
-// ErrInvalidOrigin reports a --url value tunneld cannot expose: an unparsable
+// ErrInvalidOrigin reports an origin tunneld cannot expose: an unparsable
 // URL, a scheme that is none of http, https or DockerScheme, or a URL with no
 // host. A bare host:port is not an error — it implies http.
 //
@@ -185,16 +186,16 @@ const (
 	// binding names it explicitly for that reason.
 	LogEnv = "TUNNELD_LOG"
 
-	// URLEnv names the local origins to expose — the mirror of --url, which
-	// beats it. Several origins are comma-separated, in the same order the
-	// repeated flag would take them: the first is the default and each later
-	// one answers on a bare ?n parameter.
+	// OriginsEnv names the local origins to expose — the mirror of the
+	// command's positional arguments, which beat it. Several origins are
+	// comma-separated, in the same order argv would take them: the first is
+	// the default and each later one answers on a bare ?n parameter.
 	//
 	// Comma is the separator because that is what the tunnel engine uses for
 	// its own list-valued variables. It is also the one limitation of this
-	// mirror: an origin URL carrying a literal comma has to arrive through the
-	// flag, which parses no separator at all.
-	URLEnv = "TUNNELD_URL"
+	// mirror: an origin URL carrying a literal comma has to arrive as an
+	// argument, which is parsed for no separator at all.
+	OriginsEnv = "TUNNELD_ORIGINS"
 
 	// ProviderEnv names the quick-tunnel provider host to mint against — the
 	// mirror of --provider, which beats it. Unset, the provider is
@@ -248,7 +249,7 @@ const (
 	DefaultProvider = "tunnel.pizza"
 
 	// DockerScheme names a running container as an origin instead of an HTTP
-	// service: --url dockerd://<container-name-or-id> serves a terminal
+	// service: a dockerd://<container-name-or-id> origin serves a terminal
 	// attached to that container, on the same public hostname and the same
 	// ?n index as any other origin.
 	//
@@ -279,13 +280,14 @@ const DefaultMultiview = true
 // configured by that package's options, and call the terminal Command to
 // produce a *cobra.Command.
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
+//	cmd := v1alpha1.New(v1alpha1.WithOrigin("http://localhost:3000")).Command()
 //	err := cmd.ExecuteContext(ctx)
 //
 // Every option's value is a default, not a fixed setting: the command's flags
 // bind over the same fields, so an argv value wins. Seeding an origin with
-// WithURL therefore makes --url optional rather than forbidden, which is what
-// an embedding program wants — a working default the user can still override.
+// WithOrigin therefore lets the command run with no arguments at all, which is
+// what an embedding program wants — a working default the user can still
+// override.
 //
 // The command's context is its shutdown handle. Run it with ExecuteContext and
 // cancel that context (a signal, in the binary's case) to tear the tunnel

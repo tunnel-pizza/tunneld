@@ -109,9 +109,10 @@ silently dropped.
 
 **Seeds are defaults, not settings.** Every `With*` option's value becomes the default
 of the flag that binds over it, so an argv value always wins. That is what lets
-an embedder supply a working origin (`WithURL`) while leaving the user free to
-override it — and it is why `--url` is marked required only when nothing was
-seeded.
+an embedder supply a working origin (`WithOrigin`) while leaving the user free
+to override it. Origins are the arguments rather than a flag, so the same rule
+is applied by hand in `RunE`: argv replaces the variable, which replaces the
+seed.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
 unconditionally — `cachedir`, `engine`, `cache`, `panel`, `browser`, `counter`,
@@ -148,7 +149,7 @@ alpine` once; CI's `docker` lane does exactly that.
 Run it against a local service:
 
 ```sh
-go run . --url http://localhost:3000 --url http://localhost:4000
+go run . http://localhost:3000 http://localhost:4000
 ```
 
 Or run an example, which seeds its own origins:
@@ -160,7 +161,7 @@ make run multi-origin
 
 `go run` rather than a make target wherever flags are involved: make reads a
 leading `--` as one of its own options and refuses. The `run` target takes an
-example *name*, which is a bare word, so it works — `make run basic --url ...`
+example *name*, which is a bare word, so it works — `make run basic --no-open`
 does not.
 
 ## Test layout
@@ -261,19 +262,18 @@ CI runs the same on every PR, and adds one lane `make all` leaves out:
 
 Easy to get wrong from the diff alone:
 
-- **`--url` uses `StringArray`, not `StringSlice`.** `StringSlice` splits on
-  commas, which would silently shred an origin URL carrying one in its query.
-  `StringArray` also replaces the flag's default on the first `--url` and
-  appends after that, which is what makes a command line override a `WithURL`
-  seed instead of merging into it.
-- **`TUNNELD_URL` does split on commas** — a single variable has no other way
-  to carry a list, and viper does not split one for you. That asymmetry with
-  the flag is deliberate and documented; it is also the mirror's one
-  limitation.
-- **The environment is applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
-  that hook *before* `ValidateRequiredFlags`, which is the only reason
-  `TUNNELD_URL` alone can satisfy a required `--url`. Marking `f.Changed`
-  there is the other half.
+- **Origins are arguments, and they settle in `RunE`.** There is no flag to
+  bind them to, so `Command` binds `TUNNELD_ORIGINS` under a key of its own and
+  `RunE` applies argv > variable > seed by hand. Each layer replaces the one
+  under it; none merges into it.
+- **`TUNNELD_ORIGINS` splits on commas** — a single variable has no other way
+  to carry a list, and viper does not split one for you. Argv does not split at
+  all, which is the mirror's one limitation: an origin carrying a literal comma
+  has to arrive as an argument.
+- **Flag variables are applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
+  that hook *before* `ValidateRequiredFlags`, which is the only reason a
+  variable alone can satisfy a required flag. Marking `f.Changed` there is the
+  other half. `--cache-dir` is the one that needs it.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `PublicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
@@ -397,7 +397,8 @@ everywhere, including the lanes that mint no tunnel.
 
 ## Adding a flag
 
-The flag surface is deliberately small: `--url`, `--provider`, `--log-level`.
+The flag surface is deliberately small: `--provider`, `--log-level`,
+`--cache-dir`. Origins are not among them — they are the arguments.
 Everything else the tunnel engine can do is reachable through `libtunnel`'s own
 `LIBTUNNEL_*` environment variables, which pass straight through — reach for
 those before adding a flag.

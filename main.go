@@ -2,11 +2,11 @@
 // public internet through a quick tunnel, in-process — no `cloudflared`
 // binary, no account, no DNS to configure.
 //
-//	tunneld --url http://localhost:3000 --url http://localhost:4000
+//	tunneld http://localhost:3000 http://localhost:4000
 //
 // It is a lite `cloudflared tunnel --url` with the multi-origin extension:
-// every --url after the first is reachable under the same public hostname via
-// a bare ?n query parameter, n being that flag's 0-based position.
+// every origin after the first is reachable under the same public hostname via
+// a bare ?n query parameter, n being that argument's 0-based position.
 //
 // This package is the process shell and nothing more: it turns signals into a
 // context and hands that to the command the builder assembles. The command
