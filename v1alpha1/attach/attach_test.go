@@ -98,7 +98,7 @@ func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 // TestPage pins that the tunnel's own address answers with the terminal page
 // and that nothing else on the origin answers at all. The origin exists to
 // serve exactly two paths; anything else reaching it is a bug upstream, and a
-// 404 says so instead of quietly returning the shell again.
+// 404 says so instead of quietly returning the terminal page again.
 func TestPage(t *testing.T) {
 	s := serveFake(t, newFakeTarget("api", true, true))
 

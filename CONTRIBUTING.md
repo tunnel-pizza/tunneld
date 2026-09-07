@@ -95,7 +95,7 @@ and each implementation's tunables alike, and a package with no tunables still
 takes the variadic so adding one changes no caller. An option is a plain
 function, so it can be applied anywhere a setter used to be called: `New`
 seeds its own defaults with the same `With*` options a caller passes —
-`WithOpen(v1.DefaultOpen)` goes through the same `v1.Apply` call as a
+`WithOpen(v1.DefaultOpen)` goes through the same `v1.Apply` path as a
 caller's own `WithOpen(false)`.
 
 **Command assembles once.** `Command` is guarded by `commandOnce` (see

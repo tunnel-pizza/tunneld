@@ -142,11 +142,13 @@ func main() {
 		return nil
 	}
 
-	// os.Exit runs no deferred function, so stop and remove are called
+	// os.Exit runs no deferred function, so remove and stop are called
 	// explicitly here rather than deferred: exiting before them would strand
 	// the container — the tunnel failing is an ordinary outcome, an
 	// unreachable edge or a revoked hostname, and it must still take the
-	// container with it.
+	// container with it. remove goes first: stop releases the signal
+	// handler, so a second Ctrl-C during docker rm -f would kill the process
+	// before the container is gone.
 	err := cmd.ExecuteContext(ctx)
 	if remove != nil {
 		remove()

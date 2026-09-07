@@ -215,13 +215,13 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// closed laptop, a dropped network, the Cloudflare edge reaping a connection.
 	//
 	// klog.SetLogger is process-global, which is the cost. It is the same trade
-	// tunneld already makes and documents for browser.Stdout/Stderr in
-	// browser.Open (v1alpha1/browser) — a package global set on a dependency's
-	// behalf, because owning the process's output is worth more than leaving a
-	// global untouched. Routed here rather than in the command so the guarantee
-	// holds for an embedding program that never executes the command. The
-	// first Server's logger wins, which for a process with one --log-level is
-	// the only logger there is.
+	// tunneld already makes and documents for pkgbrowser.Stdout/Stderr in
+	// browser.OpenerImpl.Open (v1alpha1/browser) — a package global set on a
+	// dependency's behalf, because owning the process's output is worth more
+	// than leaving a global untouched. Routed here rather than in the command
+	// so the guarantee holds for an embedding program that never executes the
+	// command. The first Server's logger wins, which for a process with one
+	// --log-level is the only logger there is.
 	klogRouted.Do(func() { klog.SetLogger(logr.FromSlogHandler(log.Handler())) })
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -243,7 +243,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
-	// gets a 404 rather than the shell a second time. GET also answers HEAD,
+	// gets a 404 rather than the terminal page a second time. GET also answers HEAD,
 	// which is what the reachability probe sends.
 	//
 	// The page handler renders the terminal page. A render failure is logged
