@@ -148,10 +148,10 @@ func main() {
 	// unreachable edge or a revoked hostname, and it must still take the
 	// container with it.
 	err := cmd.ExecuteContext(ctx)
-	stop()
 	if remove != nil {
 		remove()
 	}
+	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "attach: "+err.Error())
 		os.Exit(1)
