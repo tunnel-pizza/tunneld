@@ -14,9 +14,8 @@ Deep-link by filename; line numbers will drift.
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
-| Builder options, `Command` (flags, env binding, the tunnel run), `PublicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
+| Builder options, `Command` (flags, env binding, the tunnel run), `flagEnv`, `PublicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| Env logger (`Logger`) + flag → variable registry | [`v1alpha1/env.go`](./v1alpha1/env.go)                         |
 | `CacheDirs` contract's implementation: the --cache-dir list and its pflag value | [`v1alpha1/cachedir/`](./v1alpha1/cachedir) |
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
@@ -223,10 +222,9 @@ Two deliberate exceptions:
 One consequence worth knowing: a source file whose tests need both unexported
 access and an outside-the-package view still gets one test file, so it is
 `package <pkg>` (internal) and the external view is covered elsewhere.
-[`v1alpha1/env_test.go`](./v1alpha1/env_test.go) is that case — it reaches
-`flagEnv` and drives the environment binding in `Command`'s
-`PersistentPreRunE`, so the whole file is internal, and the genuine
-consumer's view is covered by `e2e`.
+[`v1alpha1/builder_test.go`](./v1alpha1/builder_test.go) is that case — it
+reaches `flagEnv` and the fakes behind `Command`'s tunnel run, so the whole
+file is internal, and the genuine consumer's view is covered by `e2e`.
 
 ## Before you push
 
@@ -389,14 +387,14 @@ When a flag really is warranted, five things move together:
    one registry for operator-facing strings;
 3. the field on `BuilderImpl` and the `cmd.Flags()` binding in `v1alpha1` — the
    binding's default is the seeded field, never a literal — plus a row in
-   `flagEnv` in [`v1alpha1/env.go`](./v1alpha1/env.go) pairing the flag with
+   `flagEnv` in [`v1alpha1/builder.go`](./v1alpha1/builder.go) pairing the flag with
    the constant;
 4. a case in the table in `v1alpha1/builder_test.go`, plus a row in
    `e2e/e2e_test.go` if the flag has a refusable value; and
 5. the **Flags** and **Environment** tables in the README.
 
 Step 3's `flagEnv` row is the one that is easy to forget, and
-`TestFlagEnvRegistryIsComplete` in `v1alpha1/env_test.go` fails without it: a
+`TestFlagEnvRegistryIsComplete` in `v1alpha1/builder_test.go` fails without it: a
 flag with no mirror works on the command line and is silently unreachable from
 a container's environment.
 
@@ -446,9 +444,11 @@ Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
 names.
 
 `TUNNEL.env` needs its own entry, because it is not a `*.local`. It is the
-cached tunnel spec — credentials — and the default cache directory is the
-working directory, so running anything here writes one without asking. A
-rename of that file has to update `.gitignore` in the same change, or the next
+cached tunnel spec — credentials. The default cache directory is a per-project
+one under the user's cache directory, never the checkout, so a plain run
+writes nothing here; but `--cache-dir .` or `TUNNELD_CACHE_DIR` can point at
+the checkout, and the entry is what keeps that spec out of a commit. A rename
+of that file has to update `.gitignore` in the same change, or the next
 `git add -A` commits a credential. `make clean` removes it, along with the
 compose example's volume and the local image.
 
