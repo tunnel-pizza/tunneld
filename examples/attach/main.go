@@ -47,7 +47,7 @@ func main() {
 
 	cmd := v1alpha1.New(
 		v1alpha1.WithURL("dockerd://" + name),
-	).Build()
+	).Command()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers
 	// --help before that hook runs, so `--help` stays a pure question and

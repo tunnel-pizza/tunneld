@@ -34,9 +34,9 @@ func main() {
 
 	cmd := v1alpha1.New(
 		v1alpha1.WithURL("http://localhost:3000"),
-	).Build()
+	).Command()
 
-	// Build returns an ordinary *cobra.Command, so the origin hangs off its
+	// Command returns an ordinary *cobra.Command, so the origin hangs off its
 	// PreRunE. That hook rather than plain code before ExecuteContext because
 	// cobra answers --help before it runs, so `--help` stays a pure question:
 	// it prints and exits without binding a port.

@@ -315,7 +315,7 @@ func main() {
 	cmd := v1alpha1.New(
 		v1alpha1.WithName("expose"),               // mount under your own verb
 		v1alpha1.WithURL("http://localhost:3000"), // a default the user can override
-	).Build()
+	).Command()
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		os.Exit(1)
@@ -377,8 +377,8 @@ func WithStderr(w io.Writer) Option      // banner, origin map, logs
 ```
 
 There are no fluent setters: every knob is an option passed to `New`, and
-`v1.Builder` is only `Build` and `Name`. An embedder on the old shape changes
-`New().WithURL(u).Build()` to `New(WithURL(u)).Build()`.
+`v1.Builder` is only `Command` and `Name`. An embedder on the old shape
+changes `New().WithURL(u).Build()` to `New(WithURL(u)).Command()`.
 
 `BuilderImpl` also takes `WithEngine`, `WithCache`, `WithPanel`, `WithOpener`,
 `WithCounter` and `WithTargets`, which swap the collaborators the tunnel run
@@ -397,8 +397,8 @@ func Apply[T any](t T, opts ...Option[T]) T
 // Builder assembles the tunneld command: what a caller calls once New has
 // configured it.
 type Builder interface {
-    Build() *cobra.Command // terminal: assembles and returns
-    Name() string          // configured command name
+    Command() *cobra.Command // terminal: assembles and returns
+    Name() string            // configured command name
 }
 
 // match with errors.Is

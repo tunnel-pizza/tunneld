@@ -33,7 +33,7 @@ func main() {
 
 	// SilenceErrors is set on the built command, so the error surfaces here
 	// exactly once, prefixed with the program name.
-	if err := v1alpha1.New().Build().ExecuteContext(ctx); err != nil {
+	if err := v1alpha1.New().Command().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
 		os.Exit(1)
 	}

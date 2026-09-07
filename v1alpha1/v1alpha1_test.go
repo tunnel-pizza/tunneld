@@ -38,7 +38,7 @@ func TestNewIsUnconfigured(t *testing.T) {
 // fails this.
 func TestCallerOptionBeatsDefault(t *testing.T) {
 	b := New(WithURL("http://localhost:3000"), WithOpen(false))
-	if got := b.Build().Flags().Lookup("no-open").DefValue; got != "true" {
+	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
 		t.Errorf("--no-open default = %q, want %q (WithOpen(false) lost to the default)", got, "true")
 	}
 }

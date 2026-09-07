@@ -42,7 +42,7 @@ func main() {
 		// Only the default origin would open, and this example is about
 		// seeing both. Off, so it reports the whole map and opens nothing.
 		v1alpha1.WithOpen(false),
-	).Build()
+	).Command()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers
 	// --help before that hook runs, so `--help` stays a pure question and

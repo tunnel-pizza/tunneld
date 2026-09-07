@@ -14,7 +14,7 @@
 // New lives in v1alpha1 rather than here, so application code constructs from
 // there and matches errors here:
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Build()
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 //	if err := cmd.ExecuteContext(ctx); err != nil { ... }
 //
 // A façade package re-exporting New alongside these names would read better,
@@ -25,7 +25,7 @@
 // ErrInvalidOrigin.
 //
 // The builder assembles the `tunneld` command: a New that takes options,
-// finalized by Build, which returns a *cobra.Command ready to Execute. That
+// finalized by Command, which returns a *cobra.Command ready to Execute. That
 // shape is what lets tunneld be both a binary and an embeddable subcommand —
 // a host program builds the command, renames it, seeds its origins, redirects
 // its streams, and hangs it off its own root without reimplementing anything.
@@ -57,7 +57,7 @@ type Logger = *slog.Logger
 // package aliases the instantiated type to its own Option and exposes With*
 // constructors returning that alias:
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Build()
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 //
 // One generic type rather than an Option per package, so the rule for how
 // options are applied is declared once, in Apply, and every constructor in
@@ -276,10 +276,10 @@ const DefaultOpen = true
 const DefaultMultiview = true
 
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
-// configured by that package's options, and call the terminal Build to
+// configured by that package's options, and call the terminal Command to
 // produce a *cobra.Command.
 //
-//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Build()
+//	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 //	err := cmd.ExecuteContext(ctx)
 //
 // Every option's value is a default, not a fixed setting: the command's flags
@@ -296,9 +296,9 @@ const DefaultMultiview = true
 // which is why it is not here: a setter returning this interface would make
 // any knob the interface does not name unreachable after it.
 type Builder interface {
-	// Build assembles the configured command and returns it. It is the
+	// Command assembles the configured command and returns it. It is the
 	// terminal step; calling it more than once returns the same command.
-	Build() *cobra.Command
+	Command() *cobra.Command
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string

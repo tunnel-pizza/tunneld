@@ -71,7 +71,7 @@ and get the identical behaviour. A feature that only works when tunneld is
 Conventions, not machinery — nothing here enforces them.
 
 **Surface/engine split.** `v1.Builder` is only what a caller calls once the
-builder exists: `Build` and `Name`. Everything `run` composes that owns an
+builder exists: `Command` and `Name`. Everything `run` composes that owns an
 external effect — the edge, the disk, the daemon, the browser, an HTTP probe —
 is an internal contract in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go):
 `Engine`, `Cache`, `Panel`, `Opener`, `Counter`, `Targets`. Each has one
@@ -90,7 +90,7 @@ takes the variadic so adding one changes no caller. An option is a plain
 function, so it can be applied anywhere a setter used to be called:
 `cacheDirValue.Set` is `WithCacheDir(s)(v.b)`.
 
-**Build assembles once.** `Build` is guarded by `builtOnce` (see
+**Command assembles once.** `Command` is guarded by `commandOnce` (see
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
 an optimization: the command's flags bind *over* the builder's own fields, so a
 second assembly would register a second set of flags against the same storage.
@@ -352,7 +352,7 @@ come from
 rather than inlining HTML in a `main.go`. Hang startup on the built command's
 `PreRunE`, not on plain code before `ExecuteContext`: cobra answers `--help`
 before it reaches that hook, which is what keeps `--help` from binding a port.
-`Build` returns an ordinary `*cobra.Command`, so the hook is free — but
+`Command` returns an ordinary `*cobra.Command`, so the hook is free — but
 `PersistentPreRunE` is already taken by the environment binding, so use the
 non-persistent one.
 

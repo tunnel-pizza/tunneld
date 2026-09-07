@@ -175,9 +175,9 @@ func WithMultiview(multiview bool) Option {
 	return func(b *BuilderImpl) { b.multiview = multiview }
 }
 
-// WithStdout redirects the help text and the version banner. Build passes it
-// to the command's SetOut, so calling SetOut on the built command overrides
-// this. Unset, output goes to the process's stdout.
+// WithStdout redirects the help text and the version banner. Command passes
+// it to the command's SetOut, so calling SetOut on the built command
+// overrides this. Unset, output goes to the process's stdout.
 //
 // A running tunnel writes nothing there: its addresses go to stderr with the
 // rest of what a person reads.
@@ -186,7 +186,7 @@ func WithStdout(w io.Writer) Option {
 }
 
 // WithStderr redirects the banner, the origin map, and the tunnel's logs.
-// Build passes it to the command's SetErr, so calling SetErr on the built
+// Command passes it to the command's SetErr, so calling SetErr on the built
 // command overrides this. Unset, output goes to the process's stderr.
 func WithStderr(w io.Writer) Option {
 	return func(b *BuilderImpl) { b.stderr = w }
@@ -200,13 +200,12 @@ func (b *BuilderImpl) Name() string {
 	return b.name
 }
 
-// Build assembles the configured command. It is the terminal step; the command
-// is built once and cached, so repeated calls return the same *cobra.Command
-// rather than a second one with a second set of flags bound to these fields.
-//
-// command is the one-shot assembly behind Build.
-func (b *BuilderImpl) Build() *cobra.Command {
-	b.builtOnce.Do(func() {
+// Command assembles the configured command. It is the terminal step; the
+// command is built once and cached, so repeated calls return the same
+// *cobra.Command rather than a second one with a second set of flags bound to
+// these fields.
+func (b *BuilderImpl) Command() *cobra.Command {
+	b.commandOnce.Do(func() {
 		name := b.Name()
 
 		// The environment binding is per-builder, never viper's package
@@ -373,9 +372,9 @@ The public URLs, the origin map and every log line go to stderr.`,
 			},
 		})
 
-		b.built = cmd
+		b.command = cmd
 	})
-	return b.built
+	return b.command
 }
 
 // cacheDirValue binds --cache-dir onto WithCacheDir, so the flag, its
@@ -403,7 +402,7 @@ func (v *cacheDirValue) Set(s string) error {
 }
 
 // Append, GetSlice and Replace are pflag.SliceValue, which is how the
-// environment binding in Build hands a whole comma-separated variable over
+// environment binding in Command hands a whole comma-separated variable over
 // at once. Replace clears first, for the same reason Set does on its first
 // call.
 func (v *cacheDirValue) Append(s string) error { return v.Set(s) }

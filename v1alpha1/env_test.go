@@ -162,7 +162,7 @@ func TestLoggerLevels(t *testing.T) {
 // catches: it would work on the command line and be silently unreachable from
 // a container's environment.
 func TestFlagEnvRegistryIsComplete(t *testing.T) {
-	cmd := New().Build()
+	cmd := New().Command()
 
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if f.Name == "help" { // cobra's own, no knob behind it
@@ -208,7 +208,7 @@ func TestEnvListSplitting(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.URLEnv, tc.in)
 
-			cmd := New().Build()
+			cmd := New().Command()
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			cmd.SetArgs([]string{"--log-level", "loud"})
@@ -283,7 +283,7 @@ func TestApplyEnvPrecedence(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			b := New()
-			cmd := b.Build()
+			cmd := b.Command()
 			cmd.SetOut(io.Discard)
 			cmd.SetErr(io.Discard)
 			// A deliberately bad level stops the run after the flags settle
@@ -317,7 +317,7 @@ func TestApplyEnvPrecedence(t *testing.T) {
 func TestApplyEnvSeededDefault(t *testing.T) {
 	t.Setenv(v1.URLEnv, "http://env:1")
 
-	cmd := New(WithURL("http://seeded:1")).Build()
+	cmd := New(WithURL("http://seeded:1")).Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"--log-level", "loud"})
@@ -341,7 +341,7 @@ func TestApplyEnvSeededDefault(t *testing.T) {
 func TestApplyEnvIsPerBuilder(t *testing.T) {
 	t.Setenv(v1.URLEnv, "http://env:1")
 
-	first := New().Build()
+	first := New().Command()
 	first.SetOut(io.Discard)
 	first.SetErr(io.Discard)
 	first.SetArgs([]string{"--log-level", "loud"})
@@ -349,7 +349,7 @@ func TestApplyEnvIsPerBuilder(t *testing.T) {
 		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 	}
 
-	second := New().Build()
+	second := New().Command()
 	second.SetOut(io.Discard)
 	second.SetErr(io.Discard)
 	second.SetArgs([]string{"--log-level", "loud"})
@@ -372,7 +372,7 @@ func TestEnvLogLevelIsStrict(t *testing.T) {
 	t.Setenv(v1.LogEnv, "loud")
 	t.Setenv(v1.URLEnv, "http://localhost:3000")
 
-	cmd := New().Build()
+	cmd := New().Command()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs(nil)

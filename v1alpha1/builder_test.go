@@ -21,7 +21,7 @@ import (
 func execute(t *testing.T, b v1.Builder, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	cmd := b.Build()
+	cmd := b.Command()
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
@@ -48,7 +48,7 @@ func TestOptionsLand(t *testing.T) {
 	if got, want := b.Name(), "expose"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
-	cmd := b.Build()
+	cmd := b.Command()
 	if got, want := cmd.Name(), "expose"; got != want {
 		t.Errorf("built command Name() = %q, want %q", got, want)
 	}
@@ -73,18 +73,18 @@ func TestNameDefaults(t *testing.T) {
 	if got, want := v1alpha1.New().Name(), v1.CommandName; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
-	if got, want := v1alpha1.New().Build().Name(), v1.CommandName; got != want {
+	if got, want := v1alpha1.New().Command().Name(), v1.CommandName; got != want {
 		t.Errorf("built command Name() = %q, want %q", got, want)
 	}
 }
 
-// TestBuildIsIdempotent pins that Build assembles once. A second assembly
-// would bind a second set of flags over the same fields, so the cached command
-// is correctness, not just an optimization.
-func TestBuildIsIdempotent(t *testing.T) {
+// TestCommandIsIdempotent pins that Command assembles once. A second
+// assembly would bind a second set of flags over the same fields, so the
+// cached command is correctness, not just an optimization.
+func TestCommandIsIdempotent(t *testing.T) {
 	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
-	if first, second := b.Build(), b.Build(); first != second {
-		t.Error("Build() returned a different command on the second call, want the cached one")
+	if first, second := b.Command(), b.Command(); first != second {
+		t.Error("Command() returned a different command on the second call, want the cached one")
 	}
 }
 
@@ -219,7 +219,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 			}
 
-			got, err := b.Build().Flags().GetBool("no-open")
+			got, err := b.Command().Flags().GetBool("no-open")
 			if err != nil {
 				t.Fatalf("GetBool: %v", err)
 			}
@@ -238,7 +238,7 @@ func TestOpenDefaultsOn(t *testing.T) {
 func TestWithOpenSeedsTheDefault(t *testing.T) {
 	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"), v1alpha1.WithOpen(false))
 
-	if got := b.Build().Flags().Lookup("no-open").DefValue; got != "true" {
+	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
 		t.Errorf("--no-open default = %q, want %q", got, "true")
 	}
 
@@ -246,7 +246,7 @@ func TestWithOpenSeedsTheDefault(t *testing.T) {
 	if !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 	}
-	got, err := b.Build().Flags().GetBool("no-open")
+	got, err := b.Command().Flags().GetBool("no-open")
 	if err != nil {
 		t.Fatalf("GetBool: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestCacheDir(t *testing.T) {
 			args: []string{"--cache-dir", "false", "--cache-dir", "$OTHER"},
 		},
 		{
-			// Build fills an unset list with the working directory, and has
+			// Command fills an unset list with the working directory, and has
 			// to tell "unset" from "emptied on purpose" to leave this one
 			// alone. Nothing else in this table separates the two.
 			name: "a seed that disabled it is not re-filled by the default",
@@ -389,10 +389,10 @@ func TestCacheDir(t *testing.T) {
 			other := t.TempDir()
 
 			// What an unconfigured run resolves to, from this working
-			// directory. Build seeds the default; nothing is executed, so the
-			// environment is not applied to it.
+			// directory. Command seeds the default; nothing is executed, so
+			// the environment is not applied to it.
 			probe := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
-			dflt := probe.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
+			dflt := probe.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 
 			// The same substitution on inputs and wants, so a path is written
 			// once and means the same thing on either platform.
@@ -426,7 +426,7 @@ func TestCacheDir(t *testing.T) {
 			// through a comma-separated String(), which splits any path that
 			// contains a comma — and t.TempDir builds one out of the subtest
 			// name.
-			got := b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()
+			got := b.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()
 			if want := resolveAll(tc.want); !slices.Equal(got, want) {
 				t.Errorf("--cache-dir = %v, want %v", got, want)
 			}
@@ -460,7 +460,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
 			}
 
-			got, err := b.Build().Flags().GetBool("multiview")
+			got, err := b.Command().Flags().GetBool("multiview")
 			if err != nil {
 				t.Fatalf("GetBool: %v", err)
 			}
@@ -476,7 +476,7 @@ func TestMultiviewDefaultsOn(t *testing.T) {
 func TestWithMultiviewSeedsTheDefault(t *testing.T) {
 	b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"), v1alpha1.WithMultiview(false))
 
-	if got := b.Build().Flags().Lookup("multiview").DefValue; got != "false" {
+	if got := b.Command().Flags().Lookup("multiview").DefValue; got != "false" {
 		t.Errorf("--multiview default = %q, want %q", got, "false")
 	}
 }
@@ -493,7 +493,7 @@ func TestDefaultCacheDir(t *testing.T) {
 	dflt := func(t *testing.T) string {
 		t.Helper()
 		b := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000"))
-		return b.Build().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
+		return b.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
 	}
 
 	t.Run("is not inside the working directory", func(t *testing.T) {

@@ -10,10 +10,10 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
-// New returns a Builder configured by its options; finalize with Build, which
-// yields a *cobra.Command ready to Execute.
+// New returns a Builder configured by its options; finalize with Command,
+// which yields a *cobra.Command ready to Execute.
 func ExampleNew() {
-	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Build()
+	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
 
 	fmt.Println(cmd.Name())
 	// Output: tunneld
@@ -24,7 +24,7 @@ func ExampleNew() {
 func ExampleNew_multipleOrigins() {
 	cmd := v1alpha1.New(
 		v1alpha1.WithURL("http://localhost:3000", "http://localhost:4000"),
-	).Build()
+	).Command()
 
 	fmt.Println(cmd.Flags().Lookup("url").DefValue)
 	// Output: [http://localhost:3000,http://localhost:4000]
@@ -36,7 +36,7 @@ func ExampleNew_embedded() {
 	cmd := v1alpha1.New(
 		v1alpha1.WithName("expose"),
 		v1alpha1.WithURL("http://localhost:3000"),
-	).Build()
+	).Command()
 
 	fmt.Println(cmd.Name())
 	// Output: expose
