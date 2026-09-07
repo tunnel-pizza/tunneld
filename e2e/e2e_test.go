@@ -105,7 +105,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--url", "--provider", "--log-level", "--no-open", "--multiview", "tunneld --url"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--no-open", "--multiview", "tunneld <origin> [origin ...]"}},
 	}
 
 	for _, tc := range cases {
@@ -139,13 +139,16 @@ func TestRefusedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no origin at all", nil, "url"},
-		{"unproxyable scheme", []string{"--url", "ftp://localhost:21"}, "ftp"},
-		{"origin with no host", []string{"--url", "http://"}, "no host"},
-		{"unknown log level", []string{"--url", "http://localhost:3000", "--log-level", "loud"}, "log-level"},
-		{"positional argument", []string{"--url", "http://localhost:3000", "stray"}, "stray"},
-		{"unknown flag", []string{"--url", "http://localhost:3000", "--nope"}, "nope"},
-		{"unparsable boolean flag", []string{"--url", "http://localhost:3000", "--no-open=nonsense"}, "no-open"},
+		{"no origin at all", nil, "TUNNELD_ORIGINS"},
+		{"unproxyable scheme", []string{"ftp://localhost:21"}, "ftp"},
+		{"origin with no host", []string{"http://"}, "no host"},
+		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, "log-level"},
+		// A second argument is a second origin, so a bad one is refused as an
+		// origin rather than as a stray word — and reaching it proves every
+		// argument is parsed, not just the first.
+		{"a later origin is still parsed", []string{"http://localhost:3000", "ftp://nope"}, "ftp://nope"},
+		{"unknown flag", []string{"http://localhost:3000", "--nope"}, "nope"},
+		{"unparsable boolean flag", []string{"http://localhost:3000", "--no-open=nonsense"}, "no-open"},
 	}
 
 	for _, tc := range cases {
@@ -200,30 +203,30 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 		want string
 	}{
 		{
-			name: "TUNNELD_URL satisfies the required flag",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_LOG": "loud"},
+			name: "TUNNELD_ORIGINS satisfies the required flag",
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 		{
-			name: "TUNNELD_URL takes a comma-separated list",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000,http://localhost:4000", "TUNNELD_LOG": "loud"},
+			name: "TUNNELD_ORIGINS takes a comma-separated list",
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000,http://localhost:4000", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 		{
-			name: "TUNNELD_URL is validated like the flag",
-			env:  map[string]string{"TUNNELD_URL": "ftp://localhost:21"},
+			name: "TUNNELD_ORIGINS is validated like the flag",
+			env:  map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21"},
 			want: "invalid origin",
 		},
 		{
 			name: "TUNNELD_LOG is strict",
 			env:  map[string]string{"TUNNELD_LOG": "loud"},
-			args: []string{"--url", "http://localhost:3000"},
+			args: []string{"http://localhost:3000"},
 			want: "invalid log level",
 		},
 		{
 			name: "the flag beats the variable",
 			env:  map[string]string{"TUNNELD_LOG": "info"},
-			args: []string{"--url", "http://localhost:3000", "--log-level", "loud"},
+			args: []string{"http://localhost:3000", "--log-level", "loud"},
 			want: "invalid log level",
 		},
 		{
@@ -231,17 +234,17 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			// pflag refuses the value and PersistentPreRunE reports it as
 			// ErrInvalidEnv, naming the variable rather than the flag.
 			name: "TUNNELD_NO_OPEN is validated",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_NO_OPEN": "nonsense"},
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "nonsense"},
 			want: "TUNNELD_NO_OPEN=\"nonsense\": invalid environment value",
 		},
 		{
 			name: "TUNNELD_MULTIVIEW is validated",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
 			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
 		},
 		{
 			name: "TUNNELD_NO_OPEN accepts a boolean",
-			env:  map[string]string{"TUNNELD_URL": "http://localhost:3000", "TUNNELD_NO_OPEN": "true", "TUNNELD_LOG": "loud"},
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "true", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 	}
@@ -270,7 +273,7 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 func TestVersionIgnoresABadEnvironment(t *testing.T) {
 	bin := build(t)
 
-	stdout, _, code := runEnv(t, bin, map[string]string{"TUNNELD_LOG": "loud", "TUNNELD_URL": "ftp://nope"}, "version")
+	stdout, _, code := runEnv(t, bin, map[string]string{"TUNNELD_LOG": "loud", "TUNNELD_ORIGINS": "ftp://nope"}, "version")
 	if code != 0 {
 		t.Errorf("exited %d, want 0", code)
 	}
@@ -750,8 +753,8 @@ func TestExamples(t *testing.T) {
 			fetchThroughEdge("<title>frontend</title>"),
 			interruptAndExitCleanly(1),
 		}},
-		{"multi-origin", "(default [http://localhost:3000,http://localhost:4000])", nil, nil},
-		{"attach", "(default [dockerd://tunneld-example])", nil, nil},
+		{"multi-origin", "exposes: http://localhost:3000, http://localhost:4000", nil, nil},
+		{"attach", "exposes: dockerd://tunneld-example", nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

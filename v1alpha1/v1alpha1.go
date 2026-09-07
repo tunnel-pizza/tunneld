@@ -196,7 +196,7 @@ func New(opts ...Option) *BuilderImpl {
 // the seed and there is no second copy of the configuration to keep in sync.
 type BuilderImpl struct {
 	name      string
-	urls      []string
+	origins   []string
 	provider  string
 	logLevel  string
 	multiview bool

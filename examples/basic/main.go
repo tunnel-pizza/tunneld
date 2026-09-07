@@ -6,7 +6,7 @@
 // own, serving the same page examples/multi-origin puts in its first tile. Every tunneld flag still works, since the seeded origin is only a
 // default:
 //
-//	go run ./examples/basic --url http://localhost:8080 --no-open
+//	go run ./examples/basic http://localhost:8080 --no-open
 package main
 
 import (
@@ -33,7 +33,7 @@ func main() {
 	defer stop()
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithURL("http://localhost:3000"),
+		v1alpha1.WithOrigin("http://localhost:3000"),
 		v1alpha1.WithLogLevel("debug"),
 	).Command()
 

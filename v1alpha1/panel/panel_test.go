@@ -98,7 +98,7 @@ func TestIsPanelRequest(t *testing.T) {
 
 // TestWanted pins that the panel needs both the flag and something to
 // compare. One origin framed alone is a worse view of it than the origin
-// itself, so a lone --url keeps opening the origin.
+// itself, so a lone origin keeps being opened directly.
 func TestWanted(t *testing.T) {
 	one, err := mustOrigins([]string{"http://localhost:3000"})
 	if err != nil {

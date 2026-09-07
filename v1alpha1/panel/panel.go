@@ -287,7 +287,7 @@ func (u *unframer) Write(b []byte) (int, error) {
 }
 
 // Wanted reports whether the panel should be served at all. One origin has
-// nothing to compare against, so a lone --url keeps the bare address for
+// nothing to compare against, so a lone origin keeps the bare address for
 // itself rather than framing one page in a panel.
 func (*PanelImpl) Wanted(enabled bool, origins []*url.URL) bool {
 	return enabled && len(origins) > 1

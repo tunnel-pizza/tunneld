@@ -13,21 +13,22 @@ import (
 // New returns a Builder configured by its options; finalize with Command,
 // which yields a *cobra.Command ready to Execute.
 func ExampleNew() {
-	cmd := v1alpha1.New(v1alpha1.WithURL("http://localhost:3000")).Command()
+	cmd := v1alpha1.New(v1alpha1.WithOrigin("http://localhost:3000")).Command()
 
 	fmt.Println(cmd.Name())
 	// Output: tunneld
 }
 
-// Several --url values share one public hostname: the first is the default
-// origin and each later one answers on a bare ?n parameter.
+// Several origins share one public hostname: the first is the default origin
+// and each later one answers on a bare ?n parameter. They are the command's
+// arguments, so an embedder seeds them and a command line replaces them.
 func ExampleNew_multipleOrigins() {
 	cmd := v1alpha1.New(
-		v1alpha1.WithURL("http://localhost:3000", "http://localhost:4000"),
+		v1alpha1.WithOrigin("http://localhost:3000", "http://localhost:4000"),
 	).Command()
 
-	fmt.Println(cmd.Flags().Lookup("url").DefValue)
-	// Output: [http://localhost:3000,http://localhost:4000]
+	fmt.Println(cmd.Use)
+	// Output: tunneld <origin> [origin ...]
 }
 
 // WithName mounts tunneld under another program's verb, so an embedding CLI
@@ -35,7 +36,7 @@ func ExampleNew_multipleOrigins() {
 func ExampleNew_embedded() {
 	cmd := v1alpha1.New(
 		v1alpha1.WithName("expose"),
-		v1alpha1.WithURL("http://localhost:3000"),
+		v1alpha1.WithOrigin("http://localhost:3000"),
 	).Command()
 
 	fmt.Println(cmd.Name())

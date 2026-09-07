@@ -57,7 +57,7 @@ func New(opts ...Option) *TargetsImpl {
 //
 // The three failures are told apart because their levers differ: a daemon that
 // cannot be reached is ErrNoDocker (start Docker), and both a missing container
-// and a stopped one are ErrInvalidOrigin (fix the --url, or start it).
+// and a stopped one are ErrInvalidOrigin (fix the origin, or start it).
 func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -67,7 +67,7 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 	res, err := cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
 	// Under Compose the name a person knows is not the name the daemon knows:
 	// service `web` in project `proj` is a container called `proj-web-1`, so
-	// the obvious TUNNELD_URL misses every time. Falling back to the labels
+	// the obvious origin misses every time. Falling back to the labels
 	// Compose already writes costs one list call, and only on the path that
 	// has failed anyway. Name-or-id stays first: a container literally named
 	// `web` must keep winning, or this changes what an existing config means.
@@ -228,7 +228,7 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 	// shim that is not Docker — would panic here rather than fail. It reads as
 	// an origin problem for the same reason a stopped container does: nothing
 	// tunneld can do makes this container attachable, and the lever is the
-	// --url.
+	// origin.
 	if info.Config == nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("%w: container %q reports no configuration", v1.ErrInvalidOrigin, ref)

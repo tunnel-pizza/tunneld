@@ -24,11 +24,11 @@ Or without a Go toolchain, from npm. The package wraps the same binary, one
 build per platform, and hands it the process:
 
 ```sh
-npx tunneld --url :3000
+npx tunneld :3000
 ```
 
 ```sh
-tunneld --url http://localhost:3000   # or just: tunneld --url :3000
+tunneld http://localhost:3000   # or just: tunneld :3000
 ```
 
 ```
@@ -44,7 +44,7 @@ root. Every flag has an environment mirror, which is what a container is
 configured with:
 
 ```sh
-docker run --rm -e TUNNELD_URL=http://host.docker.internal:8080 \
+docker run --rm -e TUNNELD_ORIGINS=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
 
@@ -54,7 +54,7 @@ machine:
 
 ```sh
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  -e TUNNELD_URL=dockerd://my-container ghcr.io/tunnel-pizza/tunneld
+  -e TUNNELD_ORIGINS=dockerd://my-container ghcr.io/tunnel-pizza/tunneld
 ```
 
 Images are signed by digest, so a moved tag cannot inherit a signature:
@@ -67,12 +67,12 @@ cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
 
 ## Multiple origins
 
-Pass `--url` once per local service. They share one public hostname: the first
+Pass one argument per local service. They share one public hostname: the first
 is the default, and each later one answers on a **bare `?n`** parameter, `n`
-being that flag's 0-based position.
+being that argument's 0-based position.
 
 ```sh
-tunneld --url http://localhost:3000 --url http://localhost:4000
+tunneld http://localhost:3000 http://localhost:4000
 ```
 
 ```
@@ -108,7 +108,7 @@ rewriting the cookie in one move.
 
 That is why the map above prints `?0` for the default origin rather than a bare
 URL: every address stays correct however much you have clicked around. A single
-`--url` has nothing to route between and prints the plain URL.
+origin has nothing to route between and prints the plain URL.
 
 ### WebSockets
 
@@ -129,13 +129,13 @@ A third-party dev server cannot be told to. Mark its origin instead, and every
 otherwise-unroutable handshake goes there:
 
 ```sh
-tunneld --url :4000 --url http+ws://localhost:5173
+tunneld :4000 http+ws://localhost:5173
 ```
 
 `http+ws`, `http+wss`, `https+ws` and `https+wss` all work and mean the same
 thing — the suffix names the origin, it does not describe a transport, and the
 origin is dialed by its base scheme either way. It is inert with a single
-`--url`, which has nothing to route between.
+origin, which has nothing to route between.
 
 **Only one origin may be marked**, and that is the shape of the problem rather
 than a limit of the flag: two services opening their own sockets behind one
@@ -147,11 +147,11 @@ container terminal below, and every tile of the multiview panel — is unaffecte
 
 ### Containers
 
-`--url dockerd://<container>` exposes a terminal attached to a running
+A `dockerd://<container>` origin exposes a terminal attached to a running
 container instead of an HTTP service:
 
 ```sh
-tunneld --url dockerd://my-container
+tunneld dockerd://my-container
 ```
 
 `<container>` is a container name or id, or — when neither matches — a Compose
@@ -160,7 +160,7 @@ name `proj-web-1`, so the name you wrote in the compose file is never the name
 the daemon knows; tunneld looks it up by the labels Compose already wrote:
 
 ```sh
-tunneld --url dockerd://web
+tunneld dockerd://web
 ```
 
 A container literally named `web` still wins. The lookup is scoped to tunneld's
@@ -172,7 +172,7 @@ It is an origin like any other, so it takes an index, gets a multiview tile,
 and mixes freely with HTTP origins:
 
 ```sh
-tunneld --url :3000 --url dockerd://my-container
+tunneld :3000 dockerd://my-container
 ```
 
 The semantics are `docker attach`'s, which means most of the behaviour was
@@ -196,7 +196,7 @@ Several origins behind one hostname are also served as one page, at the
 tunnel's own address:
 
 ```
-tunneld --url :3000 --url :4000 --url :5000
+tunneld :3000 :4000 :5000
 ```
 ```
 tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
@@ -285,22 +285,38 @@ TLS, spec replay, edge pinning, the cache directory — is reachable through
 `libtunnel`'s own `LIBTUNNEL_*` variables, which pass straight through; see
 [its README](https://github.com/cnuss/libtunnel#environment-variables).
 
+The origins are the arguments. One per local service, in order: the first is the
+default and each later one answers on `?n`. A missing scheme implies `http` and
+a missing host implies `localhost`, so `:8000`, `localhost:8000` and
+`http://localhost:8000` are one origin. At least one is required, from argv,
+from `TUNNELD_ORIGINS`, or seeded in code — and argv beats the variable, which
+beats the seed, each replacing the one under it rather than adding to it.
+
+```sh
+tunneld :3000 :4000 dockerd://my-container
+```
+
+A `dockerd://<container>` origin is not proxied but served: tunneld answers it
+with a browser terminal attached to the container, the way `docker attach`
+attaches, and `<container>` is a name, an id, or a Compose service name. See
+[Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names
+the one that owns WebSockets; see [WebSockets](#websockets).
+
 Every flag has an environment mirror, and the flag wins: **flag > environment >
 default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `-u`, `--url` | `TUNNELD_URL` | Local origin to expose. Repeat the flag for more; the first is the default and later ones answer on `?n`. A missing scheme implies `http` and a missing host implies `localhost`, so `:8000`, `localhost:8000` and `http://localhost:8000` are one origin. Required unless supplied by the variable or seeded in code. A value of `dockerd://<container>` is not proxied but served: tunneld answers that origin with a browser terminal attached to the container, the way `docker attach` attaches; `<container>` is a name, an id, or a Compose service name. See [Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see [WebSockets](#websockets). |
 | `--cache-dir` | `TUNNELD_CACHE_DIR` | Directory to cache the tunnel spec in — `TUNNEL.env`, the credentials that let the next run replay the same hostname instead of minting a new one. Repeat the flag for more; comma-separated in the variable. Empty or `true` means the default: a per-project directory under the user's cache directory, named for the working directory. Never the working directory itself — a spec is credentials, and a checkout is the one place they must not land by default. `false` anywhere in the list turns caching off. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--no-open` | `TUNNELD_NO_OPEN` | Do not open a public URL in a browser once the tunnel is live. Opening is **on by default** — the panel when there is one, else the default origin — so this is the flag for a server or CI. A browser that cannot be opened is not an error: the tunnel is up either way, and the failure goes to `--log-level=debug` rather than stderr. |
-| `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single `--url`, which keeps the bare address for itself. |
+| `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 
 So the whole thing runs from a container with no command line at all:
 
 ```sh
-docker run -e TUNNELD_URL=http://host.docker.internal:3000,http://host.docker.internal:4000 \
+docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docker.internal:4000 \
            -e TUNNELD_LOG=info \
            tunneld
 ```
@@ -327,7 +343,7 @@ import (
 func main() {
 	cmd := v1alpha1.New(
 		v1alpha1.WithName("expose"),               // mount under your own verb
-		v1alpha1.WithURL("http://localhost:3000"), // a default the user can override
+		v1alpha1.WithOrigin("http://localhost:3000"), // a default the user can override
 	).Command()
 
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
@@ -338,7 +354,7 @@ func main() {
 
 Every option's value is a *default*, not a fixed setting: the command's flags
 bind over the same fields, so an argv value wins. Seeding an origin therefore
-makes `--url` optional rather than forbidden.
+lets the command run with no arguments at all.
 
 ## Layout
 
@@ -381,7 +397,7 @@ func VersionLine() string             // the human-facing build banner
 
 // The builder's options. Each seeds a flag's default, so argv still wins.
 func WithName(name string) Option                 // command name; default "tunneld"
-func WithURL(urls ...string) Option               // origins, in order; appends across options
+func WithOrigin(origins ...string) Option         // origins, in order; appends across options
 func WithProvider(host string) Option             // quick-tunnel host; default tunnel.pizza
 func WithCacheDir(dirs ...string) Option          // spec cache directories; true/false are instructions
 func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
@@ -394,7 +410,7 @@ func WithStderr(w io.Writer) Option               // banner, the origin each add
 
 There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
-changes `New().WithURL(u).Build()` to `New(WithURL(u)).Command()`.
+changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
 `BuilderImpl` also takes `WithCacheDirs`, `WithEngine`, `WithCache`,
 `WithPanel`, `WithOpener`, `WithCounter` and `WithBinder`, which swap the
@@ -426,7 +442,7 @@ var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")
 
 const LogEnv          = "TUNNELD_LOG"
-const URLEnv          = "TUNNELD_URL"
+const OriginsEnv      = "TUNNELD_ORIGINS"
 const ProviderEnv     = "TUNNELD_PROVIDER"
 const CacheDirEnv     = "TUNNELD_CACHE_DIR"
 const NoOpenEnv       = "TUNNELD_NO_OPEN"
@@ -446,7 +462,7 @@ after construction still lands.
 
 | Variable | Mirrors | Effect |
 | -------- | ------- | ------ |
-| `TUNNELD_URL` | `--url` | Local origins, comma-separated in the order the repeated flag would take them. An origin URL containing a literal comma has to use the flag, which parses no separator. |
+| `TUNNELD_ORIGINS` | the arguments | Local origins, comma-separated in the order argv would take them. An origin URL containing a literal comma has to arrive as an argument, which is parsed for no separator. |
 | `TUNNELD_CACHE_DIR` | `--cache-dir` | Spec cache directories, comma-separated and in order. `true` or an empty entry is the default location, `false` anywhere in the list turns caching off, anything else is a path. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
@@ -501,7 +517,7 @@ pass them through `go run`, since make would read a leading `--` as one of its
 own options:
 
 ```sh
-go run ./examples/basic --url http://localhost:8080 --no-open
+go run ./examples/basic http://localhost:8080 --no-open
 ```
 
 ## Testing

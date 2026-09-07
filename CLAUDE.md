@@ -17,8 +17,8 @@ agent-specific framing.
 
 ## Before you touch anything
 
-- File map, module layout, and the conventions that bite (`StringArray` vs
-  `StringSlice`, the bare `?n` routing parameter, a running tunnel splitting
+- File map, module layout, and the conventions that bite (origins as arguments
+  settling argv > environment > seed, the bare `?n` routing parameter, a running tunnel splitting
   addresses onto stdout and their origins onto stderr, e2e `-count=1`, the
   live example row, skip release anchoring, annotated cosign tags) are
   all in [CONTRIBUTING.md](./CONTRIBUTING.md). Don't re-derive them from the
