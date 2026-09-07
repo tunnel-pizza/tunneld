@@ -738,6 +738,7 @@ func captureStderr(t *testing.T) func() string {
 			os.Stderr = orig
 			w.Close() // unblocks the copy goroutine's Read, which closes done
 			<-done
+			r.Close()
 		}
 		return buf.String()
 	}

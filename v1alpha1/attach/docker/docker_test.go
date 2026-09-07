@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -201,7 +202,11 @@ type composeContainer struct {
 // selfProject is the com.docker.compose.project label reported for this
 // process's own hostname — "" means tunneld is not running inside a project,
 // which is the host-side case.
-func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
+//
+// The returned pointer accumulates every ref this stub was asked to inspect,
+// in the order the requests arrived — Open's own self-id ordering is
+// otherwise invisible from outside the package it was inlined into.
+func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) *[]string {
 	t.Helper()
 	host, err := os.Hostname()
 	if err != nil {
@@ -214,6 +219,9 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 			"com.docker.compose.service": c.service,
 		}
 	}
+
+	var mu sync.Mutex
+	var inspected []string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Api-Version", "1.51")
@@ -255,6 +263,9 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 		if i := strings.LastIndex(ref, "/containers/"); i >= 0 {
 			ref = ref[i+len("/containers/"):]
 		}
+		mu.Lock()
+		inspected = append(inspected, ref)
+		mu.Unlock()
 
 		// This process's own container, which is how the project gets scoped.
 		if ref == host && selfProject != "" {
@@ -278,6 +289,7 @@ func composeDaemon(t *testing.T, selfProject string, cs ...composeContainer) {
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("DOCKER_HOST", "tcp://"+strings.TrimPrefix(srv.URL, "http://"))
+	return &inspected
 }
 
 // TestOpenResolvesComposeService pins the fallback that makes a Compose
@@ -424,6 +436,119 @@ func TestOpenScopesByMountinfo(t *testing.T) {
 	if target.id != "mine-cc" {
 		t.Errorf("id = %q, want the claude-code in tunneld's own project (%q)", target.id, "mine-cc")
 	}
+}
+
+// TestOpenOrdersSelfIDs pins the candidate order the self-id lookup inside
+// Open produces: the ids are guesses, checked by being inspected, so the job
+// is to try the likely one first and never invent one. There is no seam left
+// to call this directly — the lookup was inlined into Open — so these cases
+// go through Open itself and read the order back off composeDaemon's stub,
+// which now records every ref it was asked to inspect.
+//
+// Each case gives Open a reference no service matches, so it always ends in
+// ErrInvalidOrigin; what is under test is the order of the inspects that
+// happen on the way there, not the outcome.
+func TestOpenOrdersSelfIDs(t *testing.T) {
+	const self = "42a7dbf8b5c82c9bf59749261bf0f8998fdb6f35dc74542168bdc5b5800c21b4"
+	const layer = "433163a110ebac893af94c0c0f05ef45501c8ef19a93c814e109034599c5105b"
+
+	setMountinfo := func(t *testing.T, body string) {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "mountinfo")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write mountinfo: %v", err)
+		}
+		old := mountinfo
+		mountinfo = path
+		t.Cleanup(func() { mountinfo = old })
+	}
+
+	// candidates filters inspected down to the self/layer entries, in the
+	// order the stub saw them — dropping the top-level reference Open starts
+	// from and the host's own hostname, neither of which this test cares
+	// about.
+	candidates := func(inspected []string) []string {
+		var got []string
+		for _, ref := range inspected {
+			if ref == self || ref == layer {
+				got = append(got, ref)
+			}
+		}
+		return got
+	}
+
+	t.Run("the containers path wins over a layer path", func(t *testing.T) {
+		// The shape observed on a real daemon: the runtime's per-container
+		// directory is what bind-mounts /etc/hosts.
+		setMountinfo(t, "1 2 0:1 / / rw - overlay overlay rw,upperdir=/var/lib/docker/overlay2/"+layer+"/diff\n"+
+			"3 4 0:2 /"+self+"/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n"+
+			"5 6 0:3 /var/lib/docker/containers/"+self+"/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n")
+
+		inspected := composeDaemon(t, "",
+			composeContainer{id: self, name: "self-container", project: "mine", service: "tunneld"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		got2 := candidates(*inspected)
+		if len(got2) == 0 || got2[0] != self {
+			t.Fatalf("inspected order = %v, want it to start with self (%s)", got2, self)
+		}
+		// A self that resolves (it carries a compose project label here)
+		// means the loop breaks before it ever gets to layer.
+		for _, ref := range got2 {
+			if ref == layer {
+				t.Errorf("layer (%s) was inspected; a resolving self must short-circuit before it", layer)
+			}
+		}
+	})
+
+	t.Run("without a containers path, first seen leads", func(t *testing.T) {
+		setMountinfo(t, "1 2 0:1 / / rw - overlay overlay rw,upperdir=/x/"+layer+"/diff\n"+
+			"3 4 0:2 /y/"+self+"/hostname /etc/hostname rw - ext4 /dev/vda1 rw\n")
+
+		// No composeContainer for layer: the daemon does not know it, so its
+		// inspect 404s and the loop moves on to self.
+		inspected := composeDaemon(t, "",
+			composeContainer{id: self, name: "self-container", project: "mine", service: "tunneld"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		want := []string{layer, self}
+		if got2 := candidates(*inspected); !slices.Equal(got2, want) {
+			t.Fatalf("inspected order = %v, want %v", got2, want)
+		}
+	})
+
+	t.Run("deduplicated", func(t *testing.T) {
+		setMountinfo(t, "/containers/"+self+"/a\n/containers/"+self+"/b\n")
+
+		inspected := composeDaemon(t, "", composeContainer{id: self, name: "self-container"})
+
+		got, err := New().Open(t.Context(), "target", discard())
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		count := 0
+		for _, ref := range *inspected {
+			if ref == self {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("self (%s) inspected %d times, want exactly once", self, count)
+		}
+	})
 }
 
 // TestAttach pins the round trip against a real container, both ways it can be
