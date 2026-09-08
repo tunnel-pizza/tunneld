@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -53,6 +54,19 @@ var (
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
 )
 
+// How long a frame waits to be told how big its window is before drawing at
+// the size the session settled on instead.
+//
+// The page sends its size the moment its socket opens, so this is only ever
+// spent on something that is not the page. Half a second is longer than the
+// round trip through the edge and short enough that a client which never sends
+// one is not left staring at nothing.
+const sizeGrace = 500 * time.Millisecond
+
+// settleMsg is the grace period expiring: draw at the session's size, since
+// whoever is watching has not said what theirs is.
+type settleMsg struct{}
+
 // paneMsg says the container wrote something. The frame holds no copy of the
 // screen — the emulator is the screen — so the message carries nothing: it
 // only says that rendering again is worth doing.
@@ -89,6 +103,11 @@ type frame struct {
 	// frame and the container will not see it.
 	command bool
 
+	// sized is the window having been reported by the page rather than assumed.
+	// Until it is, the frame draws nothing rather than drawing at a size that
+	// is somebody else's.
+	sized bool
+
 	// scroll is how many lines back the pane is showing, 0 being live. An
 	// altscreen frame has no browser scrollback of its own to fall back on —
 	// that is what the frame costs — so the emulator's is reached through
@@ -111,21 +130,38 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The renderer measures its terminal at startup and reports what it
 		// found. There is no terminal here to measure — the output is a
 		// websocket — so what it finds is nothing, and a renderer that
-		// believes it has no rows draws none of them: the viewer watches an
-		// empty tab until its page happens to send a size.
+		// believes it has no rows draws none of them.
 		//
-		// Answered rather than raced. Pushing the real size in alongside
-		// startup means whichever lands second wins, and when that is the zero
-		// the frame never draws again. Sent back as a command instead, so it
-		// is this message that produces the correct one and ordering has
-		// nothing to decide.
+		// Waited out rather than answered at once. The session's settled size
+		// is a guess about somebody else's window, and drawing at it means the
+		// viewer's first frame is a box of the wrong size with the cursor
+		// somewhere inside it, replaced a moment later when the page says how
+		// big it actually is. Better to draw nothing for that moment: the
+		// renderer paints nothing at zero, which is exactly the right amount.
+		//
+		// The guess is still made, just late, and it is still made as a
+		// message rather than pushed in from outside — whichever of the two
+		// landed second would win, and when that is the zero the frame never
+		// draws again.
 		if msg.Width == 0 || msg.Height == 0 {
-			w, h := f.sess.window()
-			return f, func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
+			return f, tea.Tick(sizeGrace, func(time.Time) tea.Msg { return settleMsg{} })
 		}
 		f.width, f.height = msg.Width, msg.Height
+		f.sized = true
 		f.sess.resizeViewer(f.v, msg.Width, msg.Height)
 		return f, nil
+
+	case settleMsg:
+		// Whatever size is known by now, said again so the renderer has it.
+		// A page that answered in time has already set one and this restates
+		// it; one that never will gets the session's, which is what keeps a
+		// client that does not speak the resize protocol from staring at an
+		// empty terminal.
+		w, h := f.width, f.height
+		if !f.sized {
+			w, h = f.sess.window()
+		}
+		return f, func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
 
 	case goneMsg:
 		return f, tea.Quit

@@ -572,3 +572,76 @@ func TestPasteSnapsThePaneLive(t *testing.T) {
 		t.Errorf("scroll = %d after a paste, want the pane snapped live", h.f.scroll)
 	}
 }
+
+// TestFirstDrawWaitsForTheWindow pins that a frame does not draw at a size it
+// guessed.
+//
+// The renderer has no terminal to measure — the output is a websocket — so it
+// opens by reporting nothing. Answering that immediately with the size the
+// session settled on means the viewer's first frame is a box of somebody
+// else's dimensions with the cursor somewhere inside it, redrawn the moment
+// the page says how big it actually is. Nothing is a better first frame than
+// something wrong, and the renderer paints nothing at zero on its own.
+func TestFirstDrawWaitsForTheWindow(t *testing.T) {
+	h := newFrameHarness(t)
+
+	model, cmd := h.f.Update(tea.WindowSizeMsg{})
+	f, ok := model.(frame)
+	if !ok {
+		t.Fatalf("Update returned %T, want a frame", model)
+	}
+	if cmd == nil {
+		t.Fatal("no command for the empty size report, want the grace period armed")
+	}
+	if f.sized {
+		t.Error("the frame took the empty report as its size")
+	}
+}
+
+// TestTheGuessIsMadeLate pins the other half: a client that never says how big
+// it is still gets a terminal, at whatever size the session settled on. The
+// streaming protocol does not require a client to send a size, and one that
+// does not must not be left staring at nothing.
+func TestTheGuessIsMadeLate(t *testing.T) {
+	h := newFrameHarness(t)
+
+	_, cmd := h.f.Update(settleMsg{})
+	if cmd == nil {
+		t.Fatal("no command from the grace period expiring, want the session's size")
+	}
+	msg, ok := cmd().(tea.WindowSizeMsg)
+	if !ok {
+		t.Fatalf("the grace period produced %T, want a window size", cmd())
+	}
+	w, h2 := h.s.window()
+	if msg.Width != w || msg.Height != h2 {
+		t.Errorf("settled on %dx%d, want the session's %dx%d", msg.Width, msg.Height, w, h2)
+	}
+}
+
+// TestThePagesSizeSurvivesTheGuess pins that a page which answered in time is
+// not then overruled by the fallback. The renderer has to be told a size by
+// the message that expires the grace period either way — leaving it at the
+// zero it started with is the one outcome that never draws again — so what it
+// is told has to be the page's own.
+func TestThePagesSizeSurvivesTheGuess(t *testing.T) {
+	h := newFrameHarness(t)
+
+	model, _ := h.f.Update(tea.WindowSizeMsg{Width: 111, Height: 41})
+	h.f = model.(frame)
+	if !h.f.sized {
+		t.Fatal("the page's size was not taken")
+	}
+
+	_, cmd := h.f.Update(settleMsg{})
+	if cmd == nil {
+		t.Fatal("no command from the grace period expiring")
+	}
+	msg, ok := cmd().(tea.WindowSizeMsg)
+	if !ok {
+		t.Fatalf("the grace period produced %T, want a window size", cmd())
+	}
+	if msg.Width != 111 || msg.Height != 41 {
+		t.Errorf("settled on %dx%d, want the page's 111x41", msg.Width, msg.Height)
+	}
+}

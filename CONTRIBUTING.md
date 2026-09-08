@@ -375,10 +375,14 @@ Two things there will bite if you change them without knowing why:
   `frame.go` is a value type with none of them.
 - **A frame has no terminal to measure.** Its output is a websocket, so the
   renderer's first size report is zero, and a renderer that believes it has no
-  rows draws none. The frame answers that report with the session's settled
-  window rather than racing it with a size pushed in from outside — whichever
-  landed second would win, and when that is the zero nothing is ever drawn
-  again.
+  rows draws none. The frame waits `sizeGrace` before answering, because the
+  session's settled size is a guess about *somebody else's* window: answered at
+  once, a joining viewer's first frame is a box of the wrong width with the
+  cursor somewhere inside it, redrawn as soon as the page says how big it
+  actually is. Nothing is the better first frame, and the renderer paints
+  nothing at zero on its own. The answer still has to come as a message rather
+  than a size pushed in from outside — whichever landed second would win, and
+  when that is the zero nothing is ever drawn again.
 - **The frame composes into a buffer, and everything is copied in.** Neither
   `vt.Emulator.Draw` nor `uv.StyledString.Draw` clips to the area it is handed
   — both clip to the *screen* — so drawn straight into the frame's buffer,
