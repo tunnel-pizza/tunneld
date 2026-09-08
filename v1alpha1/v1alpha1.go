@@ -159,7 +159,7 @@ var (
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Panel      = (*panel.PanelImpl)(nil)
-	_ Opener     = (*browser.OpenerImpl)(nil)
+	_ Opener     = (*browser.BrowserImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
 )

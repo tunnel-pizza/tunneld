@@ -11,26 +11,26 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// Option configures an OpenerImpl at construction.
-type Option = v1.Option[*OpenerImpl]
+// Option configures a BrowserImpl at construction.
+type Option = v1.Option[*BrowserImpl]
 
-// OpenerImpl is the default opener. Its launcher is seeded by New; a bare
-// OpenerImpl{} has none and is not a supported construction.
-type OpenerImpl struct {
+// BrowserImpl is the default opener. Its launcher is seeded by New; a bare
+// BrowserImpl{} has none and is not a supported construction.
+type BrowserImpl struct {
 	launch func(string) error
 }
 
 // New returns an opener that launches the host's browser, then configured by
 // opts.
-func New(opts ...Option) *OpenerImpl {
-	o := v1.Apply(&OpenerImpl{}, WithLaunch(pkgbrowser.OpenURL))
-	return v1.Apply(o, opts...)
+func New(opts ...Option) *BrowserImpl {
+	b := v1.Apply(&BrowserImpl{}, WithLaunch(pkgbrowser.OpenURL))
+	return v1.Apply(b, opts...)
 }
 
 // WithLaunch replaces the browser launcher, so a test can observe the call
 // without a window appearing on whoever is running it.
 func WithLaunch(launch func(string) error) Option {
-	return func(o *OpenerImpl) { o.launch = launch }
+	return func(b *BrowserImpl) { b.launch = launch }
 }
 
 // Open launches a browser on addr. It does not wait, and the context is
@@ -55,9 +55,9 @@ func WithLaunch(launch func(string) error) Option {
 // addresses. Both are pointed at stderr before the child can write a word.
 // They are package globals, so this is process-wide; tunneld owns its process,
 // and an embedding program gets the same guarantee it wants anyway.
-func (o *OpenerImpl) Open(_ context.Context, addr string, stderr io.Writer, log v1.Logger) {
+func (b *BrowserImpl) Open(_ context.Context, addr string, stderr io.Writer, log v1.Logger) {
 	pkgbrowser.Stdout, pkgbrowser.Stderr = stderr, stderr
-	if err := o.launch(addr); err != nil {
+	if err := b.launch(addr); err != nil {
 		log.Debug("could not open a browser", "url", addr, "error", err)
 	}
 }
