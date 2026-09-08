@@ -265,6 +265,7 @@ func (f frame) paneRows() int {
 func (f frame) View() tea.View {
 	view := tea.NewView("")
 	view.AltScreen = true
+	view.WindowTitle = f.pageTitle()
 
 	pane := f.pane()
 	if pane.Dx() <= 0 || pane.Dy() <= 0 {
@@ -306,7 +307,7 @@ func (f frame) View() tea.View {
 	// the bottom what to press and what the session is doing. Each pair gives
 	// the right-hand label up rather than overlapping the left one when a
 	// narrow window cannot hold both.
-	f.row(buf, 0, f.origin(), f.title(), f.where())
+	f.row(buf, 0, f.titleLabel(), f.subtitleLabel(), f.where())
 
 	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
 
@@ -382,25 +383,30 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 	return x + used
 }
 
-// origin is what is being watched, in the top border: the origin, written the
-// way it was typed. The scheme stays on rather than being trimmed to the
+// titleLabel is what is being watched, in the top border: the origin, written
+// the way it was typed. The scheme stays on rather than being trimmed to the
 // container — it is what says this is a container at all, and the same string
 // pasted back into a command line is a working origin.
 //
 // The scheme is spelled here because this package serves exactly one, and a
 // second provider would have to carry its own along with its Target rather
 // than have this guess.
-func (f frame) origin() string {
-	return nameStyle.Styled(" " + v1.DockerScheme + "://" + f.sess.Name() + " ")
+func (f frame) titleLabel() string {
+	return nameStyle.Styled(" " + f.title() + " ")
 }
 
-// title is what the terminal says it is doing, centred along the top.
+// title is the origin, unstyled, for the places that cannot carry styling.
+func (f frame) title() string {
+	return v1.DockerScheme + "://" + f.sess.Name()
+}
+
+// subtitleLabel is what the terminal says it is doing, centred along the top.
 //
 // Both of the names it goes by, because they are not the same thing: a prompt
-// framework sets the tab title to the running command's name and the window
-// title to its whole command line, and at rest one is the directory and the
-// other is user@host:directory. Shown together when they differ and once when
-// they do not, which is what an app setting both with a single OSC 0 does.
+// framework sets the title to the running command's whole line and the
+// subtitle to its name, and at rest one is user@host:directory and the other
+// the directory alone. Joined when they differ and said once when they do not,
+// which is what an app setting both with a single OSC 0 leaves.
 //
 // Shown as they arrive rather than interpreted — nothing distinguishes "a
 // command is running" from "this is the prompt", and a guess about which is
@@ -409,22 +415,54 @@ func (f frame) origin() string {
 // Blank on a terminal that names itself neither way, which is most shells
 // without a prompt framework. That is the honest answer and costs the row
 // nothing.
-func (f frame) title() string {
-	tab, window := f.sess.titles()
-	tab, window = showable(tab), showable(window)
-
-	said := tab
-	switch {
-	case tab == window || window == "":
-	case tab == "":
-		said = window
-	default:
-		said = tab + " · " + window
-	}
-	if said == "" {
+func (f frame) subtitleLabel() string {
+	subtitle := f.subtitle()
+	if subtitle == "" {
 		return ""
 	}
-	return titleStyle.Styled(" " + said + " ")
+	return titleStyle.Styled(" " + subtitle + " ")
+}
+
+// subtitle is the two names the terminal goes by, joined: its own title, and
+// its subtitle after that when it adds anything. One of them when they are the
+// same, which is what an app setting both with a single OSC 0 leaves.
+//
+// Both are reduced to what can be shown before anything measures them — see
+// showable.
+func (f frame) subtitle() string {
+	title, subtitle := f.sess.titles()
+	title, subtitle = showable(title), showable(subtitle)
+	switch {
+	case subtitle == "" || subtitle == title:
+		return title
+	case title == "":
+		return subtitle
+	default:
+		return title + " · " + subtitle
+	}
+}
+
+// pageTitle is what the browser tab displaying this terminal is called: the
+// origin, and whatever the terminal is calling itself.
+//
+// Carried as the frame's own window title, which the renderer emits as an OSC
+// and the page raises to document.title. So the mechanism an app uses to name
+// its terminal is the one that ends up naming the tab it is displayed in,
+// which is what it was for.
+//
+// The same pair the border shows, so a tab and the frame inside it agree about
+// what is running.
+//
+// What the terminal is doing goes first and the origin after it, because a
+// browser tab is narrow and loses its end: a row of them all beginning with
+// the same dockerd:// would be a row that says nothing. A terminal that has
+// not named itself leaves the origin on its own rather than a word standing in
+// for one — there is nothing to say, and saying so is not better.
+func (f frame) pageTitle() string {
+	if subtitle := f.subtitle(); subtitle != "" {
+		return subtitle + " · " + f.title()
+	}
+	return f.title()
 }
 
 // showable reduces a title to what will actually appear, before anything

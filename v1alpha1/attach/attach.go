@@ -322,7 +322,7 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 		case !s.target.Stdin():
 			notice = "stdin closed (started without -i) — keystrokes go nowhere"
 		}
-		data := struct{ Name, Notice string }{s.target.Name(), notice}
+		data := struct{ Notice string }{notice}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)

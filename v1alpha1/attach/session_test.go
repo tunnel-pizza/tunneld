@@ -167,16 +167,16 @@ func TestTitleFollowsTheShell(t *testing.T) {
 	target.out = "\x1b]2;sleep 2\a\x1b]1;sleep\a"
 	s := serveFake(t, target)
 
-	// Both are kept, and they are not the same thing: the tab title is the
-	// command's name, the window title its whole command line.
+	// Both are kept, and they are not the same thing: the title is the whole
+	// command line, the subtitle its name.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		tab, window := s.session.titles()
-		if tab == "sleep" && window == "sleep 2" {
+		title, subtitle := s.session.titles()
+		if title == "sleep 2" && subtitle == "sleep" {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("tab = %q, window = %q, want %q and %q", tab, window, "sleep", "sleep 2")
+			t.Fatalf("title = %q, subtitle = %q, want %q and %q", title, subtitle, "sleep 2", "sleep")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -193,26 +193,26 @@ func TestTitleFollowsTheShell(t *testing.T) {
 func TestATruncatedTitleIsIgnored(t *testing.T) {
 	target := newFakeTarget("api", true, true)
 	// A good title, then exactly what ✳ leaves behind.
-	target.out = "\x1b]1;working\a\x1b]1;\xe2\a"
+	target.out = "\x1b]2;working\a\x1b]2;\xe2\a"
 	s := serveFake(t, target)
 
 	// The good one lands first.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if tab, _ := s.session.titles(); tab == "working" {
+		if title, _ := s.session.titles(); title == "working" {
 			break
 		}
 		if time.Now().After(deadline) {
-			tab, _ := s.session.titles()
-			t.Fatalf("tab title = %q, want %q", tab, "working")
+			title, _ := s.session.titles()
+			t.Fatalf("title = %q, want %q", title, "working")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
 	// And the stray byte behind it does not take it away.
 	for range 20 {
-		if tab, _ := s.session.titles(); tab != "working" {
-			t.Fatalf("tab title = %q, want the last usable one kept", tab)
+		if title, _ := s.session.titles(); title != "working" {
+			t.Fatalf("title = %q, want the last usable one kept", title)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -234,7 +234,7 @@ func TestTitleIsEmptyUntilTheShellSays(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if tab, window := s.session.titles(); tab != "" || window != "" {
-		t.Errorf("titles = %q / %q, want nothing said", tab, window)
+	if title, subtitle := s.session.titles(); title != "" || subtitle != "" {
+		t.Errorf("titles = %q / %q, want nothing said", title, subtitle)
 	}
 }

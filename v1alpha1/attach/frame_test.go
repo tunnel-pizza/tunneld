@@ -318,10 +318,10 @@ func TestViewIsBordered(t *testing.T) {
 
 	// Both names the terminal goes by, centred between the two, shown together
 	// when they differ.
-	h.s.setTitle(&h.s.tabTitle, "sleep")
-	h.s.setTitle(&h.s.windowTitle, "sleep 2")
+	h.s.setTitle("sleep 2")
+	h.s.setSubtitle("sleep")
 	titled := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
-	at := strings.Index(titled, "sleep · sleep 2")
+	at := strings.Index(titled, "sleep 2 · sleep")
 	if at < 0 {
 		t.Errorf("top border = %q, want both titles in it", titled)
 	} else {
@@ -332,7 +332,7 @@ func TestViewIsBordered(t *testing.T) {
 			t.Errorf("top border = %q, want the title before the address", titled)
 		}
 	}
-	h.s.tabTitle, h.s.windowTitle = "", ""
+	h.s.title, h.s.subtitle = "", ""
 
 	// And marked as a hyperlink, so a terminal that understands OSC 8 makes it
 	// clickable. The markers carry no width, so the corner it is aligned
@@ -675,7 +675,7 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 		"\xe2",
 		" \xe2 ",
 	} {
-		h.s.tabTitle = title
+		h.s.title = title
 		got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 		if got != whole {
 			t.Errorf("title %q drew %q, want the border untouched %q", title, got, whole)
@@ -684,7 +684,7 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 
 	// A title with something in it still draws, and what draws is the part
 	// that shows.
-	h.s.tabTitle = "  \x00sleep 2\x00  "
+	h.s.title = "  \x00sleep 2\x00  "
 	if got := stripSGR(strings.Split(h.f.View().Content, "\n")[0]); !strings.Contains(got, "sleep 2") {
 		t.Errorf("top border = %q, want the printable part of the title in it", got)
 	}
@@ -701,20 +701,48 @@ func TestBothTitlesAreShown(t *testing.T) {
 	h := newFrameHarness(t)
 	h.f.width, h.f.height = 80, 6
 
-	for _, tc := range []struct{ name, tab, window, want string }{
-		{"a shell reporting both", "sleep", "sleep 2", "sleep · sleep 2"},
+	for _, tc := range []struct{ name, title, subtitle, want string }{
+		{"a shell reporting both", "sleep 2", "sleep", "sleep 2 · sleep"},
 		{"one OSC 0 setting both", "◐ Claude Code", "◐ Claude Code", "◐ Claude Code"},
-		{"only the tab title", "~", "", "~"},
-		{"only the window title", "", "user@host:~", "user@host:~"},
+		{"only a subtitle", "", "~", "~"},
+		{"only a title", "user@host:~", "", "user@host:~"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h.s.tabTitle, h.s.windowTitle = tc.tab, tc.window
+			h.s.title, h.s.subtitle = tc.title, tc.subtitle
 			got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 			if !strings.Contains(got, tc.want) {
 				t.Errorf("top border = %q, want %q in it", got, tc.want)
 			}
-			if tc.tab == tc.window && strings.Count(got, tc.want) != 1 {
+			if tc.title == tc.subtitle && strings.Count(got, tc.want) != 1 {
 				t.Errorf("top border = %q, want %q said once", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPageTitleNamesTheTerminal pins what the browser tab displaying this
+// terminal is called.
+//
+// It rides on the frame's own window title, which the renderer emits as an OSC
+// and the page raises to document.title — the same mechanism the container
+// uses to name its terminal, one level out. What the terminal is doing leads,
+// because a browser tab loses its end: a row of them all starting dockerd://
+// would be a row that says nothing.
+func TestPageTitleNamesTheTerminal(t *testing.T) {
+	h := newFrameHarness(t)
+	title := v1.DockerScheme + "://" + h.s.Name()
+
+	for _, tc := range []struct{ name, said, sub, want string }{
+		{"before the terminal says anything", "", "", title},
+		{"one OSC 0 setting both", "◐ foo", "◐ foo", "◐ foo · " + title},
+		{"a shell reporting both", "sleep 2", "sleep", "sleep 2 · sleep · " + title},
+		{"only a subtitle", "", "~", "~ · " + title},
+		{"a name with nothing showable in it", "\xe2", "", title},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.s.title, h.s.subtitle = tc.said, tc.sub
+			if got := h.f.View().WindowTitle; got != tc.want {
+				t.Errorf("page title = %q, want %q", got, tc.want)
 			}
 		})
 	}

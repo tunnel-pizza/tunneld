@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
-<title>{{.Name}} · attach</title>
+<!-- Named by the terminal itself once one is attached: the frame sets its
+     window title, xterm raises it, and the handler below puts it here. Until
+     then this is all there is to say. -->
+<title>tunneld · attach</title>
 
 <!-- xterm.js, pinned by version and checked by digest so a change at the CDN
      cannot silently alter what a tunnel serves. xterm 6 ships no .min. files;
@@ -100,6 +103,15 @@
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  // The terminal names the tab it is displayed in. The frame sets its window
+  // title to the origin and whatever the container is calling itself, the
+  // renderer emits that as an OSC, and xterm hands it over here.
+  //
+  // Assigned to document.title, which is text and not markup — the string
+  // comes from a program in somebody's container, and the only reason it is
+  // safe to use is that nothing parses it.
+  term.onTitleChange((title) => { document.title = title; });
+
   term.open(document.getElementById('term'));
   fit.fit();
 

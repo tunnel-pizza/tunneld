@@ -84,11 +84,11 @@ type session struct {
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
 
-	// titleMu guards the two titles and nothing else. Deliberately not mu —
-	// see newSession, where the callbacks that write them are installed.
-	titleMu     sync.Mutex
-	tabTitle    string
-	windowTitle string
+	// titleMu guards the title and subtitle and nothing else. Deliberately not
+	// mu — see newSession, where the callbacks that write them are installed.
+	titleMu  sync.Mutex
+	title    string
+	subtitle string
 
 	// mu guards the viewer set, the size negotiated from it, and the public
 	// address, and nothing else.
@@ -164,13 +164,13 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	// output, and sink wakes everybody the moment that write returns.
 	name := target.Name()
 	em.SetCallbacks(vt.Callbacks{
-		IconName: func(title string) {
-			log.Debug("terminal tab title", "container", name, "title", title)
-			s.setTitle(&s.tabTitle, title)
-		},
 		Title: func(title string) {
-			log.Debug("terminal window title", "container", name, "title", title)
-			s.setTitle(&s.windowTitle, title)
+			log.Debug("terminal title", "container", name, "title", title)
+			s.setTitle(title)
+		},
+		IconName: func(subtitle string) {
+			log.Debug("terminal subtitle", "container", name, "subtitle", subtitle)
+			s.setSubtitle(subtitle)
 		},
 		WorkingDirectory: func(dir string) {
 			log.Debug("terminal working directory", "container", name, "dir", dir)
@@ -194,6 +194,17 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 		},
 		EnableMode:  func(m ansi.Mode) { log.Debug("terminal mode enabled", "container", name, "mode", m) },
 		DisableMode: func(m ansi.Mode) { log.Debug("terminal mode disabled", "container", name, "mode", m) },
+	})
+
+	// OSC 0 sets both names at once, which the callbacks above cannot show:
+	// they fire identically whether an app sent one OSC 0 or an OSC 1 and an
+	// OSC 2, and knowing which is how you tell an app that has one name from
+	// one that has two. Registered for the log alone, and returning false so
+	// the emulator goes on to handle it as it would have.
+	em.RegisterOscHandler(0, func(data []byte) bool {
+		_, title, _ := strings.Cut(string(data), ";")
+		log.Debug("terminal title, both at once", "container", name, "title", title)
+		return false
 	})
 
 	// The emulator answers what a real terminal answers — a device-attributes
@@ -485,35 +496,43 @@ func (s *session) window() (int, int) {
 	return int(s.size.Width), int(s.size.Height)
 }
 
-// setTitle records one of the two names the terminal goes by, keeping the one
-// it had if what arrived is not a name at all.
+// setTitle records what the terminal calls itself: the window title, which a
+// prompt framework sets to the whole command line.
+func (s *session) setTitle(title string) { s.remember(&s.title, title) }
+
+// setSubtitle records the shorter name beside it: the tab title, which the
+// same frameworks set to the running command's name.
+func (s *session) setSubtitle(subtitle string) { s.remember(&s.subtitle, subtitle) }
+
+// remember keeps one of the two names, or keeps the one it had if what arrived
+// is not a name at all.
 //
 // Held rather than blanked, because an unusable title is not the app saying it
 // has nothing to say. The emulator's OSC parser cuts a string at a 0x9C byte —
-// the 8-bit string terminator, and also the middle of every three-byte UTF-8
-// character in the U+27xx block — so an app whose title cycles through ✳ ✻ ✽
+// the 8-bit string terminator, and also the middle byte of every three-byte
+// UTF-8 character in the U+27xx block — so an app whose spinner cycles ✳ ✻ ✽
 // delivers a good title, then a stray byte, then a good title again. Taking
 // the stray one would flicker the frame's label off and on in time with
 // somebody's spinner.
-func (s *session) setTitle(into *string, title string) {
-	if !utf8.ValidString(title) {
-		s.log.Debug("terminal title was not a string; keeping the last one",
-			"container", s.Name(), "title", title)
+func (s *session) remember(into *string, said string) {
+	if !utf8.ValidString(said) {
+		s.log.Debug("terminal name was not a string; keeping the last one",
+			"container", s.Name(), "name", said)
 		return
 	}
 	s.titleMu.Lock()
-	*into = title
+	*into = said
 	s.titleMu.Unlock()
 }
 
-// titles are the two names the terminal goes by: the tab title and the window
-// title, either "" if it has never said. A prompt framework sets the first to
-// the running command's name and the second to its whole command line; an app
-// that sets them with one OSC 0 sets both to the same thing.
-func (s *session) titles() (tab, window string) {
+// titles are the two names the terminal goes by, either "" if it has never
+// said. A prompt framework sets the title to the running command's whole line
+// and the subtitle to its name; an app that sets them with one OSC 0 sets both
+// to the same thing.
+func (s *session) titles() (title, subtitle string) {
 	s.titleMu.Lock()
 	defer s.titleMu.Unlock()
-	return s.tabTitle, s.windowTitle
+	return s.title, s.subtitle
 }
 
 // announce records the public address this origin answers on, and has every

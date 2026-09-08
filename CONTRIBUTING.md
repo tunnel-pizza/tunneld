@@ -420,11 +420,14 @@ Two things there will bite if you change them without knowing why:
   deliberately absent: it fires on every cursor move and would drown the rest.
   All of them run with the emulator's lock held, so they may only stash a value
   or write a line.
-- **Both titles are kept, because they are not the same thing.** A prompt
-  framework sets the tab title to the running command's name and the window
-  title to its whole command line; an app setting both with one OSC 0 sets them
-  identically. The frame shows them together when they differ and once when
-  they do not.
+- **A terminal has a title and a subtitle, and they are not the same thing.**
+  The window title (OSC 2) is the title; the tab title (OSC 1) is the subtitle.
+  A prompt framework sets the first to the running command's whole line and the
+  second to its name; an app setting both with one OSC 0 sets them identically.
+  The frame joins them when they differ and says one when they do not, and the
+  same pair names the browser tab through `View.WindowTitle` — ahead of the
+  origin, because a tab loses its end and a row of them all starting
+  `dockerd://` would say nothing.
 - **A title is arbitrary text from somebody else's program.** It is drawn over
   the top border, so anything in it that measures wide and paints blank —
   control characters, zero-width joiners, a byte that is not a character —

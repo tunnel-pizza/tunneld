@@ -208,10 +208,12 @@ that understands OSC 8 opens it in a tab of its own. The frame has nothing to
 show there until the tunnel is up, because a container is bound before the
 tunnel exists.
 
-Centred along the top is whatever the terminal calls itself. Terminals carry
-two such names and they are not the same thing — a prompt framework sets one to
-the running command's name and the other to its whole command line — so both
-are shown when they differ and once when they do not. That is the shell talking, not tunneld guessing: a prompt framework
+Centred along the top is whatever the terminal calls itself. A terminal carries
+a title and a subtitle and they are not the same thing — a prompt framework
+sets the title to the running command's whole line and the subtitle to its name
+— so they are joined when they differ and said once when they do not. The same
+pair names the browser tab, ahead of the origin — a tab loses its end when the
+row gets crowded, and a row all beginning `dockerd://` would say nothing. That is the shell talking, not tunneld guessing: a prompt framework
 like Oh My Zsh sets the terminal's tab title from its `preexec` hook, which is
 the same thing your terminal reads to name a tab. A shell that sets none leaves
 the space empty, and one that has not spoken since you connected shows whatever

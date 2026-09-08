@@ -114,7 +114,11 @@ func TestPage(t *testing.T) {
 		want   string
 	}{
 		{"the root serves the terminal", "/", http.StatusOK, "@xterm/xterm@"},
-		{"the root names the container", "/", http.StatusOK, "api"},
+		// The page is named by the terminal, not by the template: the frame
+		// sets its window title once one is attached and the page raises it
+		// to document.title. Until then there is nothing to say but this.
+		{"the page is named until the terminal names it", "/", http.StatusOK, "<title>tunneld · attach</title>"},
+		{"the page listens for the name", "/", http.StatusOK, "onTitleChange"},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}
