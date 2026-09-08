@@ -3,8 +3,10 @@ package attach
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -403,11 +405,25 @@ func (f frame) origin() string {
 // Blank on a shell that never sets one, which is most of them without a prompt
 // framework. That is the honest answer and costs the row nothing.
 func (f frame) title() string {
-	title := f.sess.titled()
+	// Reduced to what will actually appear before it is measured. A title is
+	// whatever an app decided to put there, and an app is free to put things
+	// in it that take up columns without drawing in them — control characters,
+	// zero-width joiners, a stray escape. Those are counted when the label is
+	// measured and blank when it is painted, and since the label is written
+	// over the border, the difference is a hole in the top of the box.
+	title := strings.TrimSpace(strings.Map(printable, f.sess.titled()))
 	if title == "" {
 		return ""
 	}
 	return titleStyle.Styled(" " + title + " ")
+}
+
+// printable drops a rune that would occupy a cell without filling it.
+func printable(r rune) rune {
+	if unicode.IsPrint(r) {
+		return r
+	}
+	return -1
 }
 
 // where is the public address this origin answers on, in the top right, once

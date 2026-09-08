@@ -8,9 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"image/color"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
@@ -128,29 +131,67 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 	}
 
-	// What the shell says it is doing, if it says anything. Oh My Zsh and
-	// friends set the terminal's titles from preexec and reset them from
-	// precmd, so they carry the running command while one runs and the
-	// prompt's idea of where it is when none does. A shell that sets none
-	// leaves this empty and the frame simply has nothing to show.
+	// Everything the terminal says about itself, in the debug log, and the one
+	// thing the frame acts on.
 	//
-	// The tab title rather than the window title — OSC 1 rather than OSC 2 —
-	// which is the same fact said shorter. The window title is the whole
-	// command line and, at rest, user@host:~, which in a frame that already
-	// names the host and the origin is mostly things said twice. The tab title
-	// is the command's own name and the bare directory: the part that changes,
-	// and the part that fits.
+	// These are the channels an app has for talking about its state rather
+	// than painting its screen — a title, a working directory, a mode it wants
+	// turned on — and most of them tunneld has no use for. They are logged
+	// because the only way to find out what a given app actually sends is to
+	// watch one send it, and because an app that misbehaves in a frame usually
+	// does it here.
 	//
-	// The emulator already parses both; this is only what catches one instead
-	// of letting the other fall on the floor.
+	// What the frame shows is the tab title. Oh My Zsh and friends set both
+	// titles from preexec and reset them from precmd, so they carry the
+	// running command while one runs and the prompt's idea of where it is when
+	// none does. The tab title — OSC 1 — is the same fact said shorter: the
+	// window title is the whole command line and, at rest, user@host:~, which
+	// in a frame that already names the host and the origin is mostly things
+	// said twice. A shell that sets neither leaves the frame with nothing to
+	// show, which is most of them without a prompt framework.
 	//
-	// Stashed under a lock of its own rather than mu, and that is not
-	// fastidiousness. This runs from inside the emulator's write, which is to
-	// say with the emulator's lock held, while negotiate takes mu and then
-	// reaches for that same emulator lock — the two orders that deadlock.
-	// Nothing is woken from here either: a title only ever changes as part of
+	// CursorPosition is deliberately not among them: it fires on every cursor
+	// move, which is every keystroke and every redraw, and it would drown
+	// everything else in the log.
+	//
+	// All of these run from inside the emulator's write, which is to say with
+	// the emulator's lock held. So they may only stash a value or write a line
+	// — reaching for mu here would be the two lock orders that deadlock, since
+	// negotiate takes mu and then reaches for that same emulator lock. Nothing
+	// is woken from them either: what they report only ever changes as part of
 	// output, and sink wakes everybody the moment that write returns.
-	em.SetCallbacks(vt.Callbacks{IconName: s.setTitle})
+	name := target.Name()
+	em.SetCallbacks(vt.Callbacks{
+		IconName: func(title string) {
+			log.Debug("terminal tab title", "container", name, "title", title)
+			s.setTitle(title)
+		},
+		Title: func(title string) {
+			log.Debug("terminal window title", "container", name, "title", title)
+		},
+		WorkingDirectory: func(dir string) {
+			log.Debug("terminal working directory", "container", name, "dir", dir)
+		},
+		Bell:      func() { log.Debug("terminal bell", "container", name) },
+		AltScreen: func(on bool) { log.Debug("terminal alternate screen", "container", name, "on", on) },
+		CursorVisibility: func(visible bool) {
+			log.Debug("terminal cursor visibility", "container", name, "visible", visible)
+		},
+		CursorStyle: func(style vt.CursorStyle, blink bool) {
+			log.Debug("terminal cursor style", "container", name, "style", style, "blink", blink)
+		},
+		CursorColor: func(c color.Color) {
+			log.Debug("terminal cursor colour", "container", name, "colour", c)
+		},
+		ForegroundColor: func(c color.Color) {
+			log.Debug("terminal foreground colour", "container", name, "colour", c)
+		},
+		BackgroundColor: func(c color.Color) {
+			log.Debug("terminal background colour", "container", name, "colour", c)
+		},
+		EnableMode:  func(m ansi.Mode) { log.Debug("terminal mode enabled", "container", name, "mode", m) },
+		DisableMode: func(m ansi.Mode) { log.Debug("terminal mode disabled", "container", name, "mode", m) },
+	})
 
 	// The emulator answers what a real terminal answers — a device-attributes
 	// query, a cursor-position report — and those replies have to reach the

@@ -412,6 +412,19 @@ Two things there will bite if you change them without knowing why:
   The handler opens with `noopener,noreferrer`, because the container's output
   reaches this terminal and an origin that printed its own OSC 8 would
   otherwise be handed a reference to the window.
+- **Everything the terminal says about itself is in the debug log.** The
+  `vt.Callbacks` block in `newSession` logs titles, working directory, bell,
+  modes, cursor and colour changes, because the only way to learn what a given
+  app sends is to watch one send it — Claude Code, for instance, sets no title
+  at its login screen but does once a session is running. `CursorPosition` is
+  deliberately absent: it fires on every cursor move and would drown the rest.
+  All of them run with the emulator's lock held, so they may only stash a value
+  or write a line.
+- **A title is arbitrary text from somebody else's program.** It is drawn over
+  the top border, so anything in it that measures wide and paints blank —
+  control characters, zero-width joiners — clears the border and leaves a hole
+  in the box. `frame.title` reduces it to printable runes before it is
+  measured. This was a real frame in the wild with a clean gap at dead centre.
 - **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
   catches the OSC the container already emits — a prompt framework sets it from
   `preexec`, so it carries the running command's name — and the frame shows it

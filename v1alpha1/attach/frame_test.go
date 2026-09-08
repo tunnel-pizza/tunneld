@@ -645,3 +645,38 @@ func TestThePagesSizeSurvivesTheGuess(t *testing.T) {
 		t.Errorf("settled on %dx%d, want the page's 111x41", msg.Width, msg.Height)
 	}
 }
+
+// TestABlankTitleLeavesTheBorderWhole pins the frame against a title that
+// takes up columns without drawing in them.
+//
+// A title is whatever the app decided to put there, and the label is written
+// over the top border — so a run of characters that measure wide and paint
+// blank clears the border it was written over and leaves a hole in the box.
+// Seen in the wild: a frame with a clean gap at dead centre, which is where
+// the title sits.
+func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.width, h.f.height = 60, 6
+
+	whole := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+
+	for _, title := range []string{
+		"   ",
+		"\x00\x01\x02",
+		"\u200b\u200b\u200b\u200b",
+		"\t\t",
+	} {
+		h.s.setTitle(title)
+		got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+		if got != whole {
+			t.Errorf("title %q drew %q, want the border untouched %q", title, got, whole)
+		}
+	}
+
+	// A title with something in it still draws, and what draws is the part
+	// that shows.
+	h.s.setTitle("  \x00sleep 2\x00  ")
+	if got := stripSGR(strings.Split(h.f.View().Content, "\n")[0]); !strings.Contains(got, "sleep 2") {
+		t.Errorf("top border = %q, want the printable part of the title in it", got)
+	}
+}
