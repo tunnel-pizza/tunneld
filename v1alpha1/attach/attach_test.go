@@ -119,6 +119,9 @@ func TestPage(t *testing.T) {
 		// to document.title. Until then there is nothing to say but this.
 		{"the page is named until the terminal names it", "/", http.StatusOK, "<title>tunneld · attach</title>"},
 		{"the page listens for the name", "/", http.StatusOK, "onTitleChange"},
+		// A dead socket is reported over the terminal, not into it.
+		{"the page can say the socket is gone", "/", http.StatusOK, `id="gone"`},
+		{"and offers a way back", "/", http.StatusOK, "location.reload()"},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}
@@ -140,6 +143,37 @@ func TestPage(t *testing.T) {
 				t.Errorf("GET %s body does not contain %q", tc.path, tc.want)
 			}
 		})
+	}
+}
+
+// TestNothingIsWrittenIntoTheTerminal pins where the page is allowed to put
+// its own words.
+//
+// The only thing the page may write to the terminal is what the container
+// said. A framed terminal is on the alternate screen and the frame owns every
+// cell of it, so a line the page writes lands on top of whatever the container
+// had drawn and stays there — which is what "detached" used to do, straight
+// through the middle of the frame. Anything the page has to say now goes over
+// the top instead.
+func TestNothingIsWrittenIntoTheTerminal(t *testing.T) {
+	s := serveFake(t, newFakeTarget("api", true, true))
+
+	resp, err := http.Get(s.URL().String() + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	// term.write(body) is the container's own output and is the one write
+	// there should be; a literal argument is the page speaking.
+	for _, literal := range []string{`term.write('`, `term.write("`, "term.write(`"} {
+		if strings.Contains(string(body), literal) {
+			t.Errorf("the page writes its own text into the terminal (%s)", literal)
+		}
 	}
 }
 

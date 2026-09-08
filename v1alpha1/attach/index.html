@@ -33,7 +33,7 @@
      the container has to say is the only content, and anything framing it
      steals rows from a viewport that is often a phone. */
   html, body { height: 100%; margin: 0; background: #000; }
-  body { display: flex; flex-direction: column; }
+  body { display: flex; flex-direction: column; position: relative; }
   #term { flex: 1; min-height: 0; width: 100%; }
 
   /* The one thing worth framing it for: what the container cannot do. That is
@@ -46,6 +46,36 @@
      speaking. At this size it costs the terminal a row or two and nothing
      else, and when there is nothing to say the element is not rendered at all
      — no empty bar, no stray gap. */
+  /* Shown over the terminal when the socket is gone, rather than written into
+     it. A framed terminal is on the alternate screen and the frame owns every
+     cell of it, so a line written there lands on top of whatever the container
+     had drawn and stays there. Over the top, the last screen is left exactly
+     as it was — dimmed, because it is a photograph now rather than a terminal
+     — and nothing has to be undone to come back. */
+  #gone[hidden] { display: none; }
+  #gone {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #cfcfcf;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #gone button {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    padding: 5px 14px;
+    cursor: pointer;
+  }
+  #gone button:hover { background: #1a1a1a; border-color: #5a5a5a; }
+
   .degraded {
     flex: none;
     font: 11px/1.9 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -62,6 +92,10 @@
 <body>
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
+<div id="gone" hidden>
+  <span id="why">detached</span>
+  <button id="again" type="button">reconnect</button>
+</div>
 <script>
 (() => {
   // The k8s remotecommand channels. The first byte of every binary frame says
@@ -160,11 +194,22 @@
         try {
           const status = JSON.parse(decoder.decode(body));
           if (status.status !== 'Success') {
-            term.write('\r\n\x1b[2m' + (status.message || 'attach failed') + '\x1b[0m\r\n');
+            gone(status.message || 'attach failed');
           }
         } catch { /* not JSON; nothing useful to show */ }
         break;
     }
+  };
+
+  // gone puts the overlay up, once. A failed attach is followed by the socket
+  // closing, and of the two reasons the first is the one worth reading: the
+  // second only says the connection went with it.
+  const overlay = document.getElementById('gone'), why = document.getElementById('why');
+  document.getElementById('again').onclick = () => location.reload();
+  const gone = (reason) => {
+    if (!overlay.hidden) return;
+    why.textContent = reason;
+    overlay.hidden = false;
   };
 
   term.onData((data) => send(STDIN, encoder.encode(data)));
@@ -178,7 +223,7 @@
 
   ws.onclose = () => {
     clearInterval(beat);
-    term.write('\r\n\x1b[2mdetached\x1b[0m\r\n');
+    gone('detached');
   };
 })();
 </script>
