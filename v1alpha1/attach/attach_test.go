@@ -271,13 +271,24 @@ func readFrame(t *testing.T, c *websocket.Conn) (byte, []byte) {
 // as many pieces as the renderer chose to write.
 func stdoutUntil(t *testing.T, c *websocket.Conn, want string) {
 	t.Helper()
+
+	// Bounded here rather than left to the test binary's own timeout. What
+	// this waits for is a frame that may never be written — a renderer that
+	// has stopped drawing, or one stripping the escapes being looked for —
+	// and an unbounded read turns either into a hung package and a stack
+	// dump instead of a sentence saying what arrived.
+	deadline := time.Now().Add(10 * time.Second)
 	var seen strings.Builder
 	for !strings.Contains(seen.String(), want) {
-		if t.Context().Err() != nil {
-			t.Fatalf("never saw %q on stdout; got %q", want, seen.String())
+		if err := c.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set a read deadline: %v", err)
 		}
-		if channel, payload := readFrame(t, c); channel == 1 {
-			seen.Write(payload)
+		kind, data, err := c.ReadMessage()
+		if err != nil {
+			t.Fatalf("never saw %q on stdout; got %q (%v)", want, seen.String(), err)
+		}
+		if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
+			seen.Write(data[1:])
 		}
 	}
 }
@@ -318,6 +329,28 @@ func TestStdout(t *testing.T) {
 	// read across frames because the first of them are the renderer asking
 	// the terminal what it supports, and a frame is written in pieces.
 	stdoutUntil(t, c, "hello from pid 1")
+}
+
+// TestColourSurvivesTheFrame pins that the frame does not flatten the screen
+// it is drawing.
+//
+// Everything a viewer sees is now re-rendered rather than passed through, and
+// the renderer applies a colour profile on the way out. It has nothing to
+// detect that profile from — the output is a websocket, not a terminal — so
+// left to itself it answers NoTTY and strips every escape the container wrote:
+// colour, bold, and the frame's own status line alike, for a screen that is
+// entirely monochrome and looks like nothing worse than a dull app.
+//
+// Driven through the real socket because that is the only place it goes wrong.
+// A frame's View returns the styled string either way; it is the renderer
+// underneath that does or does not keep it.
+func TestColourSurvivesTheFrame(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "\x1b[31mred\x1b[0m\r\n"
+	c := dial(t, serveFake(t, target))
+
+	readFrame(t, c) // the established frame
+	stdoutUntil(t, c, "\x1b[31mred")
 }
 
 // TestStdin pins that keystrokes reach the target.

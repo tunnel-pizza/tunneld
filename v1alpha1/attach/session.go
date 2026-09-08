@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -227,10 +228,20 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
-		// The output is a websocket, not a terminal, so nothing about it can
-		// be probed: left to detect, every frame would render without colour.
-		// The terminal at the other end is xterm.js, which is what these
-		// describe.
+		// Stated outright, because there is nothing here to detect it from.
+		// The output is a websocket rather than a terminal, so detection
+		// answers NoTTY, and NoTTY strips every escape on the way out — the
+		// container's colours, its bold, and the frame's own dim status line
+		// with them, leaving the whole screen monochrome. The environment
+		// cannot rescue it either: COLORTERM only upgrades a profile that is
+		// not already NoTTY.
+		//
+		// TrueColor because the terminal at the other end is xterm.js, and
+		// because it is the profile that passes what the app emitted through
+		// unchanged instead of quantising it on the way past.
+		tea.WithColorProfile(colorprofile.TrueColor),
+		// TERM still describes that terminal, for everything about it that is
+		// not colour.
 		tea.WithEnvironment([]string{"TERM=xterm-256color", "COLORTERM=truecolor"}),
 	)
 
