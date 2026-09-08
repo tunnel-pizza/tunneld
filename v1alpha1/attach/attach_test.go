@@ -262,6 +262,26 @@ func readFrame(t *testing.T, c *websocket.Conn) (byte, []byte) {
 }
 
 // writeFrame sends one channel-prefixed binary frame.
+// stdoutUntil reads stdout frames until what they have carried between them
+// contains want.
+//
+// No single frame is the answer any more. A viewer's socket carries a frame
+// drawn around the screen rather than the container's own bytes, so it opens
+// with the renderer asking the terminal what it supports and then arrives in
+// as many pieces as the renderer chose to write.
+func stdoutUntil(t *testing.T, c *websocket.Conn, want string) {
+	t.Helper()
+	var seen strings.Builder
+	for !strings.Contains(seen.String(), want) {
+		if t.Context().Err() != nil {
+			t.Fatalf("never saw %q on stdout; got %q", want, seen.String())
+		}
+		if channel, payload := readFrame(t, c); channel == 1 {
+			seen.Write(payload)
+		}
+	}
+}
+
 func writeFrame(t *testing.T, c *websocket.Conn, channel byte, payload string) {
 	t.Helper()
 	if err := c.WriteMessage(websocket.BinaryMessage, append([]byte{channel}, payload...)); err != nil {
@@ -291,16 +311,13 @@ func TestStdout(t *testing.T) {
 	c := dial(t, serveFake(t, target))
 
 	readFrame(t, c) // the established frame
-	channel, payload := readFrame(t, c)
-	if channel != 1 {
-		t.Errorf("channel = %d, want 1 (stdout)", channel)
-	}
-	// The first thing a viewer receives is the screen, not the bytes that
-	// produced it: the session attached before this connection existed, so
-	// what the target wrote is already on the screen and arrives as a repaint.
-	if want := "hello from pid 1"; !strings.Contains(string(payload), want) {
-		t.Errorf("first frame %q does not show %q", payload, want)
-	}
+
+	// What a viewer receives is the screen, not the bytes that produced it:
+	// the session attached before this connection existed, so what the target
+	// wrote is already on the screen and arrives drawn into a frame. It is
+	// read across frames because the first of them are the renderer asking
+	// the terminal what it supports, and a frame is written in pieces.
+	stdoutUntil(t, c, "hello from pid 1")
 }
 
 // TestStdin pins that keystrokes reach the target.
@@ -310,13 +327,27 @@ func TestStdin(t *testing.T) {
 	readFrame(t, c) // the established frame
 
 	writeFrame(t, c, 0, "echo hi\n")
-	select {
-	case got := <-target.seenIn:
-		if got != "echo hi\n" {
-			t.Errorf("target read %q, want %q", got, "echo hi\n")
+
+	// What reaches the target is no longer a copy of what the browser sent: the
+	// frame decodes the keystrokes and hands them to the emulator, which
+	// encodes what a terminal in the app's current modes would write. For
+	// ordinary typing the two are the same bytes, which is the point — a frame
+	// standing in the way must not change what the shell reads.
+	// It arrives in as many pieces as the emulator's reader happened to hand
+	// over — one byte or all of them, and neither is worth pinning — so what
+	// is asserted is that the pieces reassemble to exactly what was typed.
+	const want = "echo hi\n"
+	var read strings.Builder
+	for read.String() != want {
+		select {
+		case got := <-target.seenIn:
+			read.WriteString(got)
+			if !strings.HasPrefix(want, read.String()) {
+				t.Fatalf("target read %q, want it building %q", read.String(), want)
+			}
+		case <-t.Context().Done():
+			t.Fatalf("target saw %q, want %q", read.String(), want)
 		}
-	case <-t.Context().Done():
-		t.Fatal("target never saw stdin")
 	}
 }
 
@@ -331,15 +362,34 @@ func TestResize(t *testing.T) {
 	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
 	writeFrame(t, c, 4, `{"Width":120,"Height":50}`)
 
-	want := []remotecommand.TerminalSize{{Width: 100, Height: 40}, {Width: 120, Height: 50}}
+	// The target is told the pane, not the window: the frame keeps
+	// chromeHeight rows of its own, and a container sized to the whole window
+	// would draw its last row underneath the status line.
+	//
+	// The session's settled window reaches the target too, and at no fixed
+	// point: a frame has no terminal to measure, so it answers the renderer's
+	// empty first report with whatever the session had settled on, and that
+	// answer races the page's own first size. Skipped rather than ordered,
+	// because which of them lands first is not a property worth pinning.
+	settled := remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows - chromeHeight}
+	want := []remotecommand.TerminalSize{
+		{Width: 100, Height: 40 - chromeHeight},
+		{Width: 120, Height: 50 - chromeHeight},
+	}
 	for _, w := range want {
-		select {
-		case got := <-target.seenSz:
-			if got != w {
-				t.Errorf("size = %+v, want %+v", got, w)
+		for {
+			select {
+			case got := <-target.seenSz:
+				if got == settled {
+					continue
+				}
+				if got != w {
+					t.Errorf("size = %+v, want %+v", got, w)
+				}
+			case <-t.Context().Done():
+				t.Fatalf("target never saw %+v", w)
 			}
-		case <-t.Context().Done():
-			t.Fatalf("target never saw %+v", w)
+			break
 		}
 	}
 }
@@ -451,10 +501,7 @@ func TestSessionOutlivesAVisitor(t *testing.T) {
 
 	second := dial(t, s)
 	readFrame(t, second) // the established frame
-	_, payload := readFrame(t, second)
-	if want := "hello from pid 1"; !strings.Contains(string(payload), want) {
-		t.Errorf("a later visitor got %q, want the screen still showing %q", payload, want)
-	}
+	stdoutUntil(t, second, "hello from pid 1")
 }
 
 // TestSessionEnds pins the two ways the shared attach is over, from the point

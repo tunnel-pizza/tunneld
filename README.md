@@ -186,6 +186,23 @@ With a TTY, Ctrl-C reaches PID 1 and stops the container — that is what
 The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
+The terminal sits inside a frame with a status line along the bottom, naming
+the container, how many people are watching it and the size everyone has
+settled on. Every key reaches the container except one:
+
+| Key | |
+| --- | --- |
+| `Ctrl-D` | Opens the frame's commands. The container never sees it. |
+| `Ctrl-D` `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
+| `Ctrl-D` `q` | End the session for everyone — the end of file `Ctrl-D` used to deliver. |
+| `Ctrl-D` `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
+
+`Ctrl-D` is held back because the attach is shared and is never reopened: it is
+end of file to a shell, so on a shared terminal one person's habit ended the
+session for everybody, and the origin went on serving a screen that could never
+produce another byte. Scrolling is the frame's because the frame is drawn on
+the alternate screen, which has no scrollback of its own to give you.
+
 **The page is unauthenticated.** The tunnel hostname is the only secret, the
 same as every other origin tunneld exposes — but here the thing behind it is a
 shell. Anyone with the link has it.

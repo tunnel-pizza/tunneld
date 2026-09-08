@@ -1,39 +1,35 @@
 package attach
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"strings"
 	"sync"
 
+	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
 // The screen the emulator keeps before any viewer has said how big its window
-// is. It is only ever the size of the first repaint, because the first viewer
-// to connect resizes everything to its own window.
+// is. It is only ever the size of the first frame, because the first viewer to
+// connect resizes everything to its own window.
 const (
 	defaultCols = 80
 	defaultRows = 24
 )
 
-// How much scrolled-off output a viewer is given on connect. Lines rather than
-// bytes because that is the emulator's own bound, and a thousand of them is
-// both more than a person scrolls back through and small enough that a
-// container talking for an hour cannot grow tunneld without limit.
+// How much scrolled-off output the emulator keeps. Lines rather than bytes
+// because that is the emulator's own bound, and a thousand of them is both
+// more than a person scrolls back through and small enough that a container
+// talking for an hour cannot grow tunneld without limit.
+//
+// A framed viewer reaches them through the frame's own scroll rather than the
+// browser's, which the alternate screen takes away.
 const scrollbackLines = 1000
-
-// How many writes a viewer may fall behind before it is dropped. A viewer that
-// cannot keep up is a dead socket that has not admitted it yet, and waiting on
-// one would stall the container's output for everyone else. Dropping it is
-// safe because reconnecting is cheap: the next connection is handed the whole
-// screen back.
-const viewerBacklog = 64
 
 // session is one attach to a target, shared by every viewer of it.
 //
@@ -46,9 +42,15 @@ const viewerBacklog = 64
 //
 // Here the stream is opened once and never restarted. Everything it writes
 // goes through an emulator, which is the thing that actually knows what the
-// screen looks like, so a viewer arriving late is handed the screen rather
-// than the bytes that once produced it. The app is never told, because from
-// its side nothing happened.
+// screen looks like, so a viewer arriving late renders the screen rather than
+// the bytes that once produced it. The app is never told, because from its
+// side nothing happened.
+//
+// What a viewer's socket carries is not the container's output but a frame
+// drawn around it — see frame.go — one frame per viewer, each rendering this one
+// emulator. That is what keeps a keystroke meant for the frame out of the
+// container, and it is why the emulator is read here rather than copied: a
+// frame asks what the screen is, and draws it.
 //
 // It embeds Target so Name, TTY, Stdin and Close pass through, and overrides
 // AttachContainer, which is how ServeAttach reaches a viewer join instead of
@@ -80,11 +82,17 @@ type session struct {
 	size    remotecommand.TerminalSize
 }
 
-// viewer is one connected browser. Output reaches it through a channel rather
-// than a direct write so that one slow socket cannot stall the emulator, and
-// through it every other viewer.
+// viewer is one connected browser: the frame drawing for it, and the window
+// that frame is drawing into.
+//
+// wake is how the container's output reaches that frame. One slot, and a write
+// that finds it full drops rather than waits — a redraw carries nothing, so
+// two pending ones say exactly what one says, and the alternative is a viewer
+// that has stopped reading holding up the container's output for everybody
+// else.
 type viewer struct {
-	out  chan []byte
+	prog *tea.Program
+	wake chan struct{}
 	size remotecommand.TerminalSize
 }
 
@@ -114,6 +122,11 @@ func newSession(ctx context.Context, target Target, log *slog.Logger) *session {
 	// That is a deadlock, not a slow path: the write that fills the buffer
 	// never returns, so nothing is ever drawn again. Copying them into the
 	// same stdin the viewers type on is what a terminal does with them.
+	//
+	// A viewer's keystrokes arrive here too, by the same route: the frame
+	// hands the emulator the key and the emulator encodes it, so what the
+	// container reads is encoded by something that knows the modes the app has
+	// set rather than by a browser that does not.
 	go func() {
 		if _, err := io.Copy(pw, em); err != nil && !errors.Is(err, io.ErrClosedPipe) {
 			log.Debug("terminal replies stopped", "container", target.Name(), "error", err)
@@ -122,6 +135,7 @@ func newSession(ctx context.Context, target Target, log *slog.Logger) *session {
 
 	go func() {
 		defer close(s.done)
+		defer s.wakeAll()
 		defer func() { _ = pr.Close() }()
 
 		name := target.Name()
@@ -140,8 +154,18 @@ func (s *session) close() error {
 	return s.stdin.Close()
 }
 
+// eof asks the target to end, which is what a shell does with an end of file.
+// It is the deliberate half of the guard the frame puts on Ctrl-D: the key no
+// longer ends a shared session by accident, and this is how somebody ends one
+// on purpose.
+func (s *session) eof() {
+	if _, err := s.stdin.Write([]byte{0x04}); err != nil {
+		s.log.Debug("end of file not delivered", "container", s.Name(), "error", err)
+	}
+}
+
 // sink is where the target's output lands: into the emulator, which is the
-// screen, and out to whoever is watching.
+// screen, and a nudge to everyone drawing it.
 type sink struct{ s *session }
 
 func (w *sink) Close() error { return nil }
@@ -149,40 +173,43 @@ func (w *sink) Close() error { return nil }
 func (w *sink) Write(p []byte) (int, error) {
 	s := w.s
 
-	// The screen first, then the people watching it. A viewer that joins
-	// between the two is handed a screen that already has these bytes and
-	// then receives them again, which repaints the same cells; one that joins
-	// the other way round would miss them entirely, which does not.
+	// The screen first, then the people drawing it. A frame woken before the
+	// emulator had the bytes would render the screen as it was and not be
+	// asked again.
 	_, _ = s.em.Write(p)
+	s.wakeAll()
+	return len(p), nil
+}
 
+// wakeAll asks every viewer's frame to render again. The sends are off the
+// lock, and each is a drop rather than a wait, so neither a slow frame nor a
+// slow socket can hold up the emulator.
+func (s *session) wakeAll() {
 	s.mu.Lock()
+	wake := make([]chan struct{}, 0, len(s.viewers))
 	for v := range s.viewers {
-		// A copy per viewer: p belongs to the caller and is reused.
-		frame := make([]byte, len(p))
-		copy(frame, p)
-		select {
-		case v.out <- frame:
-		default:
-			// Backlogged. Drop the viewer rather than the byte, and let it
-			// come back to a fresh screen.
-			delete(s.viewers, v)
-			close(v.out)
-		}
+		wake = append(wake, v.wake)
 	}
 	s.mu.Unlock()
-	return len(p), nil
+
+	for _, w := range wake {
+		select {
+		case w <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // AttachContainer joins a viewer to the shared session, which is what
 // ServeAttach calls once per websocket.
 //
-// It does not reach the target at all. The viewer is handed the screen as it
-// stands and then the live stream, and its window size is applied whenever it
+// It does not reach the target at all. The viewer gets a frame of its own,
+// rendering the shared screen, and its window size is applied whenever it
 // arrives rather than waited for: a client that never sends one still gets a
 // working terminal at whatever size the session already settled on, and the
-// page's own size lands a moment later and repaints. Blocking on it here
-// would hang any client that does not send one, which the streaming protocol
-// does not require.
+// page's own size lands a moment later and redraws. Blocking on it here would
+// hang any client that does not send one, which the streaming protocol does
+// not require.
 //
 // The resize channel closing is how the socket says it is gone. ServeAttach
 // opens that stream unconditionally and closes it when the connection ends,
@@ -192,46 +219,59 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	v := &viewer{out: make(chan []byte, viewerBacklog)}
+	width, height := s.window()
 
-	negotiated := s.join(v)
+	v := &viewer{wake: make(chan struct{}, 1)}
+	v.prog = tea.NewProgram(
+		frame{sess: s, v: v, width: width, height: height},
+		tea.WithContext(ctx),
+		tea.WithInput(in),
+		tea.WithOutput(out),
+		// The output is a websocket, not a terminal, so nothing about it can
+		// be probed: left to detect, every frame would render without colour.
+		// The terminal at the other end is xterm.js, which is what these
+		// describe.
+		tea.WithEnvironment([]string{"TERM=xterm-256color", "COLORTERM=truecolor"}),
+	)
+
+	s.join(v)
 	defer s.part(v)
-	s.apply(ctx, negotiated)
 
-	go s.pump(ctx, cancel, in)
 	go s.follow(ctx, cancel, v, resize)
+	go s.redraw(ctx, v)
 
-	// Writing happens here rather than in follow so that a write that blocks
-	// is this viewer's problem and nobody else's.
+	if _, err := v.prog.Run(); err != nil && ctx.Err() == nil {
+		s.log.Debug("frame ended", "container", s.Name(), "error", err)
+	}
+	return nil
+}
+
+// redraw turns the wake channel into the message the frame updates on. It is a
+// goroutine rather than a direct send from sink so that a frame busy rendering
+// never blocks the emulator behind it.
+func (s *session) redraw(ctx context.Context, v *viewer) {
 	for {
 		select {
-		case frame, ok := <-v.out:
-			if !ok {
-				return nil // dropped for falling behind
+		case <-v.wake:
+			select {
+			case <-s.done:
+				v.prog.Send(goneMsg{})
+				return
+			default:
 			}
-			if _, err := out.Write(frame); err != nil {
-				return nil
-			}
+			v.prog.Send(paneMsg{})
 		case <-ctx.Done():
-			return nil
-		case <-s.done:
-			return nil
+			return
 		}
 	}
 }
 
-// join registers a viewer and seeds its queue with the screen as it stands,
-// returning the size the session settled on. Both happen under one lock so the
-// screen a viewer is given and the stream it then receives cannot overlap or
-// leave a gap.
-func (s *session) join(v *viewer) remotecommand.TerminalSize {
+// join registers a viewer. Nothing is replayed to it: its frame is new, so its
+// first render is a whole one, drawn from the emulator as it stands.
+func (s *session) join(v *viewer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	s.viewers[v] = struct{}{}
-	negotiated := s.negotiate()
-	v.out <- repaint(s.em)
-	return negotiated
 }
 
 // part removes a viewer and renegotiates, since the smallest window may have
@@ -248,12 +288,26 @@ func (s *session) part(v *viewer) {
 	}
 }
 
+// resizeViewer records what one viewer's window is now and settles the session
+// on it. The frame calls this, because the frame is what learns the size.
+func (s *session) resizeViewer(v *viewer, width, height int) {
+	s.mu.Lock()
+	v.size = remotecommand.TerminalSize{Width: uint16(width), Height: uint16(height)}
+	negotiated := s.negotiate()
+	s.mu.Unlock()
+	s.apply(context.Background(), negotiated)
+}
+
 // negotiate settles the pty on the smallest window watching it, and resizes
 // the emulator to match. Smallest rather than newest or first, because the pty
 // has one size and every viewer renders all of it: anything larger than the
 // smallest window is drawn wrapped or clipped there, which looks exactly like
 // the corruption this whole session exists to prevent. A larger window gets
 // unused margin instead, which is merely wasteful.
+//
+// What the target is told is the pane, not the window: the frame keeps rows of
+// its own, and a container sized to the whole window would draw its last rows
+// underneath the status line.
 //
 // The caller holds the lock, and applies the result after releasing it.
 func (s *session) negotiate() remotecommand.TerminalSize {
@@ -273,8 +327,16 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 		return remotecommand.TerminalSize{} // nothing to apply
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
-	s.em.Resize(int(w), int(h))
-	return s.size
+
+	pane := remotecommand.TerminalSize{Width: w, Height: h - chromeHeight}
+	if h <= chromeHeight {
+		// A window with no room for the pane still has to leave the emulator a
+		// screen: an emulator resized to nothing has nowhere to put what the
+		// container says next.
+		pane.Height = 1
+	}
+	s.em.Resize(int(pane.Width), int(pane.Height))
+	return pane
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:
@@ -291,27 +353,13 @@ func (s *session) apply(ctx context.Context, size remotecommand.TerminalSize) {
 	}
 }
 
-// pump copies one viewer's keystrokes into the shared stdin.
-func (s *session) pump(ctx context.Context, cancel context.CancelFunc, in io.Reader) {
-	defer cancel()
-	buf := make([]byte, 4096)
-	for {
-		n, err := in.Read(buf)
-		if n > 0 {
-			// No lock: io.Pipe serialises its writers, and taking ours here
-			// would hold it for as long as the app takes to read.
-			if _, werr := s.stdin.Write(buf[:n]); werr != nil {
-				return
-			}
-		}
-		if err != nil || ctx.Err() != nil {
-			return
-		}
-	}
-}
-
 // follow tracks one viewer's window size, and treats the channel closing as
 // the socket having gone.
+//
+// The size goes to the frame rather than straight to negotiate, because the
+// frame needs it too — it is drawing into that window — and a size that
+// reached the session by one route and the frame by another is a size the two
+// could disagree about. The frame hands it back through resizeViewer.
 func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *viewer, resize <-chan remotecommand.TerminalSize) {
 	defer cancel()
 	for {
@@ -320,11 +368,7 @@ func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *view
 			if !ok {
 				return
 			}
-			s.mu.Lock()
-			v.size = size
-			negotiated := s.negotiate()
-			s.mu.Unlock()
-			s.apply(ctx, negotiated)
+			v.prog.Send(tea.WindowSizeMsg{Width: int(size.Width), Height: int(size.Height)})
 		case <-ctx.Done():
 			return
 		case <-s.done:
@@ -333,40 +377,69 @@ func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *view
 	}
 }
 
-// repaint is the screen as it stands, as the bytes that reproduce it: what
-// scrolled off, then the visible screen, then the cursor put back where the
-// app believes it is.
+// window is the window the session has settled on. A frame starts at it, so a
+// viewer joining one that two other people are already watching draws at the
+// size they are watching rather than repainting a moment later.
+func (s *session) window() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int(s.size.Width), int(s.size.Height)
+}
+
+// count is how many viewers are watching, for the frame to say so.
+func (s *session) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.viewers)
+}
+
+// sendKey gives a keystroke to the container, encoded by the emulator. See
+// asKeyEvent for why it goes this way round rather than as bytes.
+func (s *session) sendKey(k tea.Key) { s.em.SendKey(asKeyEvent(k)) }
+
+// paneSize is the screen the container is drawing on.
+func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
+
+// paneCursor is where the app inside believes the cursor is.
+func (s *session) paneCursor() uv.Position { return s.em.CursorPosition() }
+
+// scrollUp moves the pane one line further back, stopping where the emulator's
+// own scrollback does. Reported rather than held here: how far back a viewer
+// is looking is that viewer's, and two of them scroll independently over the
+// one screen.
+func (s *session) scrollUp(from int) int {
+	if from >= s.em.ScrollbackLen() {
+		return from
+	}
+	return from + 1
+}
+
+// paneLines is the screen as rows of text, scrolled back by scroll lines and
+// clipped to rows.
 //
-// That last part is the whole point. A byte replay leaves the cursor wherever
-// the replayed stream happened to end, which is not where the app thinks it
-// is, and the app's next differential redraw is measured from its own belief —
-// so it lands at the wrong origin and paints over what is already there.
-func repaint(em *vt.SafeEmulator) []byte {
-	var b bytes.Buffer
+// Rendered rather than replayed. The emulator holds what the screen is, so a
+// frame asks it every time it draws instead of keeping a copy that a write it
+// missed would make wrong.
+func (s *session) paneLines(scroll, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	lines := strings.Split(s.em.Render(), "\n")
 
-	// Reset attributes, clear the screen and the browser's own scrollback, and
-	// go home, so nothing from a previous connection is underneath this.
-	b.WriteString("\x1b[0m\x1b[2J\x1b[3J\x1b[H")
-
-	// An app on the alternate screen has no scrollback to restore, and the
-	// viewer's terminal has to be put on the alternate screen too or the
-	// repaint lands on the wrong buffer and is still there after the app
-	// exits.
-	if em.IsAltScreen() {
-		b.WriteString("\x1b[?1049h")
-	} else {
-		for _, line := range em.Scrollback().Lines() {
-			b.WriteString(line.Render())
-			b.WriteString("\r\n")
+	if scroll > 0 {
+		back := s.em.Scrollback().Lines()
+		if scroll > len(back) {
+			scroll = len(back)
 		}
+		scrolled := make([]string, 0, scroll+len(lines))
+		for _, line := range back[len(back)-scroll:] {
+			scrolled = append(scrolled, line.Render())
+		}
+		lines = append(scrolled, lines...)
 	}
 
-	// Render separates lines with \n. The page sets convertEol, so that alone
-	// would do, but a repaint that depends on a terminal option set elsewhere
-	// is one rename away from drawing a staircase.
-	b.WriteString(strings.ReplaceAll(em.Render(), "\n", "\r\n"))
-
-	pos := em.CursorPosition()
-	fmt.Fprintf(&b, "\x1b[%d;%dH", pos.Y+1, pos.X+1)
-	return b.Bytes()
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	return lines
 }

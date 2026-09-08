@@ -21,7 +21,7 @@ Deep-link by filename; line numbers will drift.
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
-| `Target`, `Targets`, `Server`, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
+| `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -359,12 +359,37 @@ Two things there will bite if you change them without knowing why:
   `PublicURL`, the reported map and the multiview tiles. Reordering or
   filtering either list breaks all four at once.
 - **One attach per `Server`, not per page.** `attach.session` opens the target
-  once and fans it out, so a refresh is not an event the container can see.
-  Every byte goes through a terminal emulator, and a viewer arriving late is
-  handed the screen — scrollback, cells, cursor — rather than the bytes that
-  once produced it. Replaying bytes into a fresh terminal is what used to leave
-  the app and the browser disagreeing about where the cursor was, so the app's
-  next redraw landed at the wrong origin and drew over the restored screen.
+  once, so a refresh is not an event the container can see. Every byte goes
+  through a terminal emulator, and a viewer arriving late renders the screen —
+  cells, cursor, scrollback — rather than replaying the bytes that once
+  produced it. Replaying bytes into a fresh terminal is what used to leave the
+  app and the browser disagreeing about where the cursor was, so the app's next
+  redraw landed at the wrong origin and drew over the restored screen.
+- **One frame per viewer, one emulator between them.**
+  [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea model
+  rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
+  feeds. Per viewer, because command mode is per viewer — a shared model would
+  put everyone into it when one person pressed `Ctrl-D` — and because a frame
+  that is new renders a whole screen, which is what a late joiner needs anyway.
+  The split is worth keeping: `session.go` is locks, pipes and goroutines,
+  `frame.go` is a value type with none of them.
+- **A frame has no terminal to measure.** Its output is a websocket, so the
+  renderer's first size report is zero, and a renderer that believes it has no
+  rows draws none. The frame answers that report with the session's settled
+  window rather than racing it with a size pushed in from outside — whichever
+  landed second would win, and when that is the zero nothing is ever drawn
+  again.
+- **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
+  is shared, and it is never reopened, so one viewer pressing it used to end
+  the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to
+  do what it used to do by accident.
+- **Keys go to the container through the emulator, not around it.**
+  `session.sendKey` hands the decoded key to `vt`, which encodes what a
+  terminal in the app's current modes would send; bytes written straight to
+  stdin would not know whether the app had asked for application cursor keys.
+  `asKeyEvent` is exact rather than approximate — Bubble Tea's `Key` and
+  ultraviolet's carry the same fields, and Bubble Tea's key codes *are*
+  ultraviolet's constants.
 - **The emulator's replies have to be drained.** It answers a device-attributes
   query or a cursor-position report the way a real terminal does, and those
   answers go back to the app through the same stdin the viewers type on. Leave
