@@ -406,12 +406,19 @@ func (f frame) origin() string {
 // framework. That is the honest answer and costs the row nothing.
 func (f frame) title() string {
 	// Reduced to what will actually appear before it is measured. A title is
-	// whatever an app decided to put there, and an app is free to put things
-	// in it that take up columns without drawing in them — control characters,
-	// zero-width joiners, a stray escape. Those are counted when the label is
-	// measured and blank when it is painted, and since the label is written
-	// over the border, the difference is a hole in the top of the box.
-	title := strings.TrimSpace(strings.Map(printable, f.sess.titled()))
+	// whatever an app decided to put there, and things that take up columns
+	// without drawing in them — control characters, zero-width joiners, a byte
+	// that is not a character at all — are counted when the label is measured
+	// and blank when it is painted. Since the label is written over the
+	// border, the difference is a hole in the top of the box.
+	//
+	// Invalid UTF-8 goes first, and it is not hypothetical: the emulator's OSC
+	// parser ends a title at the first byte in the C1 range, and a byte in
+	// that range is exactly what the middle of a three-byte UTF-8 sequence
+	// looks like. Claude Code sets its title to "✳ Claude Code"; ✳ is E2 9C
+	// B3, 9C is the C1 string terminator, and what arrives here is the single
+	// byte E2. One column wide, nothing in it, straight through the border.
+	title := strings.TrimSpace(strings.Map(printable, strings.ToValidUTF8(f.sess.titled(), "")))
 	if title == "" {
 		return ""
 	}

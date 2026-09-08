@@ -422,9 +422,18 @@ Two things there will bite if you change them without knowing why:
   or write a line.
 - **A title is arbitrary text from somebody else's program.** It is drawn over
   the top border, so anything in it that measures wide and paints blank —
-  control characters, zero-width joiners — clears the border and leaves a hole
-  in the box. `frame.title` reduces it to printable runes before it is
-  measured. This was a real frame in the wild with a clean gap at dead centre.
+  control characters, zero-width joiners, a byte that is not a character —
+  clears the border and leaves a hole in the box. `frame.title` drops invalid
+  UTF-8 and then reduces what is left to printable runes, before any of it is
+  measured.
+- **`x/vt` ends an OSC string at the first C1 byte, which breaks three-byte
+  UTF-8.** A byte in `0x80`–`0x9F` is the 8-bit form of a C1 control, and it is
+  also what the middle of a three-byte UTF-8 sequence looks like. Claude Code
+  sets its title to `✳ Claude Code`; `✳` is `E2 9C B3`, `9C` is the string
+  terminator, so the title arrives as the single byte `E2` — and the rest,
+  ` Claude Code`, is printed onto the screen. Two-byte characters are fine
+  (`café` survives, `A9` is not C1). The title half is worked around here; the
+  text landing in the pane is not fixable from this side.
 - **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
   catches the OSC the container already emits — a prompt framework sets it from
   `preexec`, so it carries the running command's name — and the frame shows it

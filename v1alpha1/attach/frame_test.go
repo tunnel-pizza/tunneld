@@ -665,6 +665,13 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 		"\x00\x01\x02",
 		"\u200b\u200b\u200b\u200b",
 		"\t\t",
+		// What actually arrives from Claude Code. Its title is
+		// "✳ Claude Code", ✳ is E2 9C B3, and the emulator's OSC parser stops
+		// at 9C because that is the C1 string terminator — so the title is the
+		// single byte E2, which is not a character, measures a column, and
+		// paints nothing.
+		"\xe2",
+		" \xe2 ",
 	} {
 		h.s.setTitle(title)
 		got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
