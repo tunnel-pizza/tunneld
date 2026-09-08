@@ -27,20 +27,31 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Write the embedded compose file to a temporary directory — so `go run
-	// ./examples/docker-compose` works from any directory — and return it with
-	// a teardown that runs down and then removes it.
-	//
-	// Nothing is up yet if this fails, so it exits rather than returning an error
-	// there would be no cleanup to pair with.
-	dir, err := os.MkdirTemp("", "tunneld-example-")
-	if err != nil {
-		log.Fatalf("temporary directory: %v", err)
-	}
-	if err := os.WriteFile(dir+"/docker-compose.yml", dockerComposeYml, 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		log.Fatalf("write the compose file: %v", err)
-	}
+	dir := func() string {
+		tunneld, _ := os.Getwd()
+		// slice 2 levels from cwd
+		tunneld = tunneld[:strings.LastIndex(tunneld, "/")]
+		tunneld = tunneld[:strings.LastIndex(tunneld, "/")]
+
+		dir, err := os.MkdirTemp("", "tunneld-example-")
+		if err != nil {
+			log.Fatalf("temporary directory: %v", err)
+		}
+
+		if err := os.WriteFile(dir+"/docker-compose.yml", dockerComposeYml, 0o600); err != nil {
+			_ = os.RemoveAll(dir)
+			log.Fatalf("write the compose file: %v", err)
+		}
+
+		// symlink tunneld to the temporary directory so that the docker-compose.yml can find it
+		err = os.Symlink(tunneld, dir+"/tunneld")
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			log.Fatalf("symlink tunneld: %v", err)
+		}
+
+		return dir
+	}()
 
 	// Deferred before `up` blocks, so an interrupt still takes the stack down.
 	// Background, not ctx: by then ctx is cancelled — that is what ended `up` —
@@ -55,7 +66,7 @@ func main() {
 	// -p is named rather than derived from the working directory, which is a
 	// fresh temporary one every run: a name that changes strands the stack of
 	// any run that is interrupted. The teardown spells the same one.
-	if err := sh(ctx, dir, "docker compose -f docker-compose.yml -p tunneld-example up"); err != nil {
+	if err := sh(ctx, dir, "docker compose -f docker-compose.yml -p tunneld-example up --pull always"); err != nil {
 		log.Printf("compose up: %v", err)
 		code = 1
 	}
