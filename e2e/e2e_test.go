@@ -140,13 +140,16 @@ func TestRefusedInvocations(t *testing.T) {
 		want string
 	}{
 		{"no origin at all", nil, "TUNNELD_ORIGINS"},
-		{"unproxyable scheme", []string{"ftp://localhost:21"}, "ftp"},
-		{"origin with no host", []string{"http://"}, "no host"},
+		// An unusable origin is dropped rather than refused, so a run whose
+		// only origin was unusable is refused for having none — the same
+		// failure as passing nothing at all, and the same lever.
+		{"unproxyable scheme", []string{"ftp://localhost:21"}, "no origin"},
+		{"origin with no host", []string{"http://"}, "no origin"},
 		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, "log-level"},
-		// A second argument is a second origin, so a bad one is refused as an
-		// origin rather than as a stray word — and reaching it proves every
-		// argument is parsed, not just the first.
-		{"a later origin is still parsed", []string{"http://localhost:3000", "ftp://nope"}, "ftp://nope"},
+		// A second argument is a second origin: the warning names the second
+		// one, which proves every argument is parsed and not just the first.
+		// Both are unusable, so the run is still refused.
+		{"a later origin is still parsed", []string{"ftp://localhost:21", "ftp://nope", "--log-level", "warn"}, "ftp://nope"},
 		{"unknown flag", []string{"http://localhost:3000", "--nope"}, "nope"},
 		{"unparsable boolean flag", []string{"http://localhost:3000", "--no-open=nonsense"}, "no-open"},
 	}
@@ -213,9 +216,12 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			want: "invalid log level",
 		},
 		{
-			name: "TUNNELD_ORIGINS is validated like the flag",
-			env:  map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21"},
-			want: "invalid origin",
+			// The variable is parsed the way arguments are: the value it
+			// carries is dropped by name, and the run is refused for having
+			// no origin left.
+			name: "TUNNELD_ORIGINS is parsed like the arguments",
+			env:  map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21", "TUNNELD_LOG": "warn"},
+			want: "ftp://localhost:21",
 		},
 		{
 			name: "TUNNELD_LOG is strict",

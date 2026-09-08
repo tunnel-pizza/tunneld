@@ -16,6 +16,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
@@ -250,4 +251,15 @@ type BuilderImpl struct {
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once
 	command     *cobra.Command
+
+	// env is this builder's environment binding — every flag's variable, plus
+	// the origins key that has no flag to hang off. Per-builder and never
+	// viper's package global, so two commands in one process (a host
+	// program's and an embedded tunneld's) do not share one key space, and
+	// neither do two tests in one binary.
+	//
+	// Built on first use rather than in New, because Origins reads it and
+	// may be called on a builder whose command was never assembled.
+	envOnce sync.Once
+	env     *viper.Viper
 }

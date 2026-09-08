@@ -485,6 +485,7 @@ func Apply[T any](t T, opts ...Option[T]) T
 // configured it.
 type Builder interface {
     Command() *cobra.Command // terminal: assembles and returns
+    Origins() []*url.URL     // the origins exposed: argv > env > seed
     Name() string            // configured command name
 }
 

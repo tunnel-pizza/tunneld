@@ -14,7 +14,7 @@ Deep-link by filename; line numbers will drift.
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
-| Builder options, `Command` (flags, env binding, the tunnel run), `flagEnv`, `PublicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
+| Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | `CacheDirs` contract's implementation: the --cache-dir list and its pflag value | [`v1alpha1/cachedir/`](./v1alpha1/cachedir) |
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
@@ -78,7 +78,7 @@ HTTP probe — is an internal contract in
 `cachedir`, `engine`, `cache`, `browser`, `counter`, `attach`. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
 subpackage, seeded by `New` and replaceable with the matching `With*` option.
-A function that maps a value to a value (`PublicURL`, `Version`) gets no
+A function that maps a value to a value (`publicURL`, `Version`) gets no
 interface — origin parsing, for instance, sits at the top of `Command`'s
 `RunE` rather than behind a contract of its own. The assertion block in
 `v1alpha1.go` is where a default that drifts from its contract fails — at
@@ -275,7 +275,7 @@ Easy to get wrong from the diff alone:
   other half. `--cache-dir` is the one that needs it.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
-  `PublicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
+  `publicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** The panel interceptor's `Match` requires path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the
@@ -303,7 +303,7 @@ Easy to get wrong from the diff alone:
   one.** Routing falls back to the referring page and then to a sticky cookie,
   so a plain address stops reaching origin 0 once a browser has visited `?1`.
   Only an explicit index clears a previous choice. A lone origin has nothing to
-  route between and keeps the plain URL — which is why `PublicURL` takes the
+  route between and keeps the plain URL — which is why `publicURL` takes the
   origin count.
 - **A running tunnel splits its report across both streams**: each public
   address goes to stdout, one per line and nothing else, and the origin that
@@ -356,7 +356,7 @@ Two things there will bite if you change them without knowing why:
   fight over one socket.
 - **`attach.BinderImpl.Bind` keeps the dialable list the same length and order
   as the displayed one.** Index *n* means origin *n* for `?n` routing,
-  `PublicURL`, the reported map and the multiview tiles. Reordering or
+  `publicURL`, the reported map and the multiview tiles. Reordering or
   filtering either list breaks all four at once.
 - **One attach per `Server`, not per page.** `attach.session` opens the target
   once, so a refresh is not an event the container can see. Every byte goes

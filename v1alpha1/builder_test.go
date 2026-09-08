@@ -125,31 +125,36 @@ func TestOriginOptionalWhenSeeded(t *testing.T) {
 }
 
 // TestArgumentReplacesSeededOrigins pins that a command line overrides the
-// seed wholesale instead of merging into it. The seeded origin is unusable and
-// the argument's is fine, so an append would fail on the origin and a replace
-// fails on the log level — which is the discriminator.
+// seed wholesale instead of merging into it: an append would leave the seeded
+// origin in the list behind the argument's.
+//
+// The flags are parsed rather than executed, which is all Origins needs to see
+// argv and is what keeps the case offline.
 func TestArgumentReplacesSeededOrigins(t *testing.T) {
-	b := New(WithOrigin("ftp://seeded.invalid"))
-	_, _, err := execute(t, b, "http://localhost:3000", "--log-level", "loud")
-	if errors.Is(err, v1.ErrInvalidOrigin) {
-		t.Fatal("seeded origin survived an argument, want the argument to replace the seed")
+	b := New(WithOrigin("http://seeded:1"))
+	if err := b.Command().ParseFlags([]string{"http://localhost:3000"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
 	}
-	if !errors.Is(err, v1.ErrInvalidLogLevel) {
-		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+	if got, want := originStrings(b.Origins()), []string{"http://localhost:3000"}; !slices.Equal(got, want) {
+		t.Errorf("Origins() = %q, want %q — the seed survived an argument", got, want)
 	}
 }
 
 // TestRejectsUnusableFlags pins that the validation failures reach the caller
 // as their v1 sentinels, so a program embedding tunneld can branch on the
 // class rather than on message text.
+//
+// An unusable origin is dropped rather than refused, so a run whose only
+// origin was unusable arrives at the same place as one given none at all:
+// ErrNoOrigin, before the mint. What it never becomes is a tunnel.
 func TestRejectsUnusableFlags(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 		want error
 	}{
-		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrInvalidOrigin},
-		{"no host", []string{"http://"}, v1.ErrInvalidOrigin},
+		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrNoOrigin},
+		{"no host", []string{"http://"}, v1.ErrNoOrigin},
 		{"empty origin", []string{"  "}, v1.ErrNoOrigin},
 		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, v1.ErrInvalidLogLevel},
 	}
@@ -166,11 +171,15 @@ func TestRejectsUnusableFlags(t *testing.T) {
 
 // TestArgumentsAreOrigins pins that bare arguments are the origins, and that
 // every one of them is parsed rather than the first taken and the rest
-// ignored. A word that is not an origin fails as an origin, which is the
-// message that tells somebody what they actually typed wrong.
+// ignored. The second argument is the one that is not an origin, so its being
+// dropped — while the first survives — is what proves the whole list was read.
 func TestArgumentsAreOrigins(t *testing.T) {
-	if _, _, err := execute(t, New(), "http://localhost:3000", "ftp://nope"); !errors.Is(err, v1.ErrInvalidOrigin) {
-		t.Fatalf("running with a second, bad origin = %v, want ErrInvalidOrigin", err)
+	b := New()
+	if err := b.Command().ParseFlags([]string{"http://localhost:3000", "ftp://nope"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if got, want := originStrings(b.Origins()), []string{"http://localhost:3000"}; !slices.Equal(got, want) {
+		t.Errorf("Origins() = %q, want %q", got, want)
 	}
 }
 
@@ -1088,60 +1097,109 @@ func TestParseOriginsAccepts(t *testing.T) {
 	}
 }
 
-// TestParseOriginsRejects pins the failure modes as errors rather than as a
-// public hostname that answers only errors. Each case asserts both the sentinel
-// (so callers can branch on the class) and that the message names the offending
-// input (so an operator can act on it).
+// originStrings renders parsed origins for comparison, so a table can be
+// written the way somebody types origins rather than as *url.URL literals.
+func originStrings(origins []*url.URL) []string {
+	got := make([]string, len(origins))
+	for i, u := range origins {
+		got[i] = u.String()
+	}
+	return got
+}
+
+// TestOriginsDropsTheUnusable pins that an origin tunneld cannot expose is
+// dropped with a warning rather than failing the whole run. One typo used to
+// take every other origin down with it, and the origins that work are what
+// somebody is waiting on.
 //
-// Driven through execute rather than the harness's run: every row here fails
-// before the tunnel is ever touched, so the default (non-faked) collaborators
-// are fine and nothing dials out. "no origins at all" reaches the
-// after-the-loop case by passing nothing at all: with origins as arguments
-// there is no required flag to satisfy, so an empty run gets that far on its
-// own.
-func TestParseOriginsRejects(t *testing.T) {
+// Each case asserts both halves of that bargain: what survived, and that the
+// warning names the value that did not — a drop nobody is told about is just a
+// missing origin. Origins is called directly rather than through a run, so
+// nothing here dials.
+func TestOriginsDropsTheUnusable(t *testing.T) {
 	cases := []struct {
 		name    string
 		in      []string
-		want    error
+		want    []string
 		mention string
 	}{
-		{"no origins at all", nil, v1.ErrNoOrigin, ""},
-		{"empty value", []string{""}, v1.ErrNoOrigin, ""},
-		{"whitespace only", []string{"   "}, v1.ErrNoOrigin, ""},
-		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrInvalidOrigin, "ftp"},
-		{"scheme with no host", []string{"http://"}, v1.ErrInvalidOrigin, "http://"},
-		{"one bad origin among good ones", []string{"http://localhost:3000", "ftp://localhost:21"}, v1.ErrInvalidOrigin, "ftp"},
-		{"two origins claiming the websockets", []string{"http+ws://localhost:4000", "http+ws://localhost:5173"}, v1.ErrInvalidOrigin, "http+ws://localhost:5173"},
-		{"the marker on a container", []string{"dockerd+ws://api"}, v1.ErrInvalidOrigin, "dockerd+ws"},
-		{"the marker on an unproxyable scheme", []string{"ftp+ws://localhost:21"}, v1.ErrInvalidOrigin, "ftp"},
-		{"a container with no name", []string{"dockerd://"}, v1.ErrInvalidOrigin, "dockerd://"},
-		{"a container with a path", []string{"dockerd://api/sh"}, v1.ErrInvalidOrigin, "dockerd://api"},
-		{"a container with a query", []string{"dockerd://api?tty=1"}, v1.ErrInvalidOrigin, "dockerd://api"},
-		{"a container with a fragment", []string{"dockerd://api#sh"}, v1.ErrInvalidOrigin, "dockerd://api"},
+		{"empty value", []string{""}, nil, "dropping an origin"},
+		{"whitespace only", []string{"   "}, nil, "dropping an origin"},
+		{"unproxyable scheme", []string{"ftp://localhost:21"}, nil, "ftp://localhost:21"},
+		{"scheme with no host", []string{"http://"}, nil, "http://"},
+		{
+			"one bad origin among good ones",
+			[]string{"http://localhost:3000", "ftp://localhost:21", "http://localhost:4000"},
+			[]string{"http://localhost:3000", "http://localhost:4000"},
+			"ftp://localhost:21",
+		},
+		{
+			// The marker goes, the origin stays: it is a perfectly good origin
+			// that asked for something already taken.
+			"a second origin claiming the websockets",
+			[]string{"http+ws://localhost:4000", "http+ws://localhost:5173"},
+			[]string{"http+ws://localhost:4000", "http://localhost:5173"},
+			"already claimed",
+		},
+		{"the marker on a container", []string{"dockerd+ws://api"}, nil, "dockerd+ws"},
+		{"the marker on an unproxyable scheme", []string{"ftp+ws://localhost:21"}, nil, "ftp+ws"},
+		{"a container with no name", []string{"dockerd://"}, nil, "names no container"},
+		{"a container with a path", []string{"dockerd://api/sh"}, nil, "dockerd://api"},
+		{"a container with a query", []string{"dockerd://api?tty=1"}, nil, "dockerd://api"},
+		{"a container with a fragment", []string{"dockerd://api#sh"}, nil, "dockerd://api"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var b *BuilderImpl
-			if tc.in == nil {
-				t.Setenv(v1.OriginsEnv, ",")
-				b = New(WithOrigin("http://placeholder.invalid"))
-			} else {
-				b = New(WithOrigin(tc.in...))
-			}
+			var stderr bytes.Buffer
+			b := New(WithOrigin(tc.in...), WithLogLevel("warn"), WithStderr(&stderr))
 
-			_, _, err := execute(t, b)
-			if err == nil {
-				t.Fatalf("execute(%q) = nil, want an error", tc.in)
+			if got := originStrings(b.Origins()); !slices.Equal(got, tc.want) {
+				t.Errorf("Origins(%q) = %q, want %q", tc.in, got, tc.want)
 			}
-			if !errors.Is(err, tc.want) {
-				t.Errorf("error = %v, want %v", err, tc.want)
-			}
-			if tc.mention != "" && !strings.Contains(err.Error(), tc.mention) {
-				t.Errorf("error %q does not name %q", err, tc.mention)
+			if !strings.Contains(stderr.String(), tc.mention) {
+				t.Errorf("warnings %q do not name %q", stderr.String(), tc.mention)
 			}
 		})
+	}
+}
+
+// TestOriginsWarnsAtTheTunnelsLevel pins that a dropped origin is reported at
+// the level the tunnel's own logs are, rather than uninvited on stderr: a
+// library that writes without being asked pollutes its importer's output, and
+// tunneld's default is silence.
+func TestOriginsWarnsAtTheTunnelsLevel(t *testing.T) {
+	for _, tc := range []struct {
+		level string
+		want  bool
+	}{
+		{"", false},
+		{"error", false},
+		{"warn", true},
+		{"debug", true},
+	} {
+		t.Run("level "+tc.level, func(t *testing.T) {
+			var stderr bytes.Buffer
+			b := New(WithOrigin("ftp://localhost:21"), WithLogLevel(tc.level), WithStderr(&stderr))
+			b.Origins()
+
+			if got := strings.Contains(stderr.String(), "ftp://localhost:21"); got != tc.want {
+				t.Errorf("--log-level %q warned = %v, want %v (%q)", tc.level, got, tc.want, stderr.String())
+			}
+		})
+	}
+}
+
+// TestOriginsNoneLeftIsAnError pins the one failure that survives the drop: a
+// run with nothing left to expose refuses rather than minting a hostname that
+// answers only errors, and its message names both ways of supplying an origin.
+func TestOriginsNoneLeftIsAnError(t *testing.T) {
+	_, _, err := execute(t, New(WithOrigin("ftp://localhost:21")))
+	if !errors.Is(err, v1.ErrNoOrigin) {
+		t.Fatalf("running with only an unusable origin = %v, want ErrNoOrigin", err)
+	}
+	if !strings.Contains(err.Error(), v1.OriginsEnv) {
+		t.Errorf("error %q does not name %s", err, v1.OriginsEnv)
 	}
 }
 
@@ -1317,12 +1375,12 @@ func TestPublicURL(t *testing.T) {
 		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
 	}
 	for _, tc := range cases {
-		if got := PublicURL(public, tc.i, tc.n); got != tc.want {
-			t.Errorf("%s: PublicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
+		if got := publicURL(public, tc.i, tc.n); got != tc.want {
+			t.Errorf("%s: publicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
 		}
 	}
 	if public.RawQuery != "" {
-		t.Errorf("PublicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
+		t.Errorf("publicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
 	}
 }
 
@@ -1420,36 +1478,56 @@ func TestEnvListSplitting(t *testing.T) {
 
 // TestApplyEnvPrecedence pins argv > environment > seed, one row per rung.
 //
-// The settled list has no flag to read it back from any more, so each row
-// proves which layer won by what fails: an origin the parser refuses names
-// itself in the error, and a row where argv wins never reaches that refusal
-// at all. A deliberately bad log level stops every row before anything dials.
+// Origins reports the settled list directly, so each row reads as what the
+// three layers resolve to rather than as which parse error came back. The
+// flags are parsed rather than executed — that is all Origins needs to see
+// argv, and it keeps every row offline.
 func TestApplyEnvPrecedence(t *testing.T) {
 	cases := []struct {
-		name    string
-		env     string
-		args    []string
-		wantErr error
-		mention string
+		name string
+		seed []string
+		env  string
+		args []string
+		want []string
 	}{
 		{
-			name: "the environment supplies the origin",
-			env:  "ftp://env:1", wantErr: v1.ErrInvalidOrigin, mention: "ftp://env:1",
+			name: "the seed supplies the origin",
+			seed: []string{"http://seed:1"},
+			want: []string{"http://seed:1"},
 		},
 		{
-			// The second entry is the one that fails, so reaching it proves
-			// the whole variable was split and parsed rather than its first
-			// value taken.
+			name: "the environment supplies the origin",
+			env:  "http://env:1",
+			want: []string{"http://env:1"},
+		},
+		{
+			// Reaching the second entry proves the whole variable was split
+			// and parsed rather than its first value taken.
 			name: "the environment supplies several origins",
-			env:  "http://env:1,ftp://env:2", wantErr: v1.ErrInvalidOrigin, mention: "ftp://env:2",
+			env:  "http://env:1,http://env:2",
+			want: []string{"http://env:1", "http://env:2"},
+		},
+		{
+			name: "the environment replaces the seed",
+			seed: []string{"http://seed:1"},
+			env:  "http://env:1",
+			want: []string{"http://env:1"},
 		},
 		{
 			name: "an argument beats the environment",
-			env:  "ftp://env:1", args: []string{"http://flag:1"}, wantErr: v1.ErrInvalidLogLevel,
+			env:  "http://env:1", args: []string{"http://flag:1"},
+			want: []string{"http://flag:1"},
 		},
 		{
 			name: "an argument replaces the whole environment list",
-			env:  "http://env:1,ftp://env:2", args: []string{"http://flag:1"}, wantErr: v1.ErrInvalidLogLevel,
+			env:  "http://env:1,http://env:2", args: []string{"http://flag:1"},
+			want: []string{"http://flag:1"},
+		},
+		{
+			name: "an argument replaces the seed too",
+			seed: []string{"http://seed:1", "http://seed:2"},
+			args: []string{"http://flag:1"},
+			want: []string{"http://flag:1"},
 		},
 	}
 
@@ -1457,39 +1535,26 @@ func TestApplyEnvPrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.OriginsEnv, tc.env)
 
-			cmd := New().Command()
-			cmd.SetOut(io.Discard)
-			cmd.SetErr(io.Discard)
-			cmd.SetArgs(append(append([]string{}, tc.args...), "--log-level", "loud"))
-
-			err := cmd.ExecuteContext(t.Context())
-			if !errors.Is(err, tc.wantErr) {
-				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			b := New(WithOrigin(tc.seed...))
+			if err := b.Command().ParseFlags(tc.args); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
 			}
-			if tc.mention != "" && !strings.Contains(err.Error(), tc.mention) {
-				t.Errorf("error %q does not name %q, so a different origin was parsed", err, tc.mention)
+			if got := originStrings(b.Origins()); !slices.Equal(got, tc.want) {
+				t.Errorf("Origins() = %q, want %q", got, tc.want)
 			}
 		})
 	}
 }
 
+// TestApplyEnvSeededDefault pins that the variable replaces a seeded origin
+// rather than being ignored behind it — an embedder's seed is a default, and
+// an operator's variable is an override.
 func TestApplyEnvSeededDefault(t *testing.T) {
-	t.Setenv(v1.OriginsEnv, "ftp://env:1")
+	t.Setenv(v1.OriginsEnv, "http://env:1")
 
-	// The seed is a perfectly good origin and the variable is not, so the
-	// refusal naming the variable's value is the proof that it replaced the
-	// seed rather than being ignored behind it.
-	cmd := New(WithOrigin("http://seeded:1")).Command()
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--log-level", "loud"})
-
-	err := cmd.ExecuteContext(t.Context())
-	if !errors.Is(err, v1.ErrInvalidOrigin) {
-		t.Fatalf("error = %v, want ErrInvalidOrigin", err)
-	}
-	if !strings.Contains(err.Error(), "ftp://env:1") {
-		t.Errorf("error %q does not name the environment value, so the seed won", err)
+	b := New(WithOrigin("http://seeded:1"))
+	if got, want := originStrings(b.Origins()), []string{"http://env:1"}; !slices.Equal(got, want) {
+		t.Errorf("Origins() = %q, want %q — the seed won", got, want)
 	}
 }
 
