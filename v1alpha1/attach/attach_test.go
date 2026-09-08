@@ -648,7 +648,7 @@ func mustURLs(t *testing.T, raw ...string) []*url.URL {
 // TestBindKeepsOrder pins the invariant the whole feature rests on: the
 // dialable list is the same length and the same order as what the operator
 // typed, so index n still means origin n everywhere downstream — ?n routing,
-// PublicURL, the reported map, the multiview tiles.
+// the reported addresses, the reported map, the multiview tiles.
 func TestBindKeepsOrder(t *testing.T) {
 	targets := &stubTargets{}
 	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")

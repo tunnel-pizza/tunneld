@@ -189,20 +189,10 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			}
 		}
 
-		// The environment binding is per-builder, never viper's package
-		// global: two commands in one process — a host program's and an
-		// embedded tunneld's — would otherwise share one key space, and so
-		// would two tests in one binary.
-		env := viper.New()
-		for flag, envVar := range flagEnv {
-			// BindEnv only errors when given no name at all, which the
-			// registry above cannot produce.
-			_ = env.BindEnv(flag, envVar)
-		}
-		// Origins are arguments rather than a flag, so they have no entry in
-		// flagEnv and no flag for the hook below to copy a value onto. They
-		// get a key of their own, which RunE reads them back by.
-		_ = env.BindEnv(originsKey, v1.OriginsEnv)
+		// The environment binding, built on first use and shared with
+		// Origins. It is per-builder, never viper's package global — see the
+		// field's own doc.
+		env := b.environment()
 
 		// An embedder that seeded origins made them this command's default, so
 		// help says which — otherwise the one thing a seeded build does
@@ -305,120 +295,6 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 				stdout := cmd.OutOrStdout()
 				stderr := cmd.ErrOrStderr()
 
-				// Origins settle argv > environment > seed, which is the
-				// precedence a flag has over its variable over its default.
-				// Each layer replaces the one under it rather than extending
-				// it: a caller that names origins means those origins, not
-				// those plus whatever the program was built with.
-				settled := b.origins
-				if env.IsSet(originsKey) {
-					settled = splitList(env.GetString(originsKey))
-				}
-				if len(args) > 0 {
-					settled = args
-				}
-
-				// Origins: turn the settled origin values into URLs,
-				// rejecting anything the tunnel could not proxy to.
-				//
-				// Two shorthands are filled in, both of them what people
-				// actually type: a value with no scheme implies http, and a
-				// value with no host implies localhost, so ":8000" and
-				// "localhost:8000" and "http://localhost:8000" are one origin
-				// written three ways. Everything else must carry an http or
-				// https scheme and a host, so a typo surfaces here rather than
-				// as a public hostname that answers only errors. Every failure
-				// wraps a v1 sentinel and names the offending value.
-				//
-				// The messages name the value, not where it came from,
-				// because by this point it may have arrived as an argument,
-				// through v1.OriginsEnv, or from a seed. Only the
-				// nothing-at-all case names them, since that is the one an
-				// operator fixes by choosing between them.
-				origins := make([]*url.URL, 0, len(settled))
-				// The first origin seen carrying a +ws marker, kept to reject a
-				// second.
-				wsOrigin := ""
-				for _, s := range settled {
-					s = strings.TrimSpace(s)
-					if s == "" {
-						return fmt.Errorf("%w: empty origin, pass a local service URL (e.g. http://localhost:3000)", v1.ErrNoOrigin)
-					}
-					if !strings.Contains(s, "://") {
-						s = "http://" + s
-					}
-					u, err := url.Parse(s)
-					if err != nil {
-						return fmt.Errorf("%w: %q is not a URL: %w", v1.ErrInvalidOrigin, s, err)
-					}
-					// A container is not proxied at all: it is served, by a
-					// loopback origin the binder stands up later. Everything the
-					// shorthands below fill in — a default scheme, a default
-					// host, a preserved path — is meaningless here, so the value
-					// is taken exactly as typed and anything extra is an error
-					// rather than a silent drop.
-					if u.Scheme == v1.DockerScheme {
-						if u.Host == "" {
-							return fmt.Errorf("%w: %q names no container, pass e.g. dockerd://my-container", v1.ErrInvalidOrigin, s)
-						}
-						if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-							return fmt.Errorf("%w: %q carries more than a container reference; pass %s://%s", v1.ErrInvalidOrigin, s, v1.DockerScheme, u.Host)
-						}
-						origins = append(origins, u)
-						continue
-					}
-					// A +ws / +wss suffix declares that this origin owns
-					// WebSockets, so a handshake the page did not build with a
-					// routing index goes here rather than following the sticky
-					// cookie. The marker is stripped and consumed by the tunnel
-					// engine; everything below treats the origin by its base
-					// scheme, which is also how it is dialed.
-					//
-					// The two spellings (+ws and +wss) mean the same thing: the
-					// suffix induces the designation rather than describing a
-					// transport — the origin is dialed by its base scheme either
-					// way — so accepting both spares an operator from reasoning
-					// about which one their service "is", which is not a
-					// question the marker asks.
-					base, marked := u.Scheme, false
-					if s, ok := strings.CutSuffix(u.Scheme, "+wss"); ok {
-						base, marked = s, true
-					} else if s, ok := strings.CutSuffix(u.Scheme, "+ws"); ok {
-						base, marked = s, true
-					}
-					if base != "http" && base != "https" {
-						return fmt.Errorf("%w: %q has scheme %q, want http, https or %s", v1.ErrInvalidOrigin, s, u.Scheme, v1.DockerScheme)
-					}
-					if marked {
-						// Two origins cannot both own the WebSockets — a
-						// handshake carries nothing to tell them apart, which is
-						// the whole reason the marker exists. The engine rejects
-						// this too; catching it here makes it a flag error
-						// before the mint rather than a tunnel that cancels.
-						if wsOrigin != "" {
-							return fmt.Errorf("%w: %q and %q both claim the websockets, mark only one", v1.ErrInvalidOrigin, wsOrigin, s)
-						}
-						wsOrigin = s
-					}
-					// A port with no host in front of it — ":8000", or the
-					// "http://:8000" the scheme default above makes of it —
-					// means the local machine, the way every dev server reads
-					// that shorthand. The test is Hostname, not Host: url.Parse
-					// keeps the colon, so ":8000" arrives as a non-empty Host
-					// with nothing before the port, and a bare Host check waves
-					// it through as the unresolvable origin "http://:8000".
-					if u.Hostname() == "" {
-						if u.Port() == "" {
-							return fmt.Errorf("%w: %q has no host, pass e.g. http://localhost:3000", v1.ErrInvalidOrigin, s)
-						}
-						u.Host = net.JoinHostPort("localhost", u.Port())
-					}
-					origins = append(origins, u)
-				}
-				if len(origins) == 0 {
-					return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, name, v1.OriginsEnv)
-				}
-
 				// The logger: resolve the tunnel's log sink from the level the
 				// command settled on — the --log-level flag, or v1.LogEnv bound
 				// onto it by PersistentPreRunE. An unrecognized level is an
@@ -426,22 +302,25 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 				// to info would hide the typo. Neither set is silence: a
 				// library that logs uninvited pollutes its importer's output.
 				//
-				// The sink is the command's own stderr, so logs never pollute
-				// the machine-readable URLs on stdout, and an embedding
-				// program that called SetErr sees them where it is looking.
-				// Never os.Stderr directly — that is only where cobra falls
-				// back to when nothing was set. WithLogger below shares this
-				// logger between tunneld's own startup line and the tunnel's
-				// internals, so both share one level.
-				var log *slog.Logger
-				if b.logLevel == "" {
-					log = slog.New(slog.DiscardHandler)
-				} else {
-					var level slog.Level
-					if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
-						return fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
-					}
-					log = slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
+				// Resolved first, ahead of the origins, because settling those
+				// warns about the ones it drops and this is what those
+				// warnings go to.
+				log, err := b.logger()
+				if err != nil {
+					return err
+				}
+
+				// The origins this run exposes, settled argv > environment >
+				// seed and parsed. Anything unusable was dropped with a
+				// warning rather than failing the run, so what is left is what
+				// the tunnel gets — but nothing left at all is still an error,
+				// since a tunnel with no origin is a public hostname that
+				// answers only errors. The message names both ways of
+				// supplying one, because that is the choice an operator makes
+				// to fix it.
+				origins := b.Origins()
+				if len(origins) == 0 {
+					return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, name, v1.OriginsEnv)
 				}
 
 				// The handle the event listener ends the run through. A signal
@@ -587,7 +466,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 				if announcer, ok := closeOrigins.(Announcer); ok {
 					addresses := make([]string, len(origins))
 					for i := range origins {
-						addresses[i] = PublicURL(public, i, len(origins))
+						addresses[i] = publicURL(public, i, len(origins))
 					}
 					announcer.Announce(addresses)
 				}
@@ -648,7 +527,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					}
 				} else {
 					for i, origin := range origins {
-						fmt.Fprintf(stdout, "%s\n", PublicURL(public, i, len(origins)))
+						fmt.Fprintf(stdout, "%s\n", publicURL(public, i, len(origins)))
 						fmt.Fprintf(stderr, "  -> %s\n", origin)
 					}
 				}
@@ -656,7 +535,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					// One page, never a fan of tabs: the panel when there is
 					// one, since it reaches every origin, and otherwise the
 					// default origin itself.
-					target := cmp.Or(view, PublicURL(public, 0, len(origins)))
+					target := cmp.Or(view, publicURL(public, 0, len(origins)))
 					b.browser.Open(ctx, target, stderr, log)
 				}
 
@@ -748,7 +627,185 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 	return b.command
 }
 
-// PublicURL is the address origin i answers on, out of n origins: the tunnel's
+// environment is this builder's environment binding, built on first use: every
+// flag paired with the variable that mirrors it, plus the origins key that has
+// no flag to hang off. Origins reads it as well as Command, and can be called
+// on a builder whose command was never assembled, which is why it is built
+// here rather than during assembly.
+func (b *BuilderImpl) environment() *viper.Viper {
+	b.envOnce.Do(func() {
+		b.env = viper.New()
+		for flag, envVar := range flagEnv {
+			// BindEnv only errors when given no name at all, which the
+			// registry above cannot produce.
+			_ = b.env.BindEnv(flag, envVar)
+		}
+		// Origins are arguments rather than a flag, so they have no entry in
+		// flagEnv and no flag for PersistentPreRunE to copy a value onto. They
+		// get a key of their own, which Origins reads them back by.
+		_ = b.env.BindEnv(originsKey, v1.OriginsEnv)
+	})
+	return b.env
+}
+
+// logger resolves the tunnel's log sink from the level the command settled on
+// — the --log-level flag, or v1.LogEnv bound onto it by PersistentPreRunE. An
+// unrecognized level is an error: somebody typed it, and a silent downgrade to
+// info would hide the typo. Unset is silence, since a library that logs
+// uninvited pollutes its importer's output.
+//
+// The sink is the built command's own stderr, so logs never pollute the
+// machine-readable URLs on stdout and an embedding program that called SetErr
+// sees them where it is looking. Never os.Stderr directly — that is only where
+// cobra falls back to when nothing was set.
+//
+// A logger comes back either way. The error says the level was refused, which
+// is RunE's to report; a caller that only wants somewhere to warn (Origins)
+// takes the silent one and leaves the report to the run.
+func (b *BuilderImpl) logger() (*slog.Logger, error) {
+	if b.logLevel == "" {
+		return slog.New(slog.DiscardHandler), nil
+	}
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
+		return slog.New(slog.DiscardHandler), fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
+	}
+	return slog.New(slog.NewTextHandler(b.Command().ErrOrStderr(), &slog.HandlerOptions{Level: level})), nil
+}
+
+// Origins reports the local origins this command exposes, in order: the first
+// is the default and each later one answers on a bare ?n routing parameter.
+//
+// Three layers settle argv > environment > seed, which is the precedence a
+// flag has over its variable over its default. Each layer replaces the one
+// under it rather than extending it: a caller that names origins means those
+// origins, not those plus whatever the program was built with. Argv is read
+// off the built command, so before it runs this reports what the environment
+// or the seed would expose, and from inside the run it reports what did.
+//
+// Two shorthands are filled in, both of them what people actually type: a
+// value with no scheme implies http, and a value with no host implies
+// localhost, so ":8000", "localhost:8000" and "http://localhost:8000" are one
+// origin written three ways.
+//
+// Anything else is dropped with a warning rather than failing the run — an
+// unparsable URL, a scheme that is none of http, https or v1.DockerScheme, a
+// dockerd:// value carrying more than a container reference, a URL with no
+// host at all. One typo used to take every other origin down with it, and the
+// ones that work are what somebody is waiting on; the warning names the value
+// that did not, which is what a person needs to fix it. A run left with no
+// origins at all is still an error, reported by the command rather than here.
+//
+// A second origin claiming the websockets loses only its marker, not itself: a
+// handshake carries nothing to tell two claimants apart, so the first one
+// keeps the designation and the later one is exposed as the plain origin it
+// otherwise is.
+//
+// The warnings go to the same sink and level as the tunnel's own logs, so an
+// unset --log-level (or v1.LogEnv) means a dropped origin is dropped silently
+// — the same silence everything else in a default run keeps.
+func (b *BuilderImpl) Origins() []*url.URL {
+	// A refused --log-level is the run's error to report, not this one's; here
+	// it just means the warnings below go nowhere.
+	log, _ := b.logger()
+
+	settled := b.origins
+	if env := b.environment(); env.IsSet(originsKey) {
+		settled = splitList(env.GetString(originsKey))
+	}
+	if args := b.Command().Flags().Args(); len(args) > 0 {
+		settled = args
+	}
+
+	origins := make([]*url.URL, 0, len(settled))
+	// The first origin seen carrying a +ws marker, kept to strip a second.
+	wsOrigin := ""
+	for _, s := range settled {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
+			continue
+		}
+		if !strings.Contains(s, "://") {
+			// TODO(#70): check if s is an executable on $PATH and if so, prepend it
+			// with v1.FileScheme + "://" — today a bare word that names a program
+			// becomes http://<word>, a hostname that resolves nowhere.
+			s = "http://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil {
+			log.Warn("dropping an origin", "origin", s, "reason", "not a URL", "err", err)
+			continue
+		}
+		// A container is not proxied at all: it is served, by a loopback
+		// origin the binder stands up later. Everything the shorthands below
+		// fill in — a default scheme, a default host, a preserved path — is
+		// meaningless here, so the value is taken exactly as typed and
+		// anything extra is dropped rather than silently ignored.
+		if u.Scheme == v1.DockerScheme {
+			if u.Host == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "names no container, pass e.g. "+v1.DockerScheme+"://my-container")
+				continue
+			}
+			if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a container reference, pass "+v1.DockerScheme+"://"+u.Host)
+				continue
+			}
+			origins = append(origins, u)
+			continue
+		}
+		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
+		// handshake the page did not build with a routing index goes here
+		// rather than following the sticky cookie. The marker is stripped and
+		// consumed by the tunnel engine; everything below treats the origin by
+		// its base scheme, which is also how it is dialed.
+		//
+		// The two spellings (+ws and +wss) mean the same thing: the suffix
+		// induces the designation rather than describing a transport — the
+		// origin is dialed by its base scheme either way — so accepting both
+		// spares an operator from reasoning about which one their service
+		// "is", which is not a question the marker asks.
+		base, marked := u.Scheme, false
+		if s, ok := strings.CutSuffix(u.Scheme, "+wss"); ok {
+			base, marked = s, true
+		} else if s, ok := strings.CutSuffix(u.Scheme, "+ws"); ok {
+			base, marked = s, true
+		}
+		if base != "http" && base != "https" {
+			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https or "+v1.DockerScheme, "scheme", u.Scheme)
+			continue
+		}
+		if marked {
+			if wsOrigin != "" {
+				// Two origins cannot both own the websockets. The marker goes
+				// and the origin stays: it is a perfectly good origin that
+				// asked for something already taken, and the tunnel engine
+				// would refuse the pair outright.
+				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
+				u.Scheme = base
+			} else {
+				wsOrigin = s
+			}
+		}
+		// A port with no host in front of it — ":8000", or the "http://:8000"
+		// the scheme default above makes of it — means the local machine, the
+		// way every dev server reads that shorthand. The test is Hostname, not
+		// Host: url.Parse keeps the colon, so ":8000" arrives as a non-empty
+		// Host with nothing before the port, and a bare Host check waves it
+		// through as the unresolvable origin "http://:8000".
+		if u.Hostname() == "" {
+			if u.Port() == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "no host, pass e.g. http://localhost:3000")
+				continue
+			}
+			u.Host = net.JoinHostPort("localhost", u.Port())
+		}
+		origins = append(origins, u)
+	}
+	return origins
+}
+
+// publicURL is the address origin i answers on, out of n origins: the tunnel's
 // URL with a bare ?i routing parameter. Bare is load-bearing — a valued
 // parameter ("?1=x") is application data the proxy forwards, while the bare
 // form is the routing directive it consumes and strips before the request
@@ -762,7 +819,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 //
 // A lone origin has nothing to route between, so n of 1 gives the plain URL
 // and no parameter at all.
-func PublicURL(public *url.URL, i, n int) string {
+func publicURL(public *url.URL, i, n int) string {
 	if n <= 1 {
 		return public.String()
 	}

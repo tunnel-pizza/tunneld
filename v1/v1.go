@@ -38,6 +38,7 @@ package v1
 import (
 	"errors"
 	"log/slog"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -99,24 +100,25 @@ func Apply[T any](t T, opts ...Option[T]) T {
 var ErrInvalidEnv = errors.New("invalid environment value")
 
 // ErrNoOrigin reports a command built and run with nothing to expose: no
-// origin argument, no OriginsEnv, and no WithOrigin seed. A tunnel with no
-// origin would come up pointing at a loopback socket nobody serves on — a
-// public hostname that answers only errors — so this fails before the mint
+// origin argument, no OriginsEnv, and no WithOrigin seed — or every origin it
+// was given dropped as unusable, which arrives at the same place. A tunnel
+// with no origin would come up pointing at a loopback socket nobody serves on
+// — a public hostname that answers only errors — so this fails before the mint
 // instead. The lever is an argument, OriginsEnv, or WithOrigin when
 // embedding.
 var ErrNoOrigin = errors.New("no origin")
 
-// ErrInvalidOrigin reports an origin tunneld cannot expose: an unparsable
-// URL, a scheme that is none of http, https or DockerScheme, or a URL with no
-// host. A bare host:port is not an error — it implies http.
+// ErrInvalidOrigin reports a container origin that named something tunneld
+// could not serve: a container the daemon has never heard of, one that is not
+// running, or one whose inspect comes back with no configuration to read. A
+// daemon that cannot be reached at all is ErrNoDocker instead — there the
+// origin is fine and Docker is not, and the lever is a different one.
 //
-// A dockerd:// value earns it for reasons of its own, all of them about the
-// reference rather than the syntax: anything beyond a container name (a path,
-// a query, a fragment, credentials), a container the daemon has never heard
-// of, one that is not running, and one whose inspect comes back with no
-// configuration to read. A daemon that cannot be reached at all is ErrNoDocker
-// instead — there the origin is fine and Docker is not, and the lever is a
-// different one.
+// A malformed origin does not earn it. An unparsable URL, a scheme that is
+// none of http, https or DockerScheme, a URL with no host, a DockerScheme
+// value carrying more than a container reference — each is dropped with a
+// warning and the origins that work are exposed anyway; see Builder.Origins. A
+// bare host:port is not malformed at all — it implies http.
 //
 // The wrapped message names the offending value; the lever is to correct it.
 var ErrInvalidOrigin = errors.New("invalid origin")
@@ -301,6 +303,23 @@ type Builder interface {
 	// Command assembles the configured command and returns it. It is the
 	// terminal step; calling it more than once returns the same command.
 	Command() *cobra.Command
+	// Origins reports the local origins the command exposes, in order: the
+	// first is the default and each later one answers on a bare ?n routing
+	// parameter. The layers settle argv > environment > seed — an argument,
+	// then OriginsEnv, then whatever WithOrigin seeded — and each replaces
+	// the one under it rather than extending it.
+	//
+	// Argv is read off the built command, so before it has run this reports
+	// what the environment or the seed would expose, and from inside the run
+	// it reports what did.
+	//
+	// An origin tunneld cannot expose — an unparsable URL, a scheme that is
+	// none of http, https or DockerScheme, a URL with no host, a DockerScheme
+	// value carrying more than a container reference — is dropped with a
+	// warning on the tunnel's own log rather than failing the run, so this is
+	// what the tunnel was given and not what it was asked for. A run left
+	// with no origins at all fails with ErrNoOrigin.
+	Origins() []*url.URL
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string

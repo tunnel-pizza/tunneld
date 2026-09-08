@@ -102,9 +102,9 @@ type Option = v1.Option[*BinderImpl]
 // An http or https origin passes through untouched; a dockerd:// origin is
 // served here, by a loopback attach server that takes its place in the list.
 // The two lists share a length and an order, which is the whole point: index n
-// still means origin n for the bare ?n routing parameter, for PublicURL, for
-// the reported map and for the multiview tiles, so a container is an origin
-// like any other and nothing downstream learns a second shape.
+// still means origin n for the bare ?n routing parameter, for the addresses
+// reported, for the map printed and for the multiview tiles, so a container is
+// an origin like any other and nothing downstream learns a second shape.
 type BinderImpl struct {
 	targets Targets
 	banner  string
