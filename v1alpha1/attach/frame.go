@@ -232,8 +232,22 @@ func (f frame) View() tea.View {
 	}
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)
 
-	f.write(buf, 0, f.title())
-	f.write(buf, f.height-1, f.hint())
+	// Two columns in, so a label reads as a label on the line rather than as a
+	// corner that went wrong, and never onto the far corner itself.
+	const indent = 2
+	edge := f.width - 1
+
+	writeAt(buf, indent, 0, f.title(), edge-indent)
+
+	// The keys take the bottom left and the counts the bottom right, which is
+	// where a reader's eye is not. They give way to the keys rather than
+	// overlapping them when a narrow window cannot hold both: what the session
+	// is can wait, what to press cannot.
+	after := writeAt(buf, indent, f.height-1, f.hint(), edge-indent)
+	counts := uv.NewStyledString(f.meta())
+	if x := edge - counts.UnicodeWidth(); x > after {
+		writeAt(buf, x, f.height-1, f.meta(), edge-x)
+	}
 
 	view.Content = buf.Render()
 	if !f.command && f.scroll == 0 {
@@ -254,8 +268,8 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 	}
 }
 
-// write puts a styled run into one of the border rows, two columns in so it
-// reads as a label on the line rather than as a corner that went wrong.
+// writeAt draws a styled run at x on row y, clipped to width columns, and
+// reports the column after the last one it used.
 //
 // Drawn into a buffer of its own and copied in, for the same reason the pane
 // is: a run drawn straight into the frame's buffer clears what it does not
@@ -263,35 +277,39 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // erase the border to its right and a longer one would erase the corner. Sized
 // here, it truncates instead — a long container name loses its tail and the
 // box stays a box.
-func (f frame) write(buf uv.ScreenBuffer, y int, s string) {
-	const indent = 2
-
-	room := f.width - indent - 1
-	if room <= 0 {
-		return
+func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
+	if width <= 0 {
+		return x
 	}
 	label := uv.NewStyledString(s)
-	width := min(label.UnicodeWidth(), room)
-	if width <= 0 {
-		return
+	used := min(label.UnicodeWidth(), width)
+	if used <= 0 {
+		return x
 	}
 
-	cells := uv.NewScreenBuffer(width, 1)
+	cells := uv.NewScreenBuffer(used, 1)
 	label.Draw(cells, cells.Bounds())
-	blit(buf, cells, indent, y)
+	blit(buf, cells, x, y)
+	return x + used
 }
 
-// title is what the session is, in the shape k9s writes one: the thing, what
-// it is showing, and how big it is.
+// title is what is being watched, in the top border: the container, and
+// nothing else. It is the one thing a viewer needs to know they are in the
+// right place.
 func (f frame) title() string {
+	return nameStyle.Styled(" " + f.sess.Name() + " ")
+}
+
+// meta is what the session is doing, in the shape k9s writes one: what it is
+// showing, and how big it is.
+func (f frame) meta() string {
 	qualifier := viewers(f.sess.count())
 	if f.scroll > 0 {
 		qualifier = fmt.Sprintf("scrolled back %d", f.scroll)
 	}
 	w, h := f.sess.paneSize()
-	return nameStyle.Styled(" "+f.sess.Name()) +
-		qualStyle.Styled("("+qualifier+")") +
-		countStyle.Styled(fmt.Sprintf("[%d×%d] ", w, h))
+	return qualStyle.Styled(" ("+qualifier+")") +
+		countStyle.Styled(fmt.Sprintf(" [%d×%d] ", w, h))
 }
 
 // hint is the keys, in the bottom border: the one that opens the commands, or

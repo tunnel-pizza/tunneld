@@ -285,9 +285,33 @@ func TestViewIsBordered(t *testing.T) {
 	if !strings.Contains(top, h.s.Name()) {
 		t.Errorf("top border = %q, want the container named in it", top)
 	}
-	if !strings.Contains(bottom, "^D") {
-		t.Errorf("bottom border = %q, want the key that opens the commands in it", bottom)
+	if strings.Contains(top, "viewer") {
+		t.Errorf("top border = %q, want only the name in it", top)
 	}
+
+	// The keys take the bottom left and the counts the bottom right, hard
+	// against the corner.
+	if !strings.HasPrefix(bottom, "\u2570\u2500 ^D") {
+		t.Errorf("bottom border = %q, want the keys at its left", bottom)
+	}
+	if !strings.Contains(bottom, "1 viewer") || !strings.Contains(bottom, "\u00d7") {
+		t.Errorf("bottom border = %q, want the counts in it", bottom)
+	}
+	// Hard against the corner, mirroring the name's own gap at the top left.
+	if want := "] \u256f"; !strings.HasSuffix(bottom, want) {
+		t.Errorf("bottom border = %q, want the counts ending against the corner (%q)", bottom, want)
+	}
+
+	// A window too narrow for both keeps the keys and drops the counts: what
+	// to press matters more than how many are watching.
+	h.f.width = 24
+	narrow := strings.Split(h.f.View().Content, "\n")
+	if got := stripSGR(narrow[len(narrow)-1]); strings.Contains(got, "viewer") {
+		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
+	} else if !strings.Contains(got, "^D") {
+		t.Errorf("bottom border = %q, want the keys kept", got)
+	}
+	h.f.width = 40
 
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, ctrlD)

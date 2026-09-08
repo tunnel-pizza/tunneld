@@ -187,15 +187,19 @@ The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
 The terminal sits inside a frame, with what the session is written into the
-border itself: the container, how many people are watching it, and the size
-everyone has settled on.
+border itself: the container it is attached to at the top, and at the bottom
+the keys, how many people are watching, and the size everyone has settled on.
 
 ```
-╭─ tunneld-example(2 viewers)[76×14] ─────────────────────────────────────────╮
+╭─ tunneld-example ───────────────────────────────────────────────────────────╮
 │➜  ~ ls                                                                      │
 │                                                                             │
-╰─ ^D  commands ──────────────────────────────────────────────────────────────╯
+╰─ ^D  commands ───────────────────────────────────────── (2 viewers) [76×14] ╯
 ```
+
+The name is the reference you typed after `dockerd://`, not the id the daemon
+resolved it to — so a Compose service stays the name you wrote in the compose
+file.
 
 Every key reaches the container except one:
 
