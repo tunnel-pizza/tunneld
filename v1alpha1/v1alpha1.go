@@ -24,7 +24,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -85,28 +84,24 @@ func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
 
-// Panel serves several origins as one page on the tunnel's bare address.
-type Panel interface {
-	Wanted(enabled bool, origins []*url.URL) bool
-	URL(public *url.URL) string
-	Interceptors(origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
-}
-
-// WithPanel replaces what answers the tunnel's bare address when there is
-// more than one origin. The default is panel.New().
-func WithPanel(p Panel) Option {
-	return func(b *BuilderImpl) { b.panel = p }
-}
-
-// Opener puts a public address in front of a person once the edge serves it.
-type Opener interface {
+// Browser puts the tunnel in front of a person: it answers the bare public
+// address when several origins have to share it, and it opens that address
+// once the edge serves it.
+//
+// URL and Interceptors are two halves of one decision and answer over the
+// same condition — "" and no interceptors when there is no panel to serve —
+// so the caller reads an answer rather than asking whether to ask.
+type Browser interface {
+	URL(enabled bool, public *url.URL, origins []*url.URL) string
+	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
 	Open(ctx context.Context, addr string, stderr io.Writer, log v1.Logger)
 }
 
-// WithOpener replaces what opens the public address once the tunnel is live.
-// The default is browser.New(): the host's browser, launched as-is.
-func WithOpener(o Opener) Option {
-	return func(b *BuilderImpl) { b.opener = o }
+// WithBrowser replaces what serves the tunnel's bare address and opens it
+// once the tunnel is live. The default is browser.New(): the panel from
+// multiview.html, and the host's browser launched as-is.
+func WithBrowser(browser Browser) Option {
+	return func(b *BuilderImpl) { b.browser = browser }
 }
 
 // Counter folds tunnel events into a verdict: has the edge disowned it.
@@ -158,8 +153,7 @@ var (
 	_ CacheDirs  = (*cachedir.ValueImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
-	_ Panel      = (*panel.PanelImpl)(nil)
-	_ Opener     = (*browser.OpenerImpl)(nil)
+	_ Browser    = (*browser.BrowserImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
 )
@@ -182,8 +176,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
-		WithPanel(panel.New()),
-		WithOpener(browser.New()),
+		WithBrowser(browser.New()),
 		WithCounter(counter.New()),
 		WithBinder(attach.New(attach.WithTargets(docker.New()))),
 	)
@@ -223,8 +216,7 @@ type BuilderImpl struct {
 	cacheDirs CacheDirs
 	engine    Engine
 	cache     Cache
-	panel     Panel
-	opener    Opener
+	browser   Browser
 	counter   Counter
 	binder    Binder
 

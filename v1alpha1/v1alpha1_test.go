@@ -6,19 +6,20 @@ import (
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/panel"
 )
 
 // TestNewSatisfiesTheContract pins that the implementation is assignable to
 // the v1 interface — the compile-time half of the contract, which a signature
 // drift in either package would break here rather than at a call site.
-func TestNewSatisfiesTheContract(t *testing.T) {
-	var b v1.Builder = New()
-	if b == nil {
-		t.Fatal("New() = nil, want a builder")
-	}
+//
+// The assignment is the whole test: it either compiles or it does not. There
+// is nothing to assert afterwards, because New returns a pointer and an
+// interface holding one is never nil.
+func TestNewSatisfiesTheContract(*testing.T) {
+	var _ v1.Builder = New()
 }
 
 // TestNewIsUnconfigured pins that New carries no state of its own: two
@@ -71,8 +72,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		{"cacheDirs", New(WithOrigin(":3000"), WithCacheDirs(nil))},
 		{"engine", New(WithOrigin(":3000"), WithEngine(nil))},
 		{"cache", New(WithOrigin(":3000"), WithCache(nil))},
-		{"panel", New(WithOrigin(":3000"), WithPanel(nil))},
-		{"opener", New(WithOrigin(":3000"), WithOpener(nil))},
+		{"browser", New(WithOrigin(":3000"), WithBrowser(nil))},
 		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
 	} {
@@ -95,11 +95,11 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	d, e, c, p, o, n, g := cachedir.New(), &fakeEngine{}, &fakeCache{}, panel.New(), &fakeOpener{}, counter.New(), &fakeBinder{}
-	b := New(WithCacheDirs(d), WithEngine(e), WithCache(c), WithPanel(p), WithOpener(o), WithCounter(n), WithBinder(g))
+	d, e, c, o, n, g := cachedir.New(), &fakeEngine{}, &fakeCache{}, &fakeBrowser{BrowserImpl: browser.New()}, counter.New(), &fakeBinder{}
+	b := New(WithCacheDirs(d), WithEngine(e), WithCache(c), WithBrowser(o), WithCounter(n), WithBinder(g))
 
-	if b.cacheDirs != CacheDirs(d) || b.engine != Engine(e) || b.cache != Cache(c) || b.panel != Panel(p) ||
-		b.opener != Opener(o) || b.counter != Counter(n) || b.binder != Binder(g) {
+	if b.cacheDirs != CacheDirs(d) || b.engine != Engine(e) || b.cache != Cache(c) ||
+		b.browser != Browser(o) || b.counter != Counter(n) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}
 }

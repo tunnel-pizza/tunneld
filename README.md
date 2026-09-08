@@ -413,7 +413,7 @@ There are no fluent setters: every knob is an option passed to `New`, and
 changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
 `BuilderImpl` also takes `WithCacheDirs`, `WithEngine`, `WithCache`,
-`WithPanel`, `WithOpener`, `WithCounter` and `WithBinder`, which swap the
+`WithBrowser`, `WithCounter` and `WithBinder`, which swap the
 collaborators the tunnel run composes. They are a contributor's and a test's
 concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).

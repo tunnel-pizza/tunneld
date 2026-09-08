@@ -171,8 +171,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			{"cacheDirs", b.cacheDirs == nil},
 			{"engine", b.engine == nil},
 			{"cache", b.cache == nil},
-			{"panel", b.panel == nil},
-			{"opener", b.opener == nil},
+			{"browser", b.browser == nil},
 			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
 		} {
@@ -511,17 +510,15 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 						WithEventListener(listen).
 						WithLocalURL(dialable...)
 					// Served in front of the origin proxy, so the panel needs no
-					// port of its own and no origin ever sees the request.
-					if b.panel.Wanted(b.multiview, origins) {
-						for _, ic := range b.panel.Interceptors(origins, log) {
-							tun.WithInterceptor(ic)
-						}
+					// port of its own and no origin ever sees the request. The
+					// list is empty when there is no panel to serve, which is
+					// the only place that decision is made.
+					for _, ic := range b.browser.Interceptors(b.multiview, origins, log) {
+						tun.WithInterceptor(ic)
 					}
 					return tun
 				}
 				tun := start(cached)
-
-				view := ""
 
 				log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
 
@@ -580,9 +577,11 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					}
 				}
 				public := up.URL()
-				if b.panel.Wanted(b.multiview, origins) {
-					view = b.panel.URL(public)
-				}
+
+				// The panel's address when there is a panel, "" when there is
+				// not: the browser answers the question, and everything below
+				// reads the answer.
+				view := b.browser.URL(b.multiview, public, origins)
 
 				// The report: write the human-readable map to stderr, a line
 				// per public address with the origins it reaches indented
@@ -644,7 +643,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					// one, since it reaches every origin, and otherwise the
 					// default origin itself.
 					target := cmp.Or(view, PublicURL(public, 0, len(origins)))
-					b.opener.Open(ctx, target, stderr, log)
+					b.browser.Open(ctx, target, stderr, log)
 				}
 
 				// After the URL is live, so what gets cached is a tunnel that

@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
 
@@ -671,13 +672,17 @@ func (f *fakeCache) Save([]string, v1.Logger) {
 	}
 }
 
-// fakeOpener records what it was asked to open and opens nothing.
-type fakeOpener struct {
+// fakeBrowser records what it was asked to open and opens nothing. Only the
+// launch is faked: the panel half of the contract is the real one, embedded,
+// because the address TestRun expects reported and opened is the one the
+// panel computes.
+type fakeBrowser struct {
+	*browser.BrowserImpl
 	opened []string
 	order  *[]string
 }
 
-func (f *fakeOpener) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logger) {
+func (f *fakeBrowser) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logger) {
 	f.opened = append(f.opened, addr)
 	if f.order != nil {
 		*f.order = append(*f.order, "open")
@@ -698,19 +703,19 @@ func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
 
 // runHarness is run with every collaborator faked except the two that are
-// pure: the real panel, because its URL and interceptor order are what the
-// assertions check, and a real counter armed at one, because the verdict
-// logic is what the gone case is about. order records the effects that
-// matter in the sequence they landed.
+// pure: the browser's panel half, because its URL and interceptor order are
+// what the assertions check, and a real counter armed at one, because the
+// verdict logic is what the gone case is about. order records the effects
+// that matter in the sequence they landed.
 type runHarness struct {
-	engine *fakeEngine
-	cache  *fakeCache
-	opener *fakeOpener
-	binder *fakeBinder
-	order  []string
-	stdout bytes.Buffer
-	stderr bytes.Buffer
-	b      *BuilderImpl
+	engine  *fakeEngine
+	cache   *fakeCache
+	browser *fakeBrowser
+	binder  *fakeBinder
+	order   []string
+	stdout  bytes.Buffer
+	stderr  bytes.Buffer
+	b       *BuilderImpl
 }
 
 func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
@@ -718,7 +723,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Setenv(v1.LogEnv, "") // a developer's shell must not turn the log on
 	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
 	h.cache = &fakeCache{order: &h.order}
-	h.opener = &fakeOpener{order: &h.order}
+	h.browser = &fakeBrowser{BrowserImpl: browser.New(), order: &h.order}
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
@@ -728,7 +733,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
 		WithCache(h.cache),
-		WithOpener(h.opener),
+		WithBrowser(h.browser),
 		WithBinder(h.binder),
 		// A short connect bound so no case can sit on the production default
 		// waiting for an announcement its tunnel may never make.
@@ -815,8 +820,8 @@ func TestRun(t *testing.T) {
 		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
 		}
-		if want := []string{public}; !slices.Equal(h.opener.opened, want) {
-			t.Errorf("opened %q, want the panel address %q", h.opener.opened, want)
+		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
+			t.Errorf("opened %q, want the panel address %q", h.browser.opened, want)
 		}
 		// TestReportNamesTheMultiviewPanel: the panel's own address is the
 		// one stdout carries when there is one — it answers for every origin
@@ -927,8 +932,8 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx, "--no-open"); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if len(h.opener.opened) != 0 {
-			t.Errorf("opened %q, want nothing", h.opener.opened)
+		if len(h.browser.opened) != 0 {
+			t.Errorf("opened %q, want nothing", h.browser.opened)
 		}
 		if want := []string{"url", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects %v, want %v", h.order, want)
@@ -943,8 +948,8 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if want := []string{public}; !slices.Equal(h.opener.opened, want) {
-			t.Errorf("opened %q, want the plain URL %q", h.opener.opened, want)
+		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
+			t.Errorf("opened %q, want the plain URL %q", h.browser.opened, want)
 		}
 		if n := len(h.engine.tunnels[0].ics); n != 0 {
 			t.Errorf("registered %d interceptors for one origin, want none", n)
@@ -1165,8 +1170,8 @@ func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
 	if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 		t.Errorf("effects in order %v, want %v — the wait swallowed what follows it", h.order, want)
 	}
-	if want := []string{public}; !slices.Equal(h.opener.opened, want) {
-		t.Errorf("opened %q, want the address anyway %q", h.opener.opened, want)
+	if want := []string{public}; !slices.Equal(h.browser.opened, want) {
+		t.Errorf("opened %q, want the address anyway %q", h.browser.opened, want)
 	}
 }
 

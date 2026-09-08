@@ -20,8 +20,7 @@ Deep-link by filename; line numbers will drift.
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
-| Multiview panel, framing headers, template (`Panel`) | [`v1alpha1/panel/`](./v1alpha1/panel)                      |
-| Edge probe + browser launch (`Opener`)         | [`v1alpha1/browser/`](./v1alpha1/browser)                        |
+| Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
 | `Target`, `Targets`, `Server`, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
@@ -75,8 +74,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `CacheDirs`, `Engine`,
-`Cache`, `Panel`, `Opener`, `Counter`, `Binder`, implemented respectively by
-`cachedir`, `engine`, `cache`, `panel`, `browser`, `counter`, `attach`. Each
+`Cache`, `Browser`, `Counter`, `Binder`, implemented respectively by
+`cachedir`, `engine`, `cache`, `browser`, `counter`, `attach`. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
 subpackage, seeded by `New` and replaceable with the matching `With*` option.
 A function that maps a value to a value (`PublicURL`, `Version`) gets no
@@ -115,7 +114,7 @@ is applied by hand in `RunE`: argv replaces the variable, which replaces the
 seed.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
-unconditionally — `cachedir`, `engine`, `cache`, `panel`, `browser`, `counter`,
+unconditionally — `cachedir`, `engine`, `cache`, `browser`, `counter`,
 `attach` — and the `v1alpha1` root stays implementation-agnostic:
 `New`, the contracts, the options and `Command`. A second implementation of a
 contract gets a subpackage of its own beside the first. The same applies to

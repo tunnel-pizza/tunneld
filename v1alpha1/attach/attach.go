@@ -217,7 +217,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	//
 	// klog.SetLogger is process-global, which is the cost. It is the same trade
 	// tunneld already makes and documents for pkgbrowser.Stdout/Stderr in
-	// browser.OpenerImpl.Open (v1alpha1/browser) — a package global set on a
+	// browser.BrowserImpl.Open (v1alpha1/browser) — a package global set on a
 	// dependency's behalf, because owning the process's output is worth more
 	// than leaving a global untouched. Routed here rather than in the command
 	// so the guarantee holds for an embedding program that never executes the
