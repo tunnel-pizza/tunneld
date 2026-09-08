@@ -517,7 +517,7 @@ Self-contained programs in [`./examples`](./examples):
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
-`attach` starts its container too, pulling `alpine` if it is not already
+`attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not already
 local. All three block until interrupted:
 
 ```sh

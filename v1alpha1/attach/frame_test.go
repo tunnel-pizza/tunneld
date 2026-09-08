@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/vt"
@@ -116,7 +117,18 @@ func (h *harness) silent(t *testing.T) {
 var ctrlD = tea.Key{Code: 'd', Mod: tea.ModCtrl}
 
 // typing is one printable key, the way a browser reports one.
-func typing(r rune) tea.Key { return tea.Key{Code: r, Text: string(r)} }
+//
+// A capital is reported the way a keyboard produces one — the unshifted code,
+// the shift modifier, and the text it actually produced — rather than as a
+// bare uppercase rune. That distinction is the whole point of the fixture: a
+// key rebuilt from the code and the modifier loses the capital, and a test
+// that handed the frame a tidier key than a browser does would never notice.
+func typing(r rune) tea.Key {
+	if unicode.IsUpper(r) {
+		return tea.Key{Code: unicode.ToLower(r), ShiftedCode: r, Mod: tea.ModShift, Text: string(r)}
+	}
+	return tea.Key{Code: r, Text: string(r)}
+}
 
 // TestCtrlDNeverReachesTheContainer is the guard the frame exists to put on
 // one key.
@@ -151,10 +163,10 @@ func TestCtrlDNeverReachesTheContainer(t *testing.T) {
 func TestOrdinaryKeysReachTheContainerUnchanged(t *testing.T) {
 	h := newFrameHarness(t)
 
-	for _, r := range "echo hi" {
+	for _, r := range "echo Hi There" {
 		h.press(t, typing(r))
 	}
-	h.reached(t, "echo hi")
+	h.reached(t, "echo Hi There")
 }
 
 // TestCommandModeEndsTheSessionOnPurpose pins the deliberate half of the

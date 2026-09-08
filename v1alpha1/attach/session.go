@@ -270,8 +270,13 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 // first render is a whole one, drawn from the emulator as it stands.
 func (s *session) join(v *viewer) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.viewers[v] = struct{}{}
+	s.mu.Unlock()
+
+	// Everyone else's status line just became wrong: it names how many are
+	// watching, and that is now one more. Nothing else would tell them until
+	// the container next said something, which on a quiet shell is never.
+	s.wakeAll()
 }
 
 // part removes a viewer and renegotiates, since the smallest window may have
@@ -285,6 +290,7 @@ func (s *session) part(v *viewer) {
 
 	if present {
 		s.apply(context.Background(), negotiated)
+		s.wakeAll() // one fewer viewer, and every status line says so
 	}
 }
 
@@ -395,7 +401,19 @@ func (s *session) count() int {
 
 // sendKey gives a keystroke to the container, encoded by the emulator. See
 // asKeyEvent for why it goes this way round rather than as bytes.
-func (s *session) sendKey(k tea.Key) { s.em.SendKey(asKeyEvent(k)) }
+//
+// A key that produced text is sent as that text. The alternative re-derives it
+// from the code and the modifiers, and a shifted letter is exactly where that
+// goes wrong: a capital arrives as the unshifted rune plus Shift, so what comes
+// back out is a modified key rather than a letter, and every capital the person
+// typed disappears on the way to the shell.
+func (s *session) sendKey(k tea.Key) {
+	if k.Text != "" {
+		s.em.SendText(k.Text)
+		return
+	}
+	s.em.SendKey(asKeyEvent(k))
+}
 
 // paneSize is the screen the container is drawing on.
 func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
