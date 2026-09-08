@@ -43,6 +43,7 @@ const (
 var (
 	borderStyle = uv.Style{Fg: ansi.IndexedColor(111)}
 	hostStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
+	addrStyle   = uv.Style{Fg: ansi.IndexedColor(114)}
 	nameStyle   = uv.Style{Fg: ansi.IndexedColor(45), Attrs: uv.AttrBold}
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
@@ -330,26 +331,44 @@ func (f frame) title() string {
 	return nameStyle.Styled(" " + v1.DockerScheme + "://" + f.sess.Name() + " ")
 }
 
-// where is the machine serving the container, in the top right. On a laptop it
-// says little; through a tunnel, where the page could be open anywhere and the
-// name in the other corner is one an operator chose, it is the answer to which
-// machine this actually is.
+// where is the public address this origin answers on, in the top right, once
+// the tunnel has one to give.
+//
+// Opposite the origin, which is where the container is reached from inside:
+// the two corners of the top border are the two ends of the same thing. It is
+// the tunnel's own address rather than the one this viewer happened to type,
+// which is what makes it worth showing — it is the address to send somebody
+// else, and for one origin among several it carries the routing parameter that
+// reaches this one.
 func (f frame) where() string {
-	if host() == "" {
+	addr := f.sess.announced()
+	if addr == "" {
 		return ""
 	}
-	return hostStyle.Styled(" " + host() + " ")
+	return addrStyle.Styled(" " + addr + " ")
 }
 
-// meta is what the session is doing, in the shape k9s writes one: what it is
-// showing, and how big it is.
+// meta is what the session is doing, in the shape k9s writes one: where it is
+// being served from, what it is showing, and how big it is.
+//
+// The host leads, because it is the one part of the frame that is not a name
+// somebody chose. Through a tunnel the page could be open from anywhere, and
+// the origin in the top corner is a container reference an operator typed —
+// neither says which machine is actually serving this, which is the question
+// somebody with two of these open has.
 func (f frame) meta() string {
 	qualifier := viewers(f.sess.count())
 	if f.scroll > 0 {
 		qualifier = fmt.Sprintf("scrolled back %d", f.scroll)
 	}
 	w, h := f.sess.paneSize()
-	return qualStyle.Styled(" ("+qualifier+")") +
+
+	var where string
+	if host() != "" {
+		where = hostStyle.Styled(" " + host())
+	}
+	return where +
+		qualStyle.Styled(" ("+qualifier+")") +
 		countStyle.Styled(fmt.Sprintf(" [%d×%d] ", w, h))
 }
 

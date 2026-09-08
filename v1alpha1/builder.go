@@ -578,6 +578,20 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 				}
 				public := up.URL()
 
+				// A bound container is served before the tunnel exists —
+				// the binding is what the tunnel is handed to proxy to — so
+				// this is the first moment anything down there can be told
+				// where it answers from outside. Each origin gets its own
+				// address rather than the bare one, because with several of
+				// them it is the routing parameter that reaches this one.
+				if announcer, ok := closeOrigins.(Announcer); ok {
+					addresses := make([]string, len(origins))
+					for i := range origins {
+						addresses[i] = PublicURL(public, i, len(origins))
+					}
+					announcer.Announce(addresses)
+				}
+
 				// The panel's address when there is a panel, "" when there is
 				// not: the browser answers the question, and everything below
 				// reads the answer.

@@ -139,6 +139,22 @@ type Binder interface {
 	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, close io.Closer, err error)
 }
 
+// Announcer is a bound origin that can be told the public address it answers
+// on, once the tunnel has one.
+//
+// Discovered on the closer Bind returns rather than required by Binder, and
+// that is an import direction rather than a preference: an implementation
+// lives in a subpackage, the subpackage cannot name a type declared here, and
+// a contract whose method signature mentions one could never be satisfied from
+// there. So the capability is optional in the way http.Flusher is — a binder
+// that has nothing to announce simply is not one.
+//
+// The addresses are indexed the way display was, which is the same rule
+// everything downstream of Bind already follows.
+type Announcer interface {
+	Announce(public []string)
+}
+
 // WithBinder replaces what stands a loopback origin in for a container. The
 // default is attach.New(attach.WithTargets(docker.New())): attach serves,
 // docker resolves.

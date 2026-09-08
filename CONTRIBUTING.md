@@ -387,6 +387,15 @@ Two things there will bite if you change them without knowing why:
   renders once with the new pane and the old emulator. Both go through a buffer
   of their own size and are blitted, which is also what makes a label truncate
   instead of erasing the border to its right.
+- **The public address arrives after the servers do, by assertion.** A
+  `dockerd://` origin is bound *before* the tunnel is minted — the binding is
+  what the tunnel is handed to proxy to — so at the only moment `Bind` could be
+  told where it answers from outside, nobody knows. `RunE` asks the closer
+  `Bind` returned whether it is an `Announcer` once `public` is known, and
+  hands over one address per origin, indexed the way `display` was. It is an
+  assertion rather than a method on `Binder` because of the import direction:
+  `attach` cannot name a type declared in `v1alpha1`, so a contract mentioning
+  one could never be satisfied from there. Same shape as `http.Flusher`.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

@@ -76,11 +76,12 @@ type session struct {
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
 
-	// mu guards the viewer set and the size negotiated from it, and nothing
-	// else.
+	// mu guards the viewer set, the size negotiated from it, and the public
+	// address, and nothing else.
 	mu      sync.Mutex
 	viewers map[*viewer]struct{}
 	size    remotecommand.TerminalSize
+	public  string
 }
 
 // viewer is one connected browser: the frame drawing for it, and the window
@@ -404,6 +405,27 @@ func (s *session) window() (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int(s.size.Width), int(s.size.Height)
+}
+
+// announce records the public address this origin answers on, and has every
+// frame say so.
+//
+// It arrives after the servers do, and cannot not: a container is bound before
+// the tunnel is minted, because the binding is what the tunnel is given to
+// proxy to. So a frame drawn in between has nothing to put in its corner, and
+// this is what fills it in when there is finally something to say.
+func (s *session) announce(public string) {
+	s.mu.Lock()
+	s.public = public
+	s.mu.Unlock()
+	s.wakeAll()
+}
+
+// announced is the public address, or "" before the tunnel has said.
+func (s *session) announced() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.public
 }
 
 // count is how many viewers are watching, for the frame to say so.

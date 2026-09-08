@@ -3,6 +3,7 @@ package attach
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -666,6 +667,60 @@ func TestBindKeepsOrder(t *testing.T) {
 	}
 	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
 		t.Errorf("opened %q, want %q", targets.asked, want)
+	}
+}
+
+// TestAnnounceReachesTheRightTerminal pins the other half of that invariant.
+//
+// A container is bound before the tunnel exists, so where it answers from
+// outside is not known until later, and the only thing connecting a server to
+// its address is the place its origin had in the list. Announce is handed the
+// addresses in that order, and hands each server the one at its own index —
+// give origin 3's address to origin 1 and every framed terminal names a URL
+// that reaches a different container.
+func TestAnnounceReachesTheRightTerminal(t *testing.T) {
+	targets := &stubTargets{}
+	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")
+
+	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+
+	announcer, ok := closer.(interface{ Announce(public []string) })
+	if !ok {
+		t.Fatalf("Bind returned %T, want something the root can announce to", closer)
+	}
+
+	// One address per origin, in the order the operator typed them.
+	announcer.Announce([]string{
+		"https://example.test/?0",
+		"https://example.test/?1",
+		"https://example.test/?2",
+		"https://example.test/?3",
+	})
+
+	servers, ok := closer.(bound)
+	if !ok {
+		t.Fatalf("closer is %T, want the bound list", closer)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("bound %d servers, want the two containers", len(servers))
+	}
+	for _, o := range servers {
+		want := fmt.Sprintf("https://example.test/?%d", o.at)
+		if got := o.srv.session.announced(); got != want {
+			t.Errorf("the server at index %d was told %q, want %q", o.at, got, want)
+		}
+	}
+
+	// And a caller with fewer addresses than origins leaves them unset rather
+	// than reaching for one that is not there.
+	short := bound{{at: 9, srv: servers[0].srv}}
+	short.Announce([]string{"https://example.test/?0"})
+	if got := servers[0].srv.session.announced(); got == "https://example.test/?0" {
+		t.Error("an index past the addresses given took the first one, want it left alone")
 	}
 }
 

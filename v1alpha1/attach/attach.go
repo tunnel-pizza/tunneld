@@ -127,8 +127,8 @@ func WithTargets(t Targets) Option {
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, io.Closer, error) {
 	dialable := make([]*url.URL, 0, len(display))
-	var servers closers
-	for _, origin := range display {
+	var servers bound
+	for at, origin := range display {
 		if origin.Scheme != v1.DockerScheme {
 			dialable = append(dialable, origin)
 			continue
@@ -150,27 +150,57 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		servers = append(servers, server)
+		servers = append(servers, boundOrigin{at: at, srv: server})
 		dialable = append(dialable, server.URL())
 		log.Info("serving a container as an origin", "container", origin.Host, "origin", server.URL())
 	}
 	return dialable, servers, nil
 }
 
-// closers is every attach server a Bind call started, closed together.
-type closers []io.Closer
+// bound is every attach server a Bind call started, with the place in the
+// origin list each of them took.
+//
+// The index is kept because that is the only thing that connects a server to
+// the address it will answer on: the tunnel hands back one public URL and the
+// origins are told apart by their routing parameter, so origin n's address is
+// derived from n. Same length and order as display, like everything else here.
+type bound []boundOrigin
+
+type boundOrigin struct {
+	at  int
+	srv *Server
+}
 
 // Close shuts every attach server down, and with it every container client
 // they own. The first error is returned and the rest still close: a partial
 // shutdown is worse than a lost error message.
-func (c closers) Close() error {
+func (b bound) Close() error {
 	var err error
-	for _, closer := range c {
-		if cerr := closer.Close(); err == nil {
+	for _, o := range b {
+		if cerr := o.srv.Close(); err == nil {
 			err = cerr
 		}
 	}
 	return err
+}
+
+// Announce gives each server the public address it answers on, taken from
+// public by the index the origin had.
+//
+// It is what the root's Announcer asks for. Discovered by assertion rather
+// than named in the Binder contract, because this package cannot refer to that
+// contract's types — v1alpha1 imports attach, not the other way round — so the
+// closer Bind hands back is asked whether it can do this rather than required
+// to.
+//
+// A short list is not an error. It means the caller had fewer addresses than
+// origins, and a server without one simply has nothing to show.
+func (b bound) Announce(public []string) {
+	for _, o := range b {
+		if o.at < len(public) {
+			o.srv.Announce(public[o.at])
+		}
+	}
 }
 
 // Server is the loopback HTTP origin standing in for one Target.
@@ -338,6 +368,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 		// "simplify" this back to r.Context().
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
+
 		r = r.WithContext(ctx)
 
 		name := s.target.Name()
@@ -371,6 +402,10 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	}()
 	return s, nil
 }
+
+// Announce tells the terminal the public address it answers on, which is what
+// its frame shows in the corner. Before this it shows nothing there.
+func (s *Server) Announce(public string) { s.session.announce(public) }
 
 // URL is the loopback address the tunnel proxies to.
 func (s *Server) URL() *url.URL {

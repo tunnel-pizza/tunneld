@@ -187,23 +187,24 @@ The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
 The terminal sits inside a frame, with what the session is written into the
-border itself: the origin and the machine serving it along the top, and along
-the bottom the keys, how many people are watching, and the size everyone has
-settled on.
+border itself: the origin and the address it answers on along the top, and
+along the bottom the keys, the machine serving it, how many people are
+watching, and the size everyone has settled on.
 
 ```
-╭─ dockerd://tunneld-example ───────────────────────────────────── my-laptop ╮
-│➜  ~ ls                                                                      │
-│                                                                             │
-╰─ ^D  commands ───────────────────────────────────────── (2 viewers) [76×14] ╯
+╭─ dockerd://tunneld-example ────────── https://striped-worm.tunneled.pizza/ ╮
+│➜  ~ ls                                                                     │
+│                                                                            │
+╰─ ^D  commands ───────────────────────────── my-laptop (2 viewers) [76×14] ╯
 ```
 
 The origin is written the way you typed it, so the same string pasted back into
-a command line still works. The name inside it is the reference you gave, not
-the id the daemon resolved it to — a Compose service stays the name you wrote
-in the compose file. The right-hand end of the top border is `os.Hostname()`:
-through a tunnel the page could be open anywhere, and the origin is a name
-somebody chose, so it is the only part that says which machine this is.
+a command line still works, and the name inside it is the reference you gave
+rather than the id the daemon resolved it to — a Compose service stays the name
+you wrote in the compose file. Opposite it is the tunnel's own address for this
+origin, which with several origins carries the `?n` that reaches this one, so
+it is the address to send somebody else. The frame has nothing to show there
+until the tunnel is up, because a container is bound before the tunnel exists.
 
 Every key reaches the container except one:
 

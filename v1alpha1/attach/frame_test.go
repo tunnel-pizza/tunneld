@@ -273,7 +273,8 @@ func TestViewFitsTheWindow(t *testing.T) {
 // its own.
 func TestViewIsBordered(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 40, 8
+	h.f.width, h.f.height = 80, 8
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 
 	lines := strings.Split(h.f.View().Content, "\n")
 	top, bottom := stripSGR(lines[0]), stripSGR(lines[len(lines)-1])
@@ -293,9 +294,13 @@ func TestViewIsBordered(t *testing.T) {
 	if strings.Contains(top, "viewer") {
 		t.Errorf("top border = %q, want the counts at the bottom instead", top)
 	}
-	// The machine serving it, against the far corner.
-	if name, _ := os.Hostname(); name != "" && !strings.HasSuffix(top, name+" ╮") {
-		t.Errorf("top border = %q, want %q against the corner", top, name)
+	if name, _ := os.Hostname(); name != "" && strings.Contains(top, name) {
+		t.Errorf("top border = %q, want the host at the bottom instead", top)
+	}
+	// The address this viewer arrived on, against the far corner — the other
+	// end of the same thing the origin names.
+	if want := h.s.announced() + " ╮"; !strings.HasSuffix(top, want) {
+		t.Errorf("top border = %q, want it ending %q", top, want)
 	}
 
 	// The keys take the bottom left and the counts the bottom right, hard
@@ -306,6 +311,14 @@ func TestViewIsBordered(t *testing.T) {
 	if !strings.Contains(bottom, "1 viewer") || !strings.Contains(bottom, "\u00d7") {
 		t.Errorf("bottom border = %q, want the counts in it", bottom)
 	}
+	// The host leads the counts: it is the part of the frame that is not a
+	// name somebody chose.
+	if name, _ := os.Hostname(); name != "" {
+		at, counts := strings.Index(bottom, name), strings.Index(bottom, "1 viewer")
+		if at < 0 || at > counts {
+			t.Errorf("bottom border = %q, want %q leading the counts", bottom, name)
+		}
+	}
 	// Hard against the corner, mirroring the name's own gap at the top left.
 	if want := "] \u256f"; !strings.HasSuffix(bottom, want) {
 		t.Errorf("bottom border = %q, want the counts ending against the corner (%q)", bottom, want)
@@ -314,13 +327,14 @@ func TestViewIsBordered(t *testing.T) {
 	// A window too narrow for both keeps the keys and drops the counts: what
 	// to press matters more than how many are watching.
 	h.f.width = 24
+	defer func() { h.f.width = 80 }()
 	narrow := strings.Split(h.f.View().Content, "\n")
 	if got := stripSGR(narrow[len(narrow)-1]); strings.Contains(got, "viewer") {
 		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
 	} else if !strings.Contains(got, "^D") {
 		t.Errorf("bottom border = %q, want the keys kept", got)
 	}
-	h.f.width = 40
+	h.f.width = 80
 
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, ctrlD)
