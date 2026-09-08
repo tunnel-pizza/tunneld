@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
-<title>{{.Name}} · attach</title>
+<!-- Named by the terminal itself once one is attached: the frame sets its
+     window title, xterm raises it, and the handler below puts it here. Until
+     then this is all there is to say. -->
+<title>tunneld · attach</title>
 
 <!-- xterm.js, pinned by version and checked by digest so a change at the CDN
      cannot silently alter what a tunnel serves. xterm 6 ships no .min. files;
@@ -79,9 +82,36 @@
   // sends \r\n the column is simply set to 0 twice, and the row still advances
   // once. One setting covers both, and no second copy of "does this container
   // have a TTY" is left here to drift out of step with degraded().
-  const term = new Terminal({ cursorBlink: true, convertEol: true, fontSize: 13 });
+  // linkHandler is what makes an OSC 8 hyperlink activate. xterm underlines
+  // one without it, which is worse than not marking it at all: it looks like a
+  // link and does nothing. The frame marks its own public address, so this is
+  // the click that opens the tunnel in a tab of its own.
+  //
+  // noopener because the container's output reaches this terminal, and an
+  // origin that printed its own OSC 8 could otherwise hand itself a handle on
+  // this window.
+  const term = new Terminal({
+    cursorBlink: true,
+    convertEol: true,
+    fontSize: 13,
+    linkHandler: {
+      activate(event, uri) {
+        event.preventDefault();
+        window.open(uri, '_blank', 'noopener,noreferrer');
+      },
+    },
+  });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  // The terminal names the tab it is displayed in. The frame sets its window
+  // title to the origin and whatever the container is calling itself, the
+  // renderer emits that as an OSC, and xterm hands it over here.
+  //
+  // Assigned to document.title, which is text and not markup — the string
+  // comes from a program in somebody's container, and the only reason it is
+  // safe to use is that nothing parses it.
+  term.onTitleChange((title) => { document.title = title; });
+
   term.open(document.getElementById('term'));
   fit.fit();
 

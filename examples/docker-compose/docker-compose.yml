@@ -25,6 +25,7 @@ services:
     volumes: *volumes
 
   terminal:
+    # image: ghcr.io/cnuss/zsh:latest
     image: ghcr.io/cnuss/zsh:latest
     network_mode: service:tunneld
     pid: service:tunneld

@@ -105,7 +105,10 @@ type Option = v1.Option[*BinderImpl]
 // still means origin n for the bare ?n routing parameter, for PublicURL, for
 // the reported map and for the multiview tiles, so a container is an origin
 // like any other and nothing downstream learns a second shape.
-type BinderImpl struct{ targets Targets }
+type BinderImpl struct {
+	targets Targets
+	banner  string
+}
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
 // WithTargets sets one; a dockerd:// origin met without one fails at Bind
@@ -120,6 +123,18 @@ func WithTargets(t Targets) Option {
 	return func(b *BinderImpl) { b.targets = t }
 }
 
+// WithBanner sets the build line every terminal this binder serves shows along
+// the bottom of its frame.
+//
+// Passed in rather than worked out here. It names the command, which an
+// embedding program renames, and the versions, which the root resolves from
+// build information — none of it knowable from a subpackage, and all of it
+// fixed for the life of the process, so it is configuration and not an
+// announcement.
+func WithBanner(banner string) Option {
+	return func(b *BinderImpl) { b.banner = banner }
+}
+
 // Bind implements Binder.
 //
 // A failure unwinds everything already bound. The command is about to return
@@ -127,8 +142,8 @@ func WithTargets(t Targets) Option {
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, io.Closer, error) {
 	dialable := make([]*url.URL, 0, len(display))
-	var servers closers
-	for _, origin := range display {
+	var servers bound
+	for at, origin := range display {
 		if origin.Scheme != v1.DockerScheme {
 			dialable = append(dialable, origin)
 			continue
@@ -144,33 +159,63 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, log)
+		server, err := Serve(ctx, target, b.banner, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		servers = append(servers, server)
+		servers = append(servers, boundOrigin{at: at, srv: server})
 		dialable = append(dialable, server.URL())
 		log.Info("serving a container as an origin", "container", origin.Host, "origin", server.URL())
 	}
 	return dialable, servers, nil
 }
 
-// closers is every attach server a Bind call started, closed together.
-type closers []io.Closer
+// bound is every attach server a Bind call started, with the place in the
+// origin list each of them took.
+//
+// The index is kept because that is the only thing that connects a server to
+// the address it will answer on: the tunnel hands back one public URL and the
+// origins are told apart by their routing parameter, so origin n's address is
+// derived from n. Same length and order as display, like everything else here.
+type bound []boundOrigin
+
+type boundOrigin struct {
+	at  int
+	srv *Server
+}
 
 // Close shuts every attach server down, and with it every container client
 // they own. The first error is returned and the rest still close: a partial
 // shutdown is worse than a lost error message.
-func (c closers) Close() error {
+func (b bound) Close() error {
 	var err error
-	for _, closer := range c {
-		if cerr := closer.Close(); err == nil {
+	for _, o := range b {
+		if cerr := o.srv.Close(); err == nil {
 			err = cerr
 		}
 	}
 	return err
+}
+
+// Announce gives each server the public address it answers on, taken from
+// public by the index the origin had.
+//
+// It is what the root's Announcer asks for. Discovered by assertion rather
+// than named in the Binder contract, because this package cannot refer to that
+// contract's types — v1alpha1 imports attach, not the other way round — so the
+// closer Bind hands back is asked whether it can do this rather than required
+// to.
+//
+// A short list is not an error. It means the caller had fewer addresses than
+// origins, and a server without one simply has nothing to show.
+func (b bound) Announce(public []string) {
+	for _, o := range b {
+		if o.at < len(public) {
+			o.srv.Announce(public[o.at])
+		}
+	}
 }
 
 // Server is the loopback HTTP origin standing in for one Target.
@@ -201,7 +246,7 @@ type Server struct {
 // covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -245,7 +290,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// it. Started here rather than on the first connection so a viewer never
 	// waits on the target, and so what happened before anybody looked is on
 	// the screen when they do.
-	s.session = newSession(sctx, target, log)
+	s.session = newSession(sctx, target, banner, log)
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
@@ -277,7 +322,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 		case !s.target.Stdin():
 			notice = "stdin closed (started without -i) — keystrokes go nowhere"
 		}
-		data := struct{ Name, Notice string }{s.target.Name(), notice}
+		data := struct{ Notice string }{notice}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
@@ -338,6 +383,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 		// "simplify" this back to r.Context().
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
+
 		r = r.WithContext(ctx)
 
 		name := s.target.Name()
@@ -371,6 +417,10 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	}()
 	return s, nil
 }
+
+// Announce tells the terminal the public address it answers on, which is what
+// its frame shows in the corner. Before this it shows nothing there.
+func (s *Server) Announce(public string) { s.session.announce(public) }
 
 // URL is the loopback address the tunnel proxies to.
 func (s *Server) URL() *url.URL {

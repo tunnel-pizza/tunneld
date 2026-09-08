@@ -17,8 +17,7 @@
 // exactly as `docker attach` would: with a TTY the signal reaches PID 1, and
 // PID 1 is the shell.
 //
-// Needs a Docker daemon. The alpine image is pulled if it is not already
-// local.
+// Needs a Docker daemon. The image is pulled if it is not already local.
 package main
 
 import (
@@ -42,11 +41,17 @@ import (
 // generated id would not be known that early.
 const name = "tunneld-example"
 
+// image is the container to attach to: a zsh that runs as PID 1, so Ctrl-C
+// reaches it and the terminal behaves the way a shell on any other machine
+// does.
+const image = "ghcr.io/cnuss/claude-code:latest"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithOrigin("dockerd://" + name),
+		v1alpha1.WithOrigin("dockerd://"+name),
+		v1alpha1.WithLogLevel("debug"),
 	).Command()
 
 	// PreRunE rather than plain code before ExecuteContext: cobra answers
@@ -68,27 +73,27 @@ func main() {
 			return fmt.Errorf("docker client: %w", err)
 		}
 
-		// Pull alpine if it is not already local. Inspect first, because the
+		// Pull the image if it is not already local. Inspect first, because the
 		// common case is that it is, and a pull that only prints "up to date" is
 		// still a round trip to a registry the example does not need.
-		if _, err := cli.ImageInspect(ctx, "alpine"); err != nil {
+		if _, err := cli.ImageInspect(ctx, image); err != nil {
 			if !cerrdefs.IsNotFound(err) {
 				_ = cli.Close()
-				return fmt.Errorf("inspect the alpine image: %w", err)
+				return fmt.Errorf("inspect %s: %w", image, err)
 			}
 
-			fmt.Fprintln(os.Stderr, "attach: pulling alpine")
-			body, err := cli.ImagePull(ctx, "alpine", client.ImagePullOptions{})
+			fmt.Fprintln(os.Stderr, "attach: pulling "+image)
+			body, err := cli.ImagePull(ctx, image, client.ImagePullOptions{})
 			if err != nil {
 				_ = cli.Close()
-				return fmt.Errorf("pull alpine: %w", err)
+				return fmt.Errorf("pull %s: %w", image, err)
 			}
 			defer body.Close()
 			// The pull happens as the body is read; discarding it is what waits for
 			// the layers, and stopping early would leave the image half-fetched.
 			if _, err := io.Copy(io.Discard, body); err != nil && !errors.Is(err, context.Canceled) {
 				_ = cli.Close()
-				return fmt.Errorf("pull alpine: %w", err)
+				return fmt.Errorf("pull %s: %w", image, err)
 			}
 		}
 
@@ -115,8 +120,11 @@ func main() {
 		// attached terminal interactive, and nothing can add them afterwards.
 		created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 			Config: &container.Config{
-				Image:     "alpine",
-				Cmd:       []string{"sh"},
+				Image: image,
+				// No Cmd. The image's entrypoint is zsh itself, so anything
+				// here arrives as an argument to it rather than as the command
+				// to run — a "sh" would have it looking for a script by that
+				// name. The shell the image ships with is the one to attach to.
 				Tty:       true,
 				OpenStdin: true,
 			},

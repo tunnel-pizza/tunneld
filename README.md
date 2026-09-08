@@ -186,6 +186,60 @@ With a TTY, Ctrl-C reaches PID 1 and stops the container — that is what
 The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
+The terminal sits inside a frame, with what the session is written into the
+border itself: the origin and the address it answers on along the top, and
+along the bottom the keys, the build, the machine serving it, how many people
+are watching, and the size everyone has settled on.
+
+```
+╭─ dockerd://tunneld-example ─────────────────────────── https://striped-worm.tunneled.pizza/ ╮
+│➜  ~ ls                                                                                      │
+│                                                                                             │
+╰─ ^D  commands ──── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
+```
+
+The origin is written the way you typed it, so the same string pasted back into
+a command line still works, and the name inside it is the reference you gave
+rather than the id the daemon resolved it to — a Compose service stays the name
+you wrote in the compose file. Opposite it is the tunnel's own address for this
+origin, which with several origins carries the `?n` that reaches this one, so it
+is the address to send somebody else — and it is a hyperlink, so a terminal
+that understands OSC 8 opens it in a tab of its own. The frame has nothing to
+show there until the tunnel is up, because a container is bound before the
+tunnel exists.
+
+Centred along the top is whatever the terminal calls itself. A terminal carries
+a title and a subtitle and they are not the same thing — a prompt framework
+sets the title to the running command's whole line and the subtitle to its name
+— so they are joined when they differ and said once when they do not. The same
+pair names the browser tab, ahead of the origin — a tab loses its end when the
+row gets crowded, and a row all beginning `dockerd://` would say nothing. That is the shell talking, not tunneld guessing: a prompt framework
+like Oh My Zsh sets the terminal's tab title from its `preexec` hook, which is
+the same thing your terminal reads to name a tab. A shell that sets none leaves
+the space empty, and one that has not spoken since you connected shows whatever
+it last said.
+
+A narrow window drops what it cannot hold, in order: the build first, then the
+counts, and the keys last.
+
+Every key reaches the container except one:
+
+| Key | |
+| --- | --- |
+| `Ctrl-D` | Opens the frame's commands. The container never sees it. |
+| `Ctrl-D` `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
+| `Ctrl-D` `q` | End the session for everyone — the end of file `Ctrl-D` used to deliver. |
+| `Ctrl-D` `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
+
+Pasting works as it does in any terminal, and an app that asked to be told
+the difference between pasted and typed text still is.
+
+`Ctrl-D` is held back because the attach is shared and is never reopened: it is
+end of file to a shell, so on a shared terminal one person's habit ended the
+session for everybody, and the origin went on serving a screen that could never
+produce another byte. Scrolling is the frame's because the frame is drawn on
+the alternate screen, which has no scrollback of its own to give you.
+
 **The page is unauthenticated.** The tunnel hostname is the only secret, the
 same as every other origin tunneld exposes — but here the thing behind it is a
 shell. Anyone with the link has it.
@@ -500,7 +554,7 @@ Self-contained programs in [`./examples`](./examples):
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
-`attach` starts its container too, pulling `alpine` if it is not already
+`attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not already
 local. All three block until interrupted:
 
 ```sh

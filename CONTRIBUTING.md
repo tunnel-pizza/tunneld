@@ -21,7 +21,7 @@ Deep-link by filename; line numbers will drift.
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
-| `Target`, `Targets`, `Server`, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
+| `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -359,12 +359,124 @@ Two things there will bite if you change them without knowing why:
   `PublicURL`, the reported map and the multiview tiles. Reordering or
   filtering either list breaks all four at once.
 - **One attach per `Server`, not per page.** `attach.session` opens the target
-  once and fans it out, so a refresh is not an event the container can see.
-  Every byte goes through a terminal emulator, and a viewer arriving late is
-  handed the screen — scrollback, cells, cursor — rather than the bytes that
-  once produced it. Replaying bytes into a fresh terminal is what used to leave
-  the app and the browser disagreeing about where the cursor was, so the app's
-  next redraw landed at the wrong origin and drew over the restored screen.
+  once, so a refresh is not an event the container can see. Every byte goes
+  through a terminal emulator, and a viewer arriving late renders the screen —
+  cells, cursor, scrollback — rather than replaying the bytes that once
+  produced it. Replaying bytes into a fresh terminal is what used to leave the
+  app and the browser disagreeing about where the cursor was, so the app's next
+  redraw landed at the wrong origin and drew over the restored screen.
+- **One frame per viewer, one emulator between them.**
+  [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea model
+  rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
+  feeds. Per viewer, because command mode is per viewer — a shared model would
+  put everyone into it when one person pressed `Ctrl-D` — and because a frame
+  that is new renders a whole screen, which is what a late joiner needs anyway.
+  The split is worth keeping: `session.go` is locks, pipes and goroutines,
+  `frame.go` is a value type with none of them.
+- **A frame has no terminal to measure.** Its output is a websocket, so the
+  renderer's first size report is zero, and a renderer that believes it has no
+  rows draws none. The frame waits `sizeGrace` before answering, because the
+  session's settled size is a guess about *somebody else's* window: answered at
+  once, a joining viewer's first frame is a box of the wrong width with the
+  cursor somewhere inside it, redrawn as soon as the page says how big it
+  actually is. Nothing is the better first frame, and the renderer paints
+  nothing at zero on its own. The answer still has to come as a message rather
+  than a size pushed in from outside — whichever landed second would win, and
+  when that is the zero nothing is ever drawn again.
+- **The frame composes into a buffer, and everything is copied in.** Neither
+  `vt.Emulator.Draw` nor `uv.StyledString.Draw` clips to the area it is handed
+  — both clip to the *screen* — so drawn straight into the frame's buffer,
+  anything larger than its area paints over the border and out of the window.
+  That is the ordinary path, not a corner case: a viewer whose window shrinks
+  renders once with the new pane and the old emulator. Both go through a buffer
+  of their own size and are blitted, which is also what makes a label truncate
+  instead of erasing the border to its right.
+- **The public address arrives after the servers do, by assertion.** A
+  `dockerd://` origin is bound *before* the tunnel is minted — the binding is
+  what the tunnel is handed to proxy to — so at the only moment `Bind` could be
+  told where it answers from outside, nobody knows. `RunE` asks the closer
+  `Bind` returned whether it is an `Announcer` once `public` is known, and
+  hands over one address per origin, indexed the way `display` was. It is an
+  assertion rather than a method on `Binder` because of the import direction:
+  `attach` cannot name a type declared in `v1alpha1`, so a contract mentioning
+  one could never be satisfied from there. Same shape as `http.Flusher`.
+- **The build line is configuration, the address is an announcement.** Both are
+  root knowledge a subpackage cannot work out, but the banner names the command
+  — which an embedding program renames — and versions the root resolves from
+  build information, and none of it changes while the process runs. So it
+  arrives through `attach.WithBanner` at construction, where the address has to
+  arrive later through `Announcer`.
+- **A hyperlink needs both ends.** The frame marks its address with OSC 8, and
+  `index.html` sets xterm's `linkHandler` — without one xterm underlines the
+  link and does nothing when it is clicked, which is worse than not marking it.
+  The handler opens with `noopener,noreferrer`, because the container's output
+  reaches this terminal and an origin that printed its own OSC 8 would
+  otherwise be handed a reference to the window.
+- **Everything the terminal says about itself is in the debug log.** The
+  `vt.Callbacks` block in `newSession` logs titles, working directory, bell,
+  modes, cursor and colour changes, because the only way to learn what a given
+  app sends is to watch one send it — Claude Code, for instance, sets no title
+  at its login screen but does once a session is running. `CursorPosition` is
+  deliberately absent: it fires on every cursor move and would drown the rest.
+  All of them run with the emulator's lock held, so they may only stash a value
+  or write a line.
+- **A terminal has a title and a subtitle, and they are not the same thing.**
+  The window title (OSC 2) is the title; the tab title (OSC 1) is the subtitle.
+  A prompt framework sets the first to the running command's whole line and the
+  second to its name; an app setting both with one OSC 0 sets them identically.
+  The frame joins them when they differ and says one when they do not, and the
+  same pair names the browser tab through `View.WindowTitle` — ahead of the
+  origin, because a tab loses its end and a row of them all starting
+  `dockerd://` would say nothing.
+- **A title is arbitrary text from somebody else's program.** It is drawn over
+  the top border, so anything in it that measures wide and paints blank —
+  control characters, zero-width joiners, a byte that is not a character —
+  clears the border and leaves a hole in the box. `frame.title` drops invalid
+  UTF-8 and then reduces what is left to printable runes, before any of it is
+  measured.
+- **`x/vt` ends an OSC string at a `0x9C` byte, which breaks some UTF-8.**
+  `0x9C` is the 8-bit string terminator, and it is also the middle byte of
+  every three-byte UTF-8 character in `U+27xx`. Claude Code's spinner cycles
+  `✳ ✻ ✽ ✢` — all `E2 9C xx` — so its title arrives as the single byte `E2`,
+  and the rest, ` Claude Code`, is printed onto the screen. `◐` (`E2 97 90`)
+  and `café` (`C3 A9`) are unaffected, so the title is good, then a stray byte,
+  then good again, in time with the spinner. `session.setTitle` keeps the last
+  usable one rather than taking the stray, which is what stops the label
+  flickering; the text landing in the pane is not fixable from this side.
+- **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
+  catches the OSC the container already emits — a prompt framework sets it from
+  `preexec`, so it carries the running command's name — and the frame shows it
+  as it arrives. The tab title (OSC 1) rather than the window title (OSC 2):
+  the same fact said shorter, where the window title is the whole command line
+  and, at rest, `user@host:~`, which in a frame that already names the host and
+  the origin is mostly things said twice. There is no marker separating "a command is running" from "this
+  is the prompt", so interpreting it would mean guessing at somebody's shell
+  configuration. It is stashed under `titleMu` rather than `mu`, and that is
+  not fastidiousness: the callback fires with the *emulator's* lock held, while
+  `negotiate` takes `mu` and then reaches for that same lock — the two orders
+  that deadlock. Nothing is woken from the callback either, because a title
+  only changes as part of output and `sink` wakes everybody when that write
+  returns.
+- **A paste is a message, not keystrokes.** The frame's renderer turns
+  bracketed paste on in the viewer's terminal, so the browser stops sending
+  pasted text as a burst of keys and sends it wrapped instead. A model that
+  only answers `KeyPressMsg` swallows it and pasting does nothing at all. It
+  goes to the container through `em.Paste`, not `SendText`: the emulator read
+  the app's own `\x1b[?2004h`, so it is the only thing here that knows whether
+  *this* app wants its pastes bracketed, and text written past it arrives as
+  though it had been typed — which is a shell running a half-finished command
+  off a pasted newline.
+- **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
+  is shared, and it is never reopened, so one viewer pressing it used to end
+  the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to
+  do what it used to do by accident.
+- **Keys go to the container through the emulator, not around it.**
+  `session.sendKey` hands the decoded key to `vt`, which encodes what a
+  terminal in the app's current modes would send; bytes written straight to
+  stdin would not know whether the app had asked for application cursor keys.
+  `asKeyEvent` is exact rather than approximate — Bubble Tea's `Key` and
+  ultraviolet's carry the same fields, and Bubble Tea's key codes *are*
+  ultraviolet's constants.
 - **The emulator's replies have to be drained.** It answers a device-attributes
   query or a cursor-position report the way a real terminal does, and those
   answers go back to the app through the same stdin the viewers type on. Leave
