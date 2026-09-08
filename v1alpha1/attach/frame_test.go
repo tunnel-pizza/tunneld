@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -286,8 +287,11 @@ func TestViewFitsTheWindow(t *testing.T) {
 // its own.
 func TestViewIsBordered(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 120, 8
+	h.f.height = 8
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+
+	wide, tight := roomFor(h.f)
+	h.f.width = wide
 
 	lines := strings.Split(h.f.View().Content, "\n")
 	top, bottom := stripSGR(lines[0]), stripSGR(lines[len(lines)-1])
@@ -379,7 +383,7 @@ func TestViewIsBordered(t *testing.T) {
 
 	// Narrower, and the three give way in order. First the build, which is the
 	// least urgent.
-	h.f.width = 80
+	h.f.width = tight
 	if got := stripSGR(bottomOf(h)); strings.Contains(got, testBanner) {
 		t.Errorf("bottom border = %q, want the build dropped before the counts", got)
 	} else if !strings.Contains(got, "1 viewer") {
@@ -388,7 +392,7 @@ func TestViewIsBordered(t *testing.T) {
 
 	// Then the counts: what to press matters more than how many are watching.
 	h.f.width = 24
-	defer func() { h.f.width = 120 }()
+	defer func() { h.f.width = wide }()
 	if got := stripSGR(bottomOf(h)); strings.Contains(got, "viewer") {
 		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
 	} else if strings.Contains(got, testBanner) {
@@ -396,7 +400,7 @@ func TestViewIsBordered(t *testing.T) {
 	} else if !strings.Contains(got, "^D") {
 		t.Errorf("bottom border = %q, want the keys kept", got)
 	}
-	h.f.width = 120
+	h.f.width = wide
 
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, ctrlD)
@@ -404,6 +408,25 @@ func TestViewIsBordered(t *testing.T) {
 	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "detach") {
 		t.Errorf("bottom border in command mode = %q, want the commands in it", got)
 	}
+}
+
+// roomFor is a window width that holds all three of the bottom row's labels,
+// and one that holds every label but the build.
+//
+// Measured rather than chosen. The counts carry os.Hostname, and a machine's
+// name is not a constant: fourteen characters on a laptop, sixty on a CI
+// runner. A hardcoded width passes or fails on what the machine happens to be
+// called, which is a test about the wrong thing.
+//
+// The build is centred on the frame, so fitting it takes more than the sum of
+// the three: its half-width has to clear the keys on one side and the counts
+// on the other, which is where the doubling comes from.
+func roomFor(f frame) (all, withoutBuild int) {
+	keys := uv.NewStyledString(f.hint()).UnicodeWidth()
+	build := uv.NewStyledString(f.banner()).UnicodeWidth()
+	counts := uv.NewStyledString(f.meta()).UnicodeWidth()
+
+	return build + 2*max(keys, counts) + 10, keys + counts + 10
 }
 
 // bottomOf is the frame's bottom border row as it renders now.
@@ -745,5 +768,43 @@ func TestPageTitleNamesTheTerminal(t *testing.T) {
 				t.Errorf("page title = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheLayoutSurvivesALongHostname pins the bottom row against the machine
+// it is running on.
+//
+// The counts carry os.Hostname, and a machine's name is not a constant: a
+// laptop's is fourteen characters and a CI runner's is sixty. A row laid out
+// for the short one has no space for the build when the long one turns up, and
+// a test that assumed the short one passed everywhere its author looked and
+// failed on two of eight lanes.
+func TestTheLayoutSurvivesALongHostname(t *testing.T) {
+	// What the macOS runners are actually called.
+	restore := host
+	host = func() string { return "sjc20-bb661-6a8fb526-3115-4bb6-b587-043ab41116cd-2A8936E83050.local" }
+	t.Cleanup(func() { host = restore })
+
+	h := newFrameHarness(t)
+	h.f.height = 8
+	wide, tight := roomFor(h.f)
+
+	h.f.width = wide
+	bottom := stripSGR(bottomOf(h))
+	for _, want := range []string{"^D", testBanner, "1 viewer", host()} {
+		if !strings.Contains(bottom, want) {
+			t.Errorf("bottom border = %q, want %q in it", bottom, want)
+		}
+	}
+	if len([]rune(bottom)) != wide {
+		t.Errorf("bottom border is %d columns, want the window's %d", len([]rune(bottom)), wide)
+	}
+
+	// And the order it gives way in does not change with the name either.
+	h.f.width = tight
+	if got := stripSGR(bottomOf(h)); strings.Contains(got, testBanner) {
+		t.Errorf("bottom border = %q, want the build dropped before the counts", got)
+	} else if !strings.Contains(got, "1 viewer") {
+		t.Errorf("bottom border = %q, want the counts kept", got)
 	}
 }
