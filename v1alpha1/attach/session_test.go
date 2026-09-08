@@ -167,13 +167,52 @@ func TestTitleFollowsTheShell(t *testing.T) {
 	target.out = "\x1b]2;sleep 2\a\x1b]1;sleep\a"
 	s := serveFake(t, target)
 
+	// Both are kept, and they are not the same thing: the tab title is the
+	// command's name, the window title its whole command line.
 	deadline := time.Now().Add(5 * time.Second)
-	for s.session.titled() != "sleep" {
-		if got := s.session.titled(); got == "sleep 2" {
-			t.Fatalf("title = %q, want the tab title %q rather than the window title", got, "sleep")
+	for {
+		tab, window := s.session.titles()
+		if tab == "sleep" && window == "sleep 2" {
+			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("title = %q, want the command name the shell reported", s.session.titled())
+			t.Fatalf("tab = %q, window = %q, want %q and %q", tab, window, "sleep", "sleep 2")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestATruncatedTitleIsIgnored pins that an unusable title does not replace a
+// usable one.
+//
+// The emulator's OSC parser cuts a string at a 0x9C byte — the 8-bit string
+// terminator, and also the middle byte of every three-byte UTF-8 character in
+// the U+27xx block. An app whose spinner cycles ✳ ✻ ✽ therefore delivers a
+// good title, then a stray byte, then a good title again, and taking the stray
+// one would flicker the frame's label off and on in time with the spinner.
+func TestATruncatedTitleIsIgnored(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	// A good title, then exactly what ✳ leaves behind.
+	target.out = "\x1b]1;working\a\x1b]1;\xe2\a"
+	s := serveFake(t, target)
+
+	// The good one lands first.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if tab, _ := s.session.titles(); tab == "working" {
+			break
+		}
+		if time.Now().After(deadline) {
+			tab, _ := s.session.titles()
+			t.Fatalf("tab title = %q, want %q", tab, "working")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// And the stray byte behind it does not take it away.
+	for range 20 {
+		if tab, _ := s.session.titles(); tab != "working" {
+			t.Fatalf("tab title = %q, want the last usable one kept", tab)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -195,7 +234,7 @@ func TestTitleIsEmptyUntilTheShellSays(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := s.session.titled(); got != "" {
-		t.Errorf("title = %q, want nothing said", got)
+	if tab, window := s.session.titles(); tab != "" || window != "" {
+		t.Errorf("titles = %q / %q, want nothing said", tab, window)
 	}
 }

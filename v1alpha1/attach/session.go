@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"image/color"
 
@@ -83,10 +84,11 @@ type session struct {
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
 
-	// titleMu guards title and nothing else. Deliberately not mu — see
-	// newSession, where the callback that writes it is installed.
-	titleMu sync.Mutex
-	title   string
+	// titleMu guards the two titles and nothing else. Deliberately not mu —
+	// see newSession, where the callbacks that write them are installed.
+	titleMu     sync.Mutex
+	tabTitle    string
+	windowTitle string
 
 	// mu guards the viewer set, the size negotiated from it, and the public
 	// address, and nothing else.
@@ -164,10 +166,11 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	em.SetCallbacks(vt.Callbacks{
 		IconName: func(title string) {
 			log.Debug("terminal tab title", "container", name, "title", title)
-			s.setTitle(title)
+			s.setTitle(&s.tabTitle, title)
 		},
 		Title: func(title string) {
 			log.Debug("terminal window title", "container", name, "title", title)
+			s.setTitle(&s.windowTitle, title)
 		},
 		WorkingDirectory: func(dir string) {
 			log.Debug("terminal working directory", "container", name, "dir", dir)
@@ -482,20 +485,35 @@ func (s *session) window() (int, int) {
 	return int(s.size.Width), int(s.size.Height)
 }
 
-// setTitle records what the shell last called this terminal.
-func (s *session) setTitle(title string) {
+// setTitle records one of the two names the terminal goes by, keeping the one
+// it had if what arrived is not a name at all.
+//
+// Held rather than blanked, because an unusable title is not the app saying it
+// has nothing to say. The emulator's OSC parser cuts a string at a 0x9C byte —
+// the 8-bit string terminator, and also the middle of every three-byte UTF-8
+// character in the U+27xx block — so an app whose title cycles through ✳ ✻ ✽
+// delivers a good title, then a stray byte, then a good title again. Taking
+// the stray one would flicker the frame's label off and on in time with
+// somebody's spinner.
+func (s *session) setTitle(into *string, title string) {
+	if !utf8.ValidString(title) {
+		s.log.Debug("terminal title was not a string; keeping the last one",
+			"container", s.Name(), "title", title)
+		return
+	}
 	s.titleMu.Lock()
-	s.title = title
+	*into = title
 	s.titleMu.Unlock()
 }
 
-// titled is what the shell last called this terminal, or "" if it has never
-// said. It is the command's name while one is running, on a shell that reports
-// one at all.
-func (s *session) titled() string {
+// titles are the two names the terminal goes by: the tab title and the window
+// title, either "" if it has never said. A prompt framework sets the first to
+// the running command's name and the second to its whole command line; an app
+// that sets them with one OSC 0 sets both to the same thing.
+func (s *session) titles() (tab, window string) {
 	s.titleMu.Lock()
 	defer s.titleMu.Unlock()
-	return s.title
+	return s.tabTitle, s.windowTitle
 }
 
 // announce records the public address this origin answers on, and has every

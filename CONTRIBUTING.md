@@ -420,20 +420,26 @@ Two things there will bite if you change them without knowing why:
   deliberately absent: it fires on every cursor move and would drown the rest.
   All of them run with the emulator's lock held, so they may only stash a value
   or write a line.
+- **Both titles are kept, because they are not the same thing.** A prompt
+  framework sets the tab title to the running command's name and the window
+  title to its whole command line; an app setting both with one OSC 0 sets them
+  identically. The frame shows them together when they differ and once when
+  they do not.
 - **A title is arbitrary text from somebody else's program.** It is drawn over
   the top border, so anything in it that measures wide and paints blank —
   control characters, zero-width joiners, a byte that is not a character —
   clears the border and leaves a hole in the box. `frame.title` drops invalid
   UTF-8 and then reduces what is left to printable runes, before any of it is
   measured.
-- **`x/vt` ends an OSC string at the first C1 byte, which breaks three-byte
-  UTF-8.** A byte in `0x80`–`0x9F` is the 8-bit form of a C1 control, and it is
-  also what the middle of a three-byte UTF-8 sequence looks like. Claude Code
-  sets its title to `✳ Claude Code`; `✳` is `E2 9C B3`, `9C` is the string
-  terminator, so the title arrives as the single byte `E2` — and the rest,
-  ` Claude Code`, is printed onto the screen. Two-byte characters are fine
-  (`café` survives, `A9` is not C1). The title half is worked around here; the
-  text landing in the pane is not fixable from this side.
+- **`x/vt` ends an OSC string at a `0x9C` byte, which breaks some UTF-8.**
+  `0x9C` is the 8-bit string terminator, and it is also the middle byte of
+  every three-byte UTF-8 character in `U+27xx`. Claude Code's spinner cycles
+  `✳ ✻ ✽ ✢` — all `E2 9C xx` — so its title arrives as the single byte `E2`,
+  and the rest, ` Claude Code`, is printed onto the screen. `◐` (`E2 97 90`)
+  and `café` (`C3 A9`) are unaffected, so the title is good, then a stray byte,
+  then good again, in time with the spinner. `session.setTitle` keeps the last
+  usable one rather than taking the stray, which is what stops the label
+  flickering; the text landing in the pane is not fixable from this side.
 - **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
   catches the OSC the container already emits — a prompt framework sets it from
   `preexec`, so it carries the running command's name — and the frame shows it

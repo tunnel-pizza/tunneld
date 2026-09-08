@@ -316,12 +316,14 @@ func TestViewIsBordered(t *testing.T) {
 		t.Errorf("top border = %q, want it ending %q", top, want)
 	}
 
-	// What the shell says it is doing, centred between the two.
-	h.s.setTitle("sleep 2")
+	// Both names the terminal goes by, centred between the two, shown together
+	// when they differ.
+	h.s.setTitle(&h.s.tabTitle, "sleep")
+	h.s.setTitle(&h.s.windowTitle, "sleep 2")
 	titled := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
-	at := strings.Index(titled, "sleep 2")
+	at := strings.Index(titled, "sleep · sleep 2")
 	if at < 0 {
-		t.Errorf("top border = %q, want the shell's title in it", titled)
+		t.Errorf("top border = %q, want both titles in it", titled)
 	} else {
 		if origin := strings.Index(titled, h.s.Name()); at < origin {
 			t.Errorf("top border = %q, want the title after the origin", titled)
@@ -330,7 +332,7 @@ func TestViewIsBordered(t *testing.T) {
 			t.Errorf("top border = %q, want the title before the address", titled)
 		}
 	}
-	h.s.setTitle("")
+	h.s.tabTitle, h.s.windowTitle = "", ""
 
 	// And marked as a hyperlink, so a terminal that understands OSC 8 makes it
 	// clickable. The markers carry no width, so the corner it is aligned
@@ -673,7 +675,7 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 		"\xe2",
 		" \xe2 ",
 	} {
-		h.s.setTitle(title)
+		h.s.tabTitle = title
 		got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 		if got != whole {
 			t.Errorf("title %q drew %q, want the border untouched %q", title, got, whole)
@@ -682,8 +684,38 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 
 	// A title with something in it still draws, and what draws is the part
 	// that shows.
-	h.s.setTitle("  \x00sleep 2\x00  ")
+	h.s.tabTitle = "  \x00sleep 2\x00  "
 	if got := stripSGR(strings.Split(h.f.View().Content, "\n")[0]); !strings.Contains(got, "sleep 2") {
 		t.Errorf("top border = %q, want the printable part of the title in it", got)
+	}
+}
+
+// TestBothTitlesAreShown pins that the two names a terminal goes by are not
+// assumed to be the same one.
+//
+// A prompt framework sets the tab title to the running command's name and the
+// window title to its whole command line; an app that sets both with a single
+// OSC 0 sets them to the same string. So they are shown together when they
+// differ and once when they do not.
+func TestBothTitlesAreShown(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.width, h.f.height = 80, 6
+
+	for _, tc := range []struct{ name, tab, window, want string }{
+		{"a shell reporting both", "sleep", "sleep 2", "sleep · sleep 2"},
+		{"one OSC 0 setting both", "◐ Claude Code", "◐ Claude Code", "◐ Claude Code"},
+		{"only the tab title", "~", "", "~"},
+		{"only the window title", "", "user@host:~", "user@host:~"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h.s.tabTitle, h.s.windowTitle = tc.tab, tc.window
+			got := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("top border = %q, want %q in it", got, tc.want)
+			}
+			if tc.tab == tc.window && strings.Count(got, tc.want) != 1 {
+				t.Errorf("top border = %q, want %q said once", got, tc.want)
+			}
+		})
 	}
 }

@@ -394,35 +394,49 @@ func (f frame) origin() string {
 	return nameStyle.Styled(" " + v1.DockerScheme + "://" + f.sess.Name() + " ")
 }
 
-// title is what the shell says it is doing, centred along the top.
+// title is what the terminal says it is doing, centred along the top.
 //
-// It is the terminal's own tab title, read the way any terminal emulator reads
-// it to name a tab: the running command's name, and the directory the prompt
-// is sitting in when nothing is running. Shown as it arrives rather than
-// interpreted — there is no marker distinguishing the two, and a guess about
-// which is which would be a guess about somebody's shell configuration.
+// Both of the names it goes by, because they are not the same thing: a prompt
+// framework sets the tab title to the running command's name and the window
+// title to its whole command line, and at rest one is the directory and the
+// other is user@host:directory. Shown together when they differ and once when
+// they do not, which is what an app setting both with a single OSC 0 does.
 //
-// Blank on a shell that never sets one, which is most of them without a prompt
-// framework. That is the honest answer and costs the row nothing.
+// Shown as they arrive rather than interpreted — nothing distinguishes "a
+// command is running" from "this is the prompt", and a guess about which is
+// which would be a guess about somebody's shell configuration.
+//
+// Blank on a terminal that names itself neither way, which is most shells
+// without a prompt framework. That is the honest answer and costs the row
+// nothing.
 func (f frame) title() string {
-	// Reduced to what will actually appear before it is measured. A title is
-	// whatever an app decided to put there, and things that take up columns
-	// without drawing in them — control characters, zero-width joiners, a byte
-	// that is not a character at all — are counted when the label is measured
-	// and blank when it is painted. Since the label is written over the
-	// border, the difference is a hole in the top of the box.
-	//
-	// Invalid UTF-8 goes first, and it is not hypothetical: the emulator's OSC
-	// parser ends a title at the first byte in the C1 range, and a byte in
-	// that range is exactly what the middle of a three-byte UTF-8 sequence
-	// looks like. Claude Code sets its title to "✳ Claude Code"; ✳ is E2 9C
-	// B3, 9C is the C1 string terminator, and what arrives here is the single
-	// byte E2. One column wide, nothing in it, straight through the border.
-	title := strings.TrimSpace(strings.Map(printable, strings.ToValidUTF8(f.sess.titled(), "")))
-	if title == "" {
+	tab, window := f.sess.titles()
+	tab, window = showable(tab), showable(window)
+
+	said := tab
+	switch {
+	case tab == window || window == "":
+	case tab == "":
+		said = window
+	default:
+		said = tab + " · " + window
+	}
+	if said == "" {
 		return ""
 	}
-	return titleStyle.Styled(" " + title + " ")
+	return titleStyle.Styled(" " + said + " ")
+}
+
+// showable reduces a title to what will actually appear, before anything
+// measures it.
+//
+// A title is whatever an app decided to put there, and things that take up
+// columns without drawing in them — control characters, zero-width joiners —
+// are counted when the label is measured and blank when it is painted. Since
+// the label is written over the border, the difference is a hole in the top of
+// the box.
+func showable(title string) string {
+	return strings.TrimSpace(strings.Map(printable, strings.ToValidUTF8(title, "")))
 }
 
 // printable drops a rune that would occupy a cell without filling it.
