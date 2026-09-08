@@ -3,6 +3,7 @@ package attach
 import (
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/vt"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
@@ -282,11 +284,18 @@ func TestViewIsBordered(t *testing.T) {
 	if !strings.HasPrefix(bottom, "\u2570") || !strings.HasSuffix(bottom, "\u256f") {
 		t.Errorf("bottom line = %q, want it cornered", bottom)
 	}
-	if !strings.Contains(top, h.s.Name()) {
-		t.Errorf("top border = %q, want the container named in it", top)
+	// The origin as it was typed, scheme and all: the same string pasted back
+	// into a command line is a working origin, and the scheme is what says
+	// this is a container rather than a web server.
+	if want := v1.DockerScheme + "://" + h.s.Name(); !strings.Contains(top, want) {
+		t.Errorf("top border = %q, want the origin %q in it", top, want)
 	}
 	if strings.Contains(top, "viewer") {
-		t.Errorf("top border = %q, want only the name in it", top)
+		t.Errorf("top border = %q, want the counts at the bottom instead", top)
+	}
+	// The machine serving it, against the far corner.
+	if name, _ := os.Hostname(); name != "" && !strings.HasSuffix(top, name+" ╮") {
+		t.Errorf("top border = %q, want %q against the corner", top, name)
 	}
 
 	// The keys take the bottom left and the counts the bottom right, hard

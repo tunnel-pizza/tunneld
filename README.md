@@ -187,19 +187,23 @@ The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
 The terminal sits inside a frame, with what the session is written into the
-border itself: the container it is attached to at the top, and at the bottom
-the keys, how many people are watching, and the size everyone has settled on.
+border itself: the origin and the machine serving it along the top, and along
+the bottom the keys, how many people are watching, and the size everyone has
+settled on.
 
 ```
-╭─ tunneld-example ───────────────────────────────────────────────────────────╮
+╭─ dockerd://tunneld-example ───────────────────────────────────── my-laptop ╮
 │➜  ~ ls                                                                      │
 │                                                                             │
 ╰─ ^D  commands ───────────────────────────────────────── (2 viewers) [76×14] ╯
 ```
 
-The name is the reference you typed after `dockerd://`, not the id the daemon
-resolved it to — so a Compose service stays the name you wrote in the compose
-file.
+The origin is written the way you typed it, so the same string pasted back into
+a command line still works. The name inside it is the reference you gave, not
+the id the daemon resolved it to — a Compose service stays the name you wrote
+in the compose file. The right-hand end of the top border is `os.Hostname()`:
+through a tunnel the page could be open anywhere, and the origin is a name
+somebody chose, so it is the only part that says which machine this is.
 
 Every key reaches the container except one:
 

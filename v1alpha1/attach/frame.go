@@ -2,11 +2,27 @@ package attach
 
 import (
 	"fmt"
+	"os"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
+
+// host is the machine tunneld is running on, asked for once. It cannot change
+// while the process does, and a frame draws several times a second.
+//
+// A host that will not say its own name is not worth reporting an error over:
+// the frame simply has nothing to put there.
+var host = sync.OnceValue(func() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return name
+})
 
 // What the frame keeps for itself: a border, and the two rows and two columns
 // it occupies.
@@ -26,6 +42,7 @@ const (
 // black on orange for the key that opens the commands.
 var (
 	borderStyle = uv.Style{Fg: ansi.IndexedColor(111)}
+	hostStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
 	nameStyle   = uv.Style{Fg: ansi.IndexedColor(45), Attrs: uv.AttrBold}
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
@@ -232,22 +249,13 @@ func (f frame) View() tea.View {
 	}
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)
 
-	// Two columns in, so a label reads as a label on the line rather than as a
-	// corner that went wrong, and never onto the far corner itself.
-	const indent = 2
-	edge := f.width - 1
+	// The top says what is being watched and where it is being served from,
+	// the bottom what to press and what the session is doing. Each pair gives
+	// the right-hand label up rather than overlapping the left one when a
+	// narrow window cannot hold both.
+	f.row(buf, 0, f.title(), f.where())
 
-	writeAt(buf, indent, 0, f.title(), edge-indent)
-
-	// The keys take the bottom left and the counts the bottom right, which is
-	// where a reader's eye is not. They give way to the keys rather than
-	// overlapping them when a narrow window cannot hold both: what the session
-	// is can wait, what to press cannot.
-	after := writeAt(buf, indent, f.height-1, f.hint(), edge-indent)
-	counts := uv.NewStyledString(f.meta())
-	if x := edge - counts.UnicodeWidth(); x > after {
-		writeAt(buf, x, f.height-1, f.meta(), edge-x)
-	}
+	f.row(buf, f.height-1, f.hint(), f.meta())
 
 	view.Content = buf.Render()
 	if !f.command && f.scroll == 0 {
@@ -265,6 +273,23 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 		for col := range src.Bounds().Dx() {
 			dst.SetCell(x+col, y+row, src.CellAt(col, row))
 		}
+	}
+}
+
+// row draws a border row's two labels: left from the indent, right against the
+// far corner.
+//
+// The right one is dropped rather than overlapped when what is left of the row
+// cannot hold it. What is on the left is the thing that has to be legible —
+// what to press, and what you are attached to — and half a label pushed into
+// another reads as neither.
+func (f frame) row(buf uv.ScreenBuffer, y int, left, right string) {
+	const indent = 2
+	edge := f.width - 1
+
+	after := writeAt(buf, indent, y, left, edge-indent)
+	if x := edge - uv.NewStyledString(right).UnicodeWidth(); x > after {
+		writeAt(buf, x, y, right, edge-x)
 	}
 }
 
@@ -293,11 +318,27 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 	return x + used
 }
 
-// title is what is being watched, in the top border: the container, and
-// nothing else. It is the one thing a viewer needs to know they are in the
-// right place.
+// title is what is being watched, in the top border: the origin, written the
+// way it was typed. The scheme stays on rather than being trimmed to the
+// container — it is what says this is a container at all, and the same string
+// pasted back into a command line is a working origin.
+//
+// The scheme is spelled here because this package serves exactly one, and a
+// second provider would have to carry its own along with its Target rather
+// than have this guess.
 func (f frame) title() string {
-	return nameStyle.Styled(" " + f.sess.Name() + " ")
+	return nameStyle.Styled(" " + v1.DockerScheme + "://" + f.sess.Name() + " ")
+}
+
+// where is the machine serving the container, in the top right. On a laptop it
+// says little; through a tunnel, where the page could be open anywhere and the
+// name in the other corner is one an operator chose, it is the answer to which
+// machine this actually is.
+func (f frame) where() string {
+	if host() == "" {
+		return ""
+	}
+	return hostStyle.Styled(" " + host() + " ")
 }
 
 // meta is what the session is doing, in the shape k9s writes one: what it is
