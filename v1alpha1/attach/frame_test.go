@@ -304,6 +304,14 @@ func TestViewIsBordered(t *testing.T) {
 		t.Errorf("top border = %q, want it ending %q", top, want)
 	}
 
+	// And marked as a hyperlink, so a terminal that understands OSC 8 makes it
+	// clickable. The markers carry no width, so the corner it is aligned
+	// against is unmoved by them.
+	raw := lines[0]
+	if want := "\x1b]8;;" + h.s.announced(); !strings.Contains(raw, want) {
+		t.Errorf("top border = %q, want the address marked as a link (%q)", raw, want)
+	}
+
 	// The keys take the bottom left and the counts the bottom right, hard
 	// against the corner.
 	if !strings.HasPrefix(bottom, "\u2570\u2500 ^D") {
@@ -443,21 +451,43 @@ func TestViewPlacesTheCursor(t *testing.T) {
 	}
 }
 
-// stripSGR removes the styling a rendered line carries, so a width can be
-// counted in columns rather than in escape bytes.
+// stripSGR removes the escapes a rendered line carries — the styling, and the
+// hyperlink markers around the address — so a width can be counted in columns
+// and a border read as text.
 func stripSGR(s string) string {
 	var b strings.Builder
 	for {
-		start := strings.Index(s, "\x1b[")
-		if start < 0 {
+		start := strings.Index(s, "\x1b")
+		if start < 0 || start+1 >= len(s) {
 			b.WriteString(s)
 			return b.String()
 		}
 		b.WriteString(s[:start])
-		end := strings.IndexByte(s[start:], 'm')
-		if end < 0 {
-			return b.String()
+
+		switch s[start+1] {
+		case '[': // CSI, ended by a letter
+			end := strings.IndexFunc(s[start+2:], func(r rune) bool {
+				return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+			})
+			if end < 0 {
+				return b.String()
+			}
+			s = s[start+2+end+1:]
+		case ']': // OSC, ended by BEL or ST
+			end := strings.IndexAny(s[start+2:], "\a\x1b")
+			if end < 0 {
+				return b.String()
+			}
+			s = s[start+2+end:]
+			if strings.HasPrefix(s, "\a") {
+				s = s[1:]
+			} else if strings.HasPrefix(s, "\x1b\\\\") {
+				s = s[2:]
+			} else {
+				s = s[1:]
+			}
+		default:
+			s = s[start+2:]
 		}
-		s = s[start+end+1:]
 	}
 }

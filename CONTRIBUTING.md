@@ -402,6 +402,12 @@ Two things there will bite if you change them without knowing why:
   build information, and none of it changes while the process runs. So it
   arrives through `attach.WithBanner` at construction, where the address has to
   arrive later through `Announcer`.
+- **A hyperlink needs both ends.** The frame marks its address with OSC 8, and
+  `index.html` sets xterm's `linkHandler` — without one xterm underlines the
+  link and does nothing when it is clicked, which is worse than not marking it.
+  The handler opens with `noopener,noreferrer`, because the container's output
+  reaches this terminal and an origin that printed its own OSC 8 would
+  otherwise be handed a reference to the window.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

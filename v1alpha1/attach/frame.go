@@ -357,7 +357,12 @@ func (f frame) where() string {
 	if addr == "" {
 		return ""
 	}
-	return addrStyle.Styled(" " + addr + " ")
+	// Marked as a hyperlink as well as printed. A terminal that understands
+	// OSC 8 makes it clickable; one that does not drops the escape and is left
+	// with exactly the text it would have had, which is why it costs nothing
+	// to send. It occupies no columns either, so the alignment either side of
+	// it is unaffected.
+	return addrStyle.Styled(" " + ansi.SetHyperlink(addr) + addr + ansi.ResetHyperlink() + " ")
 }
 
 // banner is the build this is running, along the bottom. It is what a bug
