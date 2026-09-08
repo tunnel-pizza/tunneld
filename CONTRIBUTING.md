@@ -396,6 +396,12 @@ Two things there will bite if you change them without knowing why:
   assertion rather than a method on `Binder` because of the import direction:
   `attach` cannot name a type declared in `v1alpha1`, so a contract mentioning
   one could never be satisfied from there. Same shape as `http.Flusher`.
+- **The build line is configuration, the address is an announcement.** Both are
+  root knowledge a subpackage cannot work out, but the banner names the command
+  — which an embedding program renames — and versions the root resolves from
+  build information, and none of it changes while the process runs. So it
+  arrives through `attach.WithBanner` at construction, where the address has to
+  arrive later through `Announcer`.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

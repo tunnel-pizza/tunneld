@@ -188,23 +188,26 @@ container still looks alive.
 
 The terminal sits inside a frame, with what the session is written into the
 border itself: the origin and the address it answers on along the top, and
-along the bottom the keys, the machine serving it, how many people are
-watching, and the size everyone has settled on.
+along the bottom the keys, the build, the machine serving it, how many people
+are watching, and the size everyone has settled on.
 
 ```
-╭─ dockerd://tunneld-example ────────── https://striped-worm.tunneled.pizza/ ╮
-│➜  ~ ls                                                                     │
-│                                                                            │
-╰─ ^D  commands ───────────────────────────── my-laptop (2 viewers) [76×14] ╯
+╭─ dockerd://tunneld-example ─────────────────────────── https://striped-worm.tunneled.pizza/ ╮
+│➜  ~ ls                                                                                      │
+│                                                                                             │
+╰─ ^D  commands ──── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
 ```
 
 The origin is written the way you typed it, so the same string pasted back into
 a command line still works, and the name inside it is the reference you gave
 rather than the id the daemon resolved it to — a Compose service stays the name
 you wrote in the compose file. Opposite it is the tunnel's own address for this
-origin, which with several origins carries the `?n` that reaches this one, so
-it is the address to send somebody else. The frame has nothing to show there
-until the tunnel is up, because a container is bound before the tunnel exists.
+origin, which with several origins carries the `?n` that reaches this one, so it
+is the address to send somebody else. The frame has nothing to show there until
+the tunnel is up, because a container is bound before the tunnel exists.
+
+A narrow window drops what it cannot hold, in order: the build first, then the
+counts, and the keys last.
 
 Every key reaches the container except one:
 

@@ -61,6 +61,10 @@ type session struct {
 
 	log *slog.Logger
 
+	// banner is the build line the frame shows along the bottom. Fixed for the
+	// life of the process, so it is read without the lock.
+	banner string
+
 	// stdin is the write end of the pipe feeding the target. Every viewer's
 	// keystrokes go here, interleaved, which is what sharing one terminal
 	// means.
@@ -102,7 +106,7 @@ type viewer struct {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
 	pr, pw := io.Pipe()
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 	em.SetScrollbackSize(scrollbackLines)
@@ -110,6 +114,7 @@ func newSession(ctx context.Context, target Target, log *slog.Logger) *session {
 	s := &session{
 		Target:  target,
 		log:     log,
+		banner:  banner,
 		stdin:   pw,
 		resize:  make(chan remotecommand.TerminalSize),
 		done:    make(chan struct{}),

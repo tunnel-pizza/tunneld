@@ -43,6 +43,7 @@ const (
 var (
 	borderStyle = uv.Style{Fg: ansi.IndexedColor(111)}
 	hostStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
+	bannerStyle = uv.Style{Fg: ansi.IndexedColor(240)}
 	addrStyle   = uv.Style{Fg: ansi.IndexedColor(114)}
 	nameStyle   = uv.Style{Fg: ansi.IndexedColor(45), Attrs: uv.AttrBold}
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
@@ -254,9 +255,9 @@ func (f frame) View() tea.View {
 	// the bottom what to press and what the session is doing. Each pair gives
 	// the right-hand label up rather than overlapping the left one when a
 	// narrow window cannot hold both.
-	f.row(buf, 0, f.title(), f.where())
+	f.row(buf, 0, f.title(), "", f.where())
 
-	f.row(buf, f.height-1, f.hint(), f.meta())
+	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
 
 	view.Content = buf.Render()
 	if !f.command && f.scroll == 0 {
@@ -277,20 +278,31 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 	}
 }
 
-// row draws a border row's two labels: left from the indent, right against the
-// far corner.
+// row draws a border row's labels: left from the indent, right against the far
+// corner, and centre in the frame if what is left of the row can hold it.
 //
-// The right one is dropped rather than overlapped when what is left of the row
-// cannot hold it. What is on the left is the thing that has to be legible —
-// what to press, and what you are attached to — and half a label pushed into
-// another reads as neither.
-func (f frame) row(buf uv.ScreenBuffer, y int, left, right string) {
+// They give way in that order. What is on the left is the thing that has to be
+// legible — what to press, and what you are attached to — and half a label
+// pushed into another reads as neither. The centre goes first because it is
+// the least urgent of the three, and it is centred on the frame rather than in
+// the gap so that it stays put as the counts beside it change width.
+func (f frame) row(buf uv.ScreenBuffer, y int, left, centre, right string) {
 	const indent = 2
 	edge := f.width - 1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
-	if x := edge - uv.NewStyledString(right).UnicodeWidth(); x > after {
-		writeAt(buf, x, y, right, edge-x)
+
+	before := edge
+	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
+		if x := edge - width; x > after {
+			writeAt(buf, x, y, right, edge-x)
+			before = x
+		}
+	}
+	if width := uv.NewStyledString(centre).UnicodeWidth(); width > 0 {
+		if x := (f.width - width) / 2; x > after && x+width < before {
+			writeAt(buf, x, y, centre, before-x)
+		}
 	}
 }
 
@@ -346,6 +358,16 @@ func (f frame) where() string {
 		return ""
 	}
 	return addrStyle.Styled(" " + addr + " ")
+}
+
+// banner is the build this is running, along the bottom. It is what a bug
+// report needs and nobody thinks to ask for, so it sits where it can be read
+// without being in the way.
+func (f frame) banner() string {
+	if f.sess.banner == "" {
+		return ""
+	}
+	return bannerStyle.Styled(" " + f.sess.banner + " ")
 }
 
 // meta is what the session is doing, in the shape k9s writes one: where it is

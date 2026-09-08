@@ -79,6 +79,10 @@ func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.
 }
 
 // serveFake starts a Server on a fake target and tears it down with the test.
+// testBanner is the build line a served terminal carries. A fixture rather
+// than the real one, which changes with every build.
+const testBanner = "tunneld test (libtunnel test, built test)"
+
 func serveFake(t *testing.T, target Target) *Server {
 	t.Helper()
 	return serveFakeOn(t, t.Context(), target)
@@ -88,7 +92,7 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}

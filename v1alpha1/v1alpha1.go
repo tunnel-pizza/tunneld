@@ -156,8 +156,8 @@ type Announcer interface {
 }
 
 // WithBinder replaces what stands a loopback origin in for a container. The
-// default is attach.New(attach.WithTargets(docker.New())): attach serves,
-// docker resolves.
+// default is attach.New(attach.WithTargets(docker.New()), attach.WithBanner(…)):
+// attach serves, docker resolves.
 func WithBinder(binder Binder) Option {
 	return func(b *BuilderImpl) { b.binder = binder }
 }
@@ -194,7 +194,10 @@ func New(opts ...Option) *BuilderImpl {
 		WithCache(cache.New()),
 		WithBrowser(browser.New()),
 		WithCounter(counter.New()),
-		WithBinder(attach.New(attach.WithTargets(docker.New()))),
+		WithBinder(attach.New(
+			attach.WithTargets(docker.New()),
+			attach.WithBanner(VersionLine()),
+		)),
 	)
 	return v1.Apply(b, opts...)
 }

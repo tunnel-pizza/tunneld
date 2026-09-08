@@ -39,6 +39,7 @@ func newFrameHarness(t *testing.T) *harness {
 	s := &session{
 		Target: newFakeTarget("api", true, true),
 		log:    slog.New(slog.DiscardHandler),
+		banner: testBanner,
 		stdin:  pw,
 		// Buffered, because nothing here is reading the far end: the frame
 		// applies a size as a side effect of being told its window, and a test
@@ -273,7 +274,7 @@ func TestViewFitsTheWindow(t *testing.T) {
 // its own.
 func TestViewIsBordered(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 80, 8
+	h.f.width, h.f.height = 120, 8
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 
 	lines := strings.Split(h.f.View().Content, "\n")
@@ -324,17 +325,40 @@ func TestViewIsBordered(t *testing.T) {
 		t.Errorf("bottom border = %q, want the counts ending against the corner (%q)", bottom, want)
 	}
 
-	// A window too narrow for both keeps the keys and drops the counts: what
-	// to press matters more than how many are watching.
+	// The build sits centred between them, and is the first thing to go when
+	// the row cannot hold all three: it is the least urgent of them.
+	if !strings.Contains(bottom, testBanner) {
+		t.Errorf("bottom border = %q, want the build line in it", bottom)
+	}
+	if at := strings.Index(bottom, testBanner); at > 0 {
+		if keys := strings.Index(bottom, "^D"); at < keys {
+			t.Errorf("bottom border = %q, want the build after the keys", bottom)
+		}
+		if counts := strings.Index(bottom, "1 viewer"); counts > 0 && at > counts {
+			t.Errorf("bottom border = %q, want the build before the counts", bottom)
+		}
+	}
+
+	// Narrower, and the three give way in order. First the build, which is the
+	// least urgent.
+	h.f.width = 80
+	if got := stripSGR(bottomOf(h)); strings.Contains(got, testBanner) {
+		t.Errorf("bottom border = %q, want the build dropped before the counts", got)
+	} else if !strings.Contains(got, "1 viewer") {
+		t.Errorf("bottom border = %q, want the counts kept", got)
+	}
+
+	// Then the counts: what to press matters more than how many are watching.
 	h.f.width = 24
-	defer func() { h.f.width = 80 }()
-	narrow := strings.Split(h.f.View().Content, "\n")
-	if got := stripSGR(narrow[len(narrow)-1]); strings.Contains(got, "viewer") {
+	defer func() { h.f.width = 120 }()
+	if got := stripSGR(bottomOf(h)); strings.Contains(got, "viewer") {
 		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
+	} else if strings.Contains(got, testBanner) {
+		t.Errorf("bottom border = %q, want the build dropped too", got)
 	} else if !strings.Contains(got, "^D") {
 		t.Errorf("bottom border = %q, want the keys kept", got)
 	}
-	h.f.width = 80
+	h.f.width = 120
 
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, ctrlD)
@@ -342,6 +366,12 @@ func TestViewIsBordered(t *testing.T) {
 	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "detach") {
 		t.Errorf("bottom border in command mode = %q, want the commands in it", got)
 	}
+}
+
+// bottomOf is the frame's bottom border row as it renders now.
+func bottomOf(h *harness) string {
+	lines := strings.Split(h.f.View().Content, "\n")
+	return lines[len(lines)-1]
 }
 
 // TestBorderSurvivesAnOversizedScreen pins the frame against the one way the

@@ -105,7 +105,10 @@ type Option = v1.Option[*BinderImpl]
 // still means origin n for the bare ?n routing parameter, for PublicURL, for
 // the reported map and for the multiview tiles, so a container is an origin
 // like any other and nothing downstream learns a second shape.
-type BinderImpl struct{ targets Targets }
+type BinderImpl struct {
+	targets Targets
+	banner  string
+}
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
 // WithTargets sets one; a dockerd:// origin met without one fails at Bind
@@ -118,6 +121,18 @@ func New(opts ...Option) *BinderImpl {
 // serve. The default is the Docker daemon, and a test hands in a stub.
 func WithTargets(t Targets) Option {
 	return func(b *BinderImpl) { b.targets = t }
+}
+
+// WithBanner sets the build line every terminal this binder serves shows along
+// the bottom of its frame.
+//
+// Passed in rather than worked out here. It names the command, which an
+// embedding program renames, and the versions, which the root resolves from
+// build information — none of it knowable from a subpackage, and all of it
+// fixed for the life of the process, so it is configuration and not an
+// announcement.
+func WithBanner(banner string) Option {
+	return func(b *BinderImpl) { b.banner = banner }
 }
 
 // Bind implements Binder.
@@ -144,7 +159,7 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, log)
+		server, err := Serve(ctx, target, b.banner, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -231,7 +246,7 @@ type Server struct {
 // covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -275,7 +290,7 @@ func Serve(ctx context.Context, target Target, log *slog.Logger) (*Server, error
 	// it. Started here rather than on the first connection so a viewer never
 	// waits on the target, and so what happened before anybody looked is on
 	// the screen when they do.
-	s.session = newSession(sctx, target, log)
+	s.session = newSession(sctx, target, banner, log)
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
