@@ -44,7 +44,7 @@ const name = "tunneld-example"
 // image is the container to attach to: a zsh that runs as PID 1, so Ctrl-C
 // reaches it and the terminal behaves the way a shell on any other machine
 // does.
-const image = "ghcr.io/cnuss/claude-code:latest"
+const image = "ghcr.io/cnuss/zsh:latest"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
