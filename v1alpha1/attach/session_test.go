@@ -3,6 +3,7 @@ package attach
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -143,5 +144,51 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	s.viewers[silent] = struct{}{}
 	if got := s.negotiate(); got != (size(0, 0)) {
 		t.Errorf("a viewer with no size changed the pty to %v, want no change", got)
+	}
+}
+
+// TestTitleFollowsTheShell pins that the frame can say what the container is
+// doing, which the container is the only one who knows.
+//
+// A prompt framework — Oh My Zsh, and most others — sets the terminal title
+// from preexec and resets it from precmd, so the stream carries the command
+// line while a command runs and the prompt's own idea of itself when none
+// does. It is the same thing a terminal emulator reads to name its tab. It
+// arrives as an ordinary escape in the container's output, so the emulator was
+// already parsing it and dropping it on the floor.
+func TestTitleFollowsTheShell(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	// Exactly what a zsh with Oh My Zsh writes when `sleep 2` is run: the
+	// window title, then the tab title.
+	target.out = "\x1b]2;sleep 2\a\x1b]1;sleep\a"
+	s := serveFake(t, target)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.session.titled() != "sleep 2" {
+		if time.Now().After(deadline) {
+			t.Fatalf("title = %q, want the command line the shell reported", s.session.titled())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestTitleIsEmptyUntilTheShellSays pins the other half. Most shells set no
+// title at all, and a frame must have nothing to show rather than something
+// invented.
+func TestTitleIsEmptyUntilTheShellSays(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "a shell that says nothing about itself\r\n"
+	s := serveFake(t, target)
+
+	// Long enough for the output above to have been through the emulator.
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(s.session.em.Render(), "says nothing") {
+		if time.Now().After(deadline) {
+			t.Fatal("the output never reached the screen")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := s.session.titled(); got != "" {
+		t.Errorf("title = %q, want nothing said", got)
 	}
 }

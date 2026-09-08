@@ -80,6 +80,11 @@ type session struct {
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
 
+	// titleMu guards title and nothing else. Deliberately not mu — see
+	// newSession, where the callback that writes it is installed.
+	titleMu sync.Mutex
+	title   string
+
 	// mu guards the viewer set, the size negotiated from it, and the public
 	// address, and nothing else.
 	mu      sync.Mutex
@@ -122,6 +127,23 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 	}
+
+	// What the shell says it is doing, if it says anything. Oh My Zsh and
+	// friends set the terminal title from preexec and reset it from precmd, so
+	// it carries the command line while one runs and the prompt's idea of
+	// where it is when none does. A shell that sets no title leaves this empty
+	// and the frame simply has nothing to show.
+	//
+	// The emulator already parses it; this is only what catches it instead of
+	// letting it fall on the floor.
+	//
+	// Stashed under a lock of its own rather than mu, and that is not
+	// fastidiousness. This runs from inside the emulator's write, which is to
+	// say with the emulator's lock held, while negotiate takes mu and then
+	// reaches for that same emulator lock — the two orders that deadlock.
+	// Nothing is woken from here either: a title only ever changes as part of
+	// output, and sink wakes everybody the moment that write returns.
+	em.SetCallbacks(vt.Callbacks{Title: s.setTitle})
 
 	// The emulator answers what a real terminal answers — a device-attributes
 	// query, a cursor-position report — and those replies have to reach the
@@ -410,6 +432,22 @@ func (s *session) window() (int, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return int(s.size.Width), int(s.size.Height)
+}
+
+// setTitle records what the shell last called this terminal.
+func (s *session) setTitle(title string) {
+	s.titleMu.Lock()
+	s.title = title
+	s.titleMu.Unlock()
+}
+
+// titled is what the shell last called this terminal, or "" if it has never
+// said. It is the command line while one is running, on a shell that reports
+// one at all.
+func (s *session) titled() string {
+	s.titleMu.Lock()
+	defer s.titleMu.Unlock()
+	return s.title
 }
 
 // announce records the public address this origin answers on, and has every

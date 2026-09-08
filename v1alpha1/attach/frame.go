@@ -46,6 +46,7 @@ var (
 	bannerStyle = uv.Style{Fg: ansi.IndexedColor(240)}
 	addrStyle   = uv.Style{Fg: ansi.IndexedColor(114)}
 	nameStyle   = uv.Style{Fg: ansi.IndexedColor(45), Attrs: uv.AttrBold}
+	titleStyle  = uv.Style{Fg: ansi.IndexedColor(179)}
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
@@ -255,7 +256,7 @@ func (f frame) View() tea.View {
 	// the bottom what to press and what the session is doing. Each pair gives
 	// the right-hand label up rather than overlapping the left one when a
 	// narrow window cannot hold both.
-	f.row(buf, 0, f.title(), "", f.where())
+	f.row(buf, 0, f.origin(), f.title(), f.where())
 
 	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
 
@@ -331,7 +332,7 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 	return x + used
 }
 
-// title is what is being watched, in the top border: the origin, written the
+// origin is what is being watched, in the top border: the origin, written the
 // way it was typed. The scheme stays on rather than being trimmed to the
 // container — it is what says this is a container at all, and the same string
 // pasted back into a command line is a working origin.
@@ -339,8 +340,26 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 // The scheme is spelled here because this package serves exactly one, and a
 // second provider would have to carry its own along with its Target rather
 // than have this guess.
-func (f frame) title() string {
+func (f frame) origin() string {
 	return nameStyle.Styled(" " + v1.DockerScheme + "://" + f.sess.Name() + " ")
+}
+
+// title is what the shell says it is doing, centred along the top.
+//
+// It is the terminal's own title, reported the way any terminal emulator would
+// read it: the command line while one runs, and whatever the prompt calls
+// itself when none does. Shown as it arrives rather than interpreted — there
+// is no marker distinguishing the two, and a guess about which is which would
+// be a guess about somebody's shell configuration.
+//
+// Blank on a shell that never sets one, which is most of them without a prompt
+// framework. That is the honest answer and costs the row nothing.
+func (f frame) title() string {
+	title := f.sess.titled()
+	if title == "" {
+		return ""
+	}
+	return titleStyle.Styled(" " + title + " ")
 }
 
 // where is the public address this origin answers on, in the top right, once

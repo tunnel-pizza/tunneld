@@ -408,6 +408,17 @@ Two things there will bite if you change them without knowing why:
   The handler opens with `noopener,noreferrer`, because the container's output
   reaches this terminal and an origin that printed its own OSC 8 would
   otherwise be handed a reference to the window.
+- **The shell's title is caught, not guessed.** `vt.Callbacks{Title:…}` catches
+  the OSC the container already emits — a prompt framework sets it from
+  `preexec`, so it carries the running command line — and the frame shows it as
+  it arrives. There is no marker separating "a command is running" from "this
+  is the prompt", so interpreting it would mean guessing at somebody's shell
+  configuration. It is stashed under `titleMu` rather than `mu`, and that is
+  not fastidiousness: the callback fires with the *emulator's* lock held, while
+  `negotiate` takes `mu` and then reaches for that same lock — the two orders
+  that deadlock. Nothing is woken from the callback either, because a title
+  only changes as part of output and `sink` wakes everybody when that write
+  returns.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

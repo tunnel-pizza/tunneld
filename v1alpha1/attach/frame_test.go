@@ -304,6 +304,22 @@ func TestViewIsBordered(t *testing.T) {
 		t.Errorf("top border = %q, want it ending %q", top, want)
 	}
 
+	// What the shell says it is doing, centred between the two.
+	h.s.setTitle("sleep 2")
+	titled := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+	at := strings.Index(titled, "sleep 2")
+	if at < 0 {
+		t.Errorf("top border = %q, want the shell's title in it", titled)
+	} else {
+		if origin := strings.Index(titled, h.s.Name()); at < origin {
+			t.Errorf("top border = %q, want the title after the origin", titled)
+		}
+		if addr := strings.Index(titled, h.s.announced()); addr > 0 && at > addr {
+			t.Errorf("top border = %q, want the title before the address", titled)
+		}
+	}
+	h.s.setTitle("")
+
 	// And marked as a hyperlink, so a terminal that understands OSC 8 makes it
 	// clickable. The markers carry no width, so the corner it is aligned
 	// against is unmoved by them.
