@@ -228,6 +228,9 @@ Every key reaches the container except one:
 | `Ctrl-D` `q` | End the session for everyone — the end of file `Ctrl-D` used to deliver. |
 | `Ctrl-D` `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
 
+Pasting works as it does in any terminal, and an app that asked to be told
+the difference between pasted and typed text still is.
+
 `Ctrl-D` is held back because the attach is shared and is never reopened: it is
 end of file to a shell, so on a shared terminal one person's habit ended the
 session for everybody, and the origin went on serving a screen that could never

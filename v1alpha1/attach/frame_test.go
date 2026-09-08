@@ -87,6 +87,18 @@ func (h *harness) press(t *testing.T, k tea.Key) tea.Cmd {
 	return cmd
 }
 
+// paste hands the frame pasted text the way the decoder hands it over: whole,
+// as one message, rather than as a burst of keystrokes.
+func (h *harness) paste(t *testing.T, text string) {
+	t.Helper()
+	model, _ := h.f.Update(tea.PasteMsg{Content: text})
+	f, ok := model.(frame)
+	if !ok {
+		t.Fatalf("Update returned %T, want a frame", model)
+	}
+	h.f = f
+}
+
 // reached collects what the container read until it is want, and fails if
 // something else shows up. The bytes arrive in as many pieces as the
 // emulator's reader chose, so it accumulates rather than comparing once.
@@ -505,5 +517,58 @@ func stripSGR(s string) string {
 		default:
 			s = s[start+2:]
 		}
+	}
+}
+
+// TestPasteReachesTheContainer pins that pasted text is not dropped.
+//
+// The frame's own renderer turns bracketed paste on in the viewer's terminal,
+// so a paste stops arriving as a burst of keystrokes and arrives as one
+// message instead. A model that only answers keystrokes silently swallows it,
+// and pasting into the terminal does nothing at all.
+func TestPasteReachesTheContainer(t *testing.T) {
+	h := newFrameHarness(t)
+
+	h.paste(t, "echo pasted")
+	h.reached(t, "echo pasted")
+}
+
+// TestPasteIsBracketedWhenTheAppAsked pins that the difference between typing
+// and pasting survives the frame.
+//
+// Bracketed paste is how an app is told the difference, and it is the app
+// inside the container that asks for it — the emulator read that request, so
+// it is the only thing here that knows. Text written past it would arrive as
+// though it had been typed, which is what a shell running a half-finished
+// command on a pasted newline looks like.
+func TestPasteIsBracketedWhenTheAppAsked(t *testing.T) {
+	h := newFrameHarness(t)
+
+	// What an app writes when it wants its pastes marked.
+	if _, err := h.s.em.WriteString("\x1b[?2004h"); err != nil {
+		t.Fatalf("enable bracketed paste: %v", err)
+	}
+	h.paste(t, "echo pasted")
+	h.reached(t, "\x1b[200~echo pasted\x1b[201~")
+}
+
+// TestPasteSnapsThePaneLive pins that pasting into a scrolled-back pane puts
+// it back at the prompt, the same as typing does — what was pasted is meant
+// for the prompt, and the prompt is at the bottom.
+func TestPasteSnapsThePaneLive(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString(strings.Repeat("a line\r\n", defaultRows*3)); err != nil {
+		t.Fatalf("fill the screen: %v", err)
+	}
+
+	h.press(t, ctrlD)
+	h.press(t, typing('k'))
+	if h.f.scroll == 0 {
+		t.Fatal("the pane did not scroll back")
+	}
+
+	h.paste(t, "x")
+	if h.f.scroll != 0 {
+		t.Errorf("scroll = %d after a paste, want the pane snapped live", h.f.scroll)
 	}
 }

@@ -422,6 +422,15 @@ Two things there will bite if you change them without knowing why:
   that deadlock. Nothing is woken from the callback either, because a title
   only changes as part of output and `sink` wakes everybody when that write
   returns.
+- **A paste is a message, not keystrokes.** The frame's renderer turns
+  bracketed paste on in the viewer's terminal, so the browser stops sending
+  pasted text as a burst of keys and sends it wrapped instead. A model that
+  only answers `KeyPressMsg` swallows it and pasting does nothing at all. It
+  goes to the container through `em.Paste`, not `SendText`: the emulator read
+  the app's own `\x1b[?2004h`, so it is the only thing here that knows whether
+  *this* app wants its pastes bracketed, and text written past it arrives as
+  though it had been typed — which is a shell running a half-finished command
+  off a pasted newline.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

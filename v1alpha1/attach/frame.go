@@ -133,6 +133,18 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case paneMsg:
 		return f, nil
 
+	case tea.PasteMsg:
+		// A paste is one message, not a burst of keystrokes: the frame's own
+		// renderer turns bracketed paste on in the viewer's terminal, so the
+		// browser wraps what was pasted and the decoder hands it over whole.
+		// Dropped rather than forwarded, this is text that simply vanishes.
+		//
+		// It reaches the container as a paste too, so an app that asked to be
+		// told the difference still is.
+		f.scroll = 0
+		f.sess.paste(msg.Content)
+		return f, nil
+
 	case tea.KeyPressMsg:
 		if f.command {
 			return f.commanded(tea.Key(msg))

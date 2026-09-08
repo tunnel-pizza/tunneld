@@ -505,6 +505,17 @@ func (s *session) sendKey(k tea.Key) {
 // it rather than reading lines back, so the cells arrive as cells.
 func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) { s.em.Draw(scr, area) }
 
+// paste hands pasted text to the container, bracketed if the app inside asked
+// for that.
+//
+// Through the emulator rather than written straight to stdin, for the same
+// reason a keystroke goes that way: the emulator is what read the app's
+// \x1b[?2004h and so is the only thing here that knows whether this app wants
+// its pastes bracketed. Text written past it arrives as though it had been
+// typed, which is exactly what bracketed paste exists to stop — a shell cannot
+// tell a pasted newline from a pressed one, and runs the half-finished command.
+func (s *session) paste(text string) { s.em.Paste(text) }
+
 // paneSize is the screen the container is drawing on.
 func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
 
