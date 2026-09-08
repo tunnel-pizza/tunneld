@@ -379,6 +379,14 @@ Two things there will bite if you change them without knowing why:
   window rather than racing it with a size pushed in from outside — whichever
   landed second would win, and when that is the zero nothing is ever drawn
   again.
+- **The frame composes into a buffer, and everything is copied in.** Neither
+  `vt.Emulator.Draw` nor `uv.StyledString.Draw` clips to the area it is handed
+  — both clip to the *screen* — so drawn straight into the frame's buffer,
+  anything larger than its area paints over the border and out of the window.
+  That is the ordinary path, not a corner case: a viewer whose window shrinks
+  renders once with the new pane and the old emulator. Both go through a buffer
+  of their own size and are blitted, which is also what makes a label truncate
+  instead of erasing the border to its right.
 - **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
   is shared, and it is never reopened, so one viewer pressing it used to end
   the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to

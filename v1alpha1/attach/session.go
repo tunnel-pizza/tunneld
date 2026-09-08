@@ -345,12 +345,15 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
-	pane := remotecommand.TerminalSize{Width: w, Height: h - chromeHeight}
+	// A window with no room for the pane still has to leave the emulator a
+	// screen: one resized to nothing has nowhere to put what the container
+	// says next.
+	pane := remotecommand.TerminalSize{Width: w - chromeWidth, Height: h - chromeHeight}
 	if h <= chromeHeight {
-		// A window with no room for the pane still has to leave the emulator a
-		// screen: an emulator resized to nothing has nowhere to put what the
-		// container says next.
 		pane.Height = 1
+	}
+	if w <= chromeWidth {
+		pane.Width = 1
 	}
 	s.em.Resize(int(pane.Width), int(pane.Height))
 	return pane
@@ -425,6 +428,10 @@ func (s *session) sendKey(k tea.Key) {
 	}
 	s.em.SendKey(asKeyEvent(k))
 }
+
+// drawPane has the emulator draw its screen into area of scr. The frame calls
+// it rather than reading lines back, so the cells arrive as cells.
+func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) { s.em.Draw(scr, area) }
 
 // paneSize is the screen the container is drawing on.
 func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }

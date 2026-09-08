@@ -106,8 +106,8 @@ func TestPaneLinesReproduceTheScreen(t *testing.T) {
 // viewer leaves, because the one that left may have been the smallest.
 //
 // What comes back is the pane and not the window: the frame keeps chromeHeight
-// rows for its status line, and a container told it had the whole window would
-// draw its last row underneath one.
+// rows and chromeWidth columns for its border, and a container told it had the
+// whole window would draw its last row and column underneath one.
 func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	s := &session{
 		em:      vt.NewSafeEmulator(defaultCols, defaultRows),
@@ -119,20 +119,21 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	narrow := &viewer{wake: make(chan struct{}, 1), size: size(80, 24)}
 
 	s.viewers[wide] = struct{}{}
-	if got, want := s.negotiate(), size(200, 60-chromeHeight); got != want {
+	if got, want := s.negotiate(), size(200-chromeWidth, 60-chromeHeight); got != want {
 		t.Errorf("one viewer settled on %v, want its own window less the chrome %v", got, want)
 	}
 
 	s.viewers[narrow] = struct{}{}
-	if got, want := s.negotiate(), size(80, 24-chromeHeight); got != want {
+	if got, want := s.negotiate(), size(80-chromeWidth, 24-chromeHeight); got != want {
 		t.Errorf("two viewers settled on %v, want the smaller %v", got, want)
 	}
-	if w, h := s.em.Width(), s.em.Height(); w != 80 || h != 24-chromeHeight {
-		t.Errorf("emulator is %dx%d, want it resized with the pty to 80x%d", w, h, 24-chromeHeight)
+	if w, h := s.em.Width(), s.em.Height(); w != 80-chromeWidth || h != 24-chromeHeight {
+		t.Errorf("emulator is %dx%d, want it resized with the pty to %dx%d",
+			w, h, 80-chromeWidth, 24-chromeHeight)
 	}
 
 	delete(s.viewers, narrow)
-	if got, want := s.negotiate(), size(200, 60-chromeHeight); got != want {
+	if got, want := s.negotiate(), size(200-chromeWidth, 60-chromeHeight); got != want {
 		t.Errorf("after the smaller left, settled on %v, want %v", got, want)
 	}
 

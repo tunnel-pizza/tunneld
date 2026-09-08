@@ -186,9 +186,18 @@ With a TTY, Ctrl-C reaches PID 1 and stops the container — that is what
 The container's existing output replays when the page opens, so a quiet
 container still looks alive.
 
-The terminal sits inside a frame with a status line along the bottom, naming
-the container, how many people are watching it and the size everyone has
-settled on. Every key reaches the container except one:
+The terminal sits inside a frame, with what the session is written into the
+border itself: the container, how many people are watching it, and the size
+everyone has settled on.
+
+```
+╭─ tunneld-example(2 viewers)[76×14] ─────────────────────────────────────────╮
+│➜  ~ ls                                                                      │
+│                                                                             │
+╰─ ^D  commands ──────────────────────────────────────────────────────────────╯
+```
+
+Every key reaches the container except one:
 
 | Key | |
 | --- | --- |

@@ -31,7 +31,7 @@ func newFrameHarness(t *testing.T) *harness {
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { _ = pw.Close() })
 
-	em := vt.NewSafeEmulator(defaultCols, defaultRows-chromeHeight)
+	em := vt.NewSafeEmulator(defaultCols-chromeWidth, defaultRows-chromeHeight)
 	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
@@ -248,23 +248,91 @@ func TestScrollStopsAtTheOldestLine(t *testing.T) {
 	}
 }
 
-// TestViewFitsTheWindow pins the two ways a frame can overrun the window it
-// was given, both of which paint over the container's screen.
+// TestViewFitsTheWindow pins that the frame draws the window it was given and
+// not a column or row more. Either overrun paints over the container's screen,
+// and on a small window there is not much of it to lose.
 func TestViewFitsTheWindow(t *testing.T) {
 	h := newFrameHarness(t)
 	h.f.width, h.f.height = 20, 6
 
-	view := h.f.View()
-	lines := strings.Split(view.Content, "\n")
-	if len(lines) > h.f.height {
-		t.Errorf("view is %d lines, want no more than the window's %d", len(lines), h.f.height)
+	lines := strings.Split(h.f.View().Content, "\n")
+	if len(lines) != h.f.height {
+		t.Errorf("view is %d lines, want exactly the window's %d", len(lines), h.f.height)
+	}
+	for i, line := range lines {
+		if got := len([]rune(stripSGR(line))); got > h.f.width {
+			t.Errorf("line %d is %d columns, want no more than the window's %d", i, got, h.f.width)
+		}
+	}
+}
+
+// TestViewIsBordered pins the frame's shape: a box drawn around the container,
+// with what the session is written into the border rather than into a row of
+// its own.
+func TestViewIsBordered(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.width, h.f.height = 40, 8
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	top, bottom := stripSGR(lines[0]), stripSGR(lines[len(lines)-1])
+
+	if !strings.HasPrefix(top, "\u256d") || !strings.HasSuffix(top, "\u256e") {
+		t.Errorf("top line = %q, want it cornered", top)
+	}
+	if !strings.HasPrefix(bottom, "\u2570") || !strings.HasSuffix(bottom, "\u256f") {
+		t.Errorf("bottom line = %q, want it cornered", bottom)
+	}
+	if !strings.Contains(top, h.s.Name()) {
+		t.Errorf("top border = %q, want the container named in it", top)
+	}
+	if !strings.Contains(bottom, "^D") {
+		t.Errorf("bottom border = %q, want the key that opens the commands in it", bottom)
 	}
 
-	// The status line is truncated rather than wrapped: a wrapped one costs a
-	// second row the pane was drawn assuming it still had.
-	status := lines[len(lines)-1]
-	if got := len(stripSGR(status)); got > h.f.width {
-		t.Errorf("status line is %d columns, want no more than the window's %d", got, h.f.width)
+	// And the commands replace it once it is open, in the same row.
+	h.press(t, ctrlD)
+	after := strings.Split(h.f.View().Content, "\n")
+	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "detach") {
+		t.Errorf("bottom border in command mode = %q, want the commands in it", got)
+	}
+}
+
+// TestBorderSurvivesAnOversizedScreen pins the frame against the one way the
+// pane can escape it.
+//
+// Neither the emulator nor a styled line clips to the area it is handed; both
+// clip to the screen. Drawn straight into the frame's buffer, a screen larger
+// than the pane paints over the border and out of the window — and that is not
+// a contrived state. A viewer whose window shrinks renders once with the new
+// pane and the old emulator, every time.
+func TestBorderSurvivesAnOversizedScreen(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.width, h.f.height = 20, 6
+
+	// The emulator is left at the harness default, which is far larger than
+	// the window just set — exactly the disagreement a shrink creates.
+	if _, err := h.s.em.WriteString(strings.Repeat("wide output here\r\n", 12)); err != nil {
+		t.Fatalf("fill the screen: %v", err)
+	}
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if len(lines) != h.f.height {
+		t.Fatalf("view is %d lines, want the window's %d", len(lines), h.f.height)
+	}
+	for i, line := range lines {
+		plain := []rune(stripSGR(line))
+		if len(plain) > h.f.width {
+			t.Errorf("line %d is %d columns, want no more than %d", i, len(plain), h.f.width)
+		}
+	}
+	if bottom := stripSGR(lines[len(lines)-1]); !strings.HasPrefix(bottom, "\u2570") || !strings.HasSuffix(bottom, "\u256f") {
+		t.Errorf("bottom border = %q, want the pane clipped and the border intact", bottom)
+	}
+	for i, line := range lines[1 : len(lines)-1] {
+		plain := []rune(stripSGR(line))
+		if len(plain) == 0 || plain[0] != '\u2502' || plain[len(plain)-1] != '\u2502' {
+			t.Errorf("row %d = %q, want the pane between two edges", i+1, string(plain))
+		}
 	}
 }
 
@@ -281,8 +349,13 @@ func TestViewPlacesTheCursor(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("no cursor in the view, want it placed where the app believes it is")
 	}
-	if want := h.s.paneCursor(); view.Cursor.X != want.X || view.Cursor.Y != want.Y {
-		t.Errorf("cursor at (%d,%d), want the pane's (%d,%d)", view.Cursor.X, view.Cursor.Y, want.X, want.Y)
+	// Offset by the border: the pane starts one row down and one column in,
+	// and a cursor placed at the pane's own coordinates would sit on the frame.
+	pane := h.f.pane()
+	want := h.s.paneCursor()
+	if view.Cursor.X != pane.Min.X+want.X || view.Cursor.Y != pane.Min.Y+want.Y {
+		t.Errorf("cursor at (%d,%d), want the pane's (%d,%d) inside the border at (%d,%d)",
+			view.Cursor.X, view.Cursor.Y, want.X, want.Y, pane.Min.X+want.X, pane.Min.Y+want.Y)
 	}
 
 	// Withheld where the live position means nothing: a command is pending, or

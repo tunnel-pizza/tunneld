@@ -2,17 +2,36 @@ package attach
 
 import (
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// The rows the frame keeps for itself. One, and it is the status line: the
-// terminal page's own rule is that the terminal is the page, because anything
-// framing it steals rows from a viewport that is often a phone. A row is what
-// it costs to have somewhere for the session to say what it is.
-const chromeHeight = 1
+// What the frame keeps for itself: a border, and the two rows and two columns
+// it occupies.
+//
+// The terminal page's own rule is that the terminal is the page, because
+// anything framing it steals rows from a viewport that is often a phone. This
+// is the whole of what is spent — the title rides in the top border and the
+// keys in the bottom one, rather than either taking a row of its own.
+const (
+	chromeHeight = 2
+	chromeWidth  = 2
+)
+
+// The frame's palette, indexed rather than true colour so it lands the same
+// way on a terminal that has only 256 of them. Light blue border, a cyan name
+// with its qualifier in magenta and its measurements in white, and a chip in
+// black on orange for the key that opens the commands.
+var (
+	borderStyle = uv.Style{Fg: ansi.IndexedColor(111)}
+	nameStyle   = uv.Style{Fg: ansi.IndexedColor(45), Attrs: uv.AttrBold}
+	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
+	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
+	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
+	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
+)
 
 // paneMsg says the container wrote something. The frame holds no copy of the
 // screen — the emulator is the screen — so the message carries nothing: it
@@ -146,6 +165,11 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 	return f, nil
 }
 
+// pane is the area inside the border, in this viewer's window.
+func (f frame) pane() uv.Rectangle {
+	return uv.Rect(1, 1, f.width-chromeWidth, f.height-chromeHeight)
+}
+
 // paneRows is how many rows of the container's screen this viewer can show.
 func (f frame) paneRows() int {
 	if rows := f.height - chromeHeight; rows > 0 {
@@ -154,7 +178,13 @@ func (f frame) paneRows() int {
 	return 0
 }
 
-// View draws the pane and the status line under it.
+// View draws the container's screen inside a border, with what the session is
+// written into the border itself.
+//
+// Composed into a buffer rather than assembled as text. Both the border and
+// the emulator know how to draw themselves into one, so the frame never counts
+// a column: no padding a styled line to a width, no measuring around escape
+// sequences, and a wide character occupies what it actually occupies.
 //
 // The cursor is the frame's second job. The pane's own cursor position is
 // where the app inside believes it is, and a frame that did not place it there
@@ -163,53 +193,117 @@ func (f frame) paneRows() int {
 // withheld while the pane is scrolled back or a command is pending, where the
 // live cursor position means nothing.
 func (f frame) View() tea.View {
-	rows := f.paneRows()
-	lines := f.sess.paneLines(f.scroll, rows)
-
-	var b strings.Builder
-	for _, line := range lines {
-		b.WriteString(line)
-		// Reset at every line end. The emulator renders styling per line and a
-		// line that ends inside an SGR run would otherwise colour the status
-		// line, or the line under it, with whatever the app left open.
-		b.WriteString("\x1b[0m\n")
-	}
-	b.WriteString(f.status())
-
-	view := tea.NewView(b.String())
+	view := tea.NewView("")
 	view.AltScreen = true
+
+	pane := f.pane()
+	if pane.Dx() <= 0 || pane.Dy() <= 0 {
+		// No room to frame anything. Better an empty screen than a border
+		// drawn over the only rows the container had.
+		return view
+	}
+
+	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
+	// width method, which is what makes a wide character occupy two columns
+	// here the way it does on the terminal this is drawn for.
+	buf := uv.NewScreenBuffer(f.width, f.height)
+	border := uv.RoundedBorder().Style(borderStyle)
+	border.Draw(buf, buf.Bounds())
+
+	// Filled at its own size and copied in, never drawn straight into the
+	// frame's buffer. Neither the emulator nor a styled line clips to the area
+	// it is handed — both clip to the screen — so given the whole window they
+	// would paint over the border and out of the frame whenever the pane and
+	// the emulator disagree about size. They disagree on the ordinary path: a
+	// window that has just shrunk draws once before the resize it asked for
+	// has come back.
+	pixels := uv.NewScreenBuffer(pane.Dx(), pane.Dy())
+	if f.scroll == 0 {
+		// The emulator draws itself, cell for cell, with nothing re-parsed on
+		// the way.
+		f.sess.drawPane(pixels, pixels.Bounds())
+	} else {
+		// Scrolled back is the one thing the emulator will not draw: what is
+		// wanted is partly its scrollback, which is lines rather than a
+		// screen.
+		for i, line := range f.sess.paneLines(f.scroll, pane.Dy()) {
+			uv.NewStyledString(line).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
+		}
+	}
+	blit(buf, pixels, pane.Min.X, pane.Min.Y)
+
+	f.write(buf, 0, f.title())
+	f.write(buf, f.height-1, f.hint())
+
+	view.Content = buf.Render()
 	if !f.command && f.scroll == 0 {
 		pos := f.sess.paneCursor()
-		if pos.Y < rows {
-			view.Cursor = tea.NewCursor(pos.X, pos.Y)
+		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
+			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
 		}
 	}
 	return view
 }
 
-// status is the one row the frame keeps. It says what the session is when
-// there is nothing to do, and what the keys are when there is.
-func (f frame) status() string {
-	var s string
-	switch {
-	case f.command:
-		s = "^D  d detach · q end session · k/j scroll · esc cancel"
-	case f.scroll > 0:
-		s = fmt.Sprintf("%s · scrolled back %d · ^D", f.sess.Name(), f.scroll)
-	default:
-		w, h := f.sess.paneSize()
-		s = fmt.Sprintf("%s · %s · %d×%d · ^D", f.sess.Name(), viewers(f.sess.count()), w, h)
+// blit copies src into dst with its top-left corner at x, y.
+func blit(dst, src uv.ScreenBuffer, x, y int) {
+	for row := range src.Bounds().Dy() {
+		for col := range src.Bounds().Dx() {
+			dst.SetCell(x+col, y+row, src.CellAt(col, row))
+		}
+	}
+}
+
+// write puts a styled run into one of the border rows, two columns in so it
+// reads as a label on the line rather than as a corner that went wrong.
+//
+// Drawn into a buffer of its own and copied in, for the same reason the pane
+// is: a run drawn straight into the frame's buffer clears what it does not
+// cover and clips only at the screen, so a label shorter than its area would
+// erase the border to its right and a longer one would erase the corner. Sized
+// here, it truncates instead — a long container name loses its tail and the
+// box stays a box.
+func (f frame) write(buf uv.ScreenBuffer, y int, s string) {
+	const indent = 2
+
+	room := f.width - indent - 1
+	if room <= 0 {
+		return
+	}
+	label := uv.NewStyledString(s)
+	width := min(label.UnicodeWidth(), room)
+	if width <= 0 {
+		return
 	}
 
-	// Truncated to the window rather than wrapped: a status line that wraps
-	// costs a second row that the pane was drawn assuming it still had, and
-	// the frame would paint over the bottom of the container's screen.
-	if f.width > 0 && len(s) > f.width {
-		s = s[:f.width]
+	cells := uv.NewScreenBuffer(width, 1)
+	label.Draw(cells, cells.Bounds())
+	blit(buf, cells, indent, y)
+}
+
+// title is what the session is, in the shape k9s writes one: the thing, what
+// it is showing, and how big it is.
+func (f frame) title() string {
+	qualifier := viewers(f.sess.count())
+	if f.scroll > 0 {
+		qualifier = fmt.Sprintf("scrolled back %d", f.scroll)
 	}
-	// Dim, so the row reads as the frame's and not as something the container
-	// printed.
-	return "\x1b[2m" + s + "\x1b[0m"
+	w, h := f.sess.paneSize()
+	return nameStyle.Styled(" "+f.sess.Name()) +
+		qualStyle.Styled("("+qualifier+")") +
+		countStyle.Styled(fmt.Sprintf("[%d×%d] ", w, h))
+}
+
+// hint is the keys, in the bottom border: the one that opens the commands, or
+// the commands themselves once it has.
+func (f frame) hint() string {
+	if !f.command {
+		return chipStyle.Styled(" ^D ") + hintStyle.Styled(" commands ")
+	}
+	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
+		chipStyle.Styled(" q ") + hintStyle.Styled(" end ") +
+		chipStyle.Styled(" k/j ") + hintStyle.Styled(" scroll ") +
+		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
 }
 
 // viewers names how many are watching, in the one place it is said.

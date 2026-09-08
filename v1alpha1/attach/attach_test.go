@@ -396,18 +396,19 @@ func TestResize(t *testing.T) {
 	writeFrame(t, c, 4, `{"Width":120,"Height":50}`)
 
 	// The target is told the pane, not the window: the frame keeps
-	// chromeHeight rows of its own, and a container sized to the whole window
-	// would draw its last row underneath the status line.
+	// chromeHeight rows and chromeWidth columns for its border, and a
+	// container sized to the whole window would draw its last row and column
+	// underneath one.
 	//
 	// The session's settled window reaches the target too, and at no fixed
 	// point: a frame has no terminal to measure, so it answers the renderer's
 	// empty first report with whatever the session had settled on, and that
 	// answer races the page's own first size. Skipped rather than ordered,
 	// because which of them lands first is not a property worth pinning.
-	settled := remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows - chromeHeight}
+	settled := remotecommand.TerminalSize{Width: defaultCols - chromeWidth, Height: defaultRows - chromeHeight}
 	want := []remotecommand.TerminalSize{
-		{Width: 100, Height: 40 - chromeHeight},
-		{Width: 120, Height: 50 - chromeHeight},
+		{Width: 100 - chromeWidth, Height: 40 - chromeHeight},
+		{Width: 120 - chromeWidth, Height: 50 - chromeHeight},
 	}
 	for _, w := range want {
 		for {
