@@ -346,11 +346,11 @@ func (f frame) origin() string {
 
 // title is what the shell says it is doing, centred along the top.
 //
-// It is the terminal's own title, reported the way any terminal emulator would
-// read it: the command line while one runs, and whatever the prompt calls
-// itself when none does. Shown as it arrives rather than interpreted — there
-// is no marker distinguishing the two, and a guess about which is which would
-// be a guess about somebody's shell configuration.
+// It is the terminal's own tab title, read the way any terminal emulator reads
+// it to name a tab: the running command's name, and the directory the prompt
+// is sitting in when nothing is running. Shown as it arrives rather than
+// interpreted — there is no marker distinguishing the two, and a guess about
+// which is which would be a guess about somebody's shell configuration.
 //
 // Blank on a shell that never sets one, which is most of them without a prompt
 // framework. That is the honest answer and costs the row nothing.

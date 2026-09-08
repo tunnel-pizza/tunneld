@@ -129,13 +129,20 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	}
 
 	// What the shell says it is doing, if it says anything. Oh My Zsh and
-	// friends set the terminal title from preexec and reset it from precmd, so
-	// it carries the command line while one runs and the prompt's idea of
-	// where it is when none does. A shell that sets no title leaves this empty
-	// and the frame simply has nothing to show.
+	// friends set the terminal's titles from preexec and reset them from
+	// precmd, so they carry the running command while one runs and the
+	// prompt's idea of where it is when none does. A shell that sets none
+	// leaves this empty and the frame simply has nothing to show.
 	//
-	// The emulator already parses it; this is only what catches it instead of
-	// letting it fall on the floor.
+	// The tab title rather than the window title — OSC 1 rather than OSC 2 —
+	// which is the same fact said shorter. The window title is the whole
+	// command line and, at rest, user@host:~, which in a frame that already
+	// names the host and the origin is mostly things said twice. The tab title
+	// is the command's own name and the bare directory: the part that changes,
+	// and the part that fits.
+	//
+	// The emulator already parses both; this is only what catches one instead
+	// of letting the other fall on the floor.
 	//
 	// Stashed under a lock of its own rather than mu, and that is not
 	// fastidiousness. This runs from inside the emulator's write, which is to
@@ -143,7 +150,7 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	// reaches for that same emulator lock — the two orders that deadlock.
 	// Nothing is woken from here either: a title only ever changes as part of
 	// output, and sink wakes everybody the moment that write returns.
-	em.SetCallbacks(vt.Callbacks{Title: s.setTitle})
+	em.SetCallbacks(vt.Callbacks{IconName: s.setTitle})
 
 	// The emulator answers what a real terminal answers — a device-attributes
 	// query, a cursor-position report — and those replies have to reach the
@@ -442,7 +449,7 @@ func (s *session) setTitle(title string) {
 }
 
 // titled is what the shell last called this terminal, or "" if it has never
-// said. It is the command line while one is running, on a shell that reports
+// said. It is the command's name while one is running, on a shell that reports
 // one at all.
 func (s *session) titled() string {
 	s.titleMu.Lock()

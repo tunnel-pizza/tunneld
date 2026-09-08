@@ -150,23 +150,30 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 // TestTitleFollowsTheShell pins that the frame can say what the container is
 // doing, which the container is the only one who knows.
 //
-// A prompt framework — Oh My Zsh, and most others — sets the terminal title
-// from preexec and resets it from precmd, so the stream carries the command
-// line while a command runs and the prompt's own idea of itself when none
-// does. It is the same thing a terminal emulator reads to name its tab. It
-// arrives as an ordinary escape in the container's output, so the emulator was
-// already parsing it and dropping it on the floor.
+// A prompt framework — Oh My Zsh, and most others — sets the terminal's titles
+// from preexec and resets them from precmd, so the stream carries the running
+// command while one runs and the prompt's own idea of itself when none does.
+// It is the same thing a terminal emulator reads to name its tab. It arrives
+// as an ordinary escape in the container's output, so the emulator was already
+// parsing it and dropping it on the floor.
 func TestTitleFollowsTheShell(t *testing.T) {
 	target := newFakeTarget("api", true, true)
 	// Exactly what a zsh with Oh My Zsh writes when `sleep 2` is run: the
 	// window title, then the tab title.
+	// Exactly what a zsh with Oh My Zsh writes when `sleep 2` is run: the
+	// window title carrying the whole command line, then the tab title
+	// carrying its name. Both are sent, and the frame wants the second — so
+	// the window title being the wrong one is half of what this pins.
 	target.out = "\x1b]2;sleep 2\a\x1b]1;sleep\a"
 	s := serveFake(t, target)
 
 	deadline := time.Now().Add(5 * time.Second)
-	for s.session.titled() != "sleep 2" {
+	for s.session.titled() != "sleep" {
+		if got := s.session.titled(); got == "sleep 2" {
+			t.Fatalf("title = %q, want the tab title %q rather than the window title", got, "sleep")
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("title = %q, want the command line the shell reported", s.session.titled())
+			t.Fatalf("title = %q, want the command name the shell reported", s.session.titled())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
