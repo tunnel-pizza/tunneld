@@ -1122,6 +1122,31 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	target.awaitSize(t, settled)
 }
 
+// TestMirrorNeedsExactlyOneOrigin pins the other half of the same gate, on the
+// side that would have to draw. A console has no way to say which of several
+// terminals it is watching and no room to watch them at once — the public
+// hostname and its routing parameter are what several origins are for.
+func TestMirrorNeedsExactlyOneOrigin(t *testing.T) {
+	targets := &stubTargets{scheme: v1.DockerScheme}
+	display := mustURLs(t, "dockerd://api", "dockerd://db")
+
+	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	mirror, ok := closer.(interface {
+		Mirror(context.Context, io.Reader, io.Writer) error
+	})
+	if !ok {
+		t.Fatal("the closer offers no Mirror")
+	}
+	if err := mirror.Mirror(t.Context(), strings.NewReader(""), &bytes.Buffer{}); err == nil {
+		t.Error("mirrored two origins onto one console, want a refusal")
+	}
+}
+
 // TestQuitReachesTheBinder pins the path from a viewer's keystroke to the
 // thing that can act on it. The frame asks its Server, the Server says so on
 // Quit, and the closer Bind handed back is where the command is listening —

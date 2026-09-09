@@ -1270,6 +1270,37 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 }
 
+// TestMirrorableRefusesWhatItCannotDraw pins the gate on handing the console a
+// terminal, which is mostly a list of times not to.
+//
+// The costly one is a stream that is not a terminal: stdout is a machine
+// interface, one public URL per origin, and a frame drawn into a pipe is a
+// wall of escapes where a script expected an address. Every case here runs
+// with the test's own buffers, which are not terminals — so the last two rows
+// are the ones that would be true on a console, and false here for that reason
+// alone.
+func TestMirrorableRefusesWhatItCannotDraw(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+	}{
+		{"nothing to show", nil},
+		{"an http origin is somebody else's server", []string{"http://localhost:3000"}},
+		{"a container beside another origin", []string{"dockerd://api", "http://localhost:3000"}},
+		{"two terminals and one console", []string{"dockerd://api", "dockerd://db"}},
+		{"one container, but into a buffer", []string{"dockerd://api"}},
+		{"one program, but into a buffer", []string{"file:///bin/zsh"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sink bytes.Buffer
+			b := New(WithOrigin(tc.in...), WithStdout(&sink), WithStderr(&sink))
+			if mirrorable(b.Command(), b.Origins()) {
+				t.Error("mirrorable() = true, want false — nothing here can be drawn on")
+			}
+		})
+	}
+}
+
 // TestAViewerCanEndTheRun pins the last link of the frame's exit: a keystroke
 // in a browser tab stops the process.
 //

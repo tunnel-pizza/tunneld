@@ -514,6 +514,45 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	return nil
 }
 
+// viewLocally puts a viewer on the console tunneld was started from, which is
+// the same viewer a browser gets and joins the same session: one emulator, one
+// viewer count, keystrokes interleaved.
+//
+// Two things a page needs are left out. The colour profile and TERM are stated
+// outright for a websocket because detection through a socket answers NoTTY; a
+// real terminal describes itself and is allowed to. And sizes arrive from
+// SIGWINCH rather than from a resize channel, which is Bubble Tea's own job on
+// a real terminal — so follow is given none, and stays only for what it does
+// besides: ending this viewer when the run does.
+//
+// Returns when the viewer leaves or the run ends. The console is restored
+// either way, which is Bubble Tea's doing and the reason detaching has to go
+// through it rather than around it.
+func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.revive()
+	width, height := s.window()
+
+	v := &viewer{wake: make(chan struct{}, 1)}
+	v.prog = tea.NewProgram(
+		frame{sess: s, v: v, width: width, height: height},
+		tea.WithContext(ctx),
+		tea.WithInput(in),
+		tea.WithOutput(out),
+	)
+
+	s.join(v)
+	defer s.part(v)
+
+	go s.follow(ctx, cancel, v, nil)
+	go s.redraw(ctx, v)
+
+	_, err := v.prog.Run()
+	return err
+}
+
 // redraw turns the wake channel into the message the frame updates on. It is a
 // goroutine rather than a direct send from sink so that a frame busy rendering
 // never blocks the emulator behind it.

@@ -302,6 +302,18 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 // derived from n. Same length and order as display, like everything else here.
 type bound []boundOrigin
 
+// Mirror draws the one origin bound here on the given streams.
+//
+// Only when there is exactly one. With several, a console has no way to say
+// which it is watching and no room to watch them at once — that is what the
+// public hostname and its routing parameter are for.
+func (b bound) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+	if len(b) != 1 {
+		return fmt.Errorf("attach: %d origins to mirror, want exactly one", len(b))
+	}
+	return b[0].srv.Mirror(ctx, in, out)
+}
+
 // Quit closes when a viewer of any of these origins asks the run to end. One
 // channel for all of them, because what they are asking for is the process,
 // which there is only one of.
@@ -380,6 +392,12 @@ type Server struct {
 	// and what acts on it is the command, which is watching through Quit.
 	quitOnce sync.Once
 	quit     chan struct{}
+}
+
+// Mirror draws this origin's terminal on the given streams, as one more viewer
+// of the same session. It returns when that viewer leaves or the run ends.
+func (s *Server) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+	return s.session.viewLocally(ctx, in, out)
 }
 
 // Quit closes when a viewer has asked the run to end. The channel is never

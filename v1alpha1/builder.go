@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"golang.org/x/term"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -567,6 +569,40 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					b.cache.Save(b.cacheDirs.GetSlice(), log)
 				}
 
+				// The console this was started from is a viewer too, when
+				// there is exactly one terminal to show and a terminal to
+				// show it on.
+				//
+				// One origin, because a console has no way to say which of
+				// several it is watching — that is what the routing parameter
+				// is for. A served origin, because an http one is somebody
+				// else's server and has no terminal. And a real terminal on
+				// both ends of the command's own streams, because a frame
+				// drawn into a pipe is a wall of escapes where a script
+				// expected a URL.
+				//
+				// Started after the addresses are reported, so what a person
+				// came for is on the screen before the frame takes it, and
+				// left behind when it ends: a detach gives the console back
+				// and the tunnel goes on without it.
+				if mirror, ok := closeOrigins.(Mirror); ok && mirrorable(cmd, origins) {
+					// The logs would land on the screen the frame is drawing.
+					// They are still kept — ^K l is where they go instead.
+					if b.recent != nil {
+						b.recent.Mute(true)
+					}
+					go func() {
+						defer func() {
+							if b.recent != nil {
+								b.recent.Mute(false)
+							}
+						}()
+						if err := mirror.Mirror(ctx, cmd.InOrStdin(), stdout); err != nil && ctx.Err() == nil {
+							log.Debug("the console stopped showing the terminal", "error", err)
+						}
+					}()
+				}
+
 				// A viewer asking to end the run is the third way this
 				// stops, beside a signal and the tunnel failing. Nothing is
 				// wrong when it happens, so it reads as a clean exit — the
@@ -872,6 +908,29 @@ func (b *BuilderImpl) Origins() []*url.URL {
 		origins = append(origins, u)
 	}
 	return origins
+}
+
+// mirrorable reports whether the console this command was given can be handed
+// a terminal: one origin, served rather than proxied, and a real terminal on
+// both of the command's own streams.
+//
+// The streams are checked rather than os.Stdin and os.Stdout, because an
+// embedding program redirects them and a frame drawn into whatever it
+// redirected to is not a terminal anybody asked for.
+func mirrorable(cmd *cobra.Command, origins []*url.URL) bool {
+	if len(origins) != 1 {
+		return false
+	}
+	if _, served := servedSchemes[origins[0].Scheme]; !served {
+		return false
+	}
+	return isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
+}
+
+// isTerminal reports whether a stream is a terminal this process can draw on.
+func isTerminal(stream any) bool {
+	f, ok := stream.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // publicURL is the address origin i answers on, out of n origins: the tunnel's

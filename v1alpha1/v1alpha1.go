@@ -159,6 +159,16 @@ type Announcer interface {
 	Announce(public []string)
 }
 
+// Mirror is a bound origin that can draw its terminal on streams of the
+// caller's choosing — the console tunneld was started from.
+//
+// Discovered on the closer Bind returns, like Announcer and Quitter, and for
+// the same reason. It returns when that viewer leaves or the run ends, and
+// leaves the console as it found it.
+type Mirror interface {
+	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
+}
+
 // Quitter is a bound origin that can be asked, from inside, to end the run.
 //
 // Discovered on the closer Bind returns, the same way Announcer is and for the

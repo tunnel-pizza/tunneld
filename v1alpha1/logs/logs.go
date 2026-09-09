@@ -53,6 +53,7 @@ type RingImpl struct {
 
 	mu    sync.Mutex
 	lines []string
+	muted bool
 }
 
 // New returns a ring that keeps DefaultLines, configured by opts. It handles
@@ -92,10 +93,29 @@ func (r *RingImpl) Enabled(ctx context.Context, level slog.Level) bool {
 // Handle keeps the record as a line and passes it on.
 func (r *RingImpl) Handle(ctx context.Context, rec slog.Record) error {
 	r.keep(line(rec))
-	if r.next == nil {
+	if r.next == nil || r.silent() {
 		return nil
 	}
 	return r.next.Handle(ctx, rec)
+}
+
+// Mute stops records reaching what this wraps, and unmutes again.
+//
+// For a console a terminal is drawing on: stderr writes straight through a
+// full-screen frame, and the frame repaints over them, and neither is
+// readable. The lines are still kept — that is the point of muting rather
+// than dropping the handler — so nothing is lost and the frame's own log view
+// is where they are read instead.
+func (r *RingImpl) Mute(muted bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.muted = muted
+}
+
+func (r *RingImpl) silent() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.muted
 }
 
 // WithAttrs and WithGroup delegate, and return the ring rather than a copy of

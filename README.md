@@ -232,6 +232,31 @@ Every key reaches the container except one:
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 
+### The console you started it from
+
+With exactly one `dockerd://` or `file://` origin, the terminal is drawn on
+your own console too:
+
+```sh
+tunneld zsh
+```
+
+The URL is printed first, then the frame takes the screen — the same frame a
+browser gets, joined to the same session. Both ends see one terminal, count
+each other in the viewer count, and interleave what they type.
+
+`^K d` gives the console back and leaves the tunnel up. `^K x` ends the run.
+There is no `Ctrl-C` for tunneld while the frame is drawing: the console is in
+raw mode, so that keystroke belongs to the program, which is the same thing it
+means in the browser.
+
+Nothing happens unless both of the command's own streams are terminals. stdout
+is a machine interface — one public URL per origin — and a frame drawn into a
+pipe is a wall of escapes where a script expected an address.
+
+While the console is drawing, tunneld's own log lines stop going to it. They
+are still kept, and `^K l` is where to read them.
+
 `l` is the only way to see what tunneld is saying about itself. Those lines go
 to the console it was started on, which is not where a viewer is — so a
 reconnect, a restart, or the edge disowning the hostname would otherwise
