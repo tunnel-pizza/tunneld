@@ -38,7 +38,9 @@ func newFakeOrigin(err error) *fakeOrigin {
 
 func (f *fakeOrigin) Close() error { return nil }
 
-func (f *fakeOrigin) Quit() <-chan struct{} { return f.ended }
+func (f *fakeOrigin) Announce([]string) {}
+
+func (f *fakeOrigin) Done() <-chan struct{} { return f.ended }
 
 func (f *fakeOrigin) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	f.mu.Lock()
@@ -193,7 +195,9 @@ func TestForRefusesWhatItCannotDraw(t *testing.T) {
 // hands back for anything but a single served origin.
 type noOrigin struct{}
 
-func (noOrigin) Close() error { return nil }
+func (noOrigin) Close() error          { return nil }
+func (noOrigin) Announce([]string)     {}
+func (noOrigin) Done() <-chan struct{} { return nil }
 
 // TestDrawHandsOverTheStreamsItWasGiven pins that the console the origin draws
 // on is the one configured, and that a failure is a debug line rather than

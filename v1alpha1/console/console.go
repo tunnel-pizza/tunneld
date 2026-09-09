@@ -19,6 +19,7 @@ import (
 	"os"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"golang.org/x/term"
 )
 
@@ -105,7 +106,7 @@ func WithHint(hint string) Option {
 //
 // A copy, so the seeded original stays a template: what New was given is what
 // outlives a single run, and what this takes is what does not.
-func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer) Screen {
+func (c *ConsoleImpl) For(origins attach.Bound, in io.Reader, out, hintTo io.Writer) Screen {
 	// Two questions, both answered by asking rather than deriving. Whether
 	// there is a terminal to show is the binder's — a closer carries Show
 	// only when it has exactly one served origin, so the assertion is the
@@ -117,13 +118,10 @@ func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer
 	if !ok || !IsTerminal(in) || !IsTerminal(out) {
 		return nil
 	}
-	// A run that a viewer can end tells a detach from an exit: one is going
-	// back to a prompt that will stay, the other to one that is arriving
-	// anyway and wants nothing written over it.
-	var ended <-chan struct{}
-	if quitter, ok := origins.(interface{ Quit() <-chan struct{} }); ok {
-		ended = quitter.Quit()
-	}
+	// A viewer ending the run is how a detach is told from an exit: one is
+	// going back to a prompt that will stay, the other to one that is
+	// arriving anyway and wants nothing written over it.
+	ended := origins.Done()
 	showing := *c
 	showing.terminal, showing.in, showing.out, showing.hintTo, showing.ended = terminal, in, out, hintTo, ended
 	return &showing

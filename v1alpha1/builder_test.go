@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
@@ -714,16 +715,18 @@ func (f *fakeBrowser) Open(ctx context.Context, log v1.Logger, opts ...browser.O
 type fakeBinder struct {
 	err    error
 	closed bool
-	// asked is what a viewer's exit closes. Non-nil makes this binder a
-	// Quitter, which is how the run learns a terminal asked it to stop.
+	// asked is what a viewer's exit closes, and what Done hands back: how the
+	// run learns a terminal asked it to stop.
 	asked chan struct{}
-	// mirrors makes what Bind returns carry Mirror, which is how the real
+	// announced is what Announce was handed.
+	announced []string
+	// mirrors makes what Bind returns carry Show, which is how the real
 	// binder reports a single served origin — the only shape a console can
 	// draw.
 	mirrors bool
 }
 
-func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, io.Closer, error) {
+func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
 	// Carrying Mirror is how the real binder says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
 	// binder itself: a fake that always carried it would mirror every case
@@ -747,7 +750,12 @@ func (mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) erro
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
 
-func (f *fakeBinder) Quit() <-chan struct{} { return f.asked }
+func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
+
+// Announce is what a bound closer is told the public addresses through. Every
+// one of them can be, which is why it is on the type Bind returns rather than
+// an interface a caller has to go looking for.
+func (f *fakeBinder) Announce(public []string) { f.announced = public }
 
 // runHarness is run with every collaborator faked except the two that are
 // pure: the browser's panel half, because its URL and interceptor order are

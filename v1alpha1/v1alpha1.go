@@ -101,7 +101,7 @@ func WithCache(c Cache) Option {
 // is what this run gets shown on: one interface, declared where the console
 // is, named by the package that chooses between it and a tab.
 type Console interface {
-	For(bound io.Closer, in io.Reader, out, hintTo io.Writer) console.Screen
+	For(bound attach.Bound, in io.Reader, out, hintTo io.Writer) console.Screen
 }
 
 // Browser puts the tunnel in front of a person: it answers the bare public
@@ -162,36 +162,7 @@ func WithCounter(c Counter) Option {
 // keeps display's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
-	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, close io.Closer, err error)
-}
-
-// Announcer is a bound origin that can be told the public address it answers
-// on, once the tunnel has one.
-//
-// Discovered on the closer Bind returns rather than required by Binder, and
-// that is an import direction rather than a preference: an implementation
-// lives in a subpackage, the subpackage cannot name a type declared here, and
-// a contract whose method signature mentions one could never be satisfied from
-// there. So the capability is optional in the way http.Flusher is — a binder
-// that has nothing to announce simply is not one.
-//
-// The addresses are indexed the way display was, which is the same rule
-// everything downstream of Bind already follows.
-type Announcer interface {
-	Announce(public []string)
-}
-
-// Quitter is a bound origin that can be asked, from inside, to end the run.
-//
-// Discovered on the closer Bind returns, the same way Announcer is and for the
-// same reason: an implementation lives in a subpackage and cannot name a type
-// declared here. A binder with nothing to ask on simply is not one.
-//
-// The channel closes at most once and carries nothing. What it means is that
-// somebody watching a terminal chose to end the process serving it — the one
-// way out of a terminal you opened from your own machine.
-type Quitter interface {
-	Quit() <-chan struct{}
+	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
 }
 
 // WithConsole replaces the console a run may draw its terminal on. Seeded by

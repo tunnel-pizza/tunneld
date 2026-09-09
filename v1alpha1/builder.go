@@ -561,13 +561,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// where it answers from outside. Each origin gets its own
 	// address rather than the bare one, because with several of
 	// them it is the routing parameter that reaches this one.
-	if announcer, ok := closeOrigins.(Announcer); ok {
-		addresses := make([]string, len(origins))
-		for i := range origins {
-			addresses[i] = publicURL(public, i, len(origins))
-		}
-		announcer.Announce(addresses)
+	addresses := make([]string, len(origins))
+	for i := range origins {
+		addresses[i] = publicURL(public, i, len(origins))
 	}
+	closeOrigins.Announce(addresses)
 
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
@@ -672,14 +670,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// Asked for here rather than earlier, now that the only other thing that
 	// wanted it asks the closer itself: a console tells a detach from an exit
 	// by the same channel, and gets it the same way.
-	var asked <-chan struct{}
-	if quitter, ok := closeOrigins.(Quitter); ok {
-		asked = quitter.Quit()
-	}
 	select {
 	case <-ctx.Done():
 	case <-tun.Done():
-	case <-asked:
+	case <-closeOrigins.Done():
 		log.Info("a viewer asked this run to end; stopping")
 		return nil
 	}

@@ -589,6 +589,15 @@ Two things there will bite if you change them without knowing why:
   package that chooses between them is the one that names the other, so
   `console.Screen` is declared once rather than twice.
 
+  **`Bind` hands back an `attach.Bound`, not an `io.Closer` with secrets.**
+  Close, `Announce` and `Done` are on the type, because every bound list can
+  do all three — they were spelled as optional interfaces discovered by type
+  assertion, which is a lie a caller has to write an `if` around. Exactly one
+  thing is conditional: `Show`, which only a single served origin carries, and
+  that one stays an assertion because it is the only one that can answer no.
+  `Done` rather than `Quit` so the select it belongs in reads the same way
+  three times: a context is done, a tunnel is done, and so are the origins.
+
   **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
   `Terminal` is what the binder hands back, `Screen` is what a run was started
   on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them

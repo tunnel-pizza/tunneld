@@ -1166,7 +1166,7 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 // thing that can act on it. The frame asks its Server, the Server says so on
 // Quit, and the closer Bind handed back is where the command is listening —
 // which is the only reason a key inside a browser tab can end a process.
-func TestQuitReachesTheBinder(t *testing.T) {
+func TestDoneReachesTheBinder(t *testing.T) {
 	targets := &stubTargets{scheme: v1.DockerScheme}
 	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "dockerd://db")
 
@@ -1176,11 +1176,9 @@ func TestQuitReachesTheBinder(t *testing.T) {
 	}
 	defer func() { _ = closer.Close() }()
 
-	quitter, ok := closer.(interface{ Quit() <-chan struct{} })
-	if !ok {
-		t.Fatal("the closer offers no Quit; the command has nothing to watch")
-	}
-	asked := quitter.Quit()
+	// No assertion: Bound carries Done, because every bound list can say when
+	// a viewer asked the run to end. Only Show is conditional.
+	asked := closer.Done()
 
 	select {
 	case <-asked:

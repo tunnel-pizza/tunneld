@@ -252,7 +252,7 @@ func WithBanner(banner string) Option {
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, io.Closer, error) {
+func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, Bound, error) {
 	dialable := make([]*url.URL, 0, len(display))
 	var servers bound
 	for at, origin := range display {
@@ -315,6 +315,21 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.bound.show(ctx, in, out)
 }
 
+// Bound is what a Bind call hands back: the servers it started, and the three
+// things every one of them can do — be closed, be told the public addresses,
+// and say when a viewer has asked the run to end.
+//
+// None of those is conditional, which is why they are here rather than
+// discovered by type assertion one at a time. Exactly one thing is: a bound
+// list of one served origin also carries Show, since that is the only shape a
+// console can put on a screen. That one stays an assertion, because it is the
+// only one that can answer no.
+type Bound interface {
+	io.Closer
+	Announce(public []string)
+	Done() <-chan struct{}
+}
+
 // bound is every attach server a Bind call started, with the place in the
 // origin list each of them took.
 //
@@ -337,9 +352,13 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return b[0].srv.Show(ctx, in, out)
 }
 
-// Quit closes when a viewer of any of these origins asks the run to end. One
+// Done closes when a viewer of any of these origins asks the run to end. One
 // channel for all of them, because what they are asking for is the process,
 // which there is only one of.
+//
+// Named for what a caller does with it rather than what fills it, so the
+// select it belongs in reads the same way three times over: a context is
+// done, a tunnel is done, and so is this.
 //
 // The watchers live as long as the origins do, which is as long as the run: a
 // closer that has been closed has nothing left to watch for, and a run that is
@@ -350,13 +369,13 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 // Each call gets watchers and a channel of its own — every one of them closes
 // on the same ask, and they cost a goroutine per served origin, which is one
 // in the only case where two callers exist.
-func (b bound) Quit() <-chan struct{} {
+func (b bound) Done() <-chan struct{} {
 	asked := make(chan struct{})
 	var once sync.Once
 	for _, o := range b {
 		go func(srv *Server) {
 			select {
-			case <-srv.Quit():
+			case <-srv.Done():
 				once.Do(func() { close(asked) })
 			case <-srv.ctx.Done():
 			}
@@ -386,11 +405,10 @@ func (b bound) Close() error {
 // Announce gives each server the public address it answers on, taken from
 // public by the index the origin had.
 //
-// It is what the root's Announcer asks for. Discovered by assertion rather
-// than named in the Binder contract, because this package cannot refer to that
-// contract's types — v1alpha1 imports attach, not the other way round — so the
-// closer Bind hands back is asked whether it can do this rather than required
-// to.
+// It is what the root's Announce reaches. Declared on Bound, which the Binder
+// contract names, so a caller has it rather than having to ask for it: every
+// bound list can be told its addresses, and an interface that says so is
+// better than one a caller discovers by type assertion and a happy guess.
 //
 // A short list is not an error. It means the caller had fewer addresses than
 // origins, and a server without one simply has nothing to show.
@@ -431,7 +449,7 @@ func (s *Server) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // Quit closes when a viewer has asked the run to end. The channel is never
 // sent on and closes at most once, so a caller may select on it forever.
-func (s *Server) Quit() <-chan struct{} { return s.quit }
+func (s *Server) Done() <-chan struct{} { return s.quit }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
 // returning as soon as the port is live so the tunnel never proxies to a
