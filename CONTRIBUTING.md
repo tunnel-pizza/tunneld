@@ -23,7 +23,7 @@ Deep-link by filename; line numbers will drift.
 | Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `IsExecutable`         | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)              |
+| Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -527,6 +527,15 @@ Two things there will bite if you change them without knowing why:
   kill-to-end-of-line, which is the cheaper of the two keys on offer: `Ctrl-D`
   reaches the shell and ends a shared session for everyone, and
   `frame.commanded`'s `q` is how to ask for that on purpose.
+- **Software flow control is off on a pty this package creates.** A pty arrives
+  with `IXON` set, so `Ctrl-S` never reaches the program: the line discipline
+  eats it and stops the program's writes, which freezes the screen for every
+  viewer at once with the session perfectly healthy behind it. Flow control is
+  there to stop a sender overrunning a serial line, and there is no serial line
+  — the path is a websocket over a tunnel with a pipe and an emulator in it,
+  all of which buffer or block on their own — so `shell.unmeter` clears `IXON`,
+  `IXOFF` and `IXANY` before the program writes a byte. Only available for a
+  program origin: a container's tty belongs to the container.
 - **Keys go to the container through the emulator, not around it.**
   `session.sendKey` hands the decoded key to `vt`, which encodes what a
   terminal in the app's current modes would send; bytes written straight to

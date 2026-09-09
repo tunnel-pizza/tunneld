@@ -225,6 +225,13 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	if err != nil {
 		return fmt.Errorf("run %s: %w", a.ref, err)
 	}
+	// Software flow control off before the program can write a byte, so
+	// nobody's Ctrl-S freezes the screen for everybody else. Not fatal if it
+	// fails: what is lost is a key behaving oddly, where refusing to run the
+	// program at all would lose the origin.
+	if err := unmeter(term); err != nil {
+		a.log.Debug("could not turn off flow control", "program", a.ref, "error", err)
+	}
 
 	// Published under the lock so Close can reach them, and refused outright
 	// if Close already happened: a target closed while the program was
