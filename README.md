@@ -232,6 +232,26 @@ Every key reaches the container except one:
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 
+### No arguments at all
+
+```sh
+tunneld
+```
+
+exposes `$SHELL` — the one origin every machine has, needing no port to be
+listening. It is the ordinary program path, so the terminal is drawn on your
+console as well:
+
+```
+https://thick-firefly.tunneled.pizza/
+  -> file:///bin/zsh
+```
+
+An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
+it. A `$SHELL` naming a program that is not there is dropped rather than read
+as an address, so what you get is the message about passing an origin and not a
+tunnel to nothing.
+
 ### The console you started it from
 
 With exactly one `dockerd://` or `file://` origin, the terminal is drawn on
@@ -244,6 +264,11 @@ tunneld zsh
 The URL is printed first, then the frame takes the screen — the same frame a
 browser gets, joined to the same session. Both ends see one terminal, count
 each other in the viewer count, and interleave what they type.
+
+No browser opens for it, `--open` or not: the terminal is already on a screen
+you are looking at, and a tab on top of it is a second copy of the one thing
+you can see — counted as another viewer, competing for the same keystrokes.
+Paste the URL somewhere if you want it there too.
 
 `^K d` gives the console back and leaves the tunnel up — the run says how to
 stop it once you are looking at a prompt again. `^K x` ends the run.

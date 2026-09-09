@@ -229,7 +229,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		}
 
 		cmd := &cobra.Command{
-			Use:   name + " <origin> [origin ...]",
+			Use:   name + " [origin ...]",
 			Short: "Expose local origins to the public internet through a quick tunnel",
 			Long: name + ` exposes already-running local services to the public internet
 through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
@@ -252,6 +252,11 @@ a dev server's live reload, say. A handshake carries nothing that says which
 origin it belongs to, so without the marker it goes to the first one:
 
   ` + name + ` :4000 http+ws://localhost:5173
+
+With no arguments at all — and nothing in the environment or seeded by an
+embedding program — it exposes this machine's own shell, $SHELL, the same way:
+
+  ` + name + `
 
 The public URLs go to stdout, the origin map and every log line to stderr.` + seeded,
 			// Origins are the arguments, so any number is accepted here and
@@ -555,7 +560,36 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 						fmt.Fprintf(stderr, "  -> %s\n", origin)
 					}
 				}
-				if !b.noOpen {
+
+				// The console this was started from is a viewer too, when
+				// there is exactly one terminal to show and a terminal to
+				// show it on.
+				//
+				// One origin, because a console has no way to say which of
+				// several it is watching — that is what the routing parameter
+				// is for. A served origin, because an http one is somebody
+				// else's server and has no terminal. And a real terminal on
+				// both ends of the command's own streams, because a frame
+				// drawn into a pipe is a wall of escapes where a script
+				// expected a URL.
+				//
+				// Started after the addresses are reported, so what a person
+				// came for is on the screen before the frame takes it, and
+				// left behind when it ends: a detach gives the console back
+				// and the tunnel goes on without it.
+				mirror, mirroring := closeOrigins.(Mirror)
+				mirroring = mirroring && mirrorable(cmd, origins)
+
+				// Not with a browser in front of it. Mirroring already puts
+				// the terminal on a screen the person is looking at, and a
+				// tab opening on top of it is a second copy of the one thing
+				// they can already see — counted as another viewer, competing
+				// for the same keystrokes.
+				//
+				// The field is left alone rather than set: it is bound to
+				// --no-open, and a builder whose Command is called twice must
+				// not carry one run's terminal into the next one's flags.
+				if !b.noOpen && !mirroring {
 					// One page, never a fan of tabs: the panel when there is
 					// one, since it reaches every origin, and otherwise the
 					// default origin itself.
@@ -582,24 +616,8 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					asked = quitter.Quit()
 				}
 
-				// The console this was started from is a viewer too, when
-				// there is exactly one terminal to show and a terminal to
-				// show it on.
-				//
-				// One origin, because a console has no way to say which of
-				// several it is watching — that is what the routing parameter
-				// is for. A served origin, because an http one is somebody
-				// else's server and has no terminal. And a real terminal on
-				// both ends of the command's own streams, because a frame
-				// drawn into a pipe is a wall of escapes where a script
-				// expected a URL.
-				//
-				// Started after the addresses are reported, so what a person
-				// came for is on the screen before the frame takes it, and
-				// left behind when it ends: a detach gives the console back
-				// and the tunnel goes on without it.
-				mirror, mirroring := closeOrigins.(Mirror)
-				mirroring = mirroring && mirrorable(cmd, origins)
+				// Decided above, drawn here: the addresses are reported, the
+				// cache is written, and the screen is free to be taken.
 				if mirroring {
 					// The logs would land on the screen the frame is drawing.
 					// They are still kept — ^K l is where they go instead.
@@ -822,6 +840,27 @@ func (b *BuilderImpl) Origins() []*url.URL {
 	}
 	if args := b.Command().Flags().Args(); len(args) > 0 {
 		settled = args
+	}
+
+	// Nothing to expose is still a question with an answer: the shell of the
+	// person who typed it. It is the one origin every machine has, it needs no
+	// port to be listening, and tunneld already knows how to serve a program.
+	//
+	// Resolved here rather than left for the loop below, because the loop's
+	// fallback for a word it cannot resolve is to read it as an address —
+	// which turns a $SHELL naming a program that is not there into a proxy to
+	// http://localhost/bin/nope, a tunnel to nothing that reports no problem.
+	// Dropping it instead leaves the count at zero, and zero has a message
+	// that names the lever.
+	if len(settled) == 0 {
+		if sh := os.Getenv("SHELL"); sh != "" {
+			if path, ok := shell.Resolve(sh); ok {
+				log.Info("no origin given; exposing this machine's shell", "shell", path)
+				settled = append(settled, path)
+			} else {
+				log.Warn("not exposing a shell", "shell", sh, "reason", "$SHELL names no program that can be run")
+			}
+		}
 	}
 
 	origins := make([]*url.URL, 0, len(settled))

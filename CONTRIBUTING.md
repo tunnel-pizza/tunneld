@@ -551,6 +551,12 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **Zero origins means `$SHELL`, resolved before it is adopted.** The parse
+  loop's fallback for a word it cannot resolve is to read it as an address, so
+  an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
+  a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
+  failure leaves the count at zero, which already has a message naming the
+  lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The console is a viewer, and the gate is where the care is.**
   `session.viewLocally` is `AttachContainer` without the two things that exist
   only for a websocket: the stated colour profile and TERM, which a real
@@ -560,7 +566,11 @@ Two things there will bite if you change them without knowing why:
   whether to draw at all is `mirrorable` in the builder: one origin, a served
   scheme, and a terminal on both of the command's own streams — checked there
   and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
-  them.
+  them. It is decided before the browser rather than beside the frame, because
+  the browser asks about it: a mirrored run opens no tab, `--open` or not. The
+  answer gates that `if` and never writes `b.noOpen`, which is bound to
+  `--no-open` — a builder whose `Command` is called twice must not carry one
+  run's terminal into the next one's flags.
 - **A drawing console mutes the log ring.** stderr writes straight through a
   full-screen frame. `recent.Mute(true)` stops records reaching the handler
   while the ring keeps every line, so nothing is lost and `^K l` is where they

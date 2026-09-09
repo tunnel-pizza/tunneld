@@ -36,15 +36,23 @@ func build(t *testing.T) string {
 }
 
 // strippedEnv is the test process's environment with every TUNNELD_ variable
-// removed. A variable that happens to be set in the developer's shell must not
-// change what a case asserts, and a live case must not inherit a cache
-// directory pointing at that developer's own tunnels.
+// removed, and SHELL with them. A variable that happens to be set in the
+// developer's shell must not change what a case asserts, and a live case must
+// not inherit a cache directory pointing at that developer's own tunnels.
+//
+// SHELL is stripped because it is an origin now: a run given nothing else
+// exposes it. Left in, "no origin at all" would not be a refused invocation on
+// any machine a person or a runner ever uses — it would mint a hostname and
+// put an interactive shell behind it, and the case asserting a clean refusal
+// would hang until the suite's timeout with a public shell open the whole
+// time. Cases that want the fallback set SHELL back through runEnv.
 func strippedEnv() []string {
 	env := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "TUNNELD_") {
-			env = append(env, kv)
+		if strings.HasPrefix(kv, "TUNNELD_") || strings.HasPrefix(kv, "SHELL=") {
+			continue
 		}
+		env = append(env, kv)
 	}
 	return env
 }
@@ -105,7 +113,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--no-open", "--multiview", "tunneld <origin> [origin ...]"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--no-open", "--multiview", "tunneld [origin ...]"}},
 	}
 
 	for _, tc := range cases {
@@ -139,6 +147,10 @@ func TestRefusedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
+		// With nothing settled anywhere, the last thing tried is $SHELL —
+		// which strippedEnv has removed, so there is genuinely nothing left
+		// and the refusal is reachable. That is the only way it is: on a
+		// machine with a shell, no arguments is a valid invocation.
 		{"no origin at all", nil, "TUNNELD_ORIGINS"},
 		// An unusable origin is dropped rather than refused, so a run whose
 		// only origin was unusable is refused for having none — the same

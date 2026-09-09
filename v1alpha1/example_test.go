@@ -28,7 +28,7 @@ func ExampleNew_multipleOrigins() {
 	).Command()
 
 	fmt.Println(cmd.Use)
-	// Output: tunneld <origin> [origin ...]
+	// Output: tunneld [origin ...]
 }
 
 // WithName mounts tunneld under another program's verb, so an embedding CLI
