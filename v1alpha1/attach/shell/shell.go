@@ -36,8 +36,9 @@ import (
 // than beside the interfaces: attach cannot import this package, since this one
 // imports attach for the contract it implements.
 var (
-	_ attach.Target  = (*TargetImpl)(nil)
-	_ attach.Targets = (*TargetsImpl)(nil)
+	_ attach.Target     = (*TargetImpl)(nil)
+	_ attach.Targets    = (*TargetsImpl)(nil)
+	_ attach.Repeatable = (*TargetImpl)(nil)
 )
 
 // Resolve answers whether s names a program this machine can run, and with
@@ -167,6 +168,19 @@ func (a *TargetImpl) TTY() bool { return true }
 // Stdin is always true, for the same reason TTY is: the page is a terminal,
 // and a terminal that cannot be typed into is a log viewer.
 func (a *TargetImpl) Stdin() bool { return true }
+
+// Repeatable is true while the program is still there to run. Each attach
+// starts it — AttachContainer builds the command itself — so a second one is a
+// second run rather than a resumed one, which is what lets an origin outlive
+// the program that was serving it.
+//
+// The path is checked again rather than remembered: a program uninstalled
+// since the origin was resolved cannot be run, and answering yes would trade a
+// terminal that says the program ended for one that fails to start it.
+func (a *TargetImpl) Repeatable() bool {
+	_, err := os.Stat(a.path)
+	return err == nil
+}
 
 // Close ends the program and releases its terminal. It tolerates a second
 // call, which it has to: Server.Close calls it unconditionally from both the

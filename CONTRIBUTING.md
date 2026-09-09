@@ -527,6 +527,20 @@ Two things there will bite if you change them without knowing why:
   kill-to-end-of-line, which is the cheaper of the two keys on offer: `Ctrl-D`
   reaches the shell and ends a shared session for everyone, and
   `frame.commanded`'s `q` is how to ask for that on purpose.
+- **A viewer arriving after the run ended starts the next one.** Only for a
+  target that implements `attach.Repeatable` and says yes, which today is a
+  program: its origin is a path, so running it again is as well defined as
+  running it the first time. `session.stream` builds one run — the pipe, the
+  replies goroutine, the `done` channel — and `session.revive` builds another,
+  which is why `stdin` and `done` are guarded by `mu` and read through
+  `ended()` rather than off the field. The screen is reset with RIS rather than
+  replaced, so every viewer keeps drawing the same emulator; a screen carrying
+  the last program's output would claim a state the new one was never in. A
+  container implements none of this: once PID 1 exits there is nothing to
+  attach to, and the frozen final screen is the honest thing to serve.
+- **`s.Target.AttachContainer`, never `s.AttachContainer`.** A session has an
+  `AttachContainer` of its own — the per-viewer one — so the embedded Target's
+  is shadowed, and the short spelling has the session attach to itself.
 - **Software flow control is off on a pty this package creates.** A pty arrives
   with `IXON` set, so `Ctrl-S` never reaches the program: the line discipline
   eats it and stops the program's writes, which freezes the screen for every

@@ -267,6 +267,13 @@ keystrokes reach it, and resizing the browser resizes it. Nothing replays when
 the page opens — unlike a container, it has not been running since before you
 looked.
 
+**A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
+key the program quits on, or simply finishing — the origin stays up, and the
+next visit runs it once more on a clean screen. That is a new program and not a
+resumed one: nothing it had open before is still open. A container cannot be
+offered this, since once its PID 1 has exited there is nothing left to attach
+to.
+
 It is an origin like any other, so it takes an index, gets a multiview tile,
 frames itself as `file:///usr/bin/htop`, and mixes freely with the rest:
 

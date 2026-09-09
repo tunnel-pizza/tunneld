@@ -96,6 +96,23 @@ type Target interface {
 	Close() error
 }
 
+// Repeatable is a Target that can be attached to more than once, because each
+// attach starts it rather than resuming it.
+//
+// Discovered on the Target rather than required by it, the way http.Flusher is:
+// most targets are not repeatable and say so by not implementing this. A
+// container is the example — once its PID 1 has exited there is nothing left
+// to attach to — and a local program is the counter-example, since its origin
+// is a path and running it again is exactly as well defined as running it the
+// first time.
+//
+// The method answers rather than merely existing so that a provider can decide
+// per target: a program whose path has since been removed is no more
+// repeatable than a container.
+type Repeatable interface {
+	Repeatable() bool
+}
+
 // Targets opens an origin's reference as a Target. It is the half of the
 // provider contract the binder depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider

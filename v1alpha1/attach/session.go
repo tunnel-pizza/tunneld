@@ -63,15 +63,21 @@ const scrollbackLines = 1000
 type session struct {
 	Target
 
+	// ctx is the origin's own lifetime, from Serve. Held because a run can
+	// outlive the viewer who started it and a later run needs a context that
+	// is not some departed socket's — see revive.
+	ctx context.Context
+
 	log *slog.Logger
 
 	// banner is the build line the frame shows along the bottom. Fixed for the
 	// life of the process, so it is read without the lock.
 	banner string
 
-	// stdin is the write end of the pipe feeding the target. Every viewer's
-	// keystrokes go here, interleaved, which is what sharing one terminal
-	// means.
+	// stdin is the write end of the pipe feeding the target, and done closes
+	// when the run reading it is over. Both belong to one run and are replaced
+	// by the next, so both are guarded by mu — read stdin and done through the
+	// lock, never off the field.
 	stdin *io.PipeWriter
 	// resize carries the negotiated size to the target. Unbuffered, and only
 	// ever sent to from a goroutine, so a target that is slow to read one
@@ -208,23 +214,40 @@ func (s *session) watch() {
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
 func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
-	pr, pw := io.Pipe()
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
 		Target:  target,
+		ctx:     ctx,
 		log:     log,
 		banner:  banner,
-		stdin:   pw,
 		resize:  make(chan remotecommand.TerminalSize),
-		done:    make(chan struct{}),
 		em:      em,
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 	}
 
 	s.watch()
+
+	s.mu.Lock()
+	s.stream()
+	s.mu.Unlock()
+	return s
+}
+
+// stream opens one attach and starts feeding the emulator from it. The caller
+// holds mu.
+//
+// Everything it builds belongs to this run and not to the session: the pipe
+// the target reads, the goroutine draining the emulator's replies into it, and
+// the channel that says the run is over. A second run is a second set, which
+// is what makes revive possible at all — the first run's pipe is closed and
+// its done is closed, and neither can be reused.
+func (s *session) stream() {
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	s.stdin, s.done = pw, done
 
 	// The emulator answers what a real terminal answers — a device-attributes
 	// query, a cursor-position report — and those replies have to reach the
@@ -238,29 +261,81 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	// container reads is encoded by something that knows the modes the app has
 	// set rather than by a browser that does not.
 	go func() {
-		if _, err := io.Copy(pw, em); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Debug("terminal replies stopped", "container", target.Name(), "error", err)
+		if _, err := io.Copy(pw, s.em); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			s.log.Debug("terminal replies stopped", "container", s.Name(), "error", err)
 		}
 	}()
 
 	go func() {
-		defer close(s.done)
+		defer close(done)
 		defer s.wakeAll()
 		defer func() { _ = pr.Close() }()
 
-		name := target.Name()
+		name := s.Name()
 		out := &sink{s: s}
-		if err := target.AttachContainer(ctx, name, "", name, pr, out, out, target.TTY(), s.resize); err != nil &&
-			ctx.Err() == nil {
-			log.Debug("attach session ended", "container", name, "error", err)
+		// s.Target, not s, and the spelling is load-bearing: a session has an
+		// AttachContainer of its own — the per-viewer one — and calling that
+		// here would have the session attach to itself.
+		if err := s.Target.AttachContainer(s.ctx, name, "", name, pr, out, out, s.TTY(), s.resize); err != nil &&
+			s.ctx.Err() == nil {
+			s.log.Debug("attach session ended", "container", name, "error", err)
 		}
 	}()
-	return s
+}
+
+// ended is the channel that closes when the current run is over. Read through
+// a lock rather than off the field, because revive replaces it: a run that has
+// finished and a run that is about to start are two different channels, and a
+// goroutine left over from the first must not be reading the second's.
+func (s *session) ended() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.done
+}
+
+// revive starts the target again for a viewer arriving after the last run
+// ended, when the target is one that can be.
+//
+// A program origin is the case this exists for: the origin is a path, so
+// running it a second time is exactly as well defined as running it the first,
+// and without this the origin serves a screen that can never produce another
+// byte the moment its program exits — which for `tunneld ls` is before anybody
+// opens the page. A container is not repeatable and says so by not
+// implementing Repeatable: once its PID 1 has exited there is nothing left to
+// attach to.
+//
+// The screen goes with the run that drew it. RIS rather than a fresh emulator,
+// so every viewer keeps drawing the same one, and the scrollback with it: this
+// is a new program, and a screen carrying the last one's output would be
+// claiming a state the target was never in.
+func (s *session) revive() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	select {
+	case <-s.done:
+	default:
+		return // still running; a viewer is joining, not restarting
+	}
+	if s.ctx.Err() != nil {
+		return // the origin itself is going away
+	}
+	again, ok := s.Target.(Repeatable)
+	if !ok || !again.Repeatable() {
+		return
+	}
+
+	_, _ = s.em.Write([]byte("\x1bc"))
+	s.em.ClearScrollback()
+	s.log.Info("running it again", "target", s.Name())
+	s.stream()
 }
 
 // close ends the shared attach. The pipe is what the target is reading, so
 // closing it is what unblocks it.
 func (s *session) close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.stdin.Close()
 }
 
@@ -269,7 +344,10 @@ func (s *session) close() error {
 // longer ends a shared session by accident, and this is how somebody ends one
 // on purpose.
 func (s *session) eof() {
-	if _, err := s.stdin.Write([]byte{0x04}); err != nil {
+	s.mu.Lock()
+	stdin := s.stdin
+	s.mu.Unlock()
+	if _, err := stdin.Write([]byte{0x04}); err != nil {
 		s.log.Debug("end of file not delivered", "container", s.Name(), "error", err)
 	}
 }
@@ -329,6 +407,12 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// A viewer arriving after the last run ended starts the next one, when the
+	// target is something that can be started again. Nothing else can do it:
+	// the run ending drops every viewer there was, so the person who opens the
+	// page afterwards is the only one left to ask.
+	s.revive()
+
 	width, height := s.window()
 
 	v := &viewer{wake: make(chan struct{}, 1)}
@@ -373,13 +457,18 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 	for {
 		select {
 		case <-v.wake:
+			// Draw first, end second. A wake carries output, and the wake that
+			// arrives with the run's last output is also the one that finds
+			// the run over — so a frame told to quit on it would drop exactly
+			// the bytes a reader most wants: what the program said on its way
+			// out. A program that exits quickly is all last words.
+			v.prog.Send(paneMsg{})
 			select {
-			case <-s.done:
+			case <-s.ended():
 				v.prog.Send(goneMsg{})
 				return
 			default:
 			}
-			v.prog.Send(paneMsg{})
 		case <-ctx.Done():
 			return
 		}
@@ -478,7 +567,7 @@ func (s *session) apply(ctx context.Context, size remotecommand.TerminalSize) {
 	select {
 	case s.resize <- size:
 	case <-ctx.Done():
-	case <-s.done:
+	case <-s.ended():
 	}
 }
 
@@ -500,7 +589,7 @@ func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *view
 			v.prog.Send(tea.WindowSizeMsg{Width: int(size.Width), Height: int(size.Height)})
 		case <-ctx.Done():
 			return
-		case <-s.done:
+		case <-s.ended():
 			return
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -809,6 +810,94 @@ func TestBindRefusesAnUnservedScheme(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "file://htop") {
 		t.Errorf("error %q does not name the origin", err)
+	}
+}
+
+// rerunTarget is a program that exits the moment it has said its piece, which
+// is the case a program origin has to survive: `tunneld ls` is over before
+// anybody opens the page.
+type rerunTarget struct {
+	mu     sync.Mutex
+	runs   int
+	repeat bool
+	ran    chan int // each run announces its number
+}
+
+func newRerunTarget(repeat bool) *rerunTarget {
+	return &rerunTarget{repeat: repeat, ran: make(chan int, 8)}
+}
+
+func (r *rerunTarget) Name() string     { return "prog" }
+func (r *rerunTarget) Scheme() string   { return v1.FileScheme }
+func (r *rerunTarget) TTY() bool        { return true }
+func (r *rerunTarget) Stdin() bool      { return true }
+func (r *rerunTarget) Close() error     { return nil }
+func (r *rerunTarget) Repeatable() bool { return r.repeat }
+
+func (r *rerunTarget) AttachContainer(_ context.Context, _, _, _ string, _ io.Reader, out, _ io.WriteCloser, _ bool, _ <-chan remotecommand.TerminalSize) error {
+	r.mu.Lock()
+	r.runs++
+	n := r.runs
+	r.mu.Unlock()
+
+	_, _ = fmt.Fprintf(out, "run %d", n)
+	r.ran <- n
+	return nil // the program exited, which is the whole point of this fake
+}
+
+// awaitRun waits for a particular run to have started, so a test asserts on
+// something that has happened rather than on a sleep.
+func (r *rerunTarget) awaitRun(t *testing.T, want int) {
+	t.Helper()
+	for {
+		select {
+		case n := <-r.ran:
+			if n == want {
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("run %d never started", want)
+		}
+	}
+}
+
+// TestAViewerStartsARepeatableTargetAgain pins the answer to a program origin
+// outliving its program.
+//
+// The run ends on its own — the program exited — which drops every viewer
+// there was, so the person who opens the page afterwards is the only one left
+// to ask for another. What they get is a new run and a clean screen: this is a
+// second program, and a screen still carrying the first one's output would
+// claim a state the target was never in.
+func TestAViewerStartsARepeatableTargetAgain(t *testing.T) {
+	target := newRerunTarget(true)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+
+	dial(t, s)
+	target.awaitRun(t, 2)
+
+	// The screen belongs to the run that drew it.
+	screen := s.session.em.Render()
+	if strings.Contains(screen, "run 1") {
+		t.Errorf("screen = %q, want the first run's output gone", screen)
+	}
+}
+
+// TestAViewerDoesNotStartAnUnrepeatableTargetAgain pins the other half. A
+// container that has stopped is gone: attaching again would find nothing, so
+// the frozen final screen is the honest thing to serve.
+func TestAViewerDoesNotStartAnUnrepeatableTargetAgain(t *testing.T) {
+	target := newRerunTarget(false)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+
+	dial(t, s)
+
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started; a target that says it is not repeatable must not be", n)
+	case <-time.After(time.Second):
 	}
 }
 
