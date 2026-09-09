@@ -550,6 +550,13 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **A keystroke can end the process, and the path is deliberate.** `x` in the
+  frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
+  fans every origin's into one, because what they are asking for is the
+  process and there is only one; and `RunE` selects on it through the
+  `Quitter` contract, discovered on the closer the way `Announcer` is. Nothing
+  in `attach` acts on it — a frame can end its own viewer, and ending a run is
+  the command's, which is what owns the context everything else hangs from.
 - **The page asks whether coming back is worth offering.** A socket ending
   says nothing about why: this viewer's own connection dropping leaves a
   terminal still running, and a container whose shell exited leaves nothing at

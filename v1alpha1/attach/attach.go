@@ -285,6 +285,28 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 // derived from n. Same length and order as display, like everything else here.
 type bound []boundOrigin
 
+// Quit closes when a viewer of any of these origins asks the run to end. One
+// channel for all of them, because what they are asking for is the process,
+// which there is only one of.
+//
+// The watchers live as long as the origins do, which is as long as the run: a
+// closer that has been closed has nothing left to watch for, and a run that is
+// over is not waiting on this.
+func (b bound) Quit() <-chan struct{} {
+	asked := make(chan struct{})
+	var once sync.Once
+	for _, o := range b {
+		go func(srv *Server) {
+			select {
+			case <-srv.Quit():
+				once.Do(func() { close(asked) })
+			case <-srv.ctx.Done():
+			}
+		}(o.srv)
+	}
+	return asked
+}
+
 type boundOrigin struct {
 	at  int
 	srv *Server
@@ -335,7 +357,17 @@ type Server struct {
 	// explains why a request's own context will not do.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// quit closes when a viewer asks the whole run to end. Not this origin's
+	// own shutdown — that is cancel — but the process's: the frame offers it,
+	// and what acts on it is the command, which is watching through Quit.
+	quitOnce sync.Once
+	quit     chan struct{}
 }
+
+// Quit closes when a viewer has asked the run to end. The channel is never
+// sent on and closes at most once, so a caller may select on it forever.
+func (s *Server) Quit() <-chan struct{} { return s.quit }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
 // returning as soon as the port is live so the tunnel never proxies to a
@@ -389,12 +421,26 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 	// notices; an embedding program, which is the case Bind says it
 	// cares about, keeps running.
 	sctx, cancel := context.WithCancel(ctx)
-	s := &Server{target: target, listener: listener, log: log, ctx: sctx, cancel: cancel}
+	s := &Server{
+		target:   target,
+		listener: listener,
+		log:      log,
+		ctx:      sctx,
+		cancel:   cancel,
+		quit:     make(chan struct{}),
+	}
 	// One attach for the life of the Server, shared by every page that opens
 	// it. Started here rather than on the first connection so a viewer never
 	// waits on the target, and so what happened before anybody looked is on
 	// the screen when they do.
-	s.session = newSession(sctx, target, banner, log)
+	//
+	// The frame offers an exit, and this is what it reaches: closing quit says
+	// a viewer asked, and nothing here acts on it — ending the run is the
+	// command's to do, and it is watching.
+	s.session = newSession(sctx, target, banner, func() {
+		log.Info("a viewer asked the run to end", "target", target.Name())
+		s.quitOnce.Do(func() { close(s.quit) })
+	}, log)
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request

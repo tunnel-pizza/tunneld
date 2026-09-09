@@ -567,9 +567,21 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					b.cache.Save(b.cacheDirs.GetSlice(), log)
 				}
 
+				// A viewer asking to end the run is the third way this
+				// stops, beside a signal and the tunnel failing. Nothing is
+				// wrong when it happens, so it reads as a clean exit — the
+				// deferred teardown below takes the origins, the programs
+				// they started and the tunnel with it.
+				var asked <-chan struct{}
+				if quitter, ok := closeOrigins.(Quitter); ok {
+					asked = quitter.Quit()
+				}
 				select {
 				case <-ctx.Done():
 				case <-tun.Done():
+				case <-asked:
+					log.Info("a viewer asked this run to end; stopping")
+					return nil
 				}
 
 				// Cancelling ctx ends the tunnel too, so a reap makes both arms

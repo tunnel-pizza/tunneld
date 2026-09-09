@@ -1150,6 +1150,44 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	target.awaitSize(t, settled)
 }
 
+// TestQuitReachesTheBinder pins the path from a viewer's keystroke to the
+// thing that can act on it. The frame asks its Server, the Server says so on
+// Quit, and the closer Bind handed back is where the command is listening —
+// which is the only reason a key inside a browser tab can end a process.
+func TestQuitReachesTheBinder(t *testing.T) {
+	targets := &stubTargets{scheme: v1.DockerScheme}
+	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "dockerd://db")
+
+	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	quitter, ok := closer.(interface{ Quit() <-chan struct{} })
+	if !ok {
+		t.Fatal("the closer offers no Quit; the command has nothing to watch")
+	}
+	asked := quitter.Quit()
+
+	select {
+	case <-asked:
+		t.Fatal("asked to quit before anybody asked")
+	default:
+	}
+
+	// The second origin's viewer asks. One channel for all of them, because
+	// what they are asking for is the process.
+	servers := closer.(bound)
+	servers[1].srv.session.endRun()
+
+	select {
+	case <-asked:
+	case <-time.After(5 * time.Second):
+		t.Error("a viewer asked and the closer never said so")
+	}
+}
+
 // mustURLs parses raw as URLs, failing the test on the first one that is not.
 func mustURLs(t *testing.T, raw ...string) []*url.URL {
 	t.Helper()

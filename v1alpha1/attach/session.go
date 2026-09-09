@@ -63,6 +63,11 @@ const scrollbackLines = 1000
 type session struct {
 	Target
 
+	// quit says a viewer asked the whole run to end. What it reaches is the
+	// Server, which says so to the command; nothing here acts on it, because
+	// what a frame can end is its own viewer and what this ends is a process.
+	quit func()
+
 	// ctx is the origin's own lifetime, from Serve. Held because a run can
 	// outlive the viewer who started it and a later run needs a context that
 	// is not some departed socket's — see revive.
@@ -213,13 +218,14 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
 		Target:  target,
 		ctx:     ctx,
+		quit:    quit,
 		log:     log,
 		banner:  banner,
 		resize:  make(chan remotecommand.TerminalSize),
@@ -377,16 +383,16 @@ func (s *session) close() error {
 	return s.stdin.Close()
 }
 
-// eof asks the target to end, which is what a shell does with an end of file.
-// It is the deliberate half of the guard the frame puts on Ctrl-D: the key no
-// longer ends a shared session by accident, and this is how somebody ends one
-// on purpose.
-func (s *session) eof() {
-	s.mu.Lock()
-	stdin := s.stdin
-	s.mu.Unlock()
-	if _, err := stdin.Write([]byte{0x04}); err != nil {
-		s.log.Debug("end of file not delivered", "container", s.Name(), "error", err)
+// endRun says a viewer has asked the whole run to end. What it reaches is the
+// Server, which tells the command; the command is what actually ends, taking
+// its context and everything started under it.
+//
+// Not the target and not this origin. A frame can end its own viewer and it
+// can ask for this, and the difference is worth keeping: one of them is a tab
+// closing and the other is a process exiting.
+func (s *session) endRun() {
+	if s.quit != nil {
+		s.quit()
 	}
 }
 
