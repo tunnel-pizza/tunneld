@@ -651,8 +651,42 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	mirroring = mirroring && mirrorable(cmd, origins)
 
 	// Whether anybody is there to look at it, worked out rather than asked
-	// about — see opening, which says on the log why it decided as it did.
-	if b.opening(cmd, mirroring, log) {
+	// about. There is no flag behind this and no environment variable either:
+	// every environment without a browser — a pipeline, a service manager, a
+	// CI step, a container — used to have to say so one variable at a time,
+	// while the run already knew. mirrorable above asks a strictly harder
+	// version of the same question and gets it right.
+	//
+	// Order matters. The mirror comes before the caller's own answer because
+	// it is a fact about the run rather than an opinion about it: the
+	// terminal is already on a screen they are looking at, and a tab on top
+	// of it is a second copy competing for the same keystrokes. Everything
+	// after it is the guess, and WithOpen is where somebody who knows better
+	// says so.
+	//
+	// Every branch says on the log why it went the way it did, because a
+	// decision nobody typed is the one somebody will want explained.
+	var opening bool
+	switch {
+	case mirroring:
+		log.Debug("not opening a browser", "reason", "the console is already showing this terminal")
+	case b.open != nil:
+		opening = *b.open
+		log.Debug("browser decided by the caller", "open", opening)
+	// Nobody is watching. One test for four environments: a pipeline, a
+	// service manager, a CI step and a container all arrive with none of
+	// their three streams on a terminal, and a person at a shell keeps at
+	// least one of the three however they redirect the others.
+	case !isTerminal(cmd.InOrStdin()) && !isTerminal(cmd.OutOrStdout()) && !isTerminal(cmd.ErrOrStderr()):
+		log.Debug("not opening a browser", "reason", "no terminal on any of this command's streams")
+	default:
+		// Whether the machine has a browser worth opening is the browser
+		// package's question, not this one's. What is settled above is what
+		// only the command knows: what it is serving, and what its own
+		// streams are.
+		opening = browser.Reachable(log)
+	}
+	if opening {
 		// One page, never a fan of tabs: the panel when there is
 		// one, since it reaches every origin, and otherwise the
 		// default origin itself.
@@ -1029,44 +1063,6 @@ func (b *BuilderImpl) Origins() []*url.URL {
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
-
-// opening reports whether this run should put a public URL in front of
-// somebody, and the reason, which is logged: a decision nobody typed has to be
-// able to say why.
-//
-// There is no flag behind this and no environment variable either. Every
-// environment without a browser — a pipeline, a service manager, a CI step, a
-// container — used to have to say so one variable at a time, while the run
-// already knew: mirrorable a few lines below asks a strictly harder version of
-// the same question and gets it right. These are the signals a person reads.
-//
-// Order matters. Mirroring comes before the caller's own answer because it is
-// a fact about the run rather than an opinion about it — the terminal is
-// already on a screen they are looking at, and a tab on top of it is a second
-// copy competing for the same keystrokes. Everything after it is the guess,
-// and WithOpen is where somebody who knows better says so.
-func (b *BuilderImpl) opening(cmd *cobra.Command, mirroring bool, log v1.Logger) bool {
-	if mirroring {
-		log.Debug("not opening a browser", "reason", "the console is already showing this terminal")
-		return false
-	}
-	if b.open != nil {
-		log.Debug("browser decided by the caller", "open", *b.open)
-		return *b.open
-	}
-	// Nobody is watching. One test for four environments: a pipeline, a
-	// service manager, a CI step and a container all arrive with none of
-	// their three streams on a terminal, and a person at a shell keeps at
-	// least one of the three however they redirect the others.
-	if !isTerminal(cmd.InOrStdin()) && !isTerminal(cmd.OutOrStdout()) && !isTerminal(cmd.ErrOrStderr()) {
-		log.Debug("not opening a browser", "reason", "no terminal on any of this command's streams")
-		return false
-	}
-	// Whether the machine has a browser worth opening is the browser
-	// package's question, not this one's. What is left here is what only the
-	// command knows: what it is serving, and what its own streams are.
-	return browser.Reachable(log)
-}
 
 // mirrorable reports whether the console this command was given can be handed
 // a terminal: one origin, served rather than proxied, and a real terminal on

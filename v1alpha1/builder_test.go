@@ -219,70 +219,65 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestOpeningIsDerived covers the browser decision, which no longer has a flag
-// or a variable behind it. Each row is an environment somebody actually runs
-// in, and the answer is the one they would give without being asked.
+// TestOpeningIsDerived covers the browser decision, which has no flag and no
+// variable behind it any more. Each row is an environment somebody actually
+// runs in, and the answer is the one they would give without being asked.
 //
-// The terminal is a real pty, because that is what the derivation reads and a
-// buffer can never answer yes. Every variable it consults is set explicitly,
-// the ones a runner sets for itself included: this suite runs under $CI.
-//
-// What is tabled here is the composition — the mirror, then the caller, then
-// this command's own streams, then the machine. The machine's own half is
-// browser.Reachable, tabled beside it.
+// Driven through the run rather than through a predicate, because the decision
+// is four lines inside it and not a function of its own. The terminal is a
+// real pty, since that is what it reads and a buffer can never answer yes, and
+// every variable it consults is set explicitly — the suite itself runs under
+// $CI, which is one of the signals. The machine's own half is browser.Reachable
+// and is tabled beside it.
 func TestOpeningIsDerived(t *testing.T) {
-	yes, no := true, false
+	const public = "https://foo.tunneled.pizza/"
 	for _, tc := range []struct {
-		name      string
-		open      *bool
-		mirroring bool
-		terminal  bool
-		env       map[string]string
-		want      bool
+		name     string
+		open     *bool
+		terminal bool
+		env      map[string]string
+		want     bool
 	}{
 		{name: "a terminal with a display", terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: true},
 		{name: "nothing is watching a pipe", want: false},
-		// The machine-level signals belong to browser.Reachable and are
-		// tabled there; one row here to pin that they are still consulted.
+		// The machine-level signals belong to browser.Reachable; one row here
+		// pins that they are still consulted.
 		{name: "and it asks the browser package too", terminal: true, env: map[string]string{"DISPLAY": ":0", "CI": "true"}, want: false},
-		{name: "a console already drawing it", mirroring: true, terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
-		// The caller is asked after the mirror and before the guess, so it
-		// overrules every signal below it and none above it.
-		{name: "the caller declines", open: &no, terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
-		{name: "the caller insists over a pipe", open: &yes, want: true},
-		{name: "the caller does not outrank the mirror", open: &yes, mirroring: true, terminal: true, want: false},
+		{name: "the caller declines", open: ptr(false), terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
+		{name: "the caller insists over a pipe", open: ptr(true), want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
 				t.Setenv(name, tc.env[name])
 			}
-
-			b := New(WithOrigin(":3000"))
+			h := newRunHarness(t, live(public), ":3000")
 			if tc.open != nil {
-				v1.Apply(b, WithOpen(*tc.open))
+				v1.Apply(h.b, WithOpen(*tc.open))
 			}
-			cmd := b.Command()
 			if tc.terminal {
 				ptmx, tty, err := pty.Open()
 				if err != nil {
 					t.Skipf("no pty to be a terminal on: %v", err)
 				}
 				t.Cleanup(func() { tty.Close(); ptmx.Close() })
-				cmd.SetIn(tty)
-				cmd.SetOut(tty)
-				cmd.SetErr(tty)
-			} else {
-				cmd.SetIn(&bytes.Buffer{})
-				cmd.SetOut(&bytes.Buffer{})
-				cmd.SetErr(&bytes.Buffer{})
+				h.console = tty
 			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
 
-			if got := b.opening(cmd, tc.mirroring, slog.New(slog.DiscardHandler)); got != tc.want {
-				t.Errorf("opening() = %v, want %v", got, tc.want)
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if opened := len(h.browser.opened) > 0; opened != tc.want {
+				t.Errorf("opened %q, want a browser: %v", h.browser.opened, tc.want)
 			}
 		})
 	}
 }
+
+// ptr is a *bool for a literal, which WithOpen's tri-state needs and Go has no
+// spelling for inline.
+func ptr(b bool) *bool { return &b }
 
 // TestCacheDir pins how a cache directory list is read: which spellings mean
 // the working directory, that entries become absolute before repeats collapse,
@@ -764,11 +759,6 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
-		// Its streams are buffers, so the derivation would decline a browser
-		// for every case here — including the ones whose whole subject is
-		// what gets opened. Said out loud so those cases test opening rather
-		// than testing that a pipe has no display.
-		WithOpen(true),
 		WithEstablishDeadline(50*time.Millisecond),
 		WithOrigin(urls...),
 		WithProvider("example.test"),
@@ -794,10 +784,14 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
+	// Stdin is set either way: unset, cobra falls back to the process's own,
+	// which is a terminal when the suite is run from one — and whether a
+	// stream is a terminal is a thing the run now reads.
 	if h.console != nil {
 		cmd.SetIn(h.console)
 		cmd.SetOut(h.console)
 	} else {
+		cmd.SetIn(&bytes.Buffer{})
 		cmd.SetOut(&h.stdout)
 	}
 	cmd.SetErr(&h.stderr)
@@ -852,6 +846,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("a mint reports, opens the panel, then saves", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
+		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel // the signal, arriving once the tunnel is live
 
@@ -990,6 +985,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("one origin keeps the bare address and no panel", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
+		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel
 
@@ -1470,6 +1466,7 @@ func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
 	tun.silent = true
 
 	h := newRunHarness(t, tun, ":3000")
+	v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
 
@@ -1543,6 +1540,9 @@ func TestMirroringKeepsTheBrowserShut(t *testing.T) {
 
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), "dockerd://my-container")
+	// Asked for, so the mirror is the only thing that can be suppressing it —
+	// otherwise a runner with $CI set would pass this for the wrong reason.
+	v1.Apply(h.b, WithOpen(true))
 	h.console = tty
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel

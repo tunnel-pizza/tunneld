@@ -54,9 +54,17 @@ func Reachable(log v1.Logger) bool {
 		log.Debug("not opening a browser", "reason", "an ssh session with no display to open on")
 		return false
 	}
-	if !hasDisplay() {
-		log.Debug("not opening a browser", "reason", "no display to open on")
-		return false
+	// macOS and Windows have somewhere to put a window by construction —
+	// neither has a headless spelling that also has a terminal open — so the
+	// question is only ever really asked of the platforms where a display is
+	// a thing that may or may not be running.
+	switch runtime.GOOS {
+	case "darwin", "windows":
+	default:
+		if !forwarded() {
+			log.Debug("not opening a browser", "reason", "no display to open on")
+			return false
+		}
 	}
 	log.Debug("opening a browser", "reason", "a display to open on")
 	return true
@@ -67,19 +75,6 @@ func Reachable(log v1.Logger) bool {
 // on the far end.
 func forwarded() bool {
 	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
-}
-
-// hasDisplay reports whether this machine has somewhere to put a window.
-//
-// macOS and Windows have one by construction — neither has a headless spelling
-// that also has a terminal open — so the question is only ever really asked of
-// the platforms where a display is a thing that may or may not be running.
-func hasDisplay() bool {
-	switch runtime.GOOS {
-	case "darwin", "windows":
-		return true
-	}
-	return forwarded()
 }
 
 // Option configures a BrowserImpl at construction.

@@ -565,17 +565,19 @@ Two things there will bite if you change them without knowing why:
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The browser decision is derived, and split where the knowledge is.**
-  `--no-open` and `TUNNELD_NO_OPEN` are gone. `BuilderImpl.opening` holds what
+  `--no-open` and `TUNNELD_NO_OPEN` are gone. The `switch` in `Run` holds what
   only the command knows — is the console already drawing this terminal, did
   the caller say, is any of its three streams a terminal — and delegates the
   machine's half to `browser.Reachable`, which owns `$CI`, ssh and the display
   variables because that is knowledge about where a window can go. Order is
   load-bearing: the mirror comes before `WithOpen`, because it is a fact about
-  the run rather than an opinion about it. Neither returns a reason; each logs
-  its own at debug, which is the only record of a decision nobody typed.
-  `newRunHarness` seeds `WithOpen(true)` — its streams are buffers, so every
-  case about what gets opened would otherwise be testing that a pipe has no
-  display.
+  the run rather than an opinion about it. Neither half returns a reason; each
+  logs its own at debug, which is the only record of a decision nobody typed.
+  A case that wants a browser says `WithOpen(true)`: the harness gives the
+  command buffers, so a case that stayed quiet about it would be testing that
+  a pipe has no display. `h.run` sets stdin either way, since cobra otherwise
+  falls back to the process's own — a terminal, when the suite is run from
+  one.
 - **`RunE` is one line; the run is `Run`.** The body used to be a 357-line
   closure inside `Command`'s struct literal, reachable only by executing a
   cobra command. It is a method now, and `RunE` calls it with `cmd.Context()`.
