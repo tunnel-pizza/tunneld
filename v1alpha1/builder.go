@@ -232,11 +232,6 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			}
 		}
 
-		// The environment binding, built on first use and shared with
-		// Origins. It is per-builder, never viper's package global — see the
-		// field's own doc.
-		env := b.environment()
-
 		// An embedder that seeded origins made them this command's default, so
 		// help says which — otherwise the one thing a seeded build does
 		// differently from a bare one is the one thing --help does not
@@ -287,415 +282,15 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			// Persistent, so it also covers a subcommand — and placed here rather
 			// than in RunE because cobra runs this hook ahead of required-flag
 			// validation, which is what lets a variable satisfy a required flag.
-			PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-				// Environment values are copied onto the flags the command
-				// line did not set, which is what makes the precedence
-				// flag > env > default. This runs from PersistentPreRunE,
-				// ahead of cobra's required-flag validation, so a flag
-				// satisfied by its variable counts as supplied.
-				//
-				// A value that the flag refuses is an error wrapping
-				// v1.ErrInvalidEnv, naming the variable and the offending
-				// value: env beats code, so a typo'd override that silently
-				// fell back would be indistinguishable from one that worked.
-				var err error
-				cmd.Flags().VisitAll(func(f *pflag.Flag) {
-					if err != nil || f.Changed || !env.IsSet(f.Name) {
-						return
-					}
-					value := env.GetString(f.Name)
-
-					// A repeatable flag takes the whole list at once.
-					// Replace, not Append: the flag's default may be a
-					// seeded value, and the environment overrides a seed
-					// rather than extending it — the same rule pflag's
-					// stringArray applies to the command line.
-					if slice, ok := f.Value.(pflag.SliceValue); ok {
-						err = slice.Replace(splitList(value))
-					} else {
-						err = f.Value.Set(value)
-					}
-					if err != nil {
-						err = fmt.Errorf("%s=%q: %w: %w", flagEnv[f.Name], value, v1.ErrInvalidEnv, err)
-						return
-					}
-					// Marking it changed is what stops cobra from reporting a
-					// required flag as missing when its variable supplied it.
-					f.Changed = true
-				})
-				return err
-			},
-			// RunE is the built command's body: it brings the tunnel up,
-			// reports the public URLs, and blocks until ctx is canceled or
-			// the tunnel fails. ctx is the shutdown handle — canceling it (a
-			// signal, in the binary's case) tears the tunnel down during
-			// startup as well as after, so this returns rather than hanging.
-			// A tunnel that fails on its own returns the cause.
-			//
-			// stderr comes from the command's own ErrOrStderr, so cobra stays the
-			// single owner of where output goes; it is never nil.
-			//
-			// The engine is github.com/cnuss/libtunnel driving Cloudflare's edge
-			// in process — no cloudflared binary, no account, no DNS to
-			// configure.
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := cmd.Context()
-				stdout := cmd.OutOrStdout()
-				stderr := cmd.ErrOrStderr()
-
-				// The logger: resolve the tunnel's log sink from the level the
-				// command settled on — the --log-level flag, or v1.LogEnv bound
-				// onto it by PersistentPreRunE. An unrecognized level is an
-				// error either way: somebody typed it, and a silent downgrade
-				// to info would hide the typo. Neither set is silence: a
-				// library that logs uninvited pollutes its importer's output.
-				//
-				// Resolved first, ahead of the origins, because settling those
-				// warns about the ones it drops and this is what those
-				// warnings go to.
-				log, err := b.logger()
-				if err != nil {
-					return err
-				}
-
-				// The origins this run exposes, settled argv > environment >
-				// seed and parsed. Anything unusable was dropped with a
-				// warning rather than failing the run, so what is left is what
-				// the tunnel gets — but nothing left at all is still an error,
-				// since a tunnel with no origin is a public hostname that
-				// answers only errors. The message names both ways of
-				// supplying one, because that is the choice an operator makes
-				// to fix it.
-				origins := b.Origins()
-				if len(origins) == 0 {
-					return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, name, v1.OriginsEnv)
-				}
-
-				// The handle the event listener ends the run through. A signal
-				// cancels the parent with no cause; a reap cancels this one with
-				// ErrTunnelGone, and the cause is what tells the two apart at
-				// the bottom of this function. Wrapped here so everything below
-				// — the tunnel, the attach servers, the browser probe — comes
-				// down with it.
-				ctx, gone := context.WithCancelCause(ctx)
-				defer gone(nil)
-
-				// A container is not an HTTP service, so tunneld serves one on
-				// its behalf and hands the tunnel the loopback address instead.
-				// origins stays what the operator typed — it is what the
-				// reported map and the panel show.
-				dialable, closeOrigins, err := b.binder.Bind(ctx, origins, log)
-				if err != nil {
-					return err
-				}
-				defer closeOrigins.Close()
-
-				cached := ""
-				if len(b.cacheDirs.GetSlice()) > 0 {
-					cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
-				}
-
-				// Pure-lazy: nothing dials until URL below trips the start.
-				// WithContext upgrades URL from "the hostname resolves" to
-				// "reachable end to end" and makes it return nil on cancel, so a
-				// signal during startup exits cleanly.
-				start := func(spec string) libtunnel.TunnelV1 {
-					// Events: the tunnel's lifecycle listener. It logs what
-					// happened and ends the run once the edge has disowned the
-					// tunnel for long enough to be sure.
-					//
-					// The engine keeps retrying a reaped tunnel indefinitely —
-					// that is cloudflared's behaviour and libtunnel leaves it
-					// alone — so without this the process sits there holding a
-					// hostname that resolves nowhere, reporting nothing.
-					// Cancelling with a cause is what turns that into an exit
-					// code a supervisor can act on.
-					//
-					// The logger is closed over rather than resolved again,
-					// since it was already resolved above and a bad --log-level
-					// refused; asking a second time here would have to discard
-					// that error to satisfy the listener's signature.
-					var once sync.Once
-					listen := func(e libtunnel.Event) {
-						log.Debug("received event", "e", e)
-						b.counter.Count(e)
-						if b.counter.IsGone() {
-							// The counter stays tripped once it has been, and
-							// verdicts keep arriving while the tunnel comes
-							// down. Without the latch every one of them repeats
-							// the error and cancels again.
-							once.Do(func() {
-								log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
-								gone(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
-							})
-						}
-					}
-
-					tun := b.engine.Tunnel(spec, b.provider).
-						WithLogger(log).
-						WithContext(ctx).
-						WithEventListener(listen).
-						WithLocalURL(dialable...)
-					// Served in front of the origin proxy, so the panel needs no
-					// port of its own and no origin ever sees the request. The
-					// list is empty when there is no panel to serve, which is
-					// the only place that decision is made.
-					for _, ic := range b.browser.Interceptors(b.multiview, origins, log) {
-						tun.WithInterceptor(ic)
-					}
-					return tun
-				}
-				tun := start(cached)
-
-				log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
-
-				// The banner goes out before the tunnel is asked for a URL, not
-				// after it answers. Minting is the slow part and the part that
-				// fails, and tying the banner to success meant a start that
-				// failed printed nothing at all — no version, no sign the
-				// program had run. Everything above this line is configuration,
-				// so a bad flag or an origin that cannot be reached still fails
-				// without one.
-				fmt.Fprintln(stderr, VersionLine())
-
-				// Ready delivers the tunnel once the edge connection is up
-				// and the hostname resolves publicly — reachable end to end,
-				// which is the moment an address is worth handing to anybody.
-				// The channel closing without delivering is the tunnel saying
-				// it never came up at all, and Err is why.
-				//
-				// This is the wait that used to be URL()'s alone. URL blocks
-				// on the same readiness and answers nil for the same failure,
-				// so the two are interchangeable as a signal; asking Ready
-				// says which of the two questions is being asked.
-				up, ok := <-tun.Ready()
-				if !ok {
-					cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
-
-					// The edge refused the credential this spec carries. That is
-					// the whole of the class now: a reservation that lapsed is
-					// adopted on whatever hostname the provider minted in its
-					// place, silently and without an error, so the only way a
-					// replay still fails here is the one where the provider was
-					// never reached — the spec is served as given, and the edge
-					// is where a dead one is finally found out.
-					//
-					// Which makes the file the thing at fault, and leaving it in
-					// place the real cost: every later run replays it, is served
-					// it again, and dies at the same edge. Drop it, then mint
-					// once, which is a tunnel rather than an explanation if the
-					// provider is reachable by now and the same error either way
-					// if it is not.
-					//
-					// Only this class. ErrRejected is a mint the provider
-					// refused outright or a request that could not be built at
-					// all — configuration, and nothing the stored spec had a
-					// part in. Discarding on it would throw away a good
-					// credential over an unroutable provider or a bad header.
-					if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
-						return cause
-					}
-					b.cache.Discard(b.cacheDirs.GetSlice(), log)
-					log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
-
-					tun = start("")
-					if up, ok = <-tun.Ready(); !ok {
-						return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
-					}
-				}
-				public := up.URL()
-
-				// A bound container is served before the tunnel exists —
-				// the binding is what the tunnel is handed to proxy to — so
-				// this is the first moment anything down there can be told
-				// where it answers from outside. Each origin gets its own
-				// address rather than the bare one, because with several of
-				// them it is the routing parameter that reaches this one.
-				if announcer, ok := closeOrigins.(Announcer); ok {
-					addresses := make([]string, len(origins))
-					for i := range origins {
-						addresses[i] = publicURL(public, i, len(origins))
-					}
-					announcer.Announce(addresses)
-				}
-
-				// The panel's address when there is a panel, "" when there is
-				// not: the browser answers the question, and everything below
-				// reads the answer.
-				view := b.browser.URL(b.multiview, public, origins)
-
-				// The report: write the human-readable map to stderr, a line
-				// per public address with the origins it reaches indented
-				// beneath it. With a panel that is one address and every
-				// origin; without, one address per origin.
-				//
-				// Nothing goes to stdout. It used to carry one bare URL per
-				// origin as a machine interface, which meant every address
-				// printed twice wherever the two streams landed together — a
-				// terminal, a container's logs — and the de-duplication that
-				// hid it could only see the case where one file descriptor was
-				// literally the other. Under Docker they are two pipes that
-				// merge downstream, so it never fired where it was needed most.
-				// The banner is already on stderr by the time this runs: it was
-				// printed above, before minting, so it survives a mint that
-				// fails.
-				//
-				// Wait for the public URL to answer before any of it is
-				// printed.
-				//
-				// Ready, which the tunnel above was waited on for, means the
-				// connection is up and the hostname resolves. It does not
-				// mean the edge has registered the route: for a
-				// moment after that it answers 530. An address printed inside
-				// that moment is one a script can read and cannot yet use, and
-				// a browser opened into it shows an error page for a tunnel
-				// that is about to work. Both readers are served by the same
-				// wait, so it sits above the report rather than beside the
-				// browser.
-				//
-				// The counter answers whether the edge is up; how long that
-				// is worth waiting for is this caller's policy, so the bound
-				// is a context rather than something the counter carries.
-				// Everything below is behind this wait, the cache save
-				// included, so it cannot be unbounded.
-				if !b.counter.IsEstablished() {
-					log.Info("waiting for the public address to answer")
-					<-b.counter.Established(context.WithTimeout(ctx, b.establishDeadline))
-				}
-
-				// Every public address gets a line, with what it reaches
-				// indented beneath. A panel is the case where one address
-				// reaches them all; otherwise each origin has an address of its
-				// own. One shape either way, and no column to keep aligned as
-				// hostnames change length.
-				if view != "" {
-					fmt.Fprintf(stdout, "%s\n", view)
-					for _, origin := range origins {
-						fmt.Fprintf(stderr, "  -> %s\n", origin)
-					}
-				} else {
-					for i, origin := range origins {
-						fmt.Fprintf(stdout, "%s\n", publicURL(public, i, len(origins)))
-						fmt.Fprintf(stderr, "  -> %s\n", origin)
-					}
-				}
-
-				// The console this was started from is a viewer too, when
-				// there is exactly one terminal to show and a terminal to
-				// show it on.
-				//
-				// One origin, because a console has no way to say which of
-				// several it is watching — that is what the routing parameter
-				// is for. A served origin, because an http one is somebody
-				// else's server and has no terminal. And a real terminal on
-				// both ends of the command's own streams, because a frame
-				// drawn into a pipe is a wall of escapes where a script
-				// expected a URL.
-				//
-				// Started after the addresses are reported, so what a person
-				// came for is on the screen before the frame takes it, and
-				// left behind when it ends: a detach gives the console back
-				// and the tunnel goes on without it.
-				mirror, mirroring := closeOrigins.(Mirror)
-				mirroring = mirroring && mirrorable(cmd, origins)
-
-				// Not with a browser in front of it. Mirroring already puts
-				// the terminal on a screen the person is looking at, and a
-				// tab opening on top of it is a second copy of the one thing
-				// they can already see — counted as another viewer, competing
-				// for the same keystrokes.
-				//
-				// The field is left alone rather than set: it is bound to
-				// --no-open, and a builder whose Command is called twice must
-				// not carry one run's terminal into the next one's flags.
-				if !b.noOpen && !mirroring {
-					// One page, never a fan of tabs: the panel when there is
-					// one, since it reaches every origin, and otherwise the
-					// default origin itself.
-					target := cmp.Or(view, publicURL(public, 0, len(origins)))
-					b.browser.Open(ctx, target, stderr, log)
-				}
-
-				// After the URL is live, so what gets cached is a tunnel that
-				// came up rather than one that was merely asked for.
-				if len(b.cacheDirs.GetSlice()) > 0 {
-					b.cache.Save(b.cacheDirs.GetSlice(), log)
-				}
-
-				// A viewer asking to end the run is the third way this
-				// stops, beside a signal and the tunnel failing. Nothing is
-				// wrong when it happens, so it reads as a clean exit — the
-				// deferred teardown below takes the origins, the programs
-				// they started and the tunnel with it.
-				//
-				// Read here rather than at the select that waits on it,
-				// because the mirror below consults it too.
-				var asked <-chan struct{}
-				if quitter, ok := closeOrigins.(Quitter); ok {
-					asked = quitter.Quit()
-				}
-
-				// Decided above, drawn here: the addresses are reported, the
-				// cache is written, and the screen is free to be taken.
-				if mirroring {
-					// The logs would land on the screen the frame is drawing.
-					// They are still kept — ^K l is where they go instead.
-					if b.recent != nil {
-						b.recent.Mute(true)
-					}
-					go func() {
-						defer func() {
-							if b.recent != nil {
-								b.recent.Mute(false)
-							}
-						}()
-						if err := mirror.Mirror(ctx, cmd.InOrStdin(), stdout); err != nil && ctx.Err() == nil {
-							log.Debug("the console stopped showing the terminal", "error", err)
-						}
-						// The frame is gone and the run is not: a detach
-						// gives back a console with a prompt on it and no
-						// sign that anything is still up. Said here rather
-						// than before the frame, where it would be true for
-						// a moment and then covered — and where Ctrl+C
-						// belongs to the program being served, not to us.
-						//
-						// Not said when the frame's exit is what ended it,
-						// which is already on its way to a prompt.
-						select {
-						case <-ctx.Done():
-						case <-asked:
-						default:
-							fmt.Fprintln(stderr, stopHint)
-						}
-					}()
-				} else {
-					// Nothing else is going to be drawn here. The addresses
-					// are up, the run blocks from now on, and the signal is
-					// the only thing left on this side of it.
-					fmt.Fprintln(stderr, stopHint)
-				}
-
-				select {
-				case <-ctx.Done():
-				case <-tun.Done():
-				case <-asked:
-					log.Info("a viewer asked this run to end; stopping")
-					return nil
-				}
-
-				// Cancelling ctx ends the tunnel too, so a reap makes both arms
-				// above ready at once and the race would otherwise decide which
-				// error an operator is shown. The cause is the verdict either
-				// way: it outranks whatever the teardown it triggered has to
-				// say for itself.
-				if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-					return cause
-				}
-				if ctx.Err() != nil {
-					return nil // signaled after the tunnel came up: clean shutdown
-				}
-				return tun.Err()
-			},
+			// Ahead of cobra's required-flag validation, so a flag satisfied
+			// by its variable counts as supplied. Run calls the same thing,
+			// for a caller who never executes the command.
+			PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return b.applyEnv(cmd) },
+			// RunE is the built command's body, and it is one line: everything it
+			// does is Run, which a caller with no command reaches directly. The
+			// context is cobra's, set by ExecuteContext, and it is the shutdown
+			// handle either way.
+			RunE: func(cmd *cobra.Command, _ []string) error { return b.Run(cmd.Context()) },
 		}
 
 		// Hand the configured writers to cobra rather than keeping a second
@@ -760,6 +355,433 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 		b.command = cmd
 	})
 	return b.command
+}
+
+// Run brings the tunnel up, reports the public URLs, and blocks until ctx is
+// canceled or the tunnel fails. ctx is the shutdown handle — canceling it (a
+// signal, in the binary's case) tears the tunnel down during startup as well
+// as after, so this returns rather than hanging. A tunnel that fails on its
+// own returns the cause.
+//
+// This is the command's body, and calling it is the other way in. A program
+// that wants a tunnel and not a CLI configures the builder with options and
+// calls this; it never assembles a command it will not show anybody, and
+// never risks ExecuteContext parsing an os.Args it was not given. The binary
+// goes the long way round, through Command and ExecuteContext, because a
+// process shell is what cobra is for.
+//
+// The command is still where the streams and the flag values live, so this
+// assembles it — Command is cached, so from inside RunE that is the same
+// command already running. Reached directly, no argv has been parsed, so the
+// origins are whatever the environment and the seeds settle on; reached
+// through RunE, arguments have replaced them. Either way the environment is
+// bound first: PersistentPreRunE does it for a command being executed, and
+// applyEnv is idempotent, so doing it again here costs nothing and a direct
+// caller is not the one path where env stops beating code.
+//
+// The engine is github.com/cnuss/libtunnel driving Cloudflare's edge in
+// process — no cloudflared binary, no account, no DNS to configure.
+func (b *BuilderImpl) Run(ctx context.Context) error {
+	cmd := b.Command()
+	if err := b.applyEnv(cmd); err != nil {
+		return err
+	}
+	stdout := cmd.OutOrStdout()
+	stderr := cmd.ErrOrStderr()
+
+	// The logger: resolve the tunnel's log sink from the level the
+	// command settled on — the --log-level flag, or v1.LogEnv bound
+	// onto it by PersistentPreRunE. An unrecognized level is an
+	// error either way: somebody typed it, and a silent downgrade
+	// to info would hide the typo. Neither set is silence: a
+	// library that logs uninvited pollutes its importer's output.
+	//
+	// Resolved first, ahead of the origins, because settling those
+	// warns about the ones it drops and this is what those
+	// warnings go to.
+	log, err := b.logger()
+	if err != nil {
+		return err
+	}
+
+	// The origins this run exposes, settled argv > environment >
+	// seed and parsed. Anything unusable was dropped with a
+	// warning rather than failing the run, so what is left is what
+	// the tunnel gets — but nothing left at all is still an error,
+	// since a tunnel with no origin is a public hostname that
+	// answers only errors. The message names both ways of
+	// supplying one, because that is the choice an operator makes
+	// to fix it.
+	origins := b.Origins()
+	if len(origins) == 0 {
+		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
+	}
+
+	// The handle the event listener ends the run through. A signal
+	// cancels the parent with no cause; a reap cancels this one with
+	// ErrTunnelGone, and the cause is what tells the two apart at
+	// the bottom of this function. Wrapped here so everything below
+	// — the tunnel, the attach servers, the browser probe — comes
+	// down with it.
+	ctx, gone := context.WithCancelCause(ctx)
+	defer gone(nil)
+
+	// A container is not an HTTP service, so tunneld serves one on
+	// its behalf and hands the tunnel the loopback address instead.
+	// origins stays what the operator typed — it is what the
+	// reported map and the panel show.
+	dialable, closeOrigins, err := b.binder.Bind(ctx, origins, log)
+	if err != nil {
+		return err
+	}
+	defer closeOrigins.Close()
+
+	cached := ""
+	if len(b.cacheDirs.GetSlice()) > 0 {
+		cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
+	}
+
+	// Pure-lazy: nothing dials until URL below trips the start.
+	// WithContext upgrades URL from "the hostname resolves" to
+	// "reachable end to end" and makes it return nil on cancel, so a
+	// signal during startup exits cleanly.
+	start := func(spec string) libtunnel.TunnelV1 {
+		// Events: the tunnel's lifecycle listener. It logs what
+		// happened and ends the run once the edge has disowned the
+		// tunnel for long enough to be sure.
+		//
+		// The engine keeps retrying a reaped tunnel indefinitely —
+		// that is cloudflared's behaviour and libtunnel leaves it
+		// alone — so without this the process sits there holding a
+		// hostname that resolves nowhere, reporting nothing.
+		// Cancelling with a cause is what turns that into an exit
+		// code a supervisor can act on.
+		//
+		// The logger is closed over rather than resolved again,
+		// since it was already resolved above and a bad --log-level
+		// refused; asking a second time here would have to discard
+		// that error to satisfy the listener's signature.
+		var once sync.Once
+		listen := func(e libtunnel.Event) {
+			log.Debug("received event", "e", e)
+			b.counter.Count(e)
+			if b.counter.IsGone() {
+				// The counter stays tripped once it has been, and
+				// verdicts keep arriving while the tunnel comes
+				// down. Without the latch every one of them repeats
+				// the error and cancels again.
+				once.Do(func() {
+					log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
+					gone(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
+				})
+			}
+		}
+
+		tun := b.engine.Tunnel(spec, b.provider).
+			WithLogger(log).
+			WithContext(ctx).
+			WithEventListener(listen).
+			WithLocalURL(dialable...)
+		// Served in front of the origin proxy, so the panel needs no
+		// port of its own and no origin ever sees the request. The
+		// list is empty when there is no panel to serve, which is
+		// the only place that decision is made.
+		for _, ic := range b.browser.Interceptors(b.multiview, origins, log) {
+			tun.WithInterceptor(ic)
+		}
+		return tun
+	}
+	tun := start(cached)
+
+	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
+
+	// The banner goes out before the tunnel is asked for a URL, not
+	// after it answers. Minting is the slow part and the part that
+	// fails, and tying the banner to success meant a start that
+	// failed printed nothing at all — no version, no sign the
+	// program had run. Everything above this line is configuration,
+	// so a bad flag or an origin that cannot be reached still fails
+	// without one.
+	fmt.Fprintln(stderr, VersionLine())
+
+	// Ready delivers the tunnel once the edge connection is up
+	// and the hostname resolves publicly — reachable end to end,
+	// which is the moment an address is worth handing to anybody.
+	// The channel closing without delivering is the tunnel saying
+	// it never came up at all, and Err is why.
+	//
+	// This is the wait that used to be URL()'s alone. URL blocks
+	// on the same readiness and answers nil for the same failure,
+	// so the two are interchangeable as a signal; asking Ready
+	// says which of the two questions is being asked.
+	up, ok := <-tun.Ready()
+	if !ok {
+		cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+
+		// The edge refused the credential this spec carries. That is
+		// the whole of the class now: a reservation that lapsed is
+		// adopted on whatever hostname the provider minted in its
+		// place, silently and without an error, so the only way a
+		// replay still fails here is the one where the provider was
+		// never reached — the spec is served as given, and the edge
+		// is where a dead one is finally found out.
+		//
+		// Which makes the file the thing at fault, and leaving it in
+		// place the real cost: every later run replays it, is served
+		// it again, and dies at the same edge. Drop it, then mint
+		// once, which is a tunnel rather than an explanation if the
+		// provider is reachable by now and the same error either way
+		// if it is not.
+		//
+		// Only this class. ErrRejected is a mint the provider
+		// refused outright or a request that could not be built at
+		// all — configuration, and nothing the stored spec had a
+		// part in. Discarding on it would throw away a good
+		// credential over an unroutable provider or a bad header.
+		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
+			return cause
+		}
+		b.cache.Discard(b.cacheDirs.GetSlice(), log)
+		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
+
+		tun = start("")
+		if up, ok = <-tun.Ready(); !ok {
+			return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+		}
+	}
+	public := up.URL()
+
+	// A bound container is served before the tunnel exists —
+	// the binding is what the tunnel is handed to proxy to — so
+	// this is the first moment anything down there can be told
+	// where it answers from outside. Each origin gets its own
+	// address rather than the bare one, because with several of
+	// them it is the routing parameter that reaches this one.
+	if announcer, ok := closeOrigins.(Announcer); ok {
+		addresses := make([]string, len(origins))
+		for i := range origins {
+			addresses[i] = publicURL(public, i, len(origins))
+		}
+		announcer.Announce(addresses)
+	}
+
+	// The panel's address when there is a panel, "" when there is
+	// not: the browser answers the question, and everything below
+	// reads the answer.
+	view := b.browser.URL(b.multiview, public, origins)
+
+	// The report: write the human-readable map to stderr, a line
+	// per public address with the origins it reaches indented
+	// beneath it. With a panel that is one address and every
+	// origin; without, one address per origin.
+	//
+	// Nothing goes to stdout. It used to carry one bare URL per
+	// origin as a machine interface, which meant every address
+	// printed twice wherever the two streams landed together — a
+	// terminal, a container's logs — and the de-duplication that
+	// hid it could only see the case where one file descriptor was
+	// literally the other. Under Docker they are two pipes that
+	// merge downstream, so it never fired where it was needed most.
+	// The banner is already on stderr by the time this runs: it was
+	// printed above, before minting, so it survives a mint that
+	// fails.
+	//
+	// Wait for the public URL to answer before any of it is
+	// printed.
+	//
+	// Ready, which the tunnel above was waited on for, means the
+	// connection is up and the hostname resolves. It does not
+	// mean the edge has registered the route: for a
+	// moment after that it answers 530. An address printed inside
+	// that moment is one a script can read and cannot yet use, and
+	// a browser opened into it shows an error page for a tunnel
+	// that is about to work. Both readers are served by the same
+	// wait, so it sits above the report rather than beside the
+	// browser.
+	//
+	// The counter answers whether the edge is up; how long that
+	// is worth waiting for is this caller's policy, so the bound
+	// is a context rather than something the counter carries.
+	// Everything below is behind this wait, the cache save
+	// included, so it cannot be unbounded.
+	if !b.counter.IsEstablished() {
+		log.Info("waiting for the public address to answer")
+		<-b.counter.Established(context.WithTimeout(ctx, b.establishDeadline))
+	}
+
+	// Every public address gets a line, with what it reaches
+	// indented beneath. A panel is the case where one address
+	// reaches them all; otherwise each origin has an address of its
+	// own. One shape either way, and no column to keep aligned as
+	// hostnames change length.
+	if view != "" {
+		fmt.Fprintf(stdout, "%s\n", view)
+		for _, origin := range origins {
+			fmt.Fprintf(stderr, "  -> %s\n", origin)
+		}
+	} else {
+		for i, origin := range origins {
+			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, len(origins)))
+			fmt.Fprintf(stderr, "  -> %s\n", origin)
+		}
+	}
+
+	// The console this was started from is a viewer too, when
+	// there is exactly one terminal to show and a terminal to
+	// show it on.
+	//
+	// One origin, because a console has no way to say which of
+	// several it is watching — that is what the routing parameter
+	// is for. A served origin, because an http one is somebody
+	// else's server and has no terminal. And a real terminal on
+	// both ends of the command's own streams, because a frame
+	// drawn into a pipe is a wall of escapes where a script
+	// expected a URL.
+	//
+	// Started after the addresses are reported, so what a person
+	// came for is on the screen before the frame takes it, and
+	// left behind when it ends: a detach gives the console back
+	// and the tunnel goes on without it.
+	mirror, mirroring := closeOrigins.(Mirror)
+	mirroring = mirroring && mirrorable(cmd, origins)
+
+	// Not with a browser in front of it. Mirroring already puts
+	// the terminal on a screen the person is looking at, and a
+	// tab opening on top of it is a second copy of the one thing
+	// they can already see — counted as another viewer, competing
+	// for the same keystrokes.
+	//
+	// The field is left alone rather than set: it is bound to
+	// --no-open, and a builder whose Command is called twice must
+	// not carry one run's terminal into the next one's flags.
+	if !b.noOpen && !mirroring {
+		// One page, never a fan of tabs: the panel when there is
+		// one, since it reaches every origin, and otherwise the
+		// default origin itself.
+		target := cmp.Or(view, publicURL(public, 0, len(origins)))
+		b.browser.Open(ctx, target, stderr, log)
+	}
+
+	// After the URL is live, so what gets cached is a tunnel that
+	// came up rather than one that was merely asked for.
+	if len(b.cacheDirs.GetSlice()) > 0 {
+		b.cache.Save(b.cacheDirs.GetSlice(), log)
+	}
+
+	// A viewer asking to end the run is the third way this
+	// stops, beside a signal and the tunnel failing. Nothing is
+	// wrong when it happens, so it reads as a clean exit — the
+	// deferred teardown below takes the origins, the programs
+	// they started and the tunnel with it.
+	//
+	// Read here rather than at the select that waits on it,
+	// because the mirror below consults it too.
+	var asked <-chan struct{}
+	if quitter, ok := closeOrigins.(Quitter); ok {
+		asked = quitter.Quit()
+	}
+
+	// Decided above, drawn here: the addresses are reported, the
+	// cache is written, and the screen is free to be taken.
+	if mirroring {
+		// The logs would land on the screen the frame is drawing.
+		// They are still kept — ^K l is where they go instead.
+		if b.recent != nil {
+			b.recent.Mute(true)
+		}
+		go func() {
+			defer func() {
+				if b.recent != nil {
+					b.recent.Mute(false)
+				}
+			}()
+			if err := mirror.Mirror(ctx, cmd.InOrStdin(), stdout); err != nil && ctx.Err() == nil {
+				log.Debug("the console stopped showing the terminal", "error", err)
+			}
+			// The frame is gone and the run is not: a detach
+			// gives back a console with a prompt on it and no
+			// sign that anything is still up. Said here rather
+			// than before the frame, where it would be true for
+			// a moment and then covered — and where Ctrl+C
+			// belongs to the program being served, not to us.
+			//
+			// Not said when the frame's exit is what ended it,
+			// which is already on its way to a prompt.
+			select {
+			case <-ctx.Done():
+			case <-asked:
+			default:
+				fmt.Fprintln(stderr, stopHint)
+			}
+		}()
+	} else {
+		// Nothing else is going to be drawn here. The addresses
+		// are up, the run blocks from now on, and the signal is
+		// the only thing left on this side of it.
+		fmt.Fprintln(stderr, stopHint)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-tun.Done():
+	case <-asked:
+		log.Info("a viewer asked this run to end; stopping")
+		return nil
+	}
+
+	// Cancelling ctx ends the tunnel too, so a reap makes both arms
+	// above ready at once and the race would otherwise decide which
+	// error an operator is shown. The cause is the verdict either
+	// way: it outranks whatever the teardown it triggered has to
+	// say for itself.
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	if ctx.Err() != nil {
+		return nil // signaled after the tunnel came up: clean shutdown
+	}
+	return tun.Err()
+}
+
+// applyEnv copies environment values onto the flags the command line did not
+// set, which is what makes the precedence flag > env > default.
+//
+// A value that the flag refuses is an error wrapping v1.ErrInvalidEnv, naming
+// the variable and the offending value: env beats code, so a typo'd override
+// that silently fell back would be indistinguishable from one that worked.
+//
+// Idempotent, because two paths reach it: PersistentPreRunE for a command
+// being executed, and Run for a caller who never executes one. A flag it has
+// already set is marked Changed, and a Changed flag is skipped, so the second
+// call does nothing — and a flag the command line set is skipped by the same
+// test, which is the precedence rule itself.
+func (b *BuilderImpl) applyEnv(cmd *cobra.Command) error {
+	env := b.environment()
+	var err error
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if err != nil || f.Changed || !env.IsSet(f.Name) {
+			return
+		}
+		value := env.GetString(f.Name)
+
+		// A repeatable flag takes the whole list at once. Replace, not
+		// Append: the flag's default may be a seeded value, and the
+		// environment overrides a seed rather than extending it — the same
+		// rule pflag's stringArray applies to the command line.
+		if slice, ok := f.Value.(pflag.SliceValue); ok {
+			err = slice.Replace(splitList(value))
+		} else {
+			err = f.Value.Set(value)
+		}
+		if err != nil {
+			err = fmt.Errorf("%s=%q: %w: %w", flagEnv[f.Name], value, v1.ErrInvalidEnv, err)
+			return
+		}
+		// Marking it changed is what stops cobra from reporting a required
+		// flag as missing when its variable supplied it.
+		f.Changed = true
+	})
+	return err
 }
 
 // environment is this builder's environment binding, built on first use: every

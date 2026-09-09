@@ -637,9 +637,10 @@ func Apply[T any](t T, opts ...Option[T]) T
 // Builder assembles the tunneld command: what a caller calls once New has
 // configured it.
 type Builder interface {
-    Command() *cobra.Command // terminal: assembles and returns
-    Origins() []*url.URL     // the origins exposed: argv > env > seed
-    Name() string            // configured command name
+    Command() *cobra.Command      // terminal: assembles and returns
+    Origins() []*url.URL          // the origins exposed: argv > env > seed
+    Name() string                 // configured command name
+    Run(ctx context.Context) error // the command's body, without the command
 }
 
 // match with errors.Is
@@ -662,6 +663,29 @@ const DefaultOpen      = true
 const DefaultMultiview = true
 const DefaultShellFallback = true
 ```
+
+### A tunnel without a CLI
+
+`Run` is the command's body, so executing the command and calling this do the
+same work:
+
+```go
+b := v1alpha1.New(
+	v1alpha1.WithOrigin("http://localhost:3000"),
+	v1alpha1.WithShellFallback(false),
+)
+if err := b.Run(ctx); err != nil { ... }
+```
+
+`ctx` is the shutdown handle either way — cancel it and the tunnel comes down,
+during startup as well as after. Nothing parses `os.Args`, and there is no
+command to assemble that nobody will ever see; the configuration stays the
+options it was built with. A process shell wants the other door, which is what
+`main.go` is: signals into a context, then `Command().ExecuteContext(ctx)`.
+
+The environment is bound on both paths, so `TUNNELD_*` still beats code here.
+What differs is argv: with no command line parsed, the origins are whatever the
+environment and the seeds settle on.
 
 ## Environment
 

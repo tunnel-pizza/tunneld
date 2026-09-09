@@ -1158,6 +1158,42 @@ func originStrings(origins []*url.URL) []string {
 // warning names the value that did not — a drop nobody is told about is just a
 // missing origin. Origins is called directly rather than through a run, so
 // nothing here dials.
+// TestRunIsTheOtherDoor covers the run reached without a command line: a
+// program that configured the builder with options and wants a tunnel, not a
+// CLI. Same work and the same streams as executing the command, with no argv
+// parsed on the way and no command anybody will ever see.
+//
+// The environment is asserted on this path too, because binding it is
+// PersistentPreRunE's job when a command is executed and nothing runs
+// PersistentPreRunE here. Run calls applyEnv itself so env still beats code,
+// and TUNNELD_PROVIDER reaching the engine is what proves it.
+func TestRunIsTheOtherDoor(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	for _, name := range []string{v1.OriginsEnv, v1.CacheDirEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
+		t.Setenv(name, "")
+	}
+	t.Setenv(v1.ProviderEnv, "from-the-environment.test")
+
+	var stdout, stderr bytes.Buffer
+	v1.Apply(h.b, WithStdout(&stdout), WithStderr(&stderr))
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.b.Run(ctx); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if want := public + "\n"; stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if want := "  -> http://localhost:3000\n"; !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr %q does not contain %q", stderr.String(), want)
+	}
+	if !slices.Contains(h.engine.providers, "from-the-environment.test") {
+		t.Errorf("engine saw providers %v, want the one the environment set", h.engine.providers)
+	}
+}
+
 // TestOriginsFallsBackToTheShell covers the answer to being given nothing:
 // the one origin every machine has. It is resolved before it is adopted,
 // because the parse loop's fallback for an unresolvable word is to read it as

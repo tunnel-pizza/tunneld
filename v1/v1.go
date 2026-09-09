@@ -36,6 +36,7 @@
 package v1
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/url"
@@ -371,4 +372,23 @@ type Builder interface {
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string
+	// Run brings the tunnel up, reports the public URLs, and blocks until ctx
+	// is canceled or the tunnel fails. It is the command's body, so executing
+	// the command from Command and calling this do the same work; ctx is the
+	// shutdown handle either way, and canceling it tears the tunnel down
+	// during startup as well as after.
+	//
+	// This is the door for a program that wants a tunnel and not a CLI: no
+	// command to assemble that nobody will see, no ExecuteContext reading an
+	// os.Args it was not given, and the configuration stays the options it was
+	// built with. A process shell wants the other door — see Command.
+	//
+	// Called without executing the command, no argv has been parsed, so the
+	// origins are what the environment and the seeds settle on; see Origins.
+	// The environment is bound either way, so env still beats code.
+	//
+	// A run with no origins at all fails with ErrNoOrigin. A tunnel that fails
+	// on its own returns the cause, and a canceled ctx is a clean stop rather
+	// than an error.
+	Run(ctx context.Context) error
 }

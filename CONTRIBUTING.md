@@ -564,6 +564,16 @@ Two things there will bite if you change them without knowing why:
   a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
+- **`RunE` is one line; the run is `Run`.** The body used to be a 357-line
+  closure inside `Command`'s struct literal, reachable only by executing a
+  cobra command. It is a method now, and `RunE` calls it with `cmd.Context()`.
+  Two consequences worth keeping: `Run` assembles the command itself rather
+  than taking one, because `Command` is cached and that is where the streams
+  and the flag values live — from inside `RunE` it is the same command already
+  running. And `applyEnv` is called from both `PersistentPreRunE` and `Run`,
+  because nothing runs `PersistentPreRunE` for a direct caller and env has to
+  beat code on both paths. It is idempotent: a flag it set is marked `Changed`,
+  and a `Changed` flag is skipped.
 - **The console is a viewer, and the gate is where the care is.**
   `session.viewLocally` is `AttachContainer` without the two things that exist
   only for a websocket: the stated colour profile and TERM, which a real
