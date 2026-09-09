@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/cnuss/libtunnel"
+	"github.com/creack/pty"
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -74,17 +76,21 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // suite runs under $CI, which is one of the signals.
 func TestOpenDecides(t *testing.T) {
 	const ssh = "10.0.0.1 51234 10.0.0.2 22"
-	watched := []Option{WithInteractive(true)}
-	drawing := append(watched, WithScreen(stillScreen{}))
+	// watched and drawing are the two shapes a row starts from. The terminal
+	// they name is a real pty, because that is what WithInteractive asks the
+	// streams about and a buffer can never answer yes.
+	watched := func(t *testing.T) []Option { return []Option{WithInteractive(onATerminal(t))} }
+	drawing := func(t *testing.T) []Option { return append(watched(t), WithScreen(stillScreen{})) }
+	pipe := func(*testing.T) []Option { return nil }
 	for _, tc := range []struct {
 		name string
-		when []Option
+		when func(*testing.T) []Option
 		env  map[string]string
 		want bool
 	}{
 		{"a desktop session", watched, map[string]string{"DISPLAY": ":0"}, true},
 		{"a wayland session", watched, map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
-		{"nothing is watching a pipe", nil, map[string]string{"DISPLAY": ":0"}, false},
+		{"nothing is watching a pipe", pipe, map[string]string{"DISPLAY": ":0"}, false},
 		{"a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
 		{"CI set to a falsehood is not a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
 		{"ssh with nothing forwarded", watched, map[string]string{"SSH_CONNECTION": ssh}, false},
@@ -95,11 +101,11 @@ func TestOpenDecides(t *testing.T) {
 		{"a runner reached over ssh", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
 		// The console is already showing it, which outranks every signal
 		// below and the caller's own instruction above.
-		{"a console already drawing it", drawing, map[string]string{"DISPLAY": ":0"}, false},
-		{"a caller who insists cannot beat that", append(drawing, WithForced(ptr(true))), map[string]string{"DISPLAY": ":0"}, false},
+		{"a console already showing it", drawing, map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists cannot beat that", forced(drawing, true), map[string]string{"DISPLAY": ":0"}, false},
 		// The caller beats everything the machine has to say.
-		{"a caller who declines", append(watched, WithForced(ptr(false))), map[string]string{"DISPLAY": ":0"}, false},
-		{"a caller who insists over a pipe", []Option{WithForced(ptr(true))}, map[string]string{"CI": "true"}, true},
+		{"a caller who declines", forced(watched, false), map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists over a pipe", forced(pipe, true), map[string]string{"CI": "true"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
@@ -110,13 +116,38 @@ func TestOpenDecides(t *testing.T) {
 				launched = append(launched, addr)
 				return nil
 			}))
-			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneled.pizza/")}, tc.when...)...)
+			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneled.pizza/")}, tc.when(t)...)...)
 			if got := len(launched) > 0; got != tc.want {
 				t.Errorf("launched %q, want a browser: %v", launched, tc.want)
 			}
 		})
 	}
 }
+
+// forced is a row's options with a caller's own answer appended, which reads
+// better in a table than an append inside a composite literal.
+func forced(base func(*testing.T) []Option, open bool) func(*testing.T) []Option {
+	return func(t *testing.T) []Option { return append(base(t), WithForced(&open)) }
+}
+
+// onATerminal is a run whose output goes somewhere a person can see, which is
+// what WithInteractive asks the streams about — a real pty, since nothing else
+// answers yes.
+func onATerminal(t *testing.T) Streams {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to be a terminal on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	return streams{tty}
+}
+
+type streams struct{ tty *os.File }
+
+func (s streams) InOrStdin() io.Reader   { return s.tty }
+func (s streams) OutOrStdout() io.Writer { return s.tty }
+func (s streams) ErrOrStderr() io.Writer { return s.tty }
 
 // stillScreen is a console that shows nothing. The rows using it are about
 // what a console being there means, not about what it shows.

@@ -21,7 +21,6 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
-	"golang.org/x/term"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -631,15 +630,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		}
 	}
 
-	// A viewer asking to end the run is the third way this stops, beside a
-	// signal and the tunnel failing. Nothing is wrong when it happens, so it
-	// reads as a clean exit — the deferred teardown below takes the origins,
-	// the programs they started and the tunnel with it.
-	var asked <-chan struct{}
-	if quitter, ok := closeOrigins.(Quitter); ok {
-		asked = quitter.Quit()
-	}
-
 	// Putting the tunnel in front of a person is the browser package's, both
 	// ways it can be done: a tab, or the console this was started from. What
 	// is reported here is only what it cannot see for itself.
@@ -658,7 +648,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		browser.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
 		browser.WithForced(b.open),
 		browser.WithStderr(stderr),
-		browser.WithInteractive(isTerminal(cmd.InOrStdin()) || isTerminal(cmd.OutOrStdout()) || isTerminal(cmd.ErrOrStderr())),
+		browser.WithInteractive(cmd),
 		browser.WithScreen(screen),
 	)
 	if screen == nil {
@@ -674,6 +664,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		b.cache.Save(b.cacheDirs.GetSlice(), log)
 	}
 
+	// A viewer asking to end the run is the third way this stops, beside a
+	// signal and the tunnel failing. Nothing is wrong when it happens, so it
+	// reads as a clean exit — the deferred teardown below takes the origins,
+	// the programs they started and the tunnel with it.
+	//
+	// Asked for here rather than earlier, now that the only other thing that
+	// wanted it asks the closer itself: a console tells a detach from an exit
+	// by the same channel, and gets it the same way.
+	var asked <-chan struct{}
+	if quitter, ok := closeOrigins.(Quitter); ok {
+		asked = quitter.Quit()
+	}
 	select {
 	case <-ctx.Done():
 	case <-tun.Done():
@@ -984,12 +986,6 @@ func (b *BuilderImpl) Origins() []*url.URL {
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
-
-// isTerminal reports whether a stream is a terminal this process can draw on.
-func isTerminal(stream any) bool {
-	f, ok := stream.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
-}
 
 // publicURL is the address origin i answers on, out of n origins: the tunnel's
 // URL with a bare ?i routing parameter. Bare is load-bearing — a valued

@@ -332,7 +332,7 @@ type bound []boundOrigin
 // can no longer exist.
 func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 	if len(b) != 1 {
-		return fmt.Errorf("attach: %d origins to mirror, want exactly one", len(b))
+		return fmt.Errorf("attach: %d origins to show, want exactly one", len(b))
 	}
 	return b[0].srv.Show(ctx, in, out)
 }
@@ -344,6 +344,12 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 // The watchers live as long as the origins do, which is as long as the run: a
 // closer that has been closed has nothing left to watch for, and a run that is
 // over is not waiting on this.
+//
+// Callable more than once, and called that way: the run waits on this to know
+// it should stop, and a console waits on it to tell a detach from an exit.
+// Each call gets watchers and a channel of its own — every one of them closes
+// on the same ask, and they cost a goroutine per served origin, which is one
+// in the only case where two callers exist.
 func (b bound) Quit() <-chan struct{} {
 	asked := make(chan struct{})
 	var once sync.Once

@@ -56,9 +56,8 @@ type BrowserImpl struct {
 	// forced is a caller who has already decided, and nil when nobody wrote
 	// one. It outranks everything except screen.
 	forced *bool
-	// interactive is whether any of the command's own streams is a terminal.
-	// Its streams and not this process's, because an embedding program
-	// redirects them — which is exactly the case where nobody is watching.
+	// interactive is whether any of the command's own streams is a terminal,
+	// which WithInteractive works out from the streams themselves.
 	interactive bool
 	// stderr is where a failed launch is reported, and where pkg/browser's
 	// own child output is pointed before it can write a word.
@@ -101,12 +100,31 @@ func WithForced(open *bool) Option {
 	return func(b *BrowserImpl) { b.forced = open }
 }
 
-// WithInteractive says whether any of the command's own streams is a terminal,
-// which is the run's answer to give and not this package's to find: an
-// embedding program redirects them, and that is exactly the case where nobody
-// is watching.
-func WithInteractive(interactive bool) Option {
-	return func(b *BrowserImpl) { b.interactive = interactive }
+// Streams is the three a command was given, which is what a run is asked for
+// rather than the answer about them: *cobra.Command satisfies it, and this
+// package has no reason to import cobra to say so.
+//
+// The command's own and not the process's, because an embedding program
+// redirects them — and that is exactly the case where nobody is watching.
+type Streams interface {
+	InOrStdin() io.Reader
+	OutOrStdout() io.Writer
+	ErrOrStderr() io.Writer
+}
+
+// WithInteractive says where the run's output actually goes, and Open works
+// out whether that means anybody is there.
+//
+// One test for four environments: a pipeline, a service manager, a CI step and
+// a container all arrive with none of their three streams on a terminal, and a
+// person at a shell keeps at least one of the three however they redirect the
+// others.
+func WithInteractive(streams Streams) Option {
+	return func(b *BrowserImpl) {
+		b.interactive = console.IsTerminal(streams.InOrStdin()) ||
+			console.IsTerminal(streams.OutOrStdout()) ||
+			console.IsTerminal(streams.ErrOrStderr())
+	}
 }
 
 // WithStderr sets where a failed launch is reported and where pkg/browser's
@@ -467,6 +485,7 @@ func (b *BrowserImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
 		if !*b.forced {
 			return
 		}
+	// Nobody is watching.
 	case !b.interactive:
 		log.Debug("not opening a browser", "reason", "no terminal on any of the command's streams")
 		return

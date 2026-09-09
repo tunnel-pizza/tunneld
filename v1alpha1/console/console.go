@@ -114,7 +114,7 @@ func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer
 	// embedding program redirects them and a frame drawn into whatever it
 	// redirected to is not a terminal anybody asked for.
 	terminal, ok := origins.(Terminal)
-	if !ok || !isTerminal(in) || !isTerminal(out) {
+	if !ok || !IsTerminal(in) || !IsTerminal(out) {
 		return nil
 	}
 	// A run that a viewer can end tells a detach from an exit: one is going
@@ -166,8 +166,12 @@ func (c *ConsoleImpl) Show(ctx context.Context, log v1.Logger) {
 	}()
 }
 
-// isTerminal reports whether a stream is a terminal a frame can be drawn on.
-func isTerminal(stream any) bool {
+// IsTerminal reports whether a stream is a terminal a frame can be drawn on.
+//
+// Exported because the browser package asks the same question for its own
+// reasons — whether anybody is watching this run at all — and one answer to
+// what counts as a terminal is better than two that could drift.
+func IsTerminal(stream any) bool {
 	f, ok := stream.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
 }
