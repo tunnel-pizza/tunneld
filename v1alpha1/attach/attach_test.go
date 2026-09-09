@@ -105,6 +105,12 @@ func TestCopyOutput(t *testing.T) {
 	}
 }
 
+// testLogs is a stand-in for tunneld's own recent lines. One line, so a frame
+// showing them draws something a test can find.
+type testLogs struct{}
+
+func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
+
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a
 // container somebody has to arrange, which is what makes them testable at all.
@@ -189,7 +195,7 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -1114,6 +1120,31 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	dial(t, s)
 	target.awaitRun(t, 3)
 	target.awaitSize(t, settled)
+}
+
+// TestMirrorNeedsExactlyOneOrigin pins the other half of the same gate, on the
+// side that would have to draw. A console has no way to say which of several
+// terminals it is watching and no room to watch them at once — the public
+// hostname and its routing parameter are what several origins are for.
+func TestMirrorNeedsExactlyOneOrigin(t *testing.T) {
+	targets := &stubTargets{scheme: v1.DockerScheme}
+	display := mustURLs(t, "dockerd://api", "dockerd://db")
+
+	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	mirror, ok := closer.(interface {
+		Mirror(context.Context, io.Reader, io.Writer) error
+	})
+	if !ok {
+		t.Fatal("the closer offers no Mirror")
+	}
+	if err := mirror.Mirror(t.Context(), strings.NewReader(""), &bytes.Buffer{}); err == nil {
+		t.Error("mirrored two origins onto one console, want a refusal")
+	}
 }
 
 // TestQuitReachesTheBinder pins the path from a viewer's keystroke to the

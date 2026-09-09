@@ -40,6 +40,7 @@ func newFrameHarness(t *testing.T) *harness {
 		Target: newFakeTarget("api", true, true),
 		log:    slog.New(slog.DiscardHandler),
 		banner: testBanner,
+		logs:   testLogs{},
 		stdin:  pw,
 		// Buffered, because nothing here is reading the far end: the frame
 		// applies a size as a side effect of being told its window, and a test
@@ -276,6 +277,67 @@ func TestAStaleArmingTickIsIgnored(t *testing.T) {
 	h.f = model.(frame)
 	if h.f.armed != 'c' {
 		t.Error("a spent arming's tick disarmed the live one")
+	}
+}
+
+// TestTheLogsAreAViewAwayFromTheTerminal pins what `l` shows and how somebody
+// gets back.
+//
+// tunneld's own lines go to the console it was started on, which is somewhere
+// a viewer is not — and, on a mirrored console, underneath this very frame. So
+// the frame is the only place they can be read from, and reading is not
+// something anybody finishes in one keystroke: the view stays until escape.
+func TestTheLogsAreAViewAwayFromTheTerminal(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("what the terminal was showing"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	h.press(t, commandKey)
+	h.press(t, typing('l'))
+
+	pane := stripSGR(h.f.View().Content)
+	if !strings.Contains(pane, "a line tunneld wrote") {
+		t.Errorf("pane = %q, want tunneld's own lines", pane)
+	}
+	if strings.Contains(pane, "what the terminal was showing") {
+		t.Error("the terminal is still drawn under the logs, want the logs over it")
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "back to the terminal") {
+		t.Errorf("bottom border = %q, want it saying how to get back", bottom)
+	}
+	if h.f.View().Cursor != nil {
+		t.Error("a cursor is drawn over the logs, where the live position means nothing")
+	}
+
+	// Reading is not typing: keys spent here reach no terminal.
+	h.press(t, typing('q'))
+	h.silent(t)
+	if !h.f.logs {
+		t.Error("a keystroke closed the log view, want only escape to")
+	}
+
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.logs {
+		t.Error("escape did not go back to the terminal")
+	}
+	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "what the terminal was showing") {
+		t.Errorf("pane = %q, want the terminal back", pane)
+	}
+}
+
+// TestTheLogsSayWhenThereAreNone pins that an empty pane never reads as a
+// broken frame. A process that has been quiet has been quiet, and should say
+// so.
+func TestTheLogsSayWhenThereAreNone(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.logs = nil
+
+	h.press(t, commandKey)
+	h.press(t, typing('l'))
+
+	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "nothing logged yet") {
+		t.Errorf("pane = %q, want it saying there is nothing rather than showing nothing", pane)
 	}
 }
 

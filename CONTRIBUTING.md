@@ -24,6 +24,7 @@ Deep-link by filename; line numbers will drift.
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -550,6 +551,37 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **Zero origins means `$SHELL`, resolved before it is adopted.** The parse
+  loop's fallback for a word it cannot resolve is to read it as an address, so
+  an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
+  a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
+  failure leaves the count at zero, which already has a message naming the
+  lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
+- **The console is a viewer, and the gate is where the care is.**
+  `session.viewLocally` is `AttachContainer` without the two things that exist
+  only for a websocket: the stated colour profile and TERM, which a real
+  terminal answers for itself, and the resize channel, which is Bubble Tea's
+  job from SIGWINCH — `follow` still runs with a nil channel, for the other
+  thing it does, which is ending the viewer when the run does. What decides
+  whether to draw at all is `mirrorable` in the builder: one origin, a served
+  scheme, and a terminal on both of the command's own streams — checked there
+  and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
+  them. It is decided before the browser rather than beside the frame, because
+  the browser asks about it: a mirrored run opens no tab, `--open` or not. The
+  answer gates that `if` and never writes `b.noOpen`, which is bound to
+  `--no-open` — a builder whose `Command` is called twice must not carry one
+  run's terminal into the next one's flags.
+- **A drawing console mutes the log ring.** stderr writes straight through a
+  full-screen frame. `recent.Mute(true)` stops records reaching the handler
+  while the ring keeps every line, so nothing is lost and `^K l` is where they
+  are read; the mirror unmutes on its way out, so a detached console gets its
+  logs back with its prompt.
+- **The log ring wraps rather than tees.** `logs.RingImpl.Wrap` sits in front
+  of the text handler, so what a terminal shows is what stderr got and neither
+  can drift. It asks what it wraps through `Enabled`, so a run at `--log-level`
+  silence keeps nothing. It is built in `v1alpha1.New`, before the command
+  knows where logs go or at what level, because the binder is constructed there
+  too and both need the same one.
 - **A keystroke can end the process, and the path is deliberate.** `x` in the
   frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
   fans every origin's into one, because what they are asking for is the

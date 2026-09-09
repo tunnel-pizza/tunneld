@@ -53,6 +53,9 @@ var (
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
+	// logStyle is dimmer than the terminal it covers, because what it shows is
+	// tunneld talking about itself rather than the thing anybody came to see.
+	logStyle = uv.Style{Fg: ansi.IndexedColor(245)}
 )
 
 // How long a frame waits to be told how big its window is before drawing at
@@ -124,6 +127,11 @@ type frame struct {
 	// still the one that is armed.
 	armed  rune
 	arming int
+
+	// logs is the frame showing tunneld's own lines over the pane instead of
+	// the terminal. A view rather than a keystroke: it stays until esc, since
+	// reading is not something anybody finishes in one key.
+	logs bool
 
 	// sized is the window having been reported by the page rather than assumed.
 	// Until it is, the frame draws nothing rather than drawing at a size that
@@ -204,6 +212,15 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, nil
 
 	case tea.KeyPressMsg:
+		// The log view is the frame's, so every key belongs to it: escape
+		// leaves, and anything else is somebody reading rather than typing at
+		// a terminal they cannot see.
+		if f.logs {
+			if k := tea.Key(msg); k.Code == tea.KeyEscape || (k.Code == 'l' && k.Mod == tea.ModCtrl) {
+				f.logs = false
+			}
+			return f, nil
+		}
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
@@ -274,6 +291,13 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// This viewer only. The stream is shared and stays up; the socket
 		// closing is all that happens, and the page says "detached".
 		return f, tea.Quit
+	case 'l':
+		// The lines tunneld writes about itself, which a viewer has no other
+		// way to see: they go to the console this process was started on, and
+		// that is somewhere else — or, on a mirrored console, underneath this
+		// very frame.
+		f.logs = true
+		return f, nil
 	case 'x':
 		// The whole run, not this viewer and not this origin: the command ends,
 		// its context goes with it, and everything it started — the programs,
@@ -343,9 +367,17 @@ func (f frame) View() tea.View {
 	// window that has just shrunk draws once before the resize it asked for
 	// has come back.
 	pixels := uv.NewScreenBuffer(pane.Dx(), pane.Dy())
-	// The emulator draws itself, cell for cell, with nothing re-parsed on the
-	// way.
-	f.sess.drawPane(pixels, pixels.Bounds())
+	if f.logs {
+		// The last lines that fit, because what somebody opening this wants is
+		// what just happened rather than what happened first.
+		for i, l := range lastOf(f.sess.logLines(), pane.Dy()) {
+			uv.NewStyledString(logStyle.Styled(l)).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
+		}
+	} else {
+		// The emulator draws itself, cell for cell, with nothing re-parsed on
+		// the way.
+		f.sess.drawPane(pixels, pixels.Bounds())
+	}
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)
 
 	// The top says what is being watched and where it is being served from,
@@ -362,13 +394,29 @@ func (f frame) View() tea.View {
 	// what a full-screen program does at startup, and the emulator keeps a
 	// position regardless — so drawing one there follows the program's writes
 	// around the screen rather than showing anybody where they are typing.
-	if !f.command && !f.sess.cursorHidden() {
+	if !f.command && !f.logs && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
 		}
 	}
 	return view
+}
+
+// lastOf is the tail of lines that fits in rows, and a line saying so when
+// there is nothing to show. An empty pane would read as a frame that had
+// broken rather than a process that has been quiet.
+func lastOf(lines []string, rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	if len(lines) == 0 {
+		return []string{"nothing logged yet — tunneld says more at --log-level debug"}
+	}
+	if len(lines) > rows {
+		lines = lines[len(lines)-rows:]
+	}
+	return lines
 }
 
 // blit copies src into dst with its top-left corner at x, y.
@@ -599,11 +647,15 @@ func (f frame) hint() string {
 		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
 			hintStyle.Styled(" again to send it ")
 	}
+	if f.logs {
+		return chipStyle.Styled(" esc ") + hintStyle.Styled(" back to the terminal ")
+	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
+		chipStyle.Styled(" l ") + hintStyle.Styled(" logs ") +
 		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
 }
 

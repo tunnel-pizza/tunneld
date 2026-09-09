@@ -26,6 +26,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -158,6 +159,16 @@ type Announcer interface {
 	Announce(public []string)
 }
 
+// Mirror is a bound origin that can draw its terminal on streams of the
+// caller's choosing — the console tunneld was started from.
+//
+// Discovered on the closer Bind returns, like Announcer and Quitter, and for
+// the same reason. It returns when that viewer leaves or the run ends, and
+// leaves the console as it found it.
+type Mirror interface {
+	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
+}
+
 // Quitter is a bound origin that can be asked, from inside, to end the run.
 //
 // Discovered on the closer Bind returns, the same way Announcer is and for the
@@ -202,7 +213,12 @@ var (
 // flag's default is always the field it binds over, so WithOpen(false) is
 // honoured exactly like every other seed.
 func New(opts ...Option) *BuilderImpl {
-	b := v1.Apply(&BuilderImpl{},
+	// Built before the builder, because two things need the same one: the
+	// terminal, which shows the lines, and the logger the command assembles
+	// later — by which time the binder has already been constructed with it.
+	recent := logs.New()
+
+	b := v1.Apply(&BuilderImpl{recent: recent},
 		WithOpen(v1.DefaultOpen),
 		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
@@ -214,6 +230,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			attach.WithBanner(VersionLine()),
+			attach.WithLogs(recent),
 		)),
 	)
 	return v1.Apply(b, opts...)
@@ -263,6 +280,11 @@ type BuilderImpl struct {
 	// OutOrStdout/ErrOrStderr, so cobra stays the single owner of where
 	// output goes. Nil means whatever cobra defaults to.
 	stdout, stderr io.Writer
+
+	// recent keeps tunneld's own log lines so a terminal can show them. The
+	// command wraps its log handler in this, and the binder was handed the
+	// same one at construction — see New, and Logs in v1alpha1/attach.
+	recent *logs.RingImpl
 
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once

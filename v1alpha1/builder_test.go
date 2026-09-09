@@ -17,9 +17,11 @@ import (
 	"time"
 
 	"github.com/cnuss/libtunnel"
+	"github.com/creack/pty"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
@@ -104,6 +106,10 @@ func TestCommandIsIdempotent(t *testing.T) {
 // names both ways of supplying one — that is the choice an operator makes to
 // fix it.
 func TestOriginRequiredWhenUnseeded(t *testing.T) {
+	// $SHELL is the last origin tried, and a developer's shell has one — so
+	// without this the case does not assert a refusal, it mints a tunnel and
+	// blocks on it. Nothing to expose has to mean nothing.
+	t.Setenv("SHELL", "")
 	_, _, err := execute(t, New())
 	if !errors.Is(err, v1.ErrNoOrigin) {
 		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
@@ -207,7 +213,7 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	if !strings.Contains(stdout, "expose <origin>") {
+	if !strings.Contains(stdout, "expose [origin ...]") {
 		t.Errorf("help %q does not use the configured command name", stdout)
 	}
 }
@@ -713,6 +719,18 @@ func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([
 	return display, f, f.err
 }
 
+// Mirror makes the bound closer a Mirror, which is what the run type-asserts
+// for before it will draw on the console. It blocks until the run ends, like
+// the real one, so a case can assert on what happened while it was drawing.
+//
+// Being a Mirror is not enough on its own — mirrorable still has to agree
+// there is a terminal to draw on — so every case that hands the command
+// buffers is unaffected by this.
+func (f *fakeBinder) Mirror(ctx context.Context, _ io.Reader, _ io.Writer) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
 
 func (f *fakeBinder) Quit() <-chan struct{} { return f.asked }
@@ -730,6 +748,10 @@ type runHarness struct {
 	order   []string
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
+	// console, when set, is what the command is given for stdin and stdout
+	// instead of the buffers: a real terminal, which is what mirrorable asks
+	// about and what a bytes.Buffer can never be.
+	console *os.File
 	b       *BuilderImpl
 }
 
@@ -767,7 +789,12 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
-	cmd.SetOut(&h.stdout)
+	if h.console != nil {
+		cmd.SetIn(h.console)
+		cmd.SetOut(h.console)
+	} else {
+		cmd.SetOut(&h.stdout)
+	}
 	cmd.SetErr(&h.stderr)
 	cmd.SetArgs(args)
 	return cmd.ExecuteContext(ctx)
@@ -1130,6 +1157,60 @@ func originStrings(origins []*url.URL) []string {
 // warning names the value that did not — a drop nobody is told about is just a
 // missing origin. Origins is called directly rather than through a run, so
 // nothing here dials.
+// TestOriginsFallsBackToTheShell covers the answer to being given nothing:
+// the one origin every machine has. It is resolved before it is adopted,
+// because the parse loop's fallback for an unresolvable word is to read it as
+// an address — so an unrunnable $SHELL has to leave the count at zero and get
+// the message that names the lever, not become a proxy to localhost.
+//
+// A seed or an argument outranks it: the fallback is for having nothing, and
+// anything settled above is something.
+func TestOriginsFallsBackToTheShell(t *testing.T) {
+	// Resolved the way Origins resolves it, so the case pins where $SHELL
+	// ends up rather than re-deriving how a path is spelled — LookPath
+	// answers a PATH hit absolutely and Resolve makes it absolute again, and
+	// on Windows the answer is C:\Program Files\Git\usr\bin\sh.exe.
+	real, ok := shell.Resolve("sh")
+	if !ok {
+		t.Skip("no sh on PATH to fall back to")
+	}
+	// Compared as fields rather than as strings, because a Windows shell is
+	// C:\Program Files\Git\usr\bin\sh.exe and url.URL.String escapes every
+	// separator in it — file://C:%5CProgram%20Files%5C... is correct and
+	// nothing anybody would write down. Path is the claim worth pinning
+	// anyway: the resolved program, not the word that named it.
+	for _, tc := range []struct {
+		name    string
+		shell   string
+		args    []string
+		want    []*url.URL
+		mention string
+	}{
+		{"a runnable shell is the origin", real, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
+		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), nil, nil, "not exposing a shell"},
+		{"unset is nothing to fall back to", "", nil, nil, ""},
+		{"an argument outranks it", real, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.OriginsEnv, "") // a developer's shell must not seed this
+			t.Setenv("SHELL", tc.shell)
+			var stderr bytes.Buffer
+			b := New(WithLogLevel("warn"), WithStderr(&stderr))
+			if err := b.Command().ParseFlags(tc.args); err != nil {
+				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
+			}
+
+			got := b.Origins()
+			if !slices.EqualFunc(got, tc.want, func(a, b *url.URL) bool { return *a == *b }) {
+				t.Errorf("Origins() = %+v, want %+v", got, tc.want)
+			}
+			if tc.mention != "" && !strings.Contains(stderr.String(), tc.mention) {
+				t.Errorf("stderr %q does not mention %q", stderr.String(), tc.mention)
+			}
+		})
+	}
+}
+
 func TestOriginsDropsTheUnusable(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1270,6 +1351,37 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 }
 
+// TestMirrorableRefusesWhatItCannotDraw pins the gate on handing the console a
+// terminal, which is mostly a list of times not to.
+//
+// The costly one is a stream that is not a terminal: stdout is a machine
+// interface, one public URL per origin, and a frame drawn into a pipe is a
+// wall of escapes where a script expected an address. Every case here runs
+// with the test's own buffers, which are not terminals — so the last two rows
+// are the ones that would be true on a console, and false here for that reason
+// alone.
+func TestMirrorableRefusesWhatItCannotDraw(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+	}{
+		{"nothing to show", nil},
+		{"an http origin is somebody else's server", []string{"http://localhost:3000"}},
+		{"a container beside another origin", []string{"dockerd://api", "http://localhost:3000"}},
+		{"two terminals and one console", []string{"dockerd://api", "dockerd://db"}},
+		{"one container, but into a buffer", []string{"dockerd://api"}},
+		{"one program, but into a buffer", []string{"file:///bin/zsh"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sink bytes.Buffer
+			b := New(WithOrigin(tc.in...), WithStdout(&sink), WithStderr(&sink))
+			if mirrorable(b.Command(), b.Origins()) {
+				t.Error("mirrorable() = true, want false — nothing here can be drawn on")
+			}
+		})
+	}
+}
+
 // TestAViewerCanEndTheRun pins the last link of the frame's exit: a keystroke
 // in a browser tab stops the process.
 //
@@ -1365,6 +1477,64 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 		if got := strings.Count(h.stderr.String(), addr); got != 0 {
 			t.Errorf("%s appears %d times on stderr, want 0:\n%s", addr, got, h.stderr.String())
 		}
+	}
+}
+
+// TestMirroringKeepsTheBrowserShut covers what a drawn console does to the
+// browser: nothing opens. The terminal is already on a screen the person is
+// looking at, and a tab on top of it is a second copy of the one thing they
+// can already see — counted as another viewer, competing for the same keys.
+//
+// A real pty, because that is the whole of what mirrorable asks about and a
+// buffer can never answer yes. Skipped where there is none, which is Windows.
+func TestMirroringKeepsTheBrowserShut(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to draw on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h.console = tty
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if len(h.browser.opened) != 0 {
+		t.Errorf("browser opened %v, want nothing opened", h.browser.opened)
+	}
+}
+
+// TestStopHintTellsAWaitingConsoleWhatToPress covers the line a run prints
+// once there is nothing left for it to draw. It is chrome, so stderr — stdout
+// is the machine interface and a script reading addresses off it should not
+// have to skip prose — and it comes after the addresses, because reading the
+// last one is what tells a person the run is up.
+//
+// The harness writes to buffers, not terminals, so mirrorable is false here
+// and this is the branch under test. The mirrored branch says the same thing
+// on its way out of the frame, which needs a pty and is covered by hand.
+func TestStopHintTellsAWaitingConsoleWhatToPress(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if got := strings.Count(h.stderr.String(), stopHint); got != 1 {
+		t.Errorf("stop hint appears %d times on stderr, want 1:\n%s", got, h.stderr.String())
+	}
+	if strings.Contains(h.stdout.String(), "Ctrl+C") {
+		t.Errorf("stdout carries the hint, want addresses alone: %q", h.stdout.String())
+	}
+	origin, hint := strings.Index(h.stderr.String(), "  -> "), strings.Index(h.stderr.String(), stopHint)
+	if origin < 0 || hint < origin {
+		t.Errorf("hint at %d, first origin at %d, want the hint after it:\n%s", hint, origin, h.stderr.String())
 	}
 }
 

@@ -70,6 +70,10 @@ type session struct {
 	// life of the process, so it is read without the lock.
 	banner string
 
+	// logs is tunneld's own recent lines, for the frame to show on request.
+	// Nil when nothing was configured, which a frame says rather than hides.
+	logs Logs
+
 	// stdin is the write end of the pipe feeding the target, and done closes
 	// when the run reading it is over. Both belong to one run and are replaced
 	// by the next, so both are guarded by mu — read stdin and done through the
@@ -209,7 +213,7 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs Logs, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -218,6 +222,7 @@ func newSession(ctx context.Context, target Target, banner string, quit func(), 
 		quit:    quit,
 		log:     log,
 		banner:  banner,
+		logs:    logs,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
 		viewers: map[*viewer]struct{}{},
@@ -288,6 +293,15 @@ func (s *session) stream() {
 	// size no one is looking at, which for a full-screen program means drawing
 	// nothing at all.
 	go s.apply(s.ctx, paneOf(s.size))
+}
+
+// logLines are tunneld's own recent lines, oldest first, or nil when nothing
+// is keeping them.
+func (s *session) logLines() []string {
+	if s.logs == nil {
+		return nil
+	}
+	return s.logs.Lines()
 }
 
 // recoverable reports whether this target can be started again, which is what
@@ -498,6 +512,45 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 		s.log.Debug("frame ended", "container", s.Name(), "error", err)
 	}
 	return nil
+}
+
+// viewLocally puts a viewer on the console tunneld was started from, which is
+// the same viewer a browser gets and joins the same session: one emulator, one
+// viewer count, keystrokes interleaved.
+//
+// Two things a page needs are left out. The colour profile and TERM are stated
+// outright for a websocket because detection through a socket answers NoTTY; a
+// real terminal describes itself and is allowed to. And sizes arrive from
+// SIGWINCH rather than from a resize channel, which is Bubble Tea's own job on
+// a real terminal — so follow is given none, and stays only for what it does
+// besides: ending this viewer when the run does.
+//
+// Returns when the viewer leaves or the run ends. The console is restored
+// either way, which is Bubble Tea's doing and the reason detaching has to go
+// through it rather than around it.
+func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.revive()
+	width, height := s.window()
+
+	v := &viewer{wake: make(chan struct{}, 1)}
+	v.prog = tea.NewProgram(
+		frame{sess: s, v: v, width: width, height: height},
+		tea.WithContext(ctx),
+		tea.WithInput(in),
+		tea.WithOutput(out),
+	)
+
+	s.join(v)
+	defer s.part(v)
+
+	go s.follow(ctx, cancel, v, nil)
+	go s.redraw(ctx, v)
+
+	_, err := v.prog.Run()
+	return err
 }
 
 // redraw turns the wake channel into the message the frame updates on. It is a

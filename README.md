@@ -229,7 +229,76 @@ Every key reaches the container except one:
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
+| then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
+
+### No arguments at all
+
+```sh
+tunneld
+```
+
+exposes `$SHELL` — the one origin every machine has, needing no port to be
+listening. It is the ordinary program path, so the terminal is drawn on your
+console as well:
+
+```
+https://thick-firefly.tunneled.pizza/
+  -> file:///bin/zsh
+```
+
+An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
+it. A `$SHELL` naming a program that is not there is dropped rather than read
+as an address, so what you get is the message about passing an origin and not a
+tunnel to nothing.
+
+### The console you started it from
+
+With exactly one `dockerd://` or `file://` origin, the terminal is drawn on
+your own console too:
+
+```sh
+tunneld zsh
+```
+
+The URL is printed first, then the frame takes the screen — the same frame a
+browser gets, joined to the same session. Both ends see one terminal, count
+each other in the viewer count, and interleave what they type.
+
+No browser opens for it, `--open` or not: the terminal is already on a screen
+you are looking at, and a tab on top of it is a second copy of the one thing
+you can see — counted as another viewer, competing for the same keystrokes.
+Paste the URL somewhere if you want it there too.
+
+`^K d` gives the console back and leaves the tunnel up — the run says how to
+stop it once you are looking at a prompt again. `^K x` ends the run.
+There is no `Ctrl-C` for tunneld while the frame is drawing: the console is in
+raw mode, so that keystroke belongs to the program, which is the same thing it
+means in the browser.
+
+Without a terminal to draw — several origins, an `http://` one, or a console
+that is not a terminal — the run says what to press instead:
+
+```
+https://thick-firefly.tunneled.pizza/
+  -> http://localhost:3000
+Press Ctrl+C to stop the tunnel...
+```
+
+It goes to stderr, like the origin lines above it: stdout is the machine
+interface and carries addresses alone.
+
+Nothing happens unless both of the command's own streams are terminals. stdout
+is a machine interface — one public URL per origin — and a frame drawn into a
+pipe is a wall of escapes where a script expected an address.
+
+While the console is drawing, tunneld's own log lines stop going to it. They
+are still kept, and `^K l` is where to read them.
+
+`l` is the only way to see what tunneld is saying about itself. Those lines go
+to the console it was started on, which is not where a viewer is — so a
+reconnect, a restart, or the edge disowning the hostname would otherwise
+explain nothing to the person actually looking at the terminal.
 
 `x` is the one way out of a terminal you opened from your own machine: the
 command ends, and its context takes the tunnel and everything under it. A
