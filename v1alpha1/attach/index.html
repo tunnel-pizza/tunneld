@@ -196,6 +196,12 @@
 
   fit.fit();
 
+  // Typing should work without clicking first. Nothing else on the page wants
+  // the keyboard, and every arrival here is somebody who came to use a
+  // terminal — including the one who just pressed the overlay's button, whose
+  // focus is on a button that this reload has now replaced.
+  term.focus();
+
   // location.search is the tunnel's own bare routing parameter, carried over
   // verbatim: the page was served at /?1, so its socket goes to /attach?1 and
   // lands on the same origin. Leaning on the sticky origin cookie instead
