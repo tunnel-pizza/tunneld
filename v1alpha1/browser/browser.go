@@ -26,48 +26,40 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// Reachable reports whether this machine has a browser worth opening, and says
-// on log why it decided as it did: nobody typed this, so the only account of
-// why a tab did or did not appear is the one it writes itself.
+// When is what only the run knows about itself, handed to Open so Open can
+// decide: everything else it needs is knowledge about this machine, which is
+// the browser package's own.
 //
-// It answers for the machine and not for the run — whether anybody is watching
-// this particular command, and whether what it serves is already on a screen,
-// are questions its caller holds the answers to. What is here is the part that
-// belongs beside Open: the same knowledge about where a window can go, asked
-// before the attempt rather than discovered by making it.
-func Reachable(log v1.Logger) bool {
-	// A runner that allocates a tty is still a runner. Nearly every one of
-	// them sets this, and none of them has anybody watching.
-	if ci := os.Getenv("CI"); ci != "" && ci != "false" && ci != "0" {
-		log.Debug("not opening a browser", "reason", "$CI is set")
-		return false
+// Facts, not a verdict. The caller reports what it is doing and Open works out
+// what that means, which is why there is no "should I" for a caller to get
+// wrong and no second place where opening a browser is decided.
+type When struct {
+	// Mirror is the console this run was started from, already able to draw
+	// the terminal being served, and nil when there is no console to draw on.
+	// Non-nil is the whole of "already in front of them": Open hands it the
+	// screen instead of launching, because putting the tunnel in front of a
+	// person is this package's job and a console is the other way of doing
+	// that.
+	//
+	// An interface rather than the thing itself, so what a console has to do
+	// on the way in and out — a log ring to keep off the screen, a prompt to
+	// leave a line on — belongs to v1alpha1/mirror and not to a package about
+	// browsers.
+	//
+	// It is not a preference. The terminal is on a screen they are looking
+	// at, and a tab on top of it is a second copy competing for the same
+	// keystrokes, so this outranks even a caller who insisted.
+	Mirror interface {
+		Draw(ctx context.Context, log v1.Logger)
 	}
-	// The terminal is here and the machine is there, so its browser would
-	// open where nobody is sitting. A forwarded display is the exception and
-	// says so by name — not the platform's assumption that a desktop exists,
-	// which is the thing that is wrong over ssh.
-	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
-		if forwarded() {
-			log.Debug("opening a browser", "reason", "an ssh session with a forwarded display")
-			return true
-		}
-		log.Debug("not opening a browser", "reason", "an ssh session with no display to open on")
-		return false
-	}
-	// macOS and Windows have somewhere to put a window by construction —
-	// neither has a headless spelling that also has a terminal open — so the
-	// question is only ever really asked of the platforms where a display is
-	// a thing that may or may not be running.
-	switch runtime.GOOS {
-	case "darwin", "windows":
-	default:
-		if !forwarded() {
-			log.Debug("not opening a browser", "reason", "no display to open on")
-			return false
-		}
-	}
-	log.Debug("opening a browser", "reason", "a display to open on")
-	return true
+	// Interactive is whether any of the command's own streams is a terminal.
+	// Its streams and not this process's, because an embedding program
+	// redirects them — which is exactly the case where nobody is watching.
+	Interactive bool
+	// Forced is a caller who has already decided: WithOpen, and nil when
+	// nobody wrote one. It outranks everything except Mirror, which is a fact
+	// about the run rather than an opinion about it.
+	Forced *bool
 }
 
 // forwarded reports whether a display is reachable by name rather than by
@@ -417,7 +409,58 @@ func (u *asTile) Write(b []byte) (int, error) {
 // addresses. Both are pointed at stderr before the child can write a word.
 // They are package globals, so this is process-wide; tunneld owns its process,
 // and an embedding program gets the same guarantee it wants anyway.
-func (b *BrowserImpl) Open(_ context.Context, addr string, stderr io.Writer, log v1.Logger) {
+func (b *BrowserImpl) Open(ctx context.Context, addr string, when When, stderr io.Writer, log v1.Logger) {
+	// Whether anybody is there to look at it, worked out rather than asked
+	// about. There is no flag behind this and no environment variable either:
+	// every environment without a browser — a pipeline, a service manager, a
+	// CI step, a container — used to have to say so one variable at a time,
+	// while the run already knew.
+	//
+	// Every branch says on the log why it went the way it did, because a
+	// decision nobody typed is the one somebody will want explained. Decided
+	// here rather than at the call site so there is one answer and not one
+	// per caller, and so the attempt is never made where it was never going
+	// to work — pkg/browser reports that by failing, which is a line in the
+	// log about a thing that was never going to happen.
+	switch {
+	case when.Mirror != nil:
+		log.Debug("not opening a browser", "reason", "the console is showing this terminal instead")
+		when.Mirror.Draw(ctx, log)
+		return
+	case when.Forced != nil:
+		log.Debug("browser decided by the caller", "open", *when.Forced)
+		if !*when.Forced {
+			return
+		}
+	case !when.Interactive:
+		log.Debug("not opening a browser", "reason", "no terminal on any of the command's streams")
+		return
+	// A runner that allocates a tty is still a runner. Nearly every one of
+	// them sets this, and none of them has anybody watching.
+	case os.Getenv("CI") != "" && os.Getenv("CI") != "false" && os.Getenv("CI") != "0":
+		log.Debug("not opening a browser", "reason", "$CI is set")
+		return
+	// The terminal is here and the machine is there, so its browser would
+	// open where nobody is sitting. A forwarded display is the exception and
+	// says so by name — not the platform's assumption that a desktop exists,
+	// which is the thing that is wrong over ssh.
+	case os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "":
+		if !forwarded() {
+			log.Debug("not opening a browser", "reason", "an ssh session with no display to open on")
+			return
+		}
+		log.Debug("opening a browser", "reason", "an ssh session with a forwarded display")
+	// macOS and Windows have somewhere to put a window by construction —
+	// neither has a headless spelling that also has a terminal open — so the
+	// question is only ever really asked of the platforms where a display is
+	// a thing that may or may not be running.
+	case runtime.GOOS != "darwin" && runtime.GOOS != "windows" && !forwarded():
+		log.Debug("not opening a browser", "reason", "no display to open on")
+		return
+	default:
+		log.Debug("opening a browser", "reason", "a terminal with a display")
+	}
+
 	pkgbrowser.Stdout, pkgbrowser.Stderr = stderr, stderr
 	if err := b.launch(addr); err != nil {
 		log.Debug("could not open a browser", "url", addr, "error", err)

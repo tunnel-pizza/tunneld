@@ -25,6 +25,7 @@ Deep-link by filename; line numbers will drift.
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -565,19 +566,35 @@ Two things there will bite if you change them without knowing why:
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The browser decision is derived, and split where the knowledge is.**
-  `--no-open` and `TUNNELD_NO_OPEN` are gone. The `switch` in `Run` holds what
-  only the command knows — is the console already drawing this terminal, did
-  the caller say, is any of its three streams a terminal — and delegates the
-  machine's half to `browser.Reachable`, which owns `$CI`, ssh and the display
-  variables because that is knowledge about where a window can go. Order is
-  load-bearing: the mirror comes before `WithOpen`, because it is a fact about
-  the run rather than an opinion about it. Neither half returns a reason; each
-  logs its own at debug, which is the only record of a decision nobody typed.
-  A case that wants a browser says `WithOpen(true)`: the harness gives the
-  command buffers, so a case that stayed quiet about it would be testing that
-  a pipe has no display. `h.run` sets stdin either way, since cobra otherwise
-  falls back to the process's own — a terminal, when the suite is run from
-  one.
+  `--no-open` and `TUNNELD_NO_OPEN` are gone, and so is the gate at the call
+  site. `Browser.Open` decides, because putting the tunnel in front of a
+  person is that package's job and there are two ways to do it: a tab, or the
+  console the run was started from. The run hands it `browser.When` — a
+  console to draw on if there is one, the caller's own instruction, and
+  whether any of the command's streams is a terminal — and everything else it
+  needs is knowledge about this machine (`$CI`, ssh, the display variables),
+  which is the browser package's own. Facts in, no verdict, so there is no
+  "should I" for a caller to get wrong and no second place where this is
+  decided. Order inside is load-bearing: `Mirror` comes before `Forced`,
+  because a console already showing the thing is a fact about the run rather
+  than an opinion about it. Every branch logs its reason at debug, the only
+  record of a decision nobody typed.
+
+  `Open` decides but does not draw. `v1alpha1/console` owns what a console
+  costs on the way in and out — a log ring that must stop writing through a
+  full-screen frame, and a prompt that has to be told the tunnel is still up
+  once the frame gives it back — so a package about browsers is not also the
+  thing that runs a terminal. `console.Origin` is the optional interface the
+  bound closer satisfies, declared there because that package is the only
+  thing that drives one.
+
+  The seam moved the tests with it. `browser` owns the decision, so
+  `TestOpenDecides` drives `Open` with a recording `WithLaunch` and asserts
+  whether the attempt was made. `v1alpha1` owns reporting the facts, so its
+  cases read `h.browser.when` — a fake browser never runs the decision, and a
+  case there asserting "nothing opened" would be asserting nothing at all.
+  `h.run` sets stdin either way, since cobra otherwise falls back to the
+  process's own, which is a terminal when the suite is run from one.
 - **`RunE` is one line; the run is `Run`.** The body used to be a 357-line
   closure inside `Command`'s struct literal, reachable only by executing a
   cobra command. It is a method now, and `RunE` calls it with `cmd.Context()`.
@@ -597,9 +614,12 @@ Two things there will bite if you change them without knowing why:
   whether to draw at all is `mirrorable` in the builder: one origin, a served
   scheme, and a terminal on both of the command's own streams — checked there
   and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
-  them. It is decided before the browser rather than beside the frame, because
-  `opening` asks about it first: a mirrored run opens no tab, `WithOpen(true)`
-  or not.
+  them. It is decided before the browser because the browser is told about it:
+  a mirrored run opens no tab, `WithOpen(true)` or not. Its first two checks —
+  one origin, served scheme — are what the binder already worked out, since it
+  stands a server up only for a served origin and `bound.Mirror` refuses
+  anything but a list of one. They are said again because the answer is needed
+  before the mirror starts: the browser is told, and the log ring is muted.
 - **A drawing console mutes the log ring.** stderr writes straight through a
   full-screen frame. `recent.Mute(true)` stops records reaching the handler
   while the ring keeps every line, so nothing is lost and `^K l` is where they

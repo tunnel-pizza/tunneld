@@ -94,10 +94,15 @@ func WithCache(c Cache) Option {
 // URL and Interceptors are two halves of one decision and answer over the
 // same condition — "" and no interceptors when there is no panel to serve —
 // so the caller reads an answer rather than asking whether to ask.
+//
+// Open reads the same way. It is told what the run is doing, in browser.When,
+// and decides for itself whether that means a browser — there is no "should
+// I" for a caller to answer, and no second place where opening one is
+// decided.
 type Browser interface {
 	URL(enabled bool, public *url.URL, origins []*url.URL) string
 	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
-	Open(ctx context.Context, addr string, stderr io.Writer, log v1.Logger)
+	Open(ctx context.Context, addr string, when browser.When, stderr io.Writer, log v1.Logger)
 }
 
 // WithBrowser replaces what serves the tunnel's bare address and opens it
@@ -157,16 +162,6 @@ type Binder interface {
 // everything downstream of Bind already follows.
 type Announcer interface {
 	Announce(public []string)
-}
-
-// Mirror is a bound origin that can draw its terminal on streams of the
-// caller's choosing — the console tunneld was started from.
-//
-// Discovered on the closer Bind returns, like Announcer and Quitter, and for
-// the same reason. It returns when that viewer leaves or the run ends, and
-// leaves the console as it found it.
-type Mirror interface {
-	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
 }
 
 // Quitter is a bound origin that can be asked, from inside, to end the run.

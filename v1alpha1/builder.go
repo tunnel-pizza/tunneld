@@ -21,6 +21,7 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"golang.org/x/term"
 )
 
@@ -631,126 +632,86 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		}
 	}
 
-	// The console this was started from is a viewer too, when
-	// there is exactly one terminal to show and a terminal to
-	// show it on.
+	// The console this was started from is a viewer too, when there is
+	// exactly one terminal to show and a terminal to show it on.
 	//
-	// One origin, because a console has no way to say which of
-	// several it is watching — that is what the routing parameter
-	// is for. A served origin, because an http one is somebody
-	// else's server and has no terminal. And a real terminal on
-	// both ends of the command's own streams, because a frame
-	// drawn into a pipe is a wall of escapes where a script
-	// expected a URL.
+	// One origin, because a console has no way to say which of several it is
+	// watching — that is what the routing parameter is for. A served origin,
+	// because an http one is somebody else's server and has no terminal. And
+	// a real terminal on both of the command's own streams, because a frame
+	// drawn into a pipe is a wall of escapes where a script expected a URL —
+	// its streams and not os.Stdin and os.Stdout, since an embedding program
+	// redirects them and a frame drawn into whatever it redirected to is not
+	// a terminal anybody asked for.
 	//
-	// Started after the addresses are reported, so what a person
-	// came for is on the screen before the frame takes it, and
-	// left behind when it ends: a detach gives the console back
-	// and the tunnel goes on without it.
-	mirror, mirroring := closeOrigins.(Mirror)
-	mirroring = mirroring && mirrorable(cmd, origins)
-
-	// Whether anybody is there to look at it, worked out rather than asked
-	// about. There is no flag behind this and no environment variable either:
-	// every environment without a browser — a pipeline, a service manager, a
-	// CI step, a container — used to have to say so one variable at a time,
-	// while the run already knew. mirrorable above asks a strictly harder
-	// version of the same question and gets it right.
+	// The first two are what the binder already worked out: it stands a
+	// server up only for a served origin, so a bound list of one is exactly
+	// this, and bound.Mirror refuses anything else on its own. Said again
+	// here because the answer is needed before the mirror is started — the
+	// browser is told about it, and the log ring is muted for it.
 	//
-	// Order matters. The mirror comes before the caller's own answer because
-	// it is a fact about the run rather than an opinion about it: the
-	// terminal is already on a screen they are looking at, and a tab on top
-	// of it is a second copy competing for the same keystrokes. Everything
-	// after it is the guess, and WithOpen is where somebody who knows better
-	// says so.
+	// Started after the addresses are reported, so what a person came for is
+	// on the screen before the frame takes it, and left behind when it ends:
+	// a detach gives the console back and the tunnel goes on without it.
+	// A viewer asking to end the run is the third way this stops, beside a
+	// signal and the tunnel failing. Nothing is wrong when it happens, so it
+	// reads as a clean exit — the deferred teardown below takes the origins,
+	// the programs they started and the tunnel with it.
 	//
-	// Every branch says on the log why it went the way it did, because a
-	// decision nobody typed is the one somebody will want explained.
-	var opening bool
-	switch {
-	case mirroring:
-		log.Debug("not opening a browser", "reason", "the console is already showing this terminal")
-	case b.open != nil:
-		opening = *b.open
-		log.Debug("browser decided by the caller", "open", opening)
-	// Nobody is watching. One test for four environments: a pipeline, a
-	// service manager, a CI step and a container all arrive with none of
-	// their three streams on a terminal, and a person at a shell keeps at
-	// least one of the three however they redirect the others.
-	case !isTerminal(cmd.InOrStdin()) && !isTerminal(cmd.OutOrStdout()) && !isTerminal(cmd.ErrOrStderr()):
-		log.Debug("not opening a browser", "reason", "no terminal on any of this command's streams")
-	default:
-		// Whether the machine has a browser worth opening is the browser
-		// package's question, not this one's. What is settled above is what
-		// only the command knows: what it is serving, and what its own
-		// streams are.
-		opening = browser.Reachable(log)
+	// Read here rather than at the select that waits on it, because the
+	// console the browser package may draw consults it too.
+	var asked <-chan struct{}
+	if quitter, ok := closeOrigins.(Quitter); ok {
+		asked = quitter.Quit()
 	}
-	if opening {
-		// One page, never a fan of tabs: the panel when there is
-		// one, since it reaches every origin, and otherwise the
-		// default origin itself.
-		target := cmp.Or(view, publicURL(public, 0, len(origins)))
-		b.browser.Open(ctx, target, stderr, log)
+
+	from, mirroring := closeOrigins.(console.Origin)
+	if mirroring = mirroring && len(origins) == 1; mirroring {
+		_, served := servedSchemes[origins[0].Scheme]
+		mirroring = served && isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
+	}
+
+	// Putting the tunnel in front of a person is the browser package's, both
+	// ways it can be done: a tab, or the console this was started from. What
+	// is reported here is only what it cannot see for itself — the console to
+	// hand over, the caller's own instruction, and whether one of the
+	// command's streams is a terminal. Its streams and not the process's,
+	// because an embedding program redirects them, which is exactly the case
+	// where nobody is watching.
+	//
+	// One page, never a fan of tabs: the panel when there is one, since it
+	// reaches every origin, and otherwise the default origin itself.
+	when := browser.When{
+		Interactive: isTerminal(cmd.InOrStdin()) || isTerminal(cmd.OutOrStdout()) || isTerminal(cmd.ErrOrStderr()),
+		Forced:      b.open,
+	}
+	if mirroring {
+		screen := []console.Option{
+			console.WithOrigin(from),
+			console.WithStreams(cmd.InOrStdin(), stdout, stderr),
+			console.WithEnded(asked),
+			console.WithHint(stopHint),
+		}
+		// Only when there is one. A nil *RingImpl handed to an interface
+		// field is not a nil interface, and the guard on the other side would
+		// wave it through to a method call on nothing.
+		if b.recent != nil {
+			screen = append(screen, console.WithLogs(b.recent))
+		}
+		when.Mirror = console.New(screen...)
+	}
+	b.browser.Open(ctx, cmp.Or(view, publicURL(public, 0, len(origins))), when, stderr, log)
+	if !mirroring {
+		// Nothing else is going to be drawn here. The addresses are up, the
+		// run blocks from now on, and the signal is the only thing left on
+		// this side of it.
+		fmt.Fprintln(stderr, stopHint)
 	}
 
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	if len(b.cacheDirs.GetSlice()) > 0 {
 		b.cache.Save(b.cacheDirs.GetSlice(), log)
-	}
-
-	// A viewer asking to end the run is the third way this
-	// stops, beside a signal and the tunnel failing. Nothing is
-	// wrong when it happens, so it reads as a clean exit — the
-	// deferred teardown below takes the origins, the programs
-	// they started and the tunnel with it.
-	//
-	// Read here rather than at the select that waits on it,
-	// because the mirror below consults it too.
-	var asked <-chan struct{}
-	if quitter, ok := closeOrigins.(Quitter); ok {
-		asked = quitter.Quit()
-	}
-
-	// Decided above, drawn here: the addresses are reported, the
-	// cache is written, and the screen is free to be taken.
-	if mirroring {
-		// The logs would land on the screen the frame is drawing.
-		// They are still kept — ^K l is where they go instead.
-		if b.recent != nil {
-			b.recent.Mute(true)
-		}
-		go func() {
-			defer func() {
-				if b.recent != nil {
-					b.recent.Mute(false)
-				}
-			}()
-			if err := mirror.Mirror(ctx, cmd.InOrStdin(), stdout); err != nil && ctx.Err() == nil {
-				log.Debug("the console stopped showing the terminal", "error", err)
-			}
-			// The frame is gone and the run is not: a detach
-			// gives back a console with a prompt on it and no
-			// sign that anything is still up. Said here rather
-			// than before the frame, where it would be true for
-			// a moment and then covered — and where Ctrl+C
-			// belongs to the program being served, not to us.
-			//
-			// Not said when the frame's exit is what ended it,
-			// which is already on its way to a prompt.
-			select {
-			case <-ctx.Done():
-			case <-asked:
-			default:
-				fmt.Fprintln(stderr, stopHint)
-			}
-		}()
-	} else {
-		// Nothing else is going to be drawn here. The addresses
-		// are up, the run blocks from now on, and the signal is
-		// the only thing left on this side of it.
-		fmt.Fprintln(stderr, stopHint)
 	}
 
 	select {
@@ -1063,23 +1024,6 @@ func (b *BuilderImpl) Origins() []*url.URL {
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
-
-// mirrorable reports whether the console this command was given can be handed
-// a terminal: one origin, served rather than proxied, and a real terminal on
-// both of the command's own streams.
-//
-// The streams are checked rather than os.Stdin and os.Stdout, because an
-// embedding program redirects them and a frame drawn into whatever it
-// redirected to is not a terminal anybody asked for.
-func mirrorable(cmd *cobra.Command, origins []*url.URL) bool {
-	if len(origins) != 1 {
-		return false
-	}
-	if _, served := servedSchemes[origins[0].Scheme]; !served {
-		return false
-	}
-	return isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
-}
 
 // isTerminal reports whether a stream is a terminal this process can draw on.
 func isTerminal(stream any) bool {

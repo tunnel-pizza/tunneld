@@ -219,37 +219,28 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestOpeningIsDerived covers the browser decision, which has no flag and no
-// variable behind it any more. Each row is an environment somebody actually
-// runs in, and the answer is the one they would give without being asked.
+// TestBrowserIsToldWhatTheRunIsDoing covers the run's half of the browser
+// decision, which is not the decision: Open is told what this run is doing and
+// works out what that means. What is asserted here is that the facts arriving
+// are the true ones.
 //
-// Driven through the run rather than through a predicate, because the decision
-// is four lines inside it and not a function of its own. The terminal is a
-// real pty, since that is what it reads and a buffer can never answer yes, and
-// every variable it consults is set explicitly — the suite itself runs under
-// $CI, which is one of the signals. The machine's own half is browser.Reachable
-// and is tabled beside it.
-func TestOpeningIsDerived(t *testing.T) {
+// The terminal is a real pty, because Interactive is a question about the
+// command's own streams and a buffer can never answer yes.
+func TestBrowserIsToldWhatTheRunIsDoing(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	for _, tc := range []struct {
 		name     string
 		open     *bool
 		terminal bool
-		env      map[string]string
-		want     bool
+		mirrored bool
+		want     browser.When
 	}{
-		{name: "a terminal with a display", terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: true},
-		{name: "nothing is watching a pipe", want: false},
-		// The machine-level signals belong to browser.Reachable; one row here
-		// pins that they are still consulted.
-		{name: "and it asks the browser package too", terminal: true, env: map[string]string{"DISPLAY": ":0", "CI": "true"}, want: false},
-		{name: "the caller declines", open: ptr(false), terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
-		{name: "the caller insists over a pipe", open: ptr(true), want: true},
+		{name: "a pipe is nobody watching", want: browser.When{}},
+		{name: "a terminal is somebody", terminal: true, want: browser.When{Interactive: true}},
+		{name: "the caller travels with it", open: ptr(false), want: browser.When{Forced: ptr(false)}},
+		{name: "either way", open: ptr(true), terminal: true, want: browser.When{Interactive: true, Forced: ptr(true)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
-				t.Setenv(name, tc.env[name])
-			}
 			h := newRunHarness(t, live(public), ":3000")
 			if tc.open != nil {
 				v1.Apply(h.b, WithOpen(*tc.open))
@@ -268,15 +259,22 @@ func TestOpeningIsDerived(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			if opened := len(h.browser.opened) > 0; opened != tc.want {
-				t.Errorf("opened %q, want a browser: %v", h.browser.opened, tc.want)
+			got := h.browser.when
+			if (got.Mirror != nil) != tc.mirrored || got.Interactive != tc.want.Interactive {
+				t.Errorf("When = %+v, want %+v", got, tc.want)
+			}
+			switch {
+			case (got.Forced == nil) != (tc.want.Forced == nil):
+				t.Errorf("When.Forced = %v, want %v", got.Forced, tc.want.Forced)
+			case got.Forced != nil && *got.Forced != *tc.want.Forced:
+				t.Errorf("When.Forced = %v, want %v", *got.Forced, *tc.want.Forced)
 			}
 		})
 	}
 }
 
-// ptr is a *bool for a literal, which WithOpen's tri-state needs and Go has no
-// spelling for inline.
+// ptr is a *bool for a literal, which When.Forced needs and Go has no spelling
+// for inline.
 func ptr(b bool) *bool { return &b }
 
 // TestCacheDir pins how a cache directory list is read: which spellings mean
@@ -690,11 +688,16 @@ func (f *fakeCache) Save([]string, v1.Logger) {
 type fakeBrowser struct {
 	*browser.BrowserImpl
 	opened []string
-	order  *[]string
+	// when is what the run reported about itself on the last call. Deciding
+	// what it means is Open's, so what a case here can assert is that the
+	// facts arriving are the true ones.
+	when  browser.When
+	order *[]string
 }
 
-func (f *fakeBrowser) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logger) {
+func (f *fakeBrowser) Open(_ context.Context, addr string, when browser.When, _ io.Writer, _ v1.Logger) {
 	f.opened = append(f.opened, addr)
+	f.when = when
 	if f.order != nil {
 		*f.order = append(*f.order, "open")
 	}
@@ -963,23 +966,6 @@ func TestRun(t *testing.T) {
 		err := h.run(t, t.Context())
 		if !errors.Is(err, v1.ErrNotReady) {
 			t.Errorf("run() = %v, want ErrNotReady", err)
-		}
-	})
-
-	t.Run("a caller who declined opens nothing", func(t *testing.T) {
-		h := newRunHarness(t, live(public), ":3000", ":4000")
-		v1.Apply(h.b, WithOpen(false))
-		ctx, cancel := context.WithCancel(t.Context())
-		h.cache.onSave = cancel
-
-		if err := h.run(t, ctx); err != nil {
-			t.Fatalf("run() = %v", err)
-		}
-		if len(h.browser.opened) != 0 {
-			t.Errorf("opened %q, want nothing", h.browser.opened)
-		}
-		if want := []string{"url", "save"}; !slices.Equal(h.order, want) {
-			t.Errorf("effects %v, want %v", h.order, want)
 		}
 	})
 
@@ -1394,32 +1380,40 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 }
 
-// TestMirrorableRefusesWhatItCannotDraw pins the gate on handing the console a
+// TestMirroringRefusesWhatItCannotDraw pins the gate on handing the console a
 // terminal, which is mostly a list of times not to.
 //
 // The costly one is a stream that is not a terminal: stdout is a machine
 // interface, one public URL per origin, and a frame drawn into a pipe is a
-// wall of escapes where a script expected an address. Every case here runs
-// with the test's own buffers, which are not terminals — so the last two rows
-// are the ones that would be true on a console, and false here for that reason
-// alone.
-func TestMirrorableRefusesWhatItCannotDraw(t *testing.T) {
+// wall of escapes where a script expected an address. Every row here runs on
+// the harness's buffers, which are not terminals — so the last two are the
+// ones that would be true on a console, and false here for that reason alone.
+//
+// Read off what the browser was told, since the gate is four lines inside the
+// run and not a function of its own, and Mirrored is the run's own answer
+// travelling out of it.
+func TestMirroringRefusesWhatItCannotDraw(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
 	for _, tc := range []struct {
 		name string
 		in   []string
 	}{
-		{"nothing to show", nil},
-		{"an http origin is somebody else's server", []string{"http://localhost:3000"}},
-		{"a container beside another origin", []string{"dockerd://api", "http://localhost:3000"}},
+		{"an http origin is somebody else's server", []string{":3000"}},
+		{"a container beside another origin", []string{"dockerd://api", ":3000"}},
 		{"two terminals and one console", []string{"dockerd://api", "dockerd://db"}},
 		{"one container, but into a buffer", []string{"dockerd://api"}},
 		{"one program, but into a buffer", []string{"file:///bin/zsh"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var sink bytes.Buffer
-			b := New(WithOrigin(tc.in...), WithStdout(&sink), WithStderr(&sink))
-			if mirrorable(b.Command(), b.Origins()) {
-				t.Error("mirrorable() = true, want false — nothing here can be drawn on")
+			h := newRunHarness(t, live(public), tc.in...)
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if h.browser.when.Mirror != nil {
+				t.Error("the browser was told the console is drawing this, want false — nothing here can be drawn on")
 			}
 		})
 	}
@@ -1524,14 +1518,18 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	}
 }
 
-// TestMirroringKeepsTheBrowserShut covers what a drawn console does to the
-// browser: nothing opens. The terminal is already on a screen the person is
-// looking at, and a tab on top of it is a second copy of the one thing they
-// can already see — counted as another viewer, competing for the same keys.
+// TestMirroringTellsTheBrowser covers what a drawn console reports: the
+// terminal is already on a screen the person is looking at, and a tab on top
+// of it would be a second copy of the one thing they can already see, counted
+// as another viewer and competing for the same keys.
 //
-// A real pty, because that is the whole of what mirrorable asks about and a
+// What that means is Open's — browser.TestOpenDecides has the row where
+// Mirrored beats even a caller who insisted. What is pinned here is that the
+// fact reaches it, which is the half a fake browser cannot answer for.
+//
+// A real pty, because mirrorable asks about the command's own streams and a
 // buffer can never answer yes. Skipped where there is none, which is Windows.
-func TestMirroringKeepsTheBrowserShut(t *testing.T) {
+func TestMirroringTellsTheBrowser(t *testing.T) {
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		t.Skipf("no pty to draw on: %v", err)
@@ -1550,8 +1548,8 @@ func TestMirroringKeepsTheBrowserShut(t *testing.T) {
 	if err := h.run(t, ctx); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	if len(h.browser.opened) != 0 {
-		t.Errorf("browser opened %v, want nothing opened", h.browser.opened)
+	if h.browser.when.Mirror == nil {
+		t.Error("the browser was not told the console is drawing this terminal")
 	}
 }
 

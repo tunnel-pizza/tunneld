@@ -673,6 +673,8 @@ anybody is there to look at it:
 | an ssh session forwarded one (`ssh -X`) | an ssh session did not, so the tab would open where nobody is sitting |
 | | the console is already drawing the terminal, which would make the tab a second copy competing for the same keystrokes |
 
+The decision lives in `Browser.Open`, which is told what the run is doing and
+works out what that means — there is no "should I" for a caller to answer.
 Every branch says on `--log-level=debug` why it went the way it did, which is
 the only account of a decision nobody typed:
 

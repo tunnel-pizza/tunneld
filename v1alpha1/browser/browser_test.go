@@ -15,6 +15,7 @@ import (
 
 	"github.com/cnuss/libtunnel"
 	pkgbrowser "github.com/pkg/browser"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // discard is the logger every test hands to Interceptors: nothing under test
@@ -63,45 +64,69 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
 // the whole design: the panel answers the tunnel's own address and nothing
 // else, because everything else belongs to an origin.
-// TestReachable covers the machine-level half of the browser decision, which
-// has no flag and no variable behind it any more. Every row is somewhere
-// somebody actually runs, and the answer is the one they would give without
-// being asked.
+// TestOpenDecides covers the browser decision, which has no flag and no
+// variable behind it any more. Each row is somewhere somebody actually runs,
+// and the answer is the one they would give without being asked.
 //
-// Every variable it reads is set explicitly, the ones a runner sets for itself
-// included: this suite runs under $CI, which is one of the signals. Why it
-// decided goes on the log rather than into a return value, so what is asserted
-// here is the decision.
-func TestReachable(t *testing.T) {
+// Driven through Open with a launcher that records rather than launches, since
+// what is under test is whether the attempt is made at all. Every variable it
+// reads is set explicitly, the ones a runner sets for itself included: this
+// suite runs under $CI, which is one of the signals.
+func TestOpenDecides(t *testing.T) {
 	const ssh = "10.0.0.1 51234 10.0.0.2 22"
+	watched := When{Interactive: true}
+	drawing := func() When { return When{Interactive: true, Mirror: stillMirror{}} }
 	for _, tc := range []struct {
 		name string
+		when When
 		env  map[string]string
 		want bool
 	}{
-		{"a desktop session", map[string]string{"DISPLAY": ":0"}, true},
-		{"a wayland session", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
-		{"a runner", map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
-		{"CI set to a falsehood is not a runner", map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
-		{"ssh with nothing forwarded", map[string]string{"SSH_CONNECTION": ssh}, false},
-		{"ssh by its tty alone", map[string]string{"SSH_TTY": "/dev/pts/0"}, false},
-		{"ssh -X", map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0"}, true},
+		{"a desktop session", watched, map[string]string{"DISPLAY": ":0"}, true},
+		{"a wayland session", watched, map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"nothing is watching a pipe", When{}, map[string]string{"DISPLAY": ":0"}, false},
+		{"a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
+		{"CI set to a falsehood is not a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
+		{"ssh with nothing forwarded", watched, map[string]string{"SSH_CONNECTION": ssh}, false},
+		{"ssh by its tty alone", watched, map[string]string{"SSH_TTY": "/dev/pts/0"}, false},
+		{"ssh -X", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0"}, true},
 		// $CI is asked before ssh, because a runner reached over ssh is still
 		// a runner and the display it forwarded is still nobody's.
-		{"a runner reached over ssh", map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
+		{"a runner reached over ssh", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
+		// The console is already showing it, which outranks every signal
+		// below and the caller's own instruction above.
+		{"a console already drawing it", drawing(), map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists cannot beat that", When{Interactive: true, Mirror: stillMirror{}, Forced: ptr(true)}, map[string]string{"DISPLAY": ":0"}, false},
+		// The caller beats everything the machine has to say.
+		{"a caller who declines", When{Interactive: true, Forced: ptr(false)}, map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists over a pipe", When{Forced: ptr(true)}, map[string]string{"CI": "true"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
 				t.Setenv(name, tc.env[name])
 			}
-			// Every row that expects a browser names a display of its own, so
-			// none of them depends on the machine the suite runs on.
-			if got := Reachable(discard); got != tc.want {
-				t.Errorf("Reachable() = %v, want %v", got, tc.want)
+			var launched []string
+			b := New(WithLaunch(func(addr string) error {
+				launched = append(launched, addr)
+				return nil
+			}))
+			b.Open(t.Context(), "https://foo.tunneled.pizza/", tc.when, io.Discard, discard)
+			if got := len(launched) > 0; got != tc.want {
+				t.Errorf("launched %q, want a browser: %v", launched, tc.want)
 			}
 		})
 	}
 }
+
+// stillMirror is a console that draws nothing. The rows using it are about
+// what a console being there means, not about what it draws.
+type stillMirror struct{}
+
+func (stillMirror) Draw(context.Context, v1.Logger) {}
+
+// ptr is a *bool for a literal, which When.Forced needs and Go has no spelling
+// for inline.
+func ptr(b bool) *bool { return &b }
 
 func TestIsPanelRequest(t *testing.T) {
 	cases := []struct {
@@ -593,7 +618,7 @@ func TestOpen(t *testing.T) {
 		}))
 
 		var stderr bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", &stderr, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", When{Forced: ptr(true)}, &stderr, slog.New(slog.DiscardHandler))
 
 		if want := "https://striped-worm.tunneled.pizza/"; opened != want {
 			t.Errorf("opened %q, want %q", opened, want)
@@ -617,7 +642,7 @@ func TestOpen(t *testing.T) {
 		defer srv.Close()
 
 		o := New(WithLaunch(func(string) error { return nil }))
-		o.Open(t.Context(), srv.URL, io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), srv.URL, When{Forced: ptr(true)}, io.Discard, slog.New(slog.DiscardHandler))
 
 		if got := requests.Load(); got != 0 {
 			t.Errorf("made %d requests to the address, want none", got)
@@ -636,7 +661,7 @@ func TestOpen(t *testing.T) {
 			launched = true
 			return nil
 		}))
-		o.Open(ctx, "https://striped-worm.tunneled.pizza/", io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(ctx, "https://striped-worm.tunneled.pizza/", When{Forced: ptr(true)}, io.Discard, slog.New(slog.DiscardHandler))
 
 		if !launched {
 			t.Error("a cancelled context stopped the launch, want it to open anyway")
@@ -649,16 +674,19 @@ func TestOpen(t *testing.T) {
 	// browser that did not appear.
 	t.Run("a failure is quiet outside the debug log", func(t *testing.T) {
 		o := New(WithLaunch(func(string) error { return errors.New("no browser here") }))
+		// Forced, so the decision above cannot be what keeps it quiet: the
+		// launch has to be attempted for its failure to be the thing tested.
+		anyway := When{Forced: ptr(true)}
 
 		var quiet bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", io.Discard,
+		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", anyway, io.Discard,
 			slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		if quiet.Len() != 0 {
 			t.Errorf("log = %q, want nothing at warn level", quiet.String())
 		}
 
 		var logged bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", io.Discard,
+		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", anyway, io.Discard,
 			slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
 		if !strings.Contains(logged.String(), "could not open a browser") {
 			t.Errorf("log = %q, want the failure in the debug log", logged.String())
