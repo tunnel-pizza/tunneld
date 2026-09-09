@@ -229,7 +229,13 @@ Every key reaches the container except one:
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
+| then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
+
+`l` is the only way to see what tunneld is saying about itself. Those lines go
+to the console it was started on, which is not where a viewer is — so a
+reconnect, a restart, or the edge disowning the hostname would otherwise
+explain nothing to the person actually looking at the terminal.
 
 `x` is the one way out of a terminal you opened from your own machine: the
 command ends, and its context takes the tunnel and everything under it. A

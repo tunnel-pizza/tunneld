@@ -96,6 +96,16 @@ type Target interface {
 	Close() error
 }
 
+// Logs is where tunneld's own recent log lines come from, for a frame to show
+// on request.
+//
+// Read rather than subscribed to, because a frame draws when it draws: it asks
+// for the lines it is about to render and renders them, and a viewer who is
+// not looking at the logs costs nothing.
+type Logs interface {
+	Lines() []string
+}
+
 // Repeatable is a Target that can be attached to more than once, because each
 // attach starts it rather than resuming it.
 //
@@ -191,6 +201,7 @@ type BinderImpl struct {
 	// mistake that should collapse rather than depend on order.
 	targets map[string]Targets
 	banner  string
+	logs    Logs
 }
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
@@ -216,6 +227,12 @@ func WithTargets(targets ...Targets) Option {
 			b.targets[t.Scheme()] = t
 		}
 	}
+}
+
+// WithLogs sets where the frames this binder serves read tunneld's own recent
+// log lines from. Unset, a frame has none to show and says so.
+func WithLogs(logs Logs) Option {
+	return func(b *BinderImpl) { b.logs = logs }
 }
 
 // WithBanner sets the build line every terminal this binder serves shows along
@@ -263,7 +280,7 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, b.banner, log)
+		server, err := Serve(ctx, target, b.banner, b.logs, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -382,7 +399,7 @@ func (s *Server) Quit() <-chan struct{} { return s.quit }
 // covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, logs Logs, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -437,7 +454,7 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 	// The frame offers an exit, and this is what it reaches: closing quit says
 	// a viewer asked, and nothing here acts on it — ending the run is the
 	// command's to do, and it is watching.
-	s.session = newSession(sctx, target, banner, func() {
+	s.session = newSession(sctx, target, banner, logs, func() {
 		log.Info("a viewer asked the run to end", "target", target.Name())
 		s.quitOnce.Do(func() { close(s.quit) })
 	}, log)

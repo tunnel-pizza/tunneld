@@ -105,6 +105,12 @@ func TestCopyOutput(t *testing.T) {
 	}
 }
 
+// testLogs is a stand-in for tunneld's own recent lines. One line, so a frame
+// showing them draws something a test can find.
+type testLogs struct{}
+
+func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
+
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a
 // container somebody has to arrange, which is what makes them testable at all.
@@ -189,7 +195,7 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}

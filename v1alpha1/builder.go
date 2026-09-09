@@ -704,7 +704,14 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 	if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
 		return slog.New(slog.DiscardHandler), fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
 	}
-	return slog.New(slog.NewTextHandler(b.Command().ErrOrStderr(), &slog.HandlerOptions{Level: level})), nil
+	// Through the ring, so the same lines stderr shows are the ones a terminal
+	// can show. A builder assembled as a bare struct rather than through New
+	// has none, and logs the way it always did.
+	handler := slog.Handler(slog.NewTextHandler(b.Command().ErrOrStderr(), &slog.HandlerOptions{Level: level}))
+	if b.recent != nil {
+		handler = b.recent.Wrap(handler)
+	}
+	return slog.New(handler), nil
 }
 
 // Origins reports the local origins this command exposes, in order: the first

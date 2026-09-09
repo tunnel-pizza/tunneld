@@ -24,6 +24,7 @@ Deep-link by filename; line numbers will drift.
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -550,6 +551,12 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **The log ring wraps rather than tees.** `logs.RingImpl.Wrap` sits in front
+  of the text handler, so what a terminal shows is what stderr got and neither
+  can drift. It asks what it wraps through `Enabled`, so a run at `--log-level`
+  silence keeps nothing. It is built in `v1alpha1.New`, before the command
+  knows where logs go or at what level, because the binder is constructed there
+  too and both need the same one.
 - **A keystroke can end the process, and the path is deliberate.** `x` in the
   frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
   fans every origin's into one, because what they are asking for is the
