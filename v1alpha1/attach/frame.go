@@ -311,7 +311,12 @@ func (f frame) View() tea.View {
 	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
 
 	view.Content = buf.Render()
-	if !f.command && f.scroll == 0 {
+	// No cursor when the frame owns the keyboard, when the reader has scrolled
+	// off the live screen, or when the program asked for none. The last is
+	// what a full-screen program does at startup, and the emulator keeps a
+	// position regardless — so drawing one there follows the program's writes
+	// around the screen rather than showing anybody where they are typing.
+	if !f.command && f.scroll == 0 && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
