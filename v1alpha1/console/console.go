@@ -34,6 +34,19 @@ type Terminal interface {
 	Show(ctx context.Context, in io.Reader, out io.Writer) error
 }
 
+// Streams is the three a command was given, which is what a run is asked for
+// rather than the answers about them: *cobra.Command satisfies it, and no
+// package here needs to import cobra to say so.
+//
+// The command's own and not the process's, because an embedding program
+// redirects them — and a frame drawn into whatever it redirected to is not a
+// terminal anybody asked for.
+type Streams interface {
+	InOrStdin() io.Reader
+	OutOrStdout() io.Writer
+	ErrOrStderr() io.Writer
+}
+
 // Screen is a console bound to one run: the Terminal it shows, the streams it
 // shows it on, and everything owed to the prompt underneath when it stops. It
 // is what the browser package is handed when a console is what this run gets
@@ -104,9 +117,15 @@ func WithHint(hint string) Option {
 // For binds this console to one run, and returns nil when that run has no
 // screen — no terminal to show, or nothing to show it on.
 //
+// out is where the terminal is drawn and hintTo is where a line to a returned
+// prompt goes: the command's stdout and its stderr, because a frame is what
+// the machine interface carries once there is a terminal on it and everything
+// meant for a person already goes to the other.
+//
 // A copy, so the seeded original stays a template: what New was given is what
 // outlives a single run, and what this takes is what does not.
-func (c *ConsoleImpl) For(origins attach.Bound, in io.Reader, out, hintTo io.Writer) Screen {
+func (c *ConsoleImpl) For(origins attach.Bound, streams Streams) Screen {
+	in, out, hintTo := streams.InOrStdin(), streams.OutOrStdout(), streams.ErrOrStderr()
 	// Two questions, both answered by asking rather than deriving. Whether
 	// there is a terminal to show is the binder's — a closer carries Show
 	// only when it has exactly one served origin, so the assertion is the

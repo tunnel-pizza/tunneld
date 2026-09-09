@@ -100,26 +100,15 @@ func WithForced(open *bool) Option {
 	return func(b *BrowserImpl) { b.forced = open }
 }
 
-// Streams is the three a command was given, which is what a run is asked for
-// rather than the answer about them: *cobra.Command satisfies it, and this
-// package has no reason to import cobra to say so.
-//
-// The command's own and not the process's, because an embedding program
-// redirects them — and that is exactly the case where nobody is watching.
-type Streams interface {
-	InOrStdin() io.Reader
-	OutOrStdout() io.Writer
-	ErrOrStderr() io.Writer
-}
-
 // WithInteractive says where the run's output actually goes, and Open works
-// out whether that means anybody is there.
+// out whether that means anybody is there. The type is v1alpha1/console's,
+// which is where what counts as a terminal is decided.
 //
 // One test for four environments: a pipeline, a service manager, a CI step and
 // a container all arrive with none of their three streams on a terminal, and a
 // person at a shell keeps at least one of the three however they redirect the
 // others.
-func WithInteractive(streams Streams) Option {
+func WithInteractive(streams console.Streams) Option {
 	return func(b *BrowserImpl) {
 		b.interactive = console.IsTerminal(streams.InOrStdin()) ||
 			console.IsTerminal(streams.OutOrStdout()) ||

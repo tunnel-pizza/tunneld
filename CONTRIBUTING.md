@@ -598,6 +598,14 @@ Two things there will bite if you change them without knowing why:
   `Done` rather than `Quit` so the select it belongs in reads the same way
   three times: a context is done, a tunnel is done, and so are the origins.
 
+  **A run is asked where its output goes, not what that means.** `console.For`
+  and `browser.WithInteractive` both take `console.Streams` — the three
+  accessors `*cobra.Command` already has — so neither package imports cobra,
+  neither call site spells out an `isTerminal` chain, and what counts as a
+  terminal is `console.IsTerminal` in one place. `Streams` is declared in
+  `console` because that is where terminal knowledge lives; `browser` names it
+  the way it names `console.Screen`.
+
   **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
   `Terminal` is what the binder hands back, `Screen` is what a run was started
   on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them

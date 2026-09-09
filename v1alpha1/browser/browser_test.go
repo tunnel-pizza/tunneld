@@ -18,6 +18,7 @@ import (
 	"github.com/creack/pty"
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 )
 
 // discard is the logger every test hands to Interceptors: nothing under test
@@ -133,7 +134,7 @@ func forced(base func(*testing.T) []Option, open bool) func(*testing.T) []Option
 // onATerminal is a run whose output goes somewhere a person can see, which is
 // what WithInteractive asks the streams about — a real pty, since nothing else
 // answers yes.
-func onATerminal(t *testing.T) Streams {
+func onATerminal(t *testing.T) console.Streams {
 	t.Helper()
 	ptmx, tty, err := pty.Open()
 	if err != nil {

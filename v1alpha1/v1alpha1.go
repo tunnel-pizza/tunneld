@@ -101,7 +101,7 @@ func WithCache(c Cache) Option {
 // is what this run gets shown on: one interface, declared where the console
 // is, named by the package that chooses between it and a tab.
 type Console interface {
-	For(bound attach.Bound, in io.Reader, out, hintTo io.Writer) console.Screen
+	For(bound attach.Bound, streams console.Streams) console.Screen
 }
 
 // Browser puts the tunnel in front of a person: it answers the bare public

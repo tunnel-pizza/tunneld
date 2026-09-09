@@ -434,11 +434,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// its behalf and hands the tunnel the loopback address instead.
 	// origins stays what the operator typed — it is what the
 	// reported map and the panel show.
-	dialable, closeOrigins, err := b.binder.Bind(ctx, origins, log)
+	dialable, bound, err := b.binder.Bind(ctx, origins, log)
 	if err != nil {
 		return err
 	}
-	defer closeOrigins.Close()
+	defer bound.Close()
 
 	cached := ""
 	if len(b.cacheDirs.GetSlice()) > 0 {
@@ -565,7 +565,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	for i := range origins {
 		addresses[i] = publicURL(public, i, len(origins))
 	}
-	closeOrigins.Announce(addresses)
+	bound.Announce(addresses)
 
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
@@ -641,7 +641,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// Reported after the addresses, so what a person came for is on the
 	// screen before a frame takes it, and left behind when that frame ends: a
 	// detach gives the console back and the tunnel goes on without it.
-	screen := b.console.For(closeOrigins, cmd.InOrStdin(), stdout, stderr)
+	screen := b.console.For(bound, cmd)
 	b.browser.Open(ctx, log,
 		browser.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
 		browser.WithForced(b.open),
@@ -666,14 +666,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it
 	// reads as a clean exit — the deferred teardown below takes the origins,
 	// the programs they started and the tunnel with it.
-	//
-	// Asked for here rather than earlier, now that the only other thing that
-	// wanted it asks the closer itself: a console tells a detach from an exit
-	// by the same channel, and gets it the same way.
 	select {
 	case <-ctx.Done():
 	case <-tun.Done():
-	case <-closeOrigins.Done():
+	case <-bound.Done():
 		log.Info("a viewer asked this run to end; stopping")
 		return nil
 	}

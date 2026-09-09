@@ -86,6 +86,25 @@ func tty(t *testing.T) *os.File {
 	return tty
 }
 
+// streams is a console: a real terminal for both halves, and somewhere to
+// leave the line a returned prompt gets.
+type streams struct {
+	tty    *os.File
+	hintTo io.Writer
+}
+
+func (s streams) InOrStdin() io.Reader   { return s.tty }
+func (s streams) OutOrStdout() io.Writer { return s.tty }
+func (s streams) ErrOrStderr() io.Writer { return s.hintTo }
+
+// pipes is a run with nowhere to draw, which is what every environment
+// without somebody watching looks like.
+type pipes struct{}
+
+func (pipes) InOrStdin() io.Reader   { return strings.NewReader("") }
+func (pipes) OutOrStdout() io.Writer { return io.Discard }
+func (pipes) ErrOrStderr() io.Writer { return io.Discard }
+
 // waitFor spins until want is true or the case has waited long enough to be
 // wrong. Draw hands the screen over and returns, so everything it is
 // responsible for happens on a goroutine and nothing can be asserted the
@@ -107,7 +126,7 @@ func waitFor(t *testing.T, what string, want func() bool) {
 // a detached console gets its logs with its prompt.
 func TestDrawMutesForTheFrameAndUnmutesAfter(t *testing.T) {
 	origin, logs, screen := newFakeOrigin(nil), &ring{}, tty(t)
-	showing := New(WithLogs(logs)).For(origin, screen, screen, io.Discard)
+	showing := New(WithLogs(logs)).For(origin, streams{screen, io.Discard})
 	if showing == nil {
 		t.Fatal("For() = nil, want a console — there is an origin and a terminal")
 	}
@@ -144,7 +163,7 @@ func TestDrawLeavesTheHintOnADetach(t *testing.T) {
 			origin, screen := newFakeOrigin(nil), tty(t)
 			var hintTo lockedBuffer
 			showing := New(WithHint("Press Ctrl+C to stop the tunnel...")).
-				For(origin, screen, screen, &hintTo)
+				For(origin, streams{screen, &hintTo})
 			if showing == nil {
 				t.Fatal("For() = nil, want a console")
 			}
@@ -180,12 +199,12 @@ func TestDrawLeavesTheHintOnADetach(t *testing.T) {
 func TestForRefusesWhatItCannotDraw(t *testing.T) {
 	t.Run("a closer with no terminal behind it", func(t *testing.T) {
 		screen := tty(t)
-		if got := New().For(noOrigin{}, screen, screen, io.Discard); got != nil {
+		if got := New().For(noOrigin{}, streams{screen, io.Discard}); got != nil {
 			t.Errorf("For() = %v, want nil — the binder offered nothing to draw", got)
 		}
 	})
 	t.Run("a terminal but nowhere to draw it", func(t *testing.T) {
-		if got := New().For(newFakeOrigin(nil), strings.NewReader(""), io.Discard, io.Discard); got != nil {
+		if got := New().For(newFakeOrigin(nil), pipes{}); got != nil {
 			t.Errorf("For() = %v, want nil — a pipe is not a console", got)
 		}
 	})
@@ -204,7 +223,7 @@ func (noOrigin) Done() <-chan struct{} { return nil }
 // anything a run has to act on.
 func TestDrawHandsOverTheStreamsItWasGiven(t *testing.T) {
 	origin, screen := newFakeOrigin(errors.New("the terminal went away")), tty(t)
-	showing := New().For(origin, screen, screen, io.Discard)
+	showing := New().For(origin, streams{screen, io.Discard})
 	if showing == nil {
 		t.Fatal("For() = nil, want a console")
 	}
