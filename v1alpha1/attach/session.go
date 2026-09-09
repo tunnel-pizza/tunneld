@@ -27,15 +27,6 @@ const (
 	defaultRows = 24
 )
 
-// How much scrolled-off output the emulator keeps. Lines rather than bytes
-// because that is the emulator's own bound, and a thousand of them is both
-// more than a person scrolls back through and small enough that a container
-// talking for an hour cannot grow tunneld without limit.
-//
-// A framed viewer reaches them through the frame's own scroll rather than the
-// browser's, which the alternate screen takes away.
-const scrollbackLines = 1000
-
 // session is one attach to a target, shared by every viewer of it.
 //
 // The alternative, and what this replaces, was an attach per viewer: every
@@ -220,7 +211,6 @@ func (s *session) watch() {
 // terminal origin is not worth taking it down.
 func newSession(ctx context.Context, target Target, banner string, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
-	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
 		Target:  target,
@@ -796,41 +786,16 @@ func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
 // paneCursor is where the app inside believes the cursor is.
 func (s *session) paneCursor() uv.Position { return s.em.CursorPosition() }
 
-// scrollUp moves the pane one line further back, stopping where the emulator's
-// own scrollback does. Reported rather than held here: how far back a viewer
-// is looking is that viewer's, and two of them scroll independently over the
-// one screen.
-func (s *session) scrollUp(from int) int {
-	if from >= s.em.ScrollbackLen() {
-		return from
-	}
-	return from + 1
-}
-
-// paneLines is the screen as rows of text, scrolled back by scroll lines and
-// clipped to rows.
+// paneLines is the screen as rows of text, clipped to rows.
 //
 // Rendered rather than replayed. The emulator holds what the screen is, so a
-// frame asks it every time it draws instead of keeping a copy that a write it
-// missed would make wrong.
-func (s *session) paneLines(scroll, rows int) []string {
+// caller asks it every time instead of keeping a copy that a write it missed
+// would make wrong.
+func (s *session) paneLines(rows int) []string {
 	if rows <= 0 {
 		return nil
 	}
 	lines := strings.Split(s.em.Render(), "\n")
-
-	if scroll > 0 {
-		back := s.em.Scrollback().Lines()
-		if scroll > len(back) {
-			scroll = len(back)
-		}
-		scrolled := make([]string, 0, scroll+len(lines))
-		for _, line := range back[len(back)-scroll:] {
-			scrolled = append(scrolled, line.Render())
-		}
-		lines = append(scrolled, lines...)
-	}
-
 	if len(lines) > rows {
 		lines = lines[:rows]
 	}

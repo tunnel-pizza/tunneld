@@ -129,12 +129,6 @@ type frame struct {
 	// Until it is, the frame draws nothing rather than drawing at a size that
 	// is somebody else's.
 	sized bool
-
-	// scroll is how many lines back the pane is showing, 0 being live. An
-	// altscreen frame has no browser scrollback of its own to fall back on —
-	// that is what the frame costs — so the emulator's is reached through
-	// here instead.
-	scroll int
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -206,7 +200,6 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// It reaches the container as a paste too, so an app that asked to be
 		// told the difference still is.
-		f.scroll = 0
 		f.sess.paste(msg.Content)
 		return f, nil
 
@@ -263,11 +256,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			f.command = true
 			return f, nil
 		}
-		// Anything else is the container's. A keystroke that arrives while the
-		// pane is scrolled back snaps it live first, the way a terminal does:
-		// what was typed is meant for the prompt, and the prompt is at the
-		// bottom.
-		f.scroll = 0
+		// Anything else is the container's.
 		f.sess.sendKey(tea.Key(msg))
 		return f, nil
 	}
@@ -293,14 +282,6 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// it from inside, which is the point.
 		f.sess.endRun()
 		return f, tea.Quit
-	case 'k', tea.KeyUp:
-		f.scroll = f.sess.scrollUp(f.scroll)
-		return f, nil
-	case 'j', tea.KeyDown:
-		if f.scroll > 0 {
-			f.scroll--
-		}
-		return f, nil
 	}
 	// Escape, or anything unbound: the mode closes and the keystroke is spent
 	// on closing it. Not forwarded to the container, because a viewer who
@@ -333,8 +314,8 @@ func (f frame) paneRows() int {
 // where the app inside believes it is, and a frame that did not place it there
 // would leave every visitor's cursor in the wrong cell — the same disagreement
 // between an app and the screen that the emulator exists to prevent. It is
-// withheld while the pane is scrolled back or a command is pending, where the
-// live cursor position means nothing.
+// withheld while a command is pending or the program asked for no cursor,
+// where the live position means nothing.
 func (f frame) View() tea.View {
 	view := tea.NewView("")
 	view.AltScreen = true
@@ -362,18 +343,9 @@ func (f frame) View() tea.View {
 	// window that has just shrunk draws once before the resize it asked for
 	// has come back.
 	pixels := uv.NewScreenBuffer(pane.Dx(), pane.Dy())
-	if f.scroll == 0 {
-		// The emulator draws itself, cell for cell, with nothing re-parsed on
-		// the way.
-		f.sess.drawPane(pixels, pixels.Bounds())
-	} else {
-		// Scrolled back is the one thing the emulator will not draw: what is
-		// wanted is partly its scrollback, which is lines rather than a
-		// screen.
-		for i, line := range f.sess.paneLines(f.scroll, pane.Dy()) {
-			uv.NewStyledString(line).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
-		}
-	}
+	// The emulator draws itself, cell for cell, with nothing re-parsed on the
+	// way.
+	f.sess.drawPane(pixels, pixels.Bounds())
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)
 
 	// The top says what is being watched and where it is being served from,
@@ -390,7 +362,7 @@ func (f frame) View() tea.View {
 	// what a full-screen program does at startup, and the emulator keeps a
 	// position regardless — so drawing one there follows the program's writes
 	// around the screen rather than showing anybody where they are typing.
-	if !f.command && f.scroll == 0 && !f.sess.cursorHidden() {
+	if !f.command && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
@@ -605,9 +577,6 @@ func (f frame) banner() string {
 // somebody with two of these open has.
 func (f frame) meta() string {
 	qualifier := viewers(f.sess.count())
-	if f.scroll > 0 {
-		qualifier = fmt.Sprintf("scrolled back %d", f.scroll)
-	}
 	w, h := f.sess.paneSize()
 
 	var where string
