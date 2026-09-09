@@ -107,10 +107,11 @@ func TestCommandIsIdempotent(t *testing.T) {
 // fix it.
 func TestOriginRequiredWhenUnseeded(t *testing.T) {
 	// $SHELL is the last origin tried, and a developer's shell has one — so
-	// without this the case does not assert a refusal, it mints a tunnel and
-	// blocks on it. Nothing to expose has to mean nothing.
-	t.Setenv("SHELL", "")
-	_, _, err := execute(t, New())
+	// without turning the fallback off the case does not assert a refusal, it
+	// mints a tunnel and blocks on it. Said with the option rather than by
+	// unsetting the variable, so what the case means is on the line that
+	// means it.
+	_, _, err := execute(t, New(WithShellFallback(false)))
 	if !errors.Is(err, v1.ErrNoOrigin) {
 		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
 	}
@@ -1180,22 +1181,27 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	// nothing anybody would write down. Path is the claim worth pinning
 	// anyway: the resolved program, not the word that named it.
 	for _, tc := range []struct {
-		name    string
-		shell   string
-		args    []string
-		want    []*url.URL
-		mention string
+		name     string
+		shell    string
+		fallback bool
+		args     []string
+		want     []*url.URL
+		mention  string
 	}{
-		{"a runnable shell is the origin", real, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
-		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), nil, nil, "not exposing a shell"},
-		{"unset is nothing to fall back to", "", nil, nil, ""},
-		{"an argument outranks it", real, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+		{"a runnable shell is the origin", real, true, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
+		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), true, nil, nil, "not exposing a shell"},
+		{"unset is nothing to fall back to", "", true, nil, nil, ""},
+		{"an argument outranks it", real, true, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+		// The knob is asked before the variable is read, so a shell that is
+		// there and runnable is still not an origin when nobody wanted one.
+		{"the option declines it", real, false, nil, nil, ""},
+		{"declining does not touch an argument", real, false, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.OriginsEnv, "") // a developer's shell must not seed this
 			t.Setenv("SHELL", tc.shell)
 			var stderr bytes.Buffer
-			b := New(WithLogLevel("warn"), WithStderr(&stderr))
+			b := New(WithLogLevel("warn"), WithStderr(&stderr), WithShellFallback(tc.fallback))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}

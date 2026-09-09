@@ -222,6 +222,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithOpen(v1.DefaultOpen),
 		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
+		WithShellFallback(v1.DefaultShellFallback),
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
@@ -255,6 +256,12 @@ type BuilderImpl struct {
 	// came from.
 	open   bool
 	noOpen bool
+
+	// shellFallback is whether Origins answers "nothing settled anywhere"
+	// with $SHELL. Flag-backed like the two above, so an embedding program
+	// seeds it, an operator overrides it, and neither has to reach into the
+	// process environment to find out what a run will do.
+	shellFallback bool
 
 	// establishDeadline bounds the wait for the public URL to answer before
 	// the addresses are reported. The counter that answers that wait

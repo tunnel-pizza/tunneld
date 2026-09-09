@@ -240,6 +240,16 @@ const (
 	// origin; every origin stays reachable on its own index either way.
 	MultiviewEnv = "TUNNELD_MULTIVIEW"
 
+	// ShellFallbackEnv names whether a run given no origin anywhere falls back
+	// to $SHELL — the mirror of --shell-fallback, which beats it. Any value
+	// strconv.ParseBool accepts works.
+	//
+	// Turning it off restores ErrNoOrigin for a run with nothing to expose,
+	// which is what a script wants: a caller that meant to pass an origin and
+	// did not should be told so, not handed a public terminal onto the machine
+	// it is running on.
+	ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"
@@ -300,6 +310,21 @@ const DefaultOpen = true
 // several origins the bare address has no better meaning, every origin having
 // an index of its own.
 const DefaultMultiview = true
+
+// DefaultShellFallback is whether a run with no origin from any source — no
+// argument, no ShellFallbackEnv sibling, no WithOrigin seed — exposes $SHELL
+// rather than failing with ErrNoOrigin. On, because a bare tunneld having
+// something to do is worth more than the refusal it replaces, and a shell is
+// the one origin every machine has: it needs no port to be listening and
+// tunneld already knows how to serve a program.
+//
+// It is a knob because it is not always worth more. An embedding program that
+// mounts tunneld under its own verb inherits this default, and a user who
+// typed that verb meaning to name an origin gets a public terminal onto their
+// machine instead of being told they forgot one. That program turns it off
+// with WithShellFallback(false); an operator does the same with
+// --shell-fallback=false or ShellFallbackEnv.
+const DefaultShellFallback = true
 
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
 // configured by that package's options, and call the terminal Command to

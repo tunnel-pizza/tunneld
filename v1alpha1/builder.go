@@ -85,6 +85,23 @@ func WithMultiview(multiview bool) Option {
 	return func(b *BuilderImpl) { b.multiview = multiview }
 }
 
+// WithShellFallback sets whether a run with no origin from any source — no
+// argument, no TUNNELD_ORIGINS, no WithOrigin seed — exposes $SHELL rather
+// than failing with v1.ErrNoOrigin. Unset, the behaviour is
+// v1.DefaultShellFallback.
+//
+// An embedding program is the caller this exists for. It inherits the default
+// along with everything else, and a user who typed its verb meaning to name an
+// origin would get a public terminal onto the machine instead of being told
+// they forgot one. WithShellFallback(false) restores the refusal.
+//
+// It is also how a test says "nothing to expose" and means it, without
+// reaching into the process environment to unset a variable the run reads
+// behind its back.
+func WithShellFallback(fallback bool) Option {
+	return func(b *BuilderImpl) { b.shellFallback = fallback }
+}
+
 // WithStdout redirects the help text and the version banner. Command passes
 // it to the command's SetOut, so calling SetOut on the built command
 // overrides this. Unset, output goes to the process's stdout.
@@ -163,6 +180,8 @@ var flagEnv = map[string]string{
 	"log-level": v1.LogEnv,
 	"no-open":   v1.NoOpenEnv,
 	"multiview": v1.MultiviewEnv,
+
+	"shell-fallback": v1.ShellFallbackEnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -718,6 +737,8 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
 		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
+		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
+			"with no origin given anywhere, expose $SHELL rather than refusing to start [$"+v1.ShellFallbackEnv+"]")
 		// The version subcommand prints the build banner and exits — the
 		// build id of the binary plus the tunnel library it links against,
 		// since that library is what actually speaks to the edge and a bug
@@ -846,13 +867,21 @@ func (b *BuilderImpl) Origins() []*url.URL {
 	// person who typed it. It is the one origin every machine has, it needs no
 	// port to be listening, and tunneld already knows how to serve a program.
 	//
+	// Behind a knob, because the answer is only right when a person typed it.
+	// An embedding program mounting tunneld under its own verb inherits this,
+	// and somebody who meant to name an origin and did not should be told so
+	// rather than handed a public terminal onto their own machine —
+	// WithShellFallback(false), --shell-fallback=false, or ShellFallbackEnv.
+	// It is also what lets a caller ask what a run will do without reading a
+	// variable the run reads behind its back.
+	//
 	// Resolved here rather than left for the loop below, because the loop's
 	// fallback for a word it cannot resolve is to read it as an address —
 	// which turns a $SHELL naming a program that is not there into a proxy to
 	// http://localhost/bin/nope, a tunnel to nothing that reports no problem.
 	// Dropping it instead leaves the count at zero, and zero has a message
 	// that names the lever.
-	if len(settled) == 0 {
+	if len(settled) == 0 && b.shellFallback {
 		if sh := os.Getenv("SHELL"); sh != "" {
 			if path, ok := shell.Resolve(sh); ok {
 				log.Info("no origin given; exposing this machine's shell", "shell", path)

@@ -252,6 +252,13 @@ it. A `$SHELL` naming a program that is not there is dropped rather than read
 as an address, so what you get is the message about passing an origin and not a
 tunnel to nothing.
 
+`--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
+`WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
+did before. That is the setting for a script, and for a program that embeds
+tunneld under its own verb: it inherits the default along with everything else,
+and somebody who typed that verb meaning to name an origin should be told they
+forgot one rather than handed a public terminal onto the machine.
+
 ### The console you started it from
 
 With exactly one `dockerd://` or `file://` origin, the terminal is drawn on
@@ -510,6 +517,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--no-open` | `TUNNELD_NO_OPEN` | Do not open a public URL in a browser once the tunnel is live. Opening is **on by default** — the panel when there is one, else the default origin — so this is the flag for a server or CI. A browser that cannot be opened is not an error: the tunnel is up either way, and the failure goes to `--log-level=debug` rather than stderr. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
+| `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
 
 So the whole thing runs from a container with no command line at all:
 
@@ -601,6 +609,7 @@ func WithCacheDir(dirs ...string) Option          // spec cache directories; tru
 func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
 func WithOpen(open bool) Option                   // open a browser when live; default true
 func WithMultiview(mv bool) Option                // frame the origins together; default true
+func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
 func WithEstablishDeadline(d time.Duration) Option // wait for the URL to answer; default 10s
 func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
 func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
@@ -646,10 +655,12 @@ const ProviderEnv     = "TUNNELD_PROVIDER"
 const CacheDirEnv     = "TUNNELD_CACHE_DIR"
 const NoOpenEnv       = "TUNNELD_NO_OPEN"
 const MultiviewEnv    = "TUNNELD_MULTIVIEW"
+const ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
 const DefaultOpen      = true
 const DefaultMultiview = true
+const DefaultShellFallback = true
 ```
 
 ## Environment
@@ -667,6 +678,7 @@ after construction still lands.
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_NO_OPEN` | `--no-open` | Whether to leave the browser alone once the tunnel is live. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

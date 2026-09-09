@@ -551,7 +551,14 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
-- **Zero origins means `$SHELL`, resolved before it is adopted.** The parse
+- **Zero origins means `$SHELL` when `--shell-fallback` allows it, resolved
+  before it is adopted.** The knob is asked before the variable is read, so a
+  run that declines the fallback never consults the environment at all — which
+  is the point: it is how a caller says "nothing to expose" and means it, and
+  how a test says the same without unsetting a variable the run reads behind
+  its back. `e2e` still strips `SHELL` in `strippedEnv` rather than passing the
+  flag, because the flag is itself under test and a case proving it works has
+  to start from a run that would otherwise fall back. The parse
   loop's fallback for a word it cannot resolve is to read it as an address, so
   an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
   a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
