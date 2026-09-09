@@ -23,6 +23,7 @@ Deep-link by filename; line numbers will drift.
 | Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
+| Local-program provider, `IsExecutable`         | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)              |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -337,15 +338,49 @@ Easy to get wrong from the diff alone:
 ### Container origins
 
 `v1alpha1/attach/` serves a `dockerd://` origin as a browser terminal, and
-`v1alpha1/attach/docker/` is the one provider behind it. The split is
+`v1alpha1/attach/docker/` is the provider behind it. The split is
 load-bearing: `attach` knows HTTP and the `v4.channel.k8s.io` stream protocol
-and nothing about Docker, and `docker` is the reverse. A second provider
+and nothing about Docker, and `docker` is the reverse. Another provider
 implements `attach.Target` — five methods, four of its own plus the embedded
 `remotecommand.Attacher`'s `AttachContainer` — and `attach` does not change.
 
-`docker.TargetImpl` is that provider. What opens one by reference —
-`docker.TargetsImpl.Open` — sits behind `attach`'s own `Targets` contract,
+`docker.TargetImpl` is that provider, and `shell.TargetImpl` is the second:
+a local program run on a pseudo-terminal. What opens one by reference —
+`TargetsImpl.Open` in either — sits behind `attach`'s own `Targets` contract,
 which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
+
+**One provider, one scheme.** `Targets.Scheme()` is the whole of the dispatch:
+`WithTargets` is variadic and keys the providers by what each one says it
+answers, so there are no keys to keep in step with values, and `Bind` looks a
+scheme up rather than branching on it. A scheme no provider claims and that is
+not `http`/`https` is an error there — dialing `file://htop` as an address
+would mint a hostname in front of nothing. `Target.Scheme()` is the other half:
+the frame reconstructs the origin as typed from `Scheme()` and `Name()`, which
+is why `dockerd://` is not spelled anywhere in `frame.go`.
+
+A served origin's reference is its authority **or** its path, never both, and
+`Host + Path` is how everything downstream reads it — `Bind`, the multiview
+tile, the frame. A container is always an authority (`dockerd://api`); a
+program is either (`file://htop`, `file:///usr/bin/htop`), and an absolute path
+has to be the URL's path because `url.URL` percent-escapes the separators of a
+host. The parser resolves a bare word to its absolute path for exactly that
+reason: the origin then names the same program on any machine that reads it.
+
+The parser has to agree about which schemes are served, and `servedSchemes` in
+[`v1alpha1/builder.go`](./v1alpha1/builder.go) is that list. A scheme added to
+one and not the other is an origin the parser drops before the binder ever sees
+it, or one the binder refuses after the parser waved it through.
+
+A provider does not read its own stream. `attach.CopyOutput` does, and it is
+where the wire format is agreed: raw with a terminal, and Docker's 8-byte
+multiplexing header without one, since a provider that has no terminal has two
+streams to carry over one. It is also where the several ways a transport
+spells "the stream ended" — EOF, a closed socket, a closed file, `EIO` from a
+pseudo-terminal — become the nil that says an attach finished normally.
+
+The assertion that a provider satisfies `Target` and `Targets` lives in the
+provider, never beside the interfaces: both providers import `attach`, so
+naming one from there is an import cycle.
 
 Two things there will bite if you change them without knowing why:
 

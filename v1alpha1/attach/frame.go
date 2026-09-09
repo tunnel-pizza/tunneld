@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // host is the machine tunneld is running on, asked for once. It cannot change
@@ -388,16 +387,16 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 // container — it is what says this is a container at all, and the same string
 // pasted back into a command line is a working origin.
 //
-// The scheme is spelled here because this package serves exactly one, and a
-// second provider would have to carry its own along with its Target rather
-// than have this guess.
+// The scheme comes from the Target rather than from a guess here: a provider
+// carries its own, so a program frames itself as file://htop where a container
+// frames itself as dockerd://api.
 func (f frame) titleLabel() string {
 	return nameStyle.Styled(" " + f.title() + " ")
 }
 
 // title is the origin, unstyled, for the places that cannot carry styling.
 func (f frame) title() string {
-	return v1.DockerScheme + "://" + f.sess.Name()
+	return f.sess.Scheme() + "://" + f.sess.Name()
 }
 
 // subtitleLabel is what the terminal says it is doing, centred along the top.

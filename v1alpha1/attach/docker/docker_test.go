@@ -532,6 +532,35 @@ func TestOpenOrdersSelfIDs(t *testing.T) {
 		}
 	})
 
+	t.Run("a line past the scanner's limit ends the scan", func(t *testing.T) {
+		// bufio.Scanner refuses a line over 64KiB and stops there. What was
+		// read before it still stands — these ids are guesses, checked by being
+		// inspected — and everything after it is simply never seen, which is
+		// the truncation the scan error reports and this pins.
+		setMountinfo(t, "5 6 0:3 /var/lib/docker/containers/"+self+"/hosts /etc/hosts rw - ext4 /dev/vda1 rw\n"+
+			"7 8 0:4 /"+strings.Repeat("p", 70*1024)+"/"+layer+"/diff / rw - overlay overlay rw\n")
+
+		inspected := composeDaemon(t, "", composeContainer{id: self, name: "self-container"})
+
+		// A read that stopped early is only knowable from the scan error, so
+		// the log is the assertion that it was asked for at all.
+		var logged bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+		got, err := New().Open(t.Context(), "target", log)
+		if err == nil {
+			_ = got.Close()
+			t.Fatal("Open succeeded, want an error (no service named target)")
+		}
+
+		if got2, want := candidates(inspected()), []string{self}; !slices.Equal(got2, want) {
+			t.Errorf("inspected order = %v, want %v — an id past the long line cannot have been seen", got2, want)
+		}
+		if !strings.Contains(logged.String(), "could not read all of mountinfo") {
+			t.Errorf("logs %q do not report the truncated read", logged.String())
+		}
+	})
+
 	t.Run("deduplicated", func(t *testing.T) {
 		setMountinfo(t, "/containers/"+self+"/a\n/containers/"+self+"/b\n")
 

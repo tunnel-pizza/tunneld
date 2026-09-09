@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -1062,6 +1063,14 @@ func TestParseOriginsAccepts(t *testing.T) {
 			[]string{"http://localhost:3000", "http://localhost:4000"},
 		},
 		{"a container by name", []string{"dockerd://api"}, []string{"dockerd://api"}},
+		// Explicit, so it is taken as typed rather than looked up: an origin
+		// that names a program this machine does not have is the binder's to
+		// refuse, before the mint and with the reason.
+		{"a program by name", []string{"file://htop"}, []string{"file://htop"}},
+		// The shape the parser produces for itself when it resolves a bare
+		// word, so it has to read it back: an absolute path cannot be a URL's
+		// authority, only its path.
+		{"a program by path", []string{"file:///usr/bin/top"}, []string{"file:///usr/bin/top"}},
 		{"a container by id", []string{"dockerd://3f2a1b9c8d7e"}, []string{"dockerd://3f2a1b9c8d7e"}},
 		{"a container name keeps case and underscores", []string{"dockerd://My_Container"}, []string{"dockerd://My_Container"}},
 		{"a websocket-owning origin keeps its marker", []string{"http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http+ws://localhost:5173"}},
@@ -1144,6 +1153,8 @@ func TestOriginsDropsTheUnusable(t *testing.T) {
 		{"the marker on a container", []string{"dockerd+ws://api"}, nil, "dockerd+ws"},
 		{"the marker on an unproxyable scheme", []string{"ftp+ws://localhost:21"}, nil, "ftp+ws"},
 		{"a container with no name", []string{"dockerd://"}, nil, "names no container"},
+		{"a program with no name", []string{"file://"}, nil, "names no program"},
+		{"a program with a path", []string{"file://htop/now"}, nil, "carries more than a program reference"},
 		{"a container with a path", []string{"dockerd://api/sh"}, nil, "dockerd://api"},
 		{"a container with a query", []string{"dockerd://api?tty=1"}, nil, "dockerd://api"},
 		{"a container with a fragment", []string{"dockerd://api#sh"}, nil, "dockerd://api"},
@@ -1161,6 +1172,57 @@ func TestOriginsDropsTheUnusable(t *testing.T) {
 				t.Errorf("warnings %q do not name %q", stderr.String(), tc.mention)
 			}
 		})
+	}
+}
+
+// TestOriginsRunsAProgram pins the shorthand that makes `tunneld htop` mean
+// what somebody typing it meant: a bare word this machine can run is a program
+// origin, not the unresolvable hostname the http default would have made of
+// it. Everything beside it is untouched, which is the other half — the rule
+// only claims words that resolve.
+func TestOriginsRunsAProgram(t *testing.T) {
+	// Unix reads the mode bit and Windows reads the extension; .bat is on the
+	// default PATHEXT exec.LookPath falls back to.
+	name := "tunneld-origin-fixture"
+	if runtime.GOOS == "windows" {
+		name += ".bat"
+	}
+	const script = "#!/bin/sh\nexit 0\n"
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	b := New(WithOrigin(name, "http://localhost:3000", "dockerd://api"))
+	got := b.Origins()
+
+	// The origin carries the resolved path, not the word typed: "top" names a
+	// program only on the machine that looked it up, and the frame, the
+	// reported map and a pasted-back copy all read this.
+	want := filepath.Join(dir, name)
+	if len(got) != 3 || got[0].Scheme != v1.FileScheme || got[0].Path != want {
+		t.Fatalf("Origins() = %q, want the first to be %s://%s", originStrings(got), v1.FileScheme, want)
+	}
+	// And it survives being written out and read back, which is the promise
+	// the frame makes when it puts the origin in its corner.
+	//
+	// A Unix promise only: a Windows absolute path is C:\..., which has no
+	// spelling inside a file:// URL — url.URL escapes the separators either
+	// way round. It costs nothing there, because a platform with no
+	// pseudo-terminals refuses a program origin at startup regardless, and the
+	// binder reads the path off the URL rather than off its printed form.
+	if runtime.GOOS != "windows" {
+		again, err := url.Parse(got[0].String())
+		if err != nil {
+			t.Fatalf("%q did not parse back: %v", got[0], err)
+		}
+		if again.Path != want {
+			t.Errorf("%q parsed back to path %q, want %q", got[0], again.Path, want)
+		}
+	}
+	if rest := originStrings(got[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "dockerd://api"}) {
+		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 }
 

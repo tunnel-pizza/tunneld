@@ -1,27 +1,117 @@
 package attach
 
 import (
+	"bytes"
+	"cmp"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
+
+// framed renders one multiplexed chunk the way a provider without a terminal
+// sends it: an 8-byte header carrying the stream id in the first byte and the
+// payload length in the last four, big-endian, then the payload. Written out
+// here rather than borrowed so the test pins the format itself, which is the
+// thing every provider has to agree on.
+func framed(stream byte, payload string) []byte {
+	header := make([]byte, 8)
+	header[0] = stream
+	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+	return append(header, payload...)
+}
+
+// errReader ends a stream with a chosen error, which is the only way to reach
+// CopyOutput's judgement about what counts as a failure.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestCopyOutput pins the wire format between a provider and this package —
+// the agreement that lets docker and shell hand their streams to the same
+// reader — and pins that the stream ending is not a failure, whichever way the
+// transport underneath spells it.
+func TestCopyOutput(t *testing.T) {
+	t.Run("a terminal is one raw stream", func(t *testing.T) {
+		var out, errw bytes.Buffer
+		if err := CopyOutput(&out, &errw, strings.NewReader("hello"), true); err != nil {
+			t.Fatalf("CopyOutput() = %v", err)
+		}
+		if got := out.String(); got != "hello" {
+			t.Errorf("stdout = %q, want the bytes unchanged", got)
+		}
+		// ServeAttach does not even open the stderr channel for a TTY session,
+		// so writing to it would be writing to nothing.
+		if got := errw.String(); got != "" {
+			t.Errorf("stderr = %q, want nothing — a terminal merged them at the source", got)
+		}
+	})
+
+	t.Run("without a terminal the two are split", func(t *testing.T) {
+		var out, errw bytes.Buffer
+		stream := bytes.NewReader(slices.Concat(
+			framed(1, "to stdout"),
+			framed(2, "to stderr"),
+			framed(1, ", and more"),
+		))
+		if err := CopyOutput(&out, &errw, stream, false); err != nil {
+			t.Fatalf("CopyOutput() = %v", err)
+		}
+		if got, want := out.String(), "to stdout, and more"; got != want {
+			t.Errorf("stdout = %q, want %q", got, want)
+		}
+		if got, want := errw.String(), "to stderr"; got != want {
+			t.Errorf("stderr = %q, want %q", got, want)
+		}
+	})
+
+	// Every transport spells the end of an attach differently, and none of
+	// them is worth reporting: the process exited, the visitor left, or the
+	// tunnel came down.
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool // want the error back
+	}{
+		{"a socket that was closed", net.ErrClosed, false},
+		{"a file that was closed", os.ErrClosed, false},
+		{"a pseudo-terminal whose last writer went away", syscall.EIO, false},
+		{"a context that was canceled", context.Canceled, false},
+		{"something that actually failed", errors.New("disk on fire"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CopyOutput(io.Discard, io.Discard, errReader{tc.err}, true)
+			if got := err != nil; got != tc.want {
+				t.Errorf("CopyOutput() = %v, want an error: %v", err, tc.want)
+			}
+		})
+	}
+}
 
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a
 // container somebody has to arrange, which is what makes them testable at all.
 type fakeTarget struct {
-	name   string
+	name string
+	// scheme is the origin scheme this target was opened for, "" meaning
+	// dockerd — what most cases here are about.
+	scheme string
 	tty    bool
 	stdin  bool
 	out    string      // written to stdout as soon as the attach begins
@@ -41,10 +131,11 @@ func newFakeTarget(name string, tty, stdin bool) *fakeTarget {
 	}
 }
 
-func (f *fakeTarget) Name() string { return f.name }
-func (f *fakeTarget) TTY() bool    { return f.tty }
-func (f *fakeTarget) Stdin() bool  { return f.stdin }
-func (f *fakeTarget) Close() error { return nil }
+func (f *fakeTarget) Name() string   { return f.name }
+func (f *fakeTarget) Scheme() string { return cmp.Or(f.scheme, v1.DockerScheme) }
+func (f *fakeTarget) TTY() bool      { return f.tty }
+func (f *fakeTarget) Stdin() bool    { return f.stdin }
+func (f *fakeTarget) Close() error   { return nil }
 
 func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, _ io.WriteCloser, _ bool, resize <-chan remotecommand.TerminalSize) error {
 	defer close(f.done)
@@ -633,13 +724,15 @@ func TestSessionEnds(t *testing.T) {
 // this package.
 type stubTarget struct {
 	name   string
+	scheme string
 	closed bool
 }
 
-func (s *stubTarget) Name() string { return s.name }
-func (s *stubTarget) TTY() bool    { return true }
-func (s *stubTarget) Stdin() bool  { return true }
-func (s *stubTarget) Close() error { s.closed = true; return nil }
+func (s *stubTarget) Name() string   { return s.name }
+func (s *stubTarget) Scheme() string { return s.scheme }
+func (s *stubTarget) TTY() bool      { return true }
+func (s *stubTarget) Stdin() bool    { return true }
+func (s *stubTarget) Close() error   { s.closed = true; return nil }
 func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.Reader, _, _ io.WriteCloser, _ bool, _ <-chan remotecommand.TerminalSize) error {
 	<-ctx.Done()
 	return nil
@@ -650,19 +743,73 @@ func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 // call fail instead — the unwinding case needs one success before one
 // failure.
 type stubTargets struct {
+	// scheme is the one this provider answers, "" meaning dockerd — the
+	// scheme most cases here are about.
+	scheme string
 	asked  []string
 	failOn int
 	opened []*stubTarget
 }
+
+func (s *stubTargets) Scheme() string { return cmp.Or(s.scheme, v1.DockerScheme) }
 
 func (s *stubTargets) Open(_ context.Context, ref string, _ *slog.Logger) (Target, error) {
 	s.asked = append(s.asked, ref)
 	if s.failOn > 0 && len(s.asked) == s.failOn {
 		return nil, errors.New("no such container")
 	}
-	target := &stubTarget{name: ref}
+	target := &stubTarget{name: ref, scheme: s.Scheme()}
 	s.opened = append(s.opened, target)
 	return target, nil
+}
+
+// TestBindPicksTheProviderByScheme pins the dispatch: each provider answers
+// one scheme, the binder chooses on that alone, and an origin whose scheme
+// nobody claims never silently becomes an address the tunnel tries to dial.
+func TestBindPicksTheProviderByScheme(t *testing.T) {
+	containers := &stubTargets{scheme: v1.DockerScheme}
+	programs := &stubTargets{scheme: v1.FileScheme}
+	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "file://htop")
+
+	dialable, closer, err := New(WithTargets(containers, programs)).
+		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	if want := []string{"api"}; !slices.Equal(containers.asked, want) {
+		t.Errorf("the container provider was asked for %v, want %v", containers.asked, want)
+	}
+	if want := []string{"htop"}; !slices.Equal(programs.asked, want) {
+		t.Errorf("the program provider was asked for %v, want %v", programs.asked, want)
+	}
+	// The http origin passes through as itself; the other two were replaced by
+	// the loopback servers standing in for them, at their own indexes.
+	if got := dialable[0].String(); got != "http://localhost:3000" {
+		t.Errorf("origin 0 = %q, want the address untouched", got)
+	}
+	for _, at := range []int{1, 2} {
+		if got := dialable[at].Hostname(); got != "127.0.0.1" {
+			t.Errorf("origin %d = %q, want a loopback server", at, dialable[at])
+		}
+	}
+}
+
+// TestBindRefusesAnUnservedScheme pins that a scheme no provider answers is an
+// error rather than an origin: dialing "file://htop" as an address would mint
+// a public hostname in front of nothing at all.
+func TestBindRefusesAnUnservedScheme(t *testing.T) {
+	display := mustURLs(t, "file://htop")
+
+	_, _, err := New(WithTargets(&stubTargets{scheme: v1.DockerScheme})).
+		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err == nil {
+		t.Fatal("Bind with no provider for the scheme succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), "file://htop") {
+		t.Errorf("error %q does not name the origin", err)
+	}
 }
 
 // mustURLs parses raw as URLs, failing the test on the first one that is not.

@@ -743,6 +743,36 @@ func TestBothTitlesAreShown(t *testing.T) {
 	}
 }
 
+// TestTheFrameNamesTheOriginItServes pins that the corner says what the origin
+// is, and that it comes from the target rather than from a guess in the frame:
+// a program frames itself as file://htop where a container frames itself as
+// dockerd://api. The same string pasted back into a command line has to work,
+// which is the whole reason it is spelled as an origin at all.
+func TestTheFrameNamesTheOriginItServes(t *testing.T) {
+	for _, tc := range []struct{ scheme, name, want string }{
+		{v1.DockerScheme, "api", "dockerd://api"},
+		// A program names itself by the path that will run, which is what the
+		// origin carries: "top" says which program only on the machine that
+		// resolved it.
+		{v1.FileScheme, "/usr/bin/top", "file:///usr/bin/top"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			h := newFrameHarness(t)
+			target := newFakeTarget(tc.name, true, true)
+			target.scheme = tc.scheme
+			h.s.Target = target
+
+			if got := h.f.title(); got != tc.want {
+				t.Errorf("title() = %q, want %q", got, tc.want)
+			}
+			top := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+			if !strings.Contains(top, tc.want) {
+				t.Errorf("top border = %q, want %q in it", top, tc.want)
+			}
+		})
+	}
+}
+
 // TestPageTitleNamesTheTerminal pins what the browser tab displaying this
 // terminal is called.
 //

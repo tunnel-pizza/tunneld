@@ -173,7 +173,10 @@ func (*BrowserImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 						scheme, _, _ := strings.Cut(origin.Scheme, "+")
 						local := origin.Host
 						if scheme != "http" && scheme != "https" {
-							local = origin.Scheme + "://" + origin.Host
+							// A served origin's reference is its authority or
+							// its path — a container name, a program's path —
+							// and exactly one of the two is set.
+							local = origin.Scheme + "://" + origin.Host + origin.Path
 						}
 						data.Origins = append(data.Origins, tile{
 							Index: i,
