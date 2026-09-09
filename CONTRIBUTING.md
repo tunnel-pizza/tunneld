@@ -544,7 +544,10 @@ Two things there will bite if you change them without knowing why:
   with Ctrl-C is not a terminal. A container cannot come back, so the frame
   holds the first press and says in its border which key is waiting — a key
   that appears to do nothing reads as a key that is broken. `session.recoverable`
-  is the split, and it is `attach.Repeatable` answering.
+  is the split, and it is `attach.Repeatable` answering. What the border says
+  is a fact about the terminal (it cannot be reopened) and not a prediction
+  about the key: most of the time these end nothing — Ctrl-C at a shell prompt
+  clears the line — and which time this is, is not knowable from here.
 - **A run is told its size when it starts, whether or not anything changed.**
   `negotiate` only speaks when the window moves, and the viewer who asks for a
   restart is the size the session already settled on — so a second run would

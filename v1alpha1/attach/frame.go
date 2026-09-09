@@ -191,15 +191,20 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
-		// The two keystrokes that end a session nobody can start again, held
-		// until they are asked for twice.
+		// The two keystrokes most likely to end a terminal nobody can reopen,
+		// held until they are asked for twice.
 		//
-		// Only when the target cannot come back. On a program origin these go
-		// straight through: the origin is a path, so the cost of a mistake is
-		// opening the page again, and a terminal that argues with Ctrl-C is
-		// not a terminal. On a container the same keystroke ends the terminal
-		// for everybody watching, permanently, and one press is a low bar for
-		// that.
+		// Most of the time they end nothing: Ctrl-C at a shell prompt clears
+		// the line, and Ctrl-D closes a nested shell somebody meant to leave.
+		// Which of those it is, is not knowable from here — the same byte
+		// exits the session and edits a command line — so the guard is on the
+		// keystroke that might, not on one that will.
+		//
+		// Only where nothing can come back. On a program origin these go
+		// straight through: the origin is a path, the program can be run
+		// again, and a terminal that argues with Ctrl-C is not a terminal. On
+		// a container, PID 1 exiting is the end of it for everybody watching,
+		// and one press is a low bar for something with no way back.
 		//
 		// The first press is not swallowed silently — the border says which
 		// key is waiting and that pressing it again sends it — because a key
@@ -590,8 +595,13 @@ func (f frame) meta() string {
 // the commands themselves once it has.
 func (f frame) hint() string {
 	if f.armed != 0 {
+		// What is said is a fact about this terminal, not a prediction about
+		// the key. Ctrl-C at a shell prompt clears the line and nothing else,
+		// and a frame claiming otherwise would be crying wolf at the most
+		// ordinary keystroke there is. What is always true is the reason for
+		// asking twice: whatever this does end, nobody here can bring back.
 		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
-			hintStyle.Styled(" again to send it — this ends the session for everyone ")
+			hintStyle.Styled(" again to send it — this terminal cannot be reopened ")
 	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
