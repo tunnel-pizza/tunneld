@@ -248,6 +248,32 @@
 
   term.onData((data) => send(STDIN, encoder.encode(data)));
 
+  // The frame's own key, and the only one this page takes from the terminal:
+  // Ctrl+K, on every platform.
+  //
+  // The page has to be in the way even though xterm would encode this key by
+  // itself, because the browser claims it first — Ctrl+K opens the address bar
+  // for a search — and a page that does not preventDefault loses the keystroke
+  // before the terminal ever sees it. Sending the byte here rather than letting
+  // xterm send it is what makes refusing the key and delivering it the same
+  // decision.
+  //
+  // The byte is the one a terminal sends for Ctrl+K, so the frame's rule is
+  // about a key rather than about a private signal, and a keystroke that
+  // reaches xterm some other way still opens the commands.
+  //
+  // It costs the program a real key — Ctrl+K is kill-to-end-of-line in
+  // readline, and bound in plenty of full-screen programs. That is the price
+  // of the frame having a key at all, and it is cheaper than the price of
+  // taking Ctrl-D, which ends a shared session for everybody.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || e.key !== 'k') return true;
+    if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return true;
+    e.preventDefault();
+    send(STDIN, encoder.encode('\x0b'));
+    return false;
+  });
+
   new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
 
   // Cloudflare closes idle websockets and a page cannot send a websocket ping,

@@ -186,7 +186,17 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
-		if k := tea.Key(msg); k.Code == 'd' && k.Mod == tea.ModCtrl {
+		// The frame's own key, and the only one it keeps. Ctrl+K on every
+		// platform: the page has to be in the way regardless, since the
+		// browser claims that chord for its address bar, but the byte that
+		// arrives is the one a terminal sends — so this is a rule about a key
+		// rather than about a private signal between the two halves.
+		//
+		// It costs the program kill-to-end-of-line, which is a real key and a
+		// cheaper one than Ctrl-D. That reaches the program now: it is a
+		// shared session's most dangerous keystroke and no longer this frame's
+		// to hold, and `q` below is how somebody ends one on purpose.
+		if k := tea.Key(msg); k.Code == 'k' && k.Mod == tea.ModCtrl {
 			f.command = true
 			return f, nil
 		}
@@ -549,7 +559,7 @@ func (f frame) meta() string {
 // the commands themselves once it has.
 func (f frame) hint() string {
 	if !f.command {
-		return chipStyle.Styled(" ^D ") + hintStyle.Styled(" commands ")
+		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" q ") + hintStyle.Styled(" end ") +

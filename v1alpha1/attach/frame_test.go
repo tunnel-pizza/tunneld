@@ -134,7 +134,13 @@ func (h *harness) silent(t *testing.T) {
 	}
 }
 
-// ctrlD is the keystroke the frame keeps for itself.
+// commandKey is the keystroke the frame keeps for itself, on every platform.
+// The page is in the way of it only because the browser claims the chord for
+// its address bar; what arrives is the byte a terminal sends.
+var commandKey = tea.Key{Code: 'k', Mod: tea.ModCtrl}
+
+// ctrlD is the program's again, and the most dangerous key a shared session
+// has: a shell reads it as end of file and the stream is never reopened.
 var ctrlD = tea.Key{Code: 'd', Mod: tea.ModCtrl}
 
 // typing is one printable key, the way a browser reports one.
@@ -151,21 +157,18 @@ func typing(r rune) tea.Key {
 	return tea.Key{Code: r, Text: string(r)}
 }
 
-// TestCtrlDNeverReachesTheContainer is the guard the frame exists to put on
-// one key.
+// TestTheCommandKeyNeverReachesTheContainer pins the one key the frame keeps.
 //
-// A shell reads Ctrl-D as end of file and exits. The attach is shared and is
-// never restarted, so before the frame it took one viewer pressing it — meant
-// for their own session, as it is on any other terminal — to end the terminal
-// for everybody watching and leave the origin serving a screen that could
-// never produce another byte. The container must not see it.
-func TestCtrlDNeverReachesTheContainer(t *testing.T) {
+// Ctrl+K, which does cost the program a key — kill-to-end-of-line — and is
+// the cheaper of the two keys on offer: the other one, Ctrl-D, ends a shared
+// session for everybody watching.
+func TestTheCommandKeyNeverReachesTheContainer(t *testing.T) {
 	h := newFrameHarness(t)
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.silent(t)
 	if !h.f.command {
-		t.Error("Ctrl-D did not open command mode")
+		t.Error("the command key did not open command mode")
 	}
 
 	// And the mode closes on the next key rather than lingering, whatever
@@ -175,6 +178,24 @@ func TestCtrlDNeverReachesTheContainer(t *testing.T) {
 	if h.f.command {
 		t.Error("still in command mode after a key, want it closed")
 	}
+}
+
+// TestCtrlDReachesTheContainer pins that the frame no longer holds it.
+//
+// It was held once, and this is the deliberate end of that: Ctrl-D is a key
+// programs read — end of file to a shell, and bound in plenty of others — and
+// a terminal that swallows it is not one. What it costs is real and is the
+// session's, not this key's: a shell that reads it exits, the attach is never
+// reopened, and every other viewer is dropped. `q` is how somebody asks for
+// that on purpose; nothing here stops them asking for it by accident.
+func TestCtrlDReachesTheContainer(t *testing.T) {
+	h := newFrameHarness(t)
+
+	h.press(t, ctrlD)
+	if h.f.command {
+		t.Error("Ctrl-D opened command mode, want it passed to the program")
+	}
+	h.reached(t, "\x04")
 }
 
 // TestOrdinaryKeysReachTheContainerUnchanged pins the other half: a frame in
@@ -197,7 +218,7 @@ func TestOrdinaryKeysReachTheContainerUnchanged(t *testing.T) {
 func TestCommandModeEndsTheSessionOnPurpose(t *testing.T) {
 	h := newFrameHarness(t)
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.silent(t)
 
 	if cmd := h.press(t, typing('q')); cmd == nil {
@@ -212,7 +233,7 @@ func TestCommandModeEndsTheSessionOnPurpose(t *testing.T) {
 func TestDetachLeavesTheSessionAlone(t *testing.T) {
 	h := newFrameHarness(t)
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	if cmd := h.press(t, typing('d')); cmd == nil {
 		t.Error("d returned no command, want the frame to quit with it")
 	}
@@ -232,13 +253,13 @@ func TestScrollbackIsReachedThroughTheFrame(t *testing.T) {
 		t.Fatalf("fill the screen: %v", err)
 	}
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.press(t, typing('k'))
 	if h.f.scroll != 1 {
 		t.Errorf("scroll = %d after one k, want 1", h.f.scroll)
 	}
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.press(t, typing('j'))
 	if h.f.scroll != 0 {
 		t.Errorf("scroll = %d after j, want it back to live", h.f.scroll)
@@ -246,7 +267,7 @@ func TestScrollbackIsReachedThroughTheFrame(t *testing.T) {
 
 	// Scrolled back, then typed at: the keystroke is meant for the prompt, and
 	// the prompt is at the bottom.
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.press(t, typing('k'))
 	h.press(t, typing('x'))
 	if h.f.scroll != 0 {
@@ -261,7 +282,7 @@ func TestScrollStopsAtTheOldestLine(t *testing.T) {
 	h := newFrameHarness(t)
 
 	for range h.s.em.ScrollbackLen() + 10 {
-		h.press(t, ctrlD)
+		h.press(t, commandKey)
 		h.press(t, typing('k'))
 	}
 	if got, want := h.f.scroll, h.s.em.ScrollbackLen(); got > want {
@@ -353,7 +374,7 @@ func TestViewIsBordered(t *testing.T) {
 
 	// The keys take the bottom left and the counts the bottom right, hard
 	// against the corner.
-	if !strings.HasPrefix(bottom, "\u2570\u2500 ^D") {
+	if !strings.HasPrefix(bottom, "\u2570\u2500 ^K") {
 		t.Errorf("bottom border = %q, want the keys at its left", bottom)
 	}
 	if !strings.Contains(bottom, "1 viewer") || !strings.Contains(bottom, "\u00d7") {
@@ -402,13 +423,13 @@ func TestViewIsBordered(t *testing.T) {
 		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
 	} else if strings.Contains(got, testBanner) {
 		t.Errorf("bottom border = %q, want the build dropped too", got)
-	} else if !strings.Contains(got, "^D") {
+	} else if !strings.Contains(got, "^K") {
 		t.Errorf("bottom border = %q, want the keys kept", got)
 	}
 	h.f.width = wide
 
 	// And the commands replace it once it is open, in the same row.
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	after := strings.Split(h.f.View().Content, "\n")
 	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "detach") {
 		t.Errorf("bottom border in command mode = %q, want the commands in it", got)
@@ -503,7 +524,7 @@ func TestViewPlacesTheCursor(t *testing.T) {
 
 	// Withheld where the live position means nothing: a command is pending, or
 	// the pane is showing something that scrolled off.
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	if h.f.View().Cursor != nil {
 		t.Error("cursor shown in command mode, want it withheld")
 	}
@@ -626,7 +647,7 @@ func TestPasteSnapsThePaneLive(t *testing.T) {
 		t.Fatalf("fill the screen: %v", err)
 	}
 
-	h.press(t, ctrlD)
+	h.press(t, commandKey)
 	h.press(t, typing('k'))
 	if h.f.scroll == 0 {
 		t.Fatal("the pane did not scroll back")
@@ -861,7 +882,7 @@ func TestTheLayoutSurvivesALongHostname(t *testing.T) {
 
 	h.f.width = wide
 	bottom := stripSGR(bottomOf(h))
-	for _, want := range []string{"^D", testBanner, "1 viewer", host()} {
+	for _, want := range []string{"^K", testBanner, "1 viewer", host()} {
 		if !strings.Contains(bottom, want) {
 			t.Errorf("bottom border = %q, want %q in it", bottom, want)
 		}

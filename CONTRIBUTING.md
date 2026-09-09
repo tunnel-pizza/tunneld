@@ -404,7 +404,7 @@ Two things there will bite if you change them without knowing why:
   [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea model
   rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
   feeds. Per viewer, because command mode is per viewer — a shared model would
-  put everyone into it when one person pressed `Ctrl-D` — and because a frame
+  put everyone into it when one person opened it — and because a frame
   that is new renders a whole screen, which is what a late joiner needs anyway.
   The split is worth keeping: `session.go` is locks, pipes and goroutines,
   `frame.go` is a value type with none of them.
@@ -518,10 +518,15 @@ Two things there will bite if you change them without knowing why:
   *this* app wants its pastes bracketed, and text written past it arrives as
   though it had been typed — which is a shell running a half-finished command
   off a pasted newline.
-- **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
-  is shared, and it is never reopened, so one viewer pressing it used to end
-  the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to
-  do what it used to do by accident.
+- **The frame's key is `Ctrl+K`, and the page is in the way of it.** Not
+  because xterm could not encode it — it could — but because the browser claims
+  the chord for its address bar, so `index.html` `preventDefault`s it and sends
+  the byte itself. The byte is the one a terminal sends, so `frame.go`'s rule
+  is about a key rather than about a private signal, and a keystroke that
+  reaches xterm some other way still works. It costs the program
+  kill-to-end-of-line, which is the cheaper of the two keys on offer: `Ctrl-D`
+  reaches the shell and ends a shared session for everyone, and
+  `frame.commanded`'s `q` is how to ask for that on purpose.
 - **Keys go to the container through the emulator, not around it.**
   `session.sendKey` hands the decoded key to `vt`, which encodes what a
   terminal in the app's current modes would send; bytes written straight to
