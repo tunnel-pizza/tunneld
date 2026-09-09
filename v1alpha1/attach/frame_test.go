@@ -143,6 +143,10 @@ var commandKey = tea.Key{Code: 'k', Mod: tea.ModCtrl}
 // has: a shell reads it as end of file and the stream is never reopened.
 var ctrlD = tea.Key{Code: 'd', Mod: tea.ModCtrl}
 
+// ctrlC is the other one: SIGINT to the program, and the end of a session that
+// cannot be started again.
+var ctrlC = tea.Key{Code: 'c', Mod: tea.ModCtrl}
+
 // typing is one printable key, the way a browser reports one.
 //
 // A capital is reported the way a keyboard produces one — the unshifted code,
@@ -180,20 +184,70 @@ func TestTheCommandKeyNeverReachesTheContainer(t *testing.T) {
 	}
 }
 
-// TestCtrlDReachesTheContainer pins that the frame no longer holds it.
+// TestSessionEndingKeysAreAskedForTwice pins the guard, and what decides
+// whether there is one.
 //
-// It was held once, and this is the deliberate end of that: Ctrl-D is a key
-// programs read — end of file to a shell, and bound in plenty of others — and
-// a terminal that swallows it is not one. What it costs is real and is the
-// session's, not this key's: a shell that reads it exits, the attach is never
-// reopened, and every other viewer is dropped. `q` is how somebody asks for
-// that on purpose; nothing here stops them asking for it by accident.
-func TestCtrlDReachesTheContainer(t *testing.T) {
+// Ctrl-C and Ctrl-D end the program, and where the program cannot be started
+// again that ends the terminal for everybody watching, permanently. The frame
+// asks a second time rather than refusing: the key still works, it just is not
+// one keystroke away from taking a shared session down.
+//
+// The first press is not silent. The border says which key is waiting, because
+// a key that appears to do nothing reads as a key that is broken.
+func TestSessionEndingKeysAreAskedForTwice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  tea.Key
+		want string
+	}{
+		{"end of file", ctrlD, "\x04"},
+		{"interrupt", ctrlC, "\x03"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFrameHarness(t)
+
+			h.press(t, tc.key)
+			h.silent(t)
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "again to send it") {
+				t.Errorf("bottom border = %q, want it saying the key is waiting", bottom)
+			}
+
+			h.press(t, tc.key)
+			h.reached(t, tc.want)
+		})
+	}
+}
+
+// TestTypingOnSpendsTheArming pins that the question does not linger. Somebody
+// who typed something else is no longer answering it, and a Ctrl-C much later
+// should be the first press of a new pair rather than the second of an old
+// one.
+func TestTypingOnSpendsTheArming(t *testing.T) {
 	h := newFrameHarness(t)
+
+	h.press(t, ctrlC)
+	h.silent(t)
+	h.press(t, typing('x'))
+	h.reached(t, "x")
+
+	// Armed again, not sent: this is a first press.
+	h.press(t, ctrlC)
+	h.silent(t)
+}
+
+// TestARestartableTargetIsNotGuarded pins the other half of the split. A
+// program origin is a path, so the cost of a mistaken Ctrl-C is opening the
+// page again — and a terminal that argues with Ctrl-C is not a terminal.
+func TestARestartableTargetIsNotGuarded(t *testing.T) {
+	h := newFrameHarness(t)
+	program := newFakeTarget("prog", true, true)
+	program.scheme = v1.FileScheme
+	program.repeat = true
+	h.s.Target = program
 
 	h.press(t, ctrlD)
 	if h.f.command {
-		t.Error("Ctrl-D opened command mode, want it passed to the program")
+		t.Error("Ctrl-D opened command mode, want it passed straight to the program")
 	}
 	h.reached(t, "\x04")
 }

@@ -281,6 +281,29 @@ func (s *session) stream() {
 			s.log.Debug("attach session ended", "container", name, "error", err)
 		}
 	}()
+
+	// Tell the run how big its terminal is, whether or not anything changed.
+	//
+	// A run starts at whatever size its target made — for a pty, the system's
+	// default — and negotiate only speaks when the window moves. The first run
+	// is told because a viewer arriving is a window where there was none; a
+	// second run is told by nobody, since the viewer who asked for it is the
+	// same size the session already settled on. Without this it draws into a
+	// size no one is looking at, which for a full-screen program means drawing
+	// nothing at all.
+	go s.apply(s.ctx, paneOf(s.size))
+}
+
+// recoverable reports whether this target can be started again, which is what
+// decides whether a keystroke that ends it is worth standing in front of.
+//
+// A program can: its origin is a path, so the frame lets Ctrl-C and Ctrl-D
+// through untouched and the worst anybody does is have to open the page again.
+// A container cannot: once its PID 1 has exited there is nothing to attach to,
+// and the same keystroke is the end of the terminal for everybody watching.
+func (s *session) recoverable() bool {
+	again, ok := s.Target.(Repeatable)
+	return ok && again.Repeatable()
 }
 
 // ended is the channel that closes when the current run is over. Read through
@@ -543,17 +566,27 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
-	// A window with no room for the pane still has to leave the emulator a
-	// screen: one resized to nothing has nowhere to put what the container
-	// says next.
-	pane := remotecommand.TerminalSize{Width: w - chromeWidth, Height: h - chromeHeight}
-	if h <= chromeHeight {
+	pane := paneOf(s.size)
+	s.em.Resize(int(pane.Width), int(pane.Height))
+	return pane
+}
+
+// paneOf is the screen inside a window: the window less the frame's own
+// border.
+//
+// A window with no room for the pane still leaves a screen, because one
+// resized to nothing has nowhere to put what the target says next.
+func paneOf(window remotecommand.TerminalSize) remotecommand.TerminalSize {
+	pane := remotecommand.TerminalSize{
+		Width:  window.Width - chromeWidth,
+		Height: window.Height - chromeHeight,
+	}
+	if window.Height <= chromeHeight {
 		pane.Height = 1
 	}
-	if w <= chromeWidth {
+	if window.Width <= chromeWidth {
 		pane.Width = 1
 	}
-	s.em.Resize(int(pane.Width), int(pane.Height))
 	return pane
 }
 

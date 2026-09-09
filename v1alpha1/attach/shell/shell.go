@@ -266,11 +266,30 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 		_ = a.stop()
 	}()
 
-	// Sizes arrive until the channel closes, which ServeAttach does when the
-	// socket ends. A zero is the page saying it does not know yet; forwarding
+	// Sizes arrive until the channel closes or this attach ends, whichever
+	// comes first. A zero is the page saying it does not know yet; forwarding
 	// it would tell the program it has no room at all.
+	//
+	// Ending with the attach is the load-bearing half. The channel belongs to
+	// the caller and outlives one attach, so a reader that only stopped when
+	// it closed would go on taking sizes meant for whatever ran next — and a
+	// size taken by a terminal that is already gone is a size the running
+	// program never hears, which for a full-screen program means a pty left at
+	// nothing and a screen left blank.
+	attached, done := context.WithCancel(ctx)
+	defer done()
 	go func() {
-		for size := range resize {
+		for {
+			var size remotecommand.TerminalSize
+			select {
+			case s, ok := <-resize:
+				if !ok {
+					return
+				}
+				size = s
+			case <-attached.Done():
+				return
+			}
 			if size.Width == 0 || size.Height == 0 {
 				continue
 			}

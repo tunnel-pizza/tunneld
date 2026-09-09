@@ -538,6 +538,24 @@ Two things there will bite if you change them without knowing why:
   the last program's output would claim a state the new one was never in. A
   container implements none of this: once PID 1 exits there is nothing to
   attach to, and the frozen final screen is the honest thing to serve.
+- **Ctrl-C and Ctrl-D are asked for twice, and only where nothing can come
+  back.** A program origin lets them straight through: the origin is a path, so
+  the cost of a mistake is opening the page again, and a terminal that argues
+  with Ctrl-C is not a terminal. A container cannot come back, so the frame
+  holds the first press and says in its border which key is waiting — a key
+  that appears to do nothing reads as a key that is broken. `session.recoverable`
+  is the split, and it is `attach.Repeatable` answering.
+- **A run is told its size when it starts, whether or not anything changed.**
+  `negotiate` only speaks when the window moves, and the viewer who asks for a
+  restart is the size the session already settled on — so a second run would
+  sit at whatever `pty.Start` made, which is nothing, and a full-screen program
+  with no room draws an empty screen. `stream` pushes `paneOf(s.size)` at every
+  run for that reason.
+- **A provider stops reading the resize channel when its attach ends.** The
+  channel belongs to the session and outlives one run, so a reader that only
+  stopped when it closed goes on taking sizes meant for the run after it —
+  which is the same blank screen, arrived at from the other side. Both
+  providers select on a context cancelled by their own return.
 - **`s.Target.AttachContainer`, never `s.AttachContainer`.** A session has an
   `AttachContainer` of its own — the per-viewer one — so the embedded Target's
   is shadowed, and the short spelling has the session attach to itself.

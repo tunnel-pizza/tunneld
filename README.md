@@ -291,11 +291,12 @@ shared session for everybody watching. Scrolling is the frame's because the
 frame is drawn on the alternate screen, which has no scrollback of its own to
 give you.
 
-`Ctrl-D` reaches the shell, as it does in any terminal. Be aware of what that
-means here: the attach is shared and is never reopened, so a shell that reads
-it exits and the terminal ends for everybody watching, with the origin left
-serving a screen that can never produce another byte. `Ctrl-C` has always
-behaved the same way — with a TTY it reaches PID 1 and stops the container.
+`Ctrl-C` and `Ctrl-D` end the program, and what that costs depends on what is
+behind the origin. A program can be started again, so they go straight through
+— the worst a mistake does is send you back to the page. A container cannot:
+once its PID 1 has exited the container is gone and the terminal is over for
+everybody watching. So on a container the frame asks a second time, and says
+in its border which key is waiting.
 
 **The page is unauthenticated.** The tunnel hostname is the only secret, the
 same as every other origin tunneld exposes — but here the thing behind it is a

@@ -100,9 +100,14 @@ type frame struct {
 	// a larger window renders it with unused margin.
 	width, height int
 
-	// command is Ctrl-D having been pressed: the next keystroke belongs to the
-	// frame and the container will not see it.
+	// command is the frame's key having been pressed: the next keystroke
+	// belongs to the frame and the container will not see it.
 	command bool
+
+	// armed is a session-ending control key waiting to be asked for a second
+	// time — 'c' or 'd', or zero when none is. Only ever set for a target
+	// that cannot be started again; see the guard in Update.
+	armed rune
 
 	// sized is the window having been reported by the page rather than assumed.
 	// Until it is, the frame draws nothing rather than drawing at a size that
@@ -186,6 +191,32 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
+		// The two keystrokes that end a session nobody can start again, held
+		// until they are asked for twice.
+		//
+		// Only when the target cannot come back. On a program origin these go
+		// straight through: the origin is a path, so the cost of a mistake is
+		// opening the page again, and a terminal that argues with Ctrl-C is
+		// not a terminal. On a container the same keystroke ends the terminal
+		// for everybody watching, permanently, and one press is a low bar for
+		// that.
+		//
+		// The first press is not swallowed silently — the border says which
+		// key is waiting and that pressing it again sends it — because a key
+		// that appears to do nothing reads as a key that is broken.
+		if k := tea.Key(msg); k.Mod == tea.ModCtrl && (k.Code == 'c' || k.Code == 'd') && !f.sess.recoverable() {
+			if f.armed != k.Code {
+				f.armed = k.Code
+				return f, nil
+			}
+			f.armed = 0
+		}
+		// Anything else spends the arming: somebody who typed on is no longer
+		// answering the question the border asked.
+		if k := tea.Key(msg); f.armed != 0 && f.armed != k.Code {
+			f.armed = 0
+		}
+
 		// The frame's own key, and the only one it keeps. Ctrl+K on every
 		// platform: the page has to be in the way regardless, since the
 		// browser claims that chord for its address bar, but the byte that
@@ -558,6 +589,10 @@ func (f frame) meta() string {
 // hint is the keys, in the bottom border: the one that opens the commands, or
 // the commands themselves once it has.
 func (f frame) hint() string {
+	if f.armed != 0 {
+		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
+			hintStyle.Styled(" again to send it — this ends the session for everyone ")
+	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
