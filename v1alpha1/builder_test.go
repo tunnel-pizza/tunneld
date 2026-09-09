@@ -1206,9 +1206,20 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	}
 	// And it survives being written out and read back, which is the promise
 	// the frame makes when it puts the origin in its corner.
-	again, err := url.Parse(got[0].String())
-	if err != nil || again.Path != want {
-		t.Errorf("%q parsed back to path %q (%v), want %q", got[0], again.Path, err, want)
+	//
+	// A Unix promise only: a Windows absolute path is C:\..., which has no
+	// spelling inside a file:// URL — url.URL escapes the separators either
+	// way round. It costs nothing there, because a platform with no
+	// pseudo-terminals refuses a program origin at startup regardless, and the
+	// binder reads the path off the URL rather than off its printed form.
+	if runtime.GOOS != "windows" {
+		again, err := url.Parse(got[0].String())
+		if err != nil {
+			t.Fatalf("%q did not parse back: %v", got[0], err)
+		}
+		if again.Path != want {
+			t.Errorf("%q parsed back to path %q, want %q", got[0], again.Path, want)
+		}
 	}
 	if rest := originStrings(got[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "dockerd://api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)

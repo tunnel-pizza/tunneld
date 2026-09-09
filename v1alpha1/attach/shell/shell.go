@@ -72,6 +72,12 @@ func Resolve(s string) (string, bool) {
 	}
 	// LookPath answers a PATH hit absolutely and a path-shaped argument as it
 	// was given, so this is what makes the two agree.
+	//
+	// On Windows the absolute form is C:\..., which has no spelling inside a
+	// file:// URL — whichever half of the URL it is put in, url.URL escapes
+	// the separators. The origin is still correct where it counts, since the
+	// binder reads the path off the URL rather than off its printed form, and
+	// the platform has no pseudo-terminals to serve it on either way.
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return path, true
