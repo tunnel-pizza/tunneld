@@ -235,6 +235,51 @@ func TestTypingOnSpendsTheArming(t *testing.T) {
 	h.silent(t)
 }
 
+// TestAnArmingExpires pins that the question does not wait forever. A second
+// press minutes later is a new intention rather than the other half of a
+// double tap, so the arming lets go on its own and the border says so by
+// going back to what it said before.
+func TestAnArmingExpires(t *testing.T) {
+	h := newFrameHarness(t)
+
+	h.press(t, ctrlC)
+	h.silent(t)
+
+	// The tick, without waiting for it.
+	model, _ := h.f.Update(disarmMsg{arming: h.f.arming})
+	h.f = model.(frame)
+	if h.f.armed != 0 {
+		t.Error("still armed after the grace expired")
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "commands") {
+		t.Errorf("bottom border = %q, want it back to the ordinary hint", bottom)
+	}
+
+	// And the next press is a first press, not a second.
+	h.press(t, ctrlC)
+	h.silent(t)
+}
+
+// TestAStaleArmingTickIsIgnored pins the counter. Press, type on, press
+// again inside the grace, and the first arming's tick must not disarm the
+// second — which would leave a viewer's next Ctrl-C sending nothing while the
+// border said it would.
+func TestAStaleArmingTickIsIgnored(t *testing.T) {
+	h := newFrameHarness(t)
+
+	h.press(t, ctrlC)
+	stale := h.f.arming
+	h.press(t, typing('x'))
+	h.reached(t, "x")
+	h.press(t, ctrlC)
+
+	model, _ := h.f.Update(disarmMsg{arming: stale})
+	h.f = model.(frame)
+	if h.f.armed != 'c' {
+		t.Error("a spent arming's tick disarmed the live one")
+	}
+}
+
 // TestARestartableTargetIsNotGuarded pins the other half of the split. A
 // program origin is a path, so the cost of a mistaken Ctrl-C is opening the
 // page again — and a terminal that argues with Ctrl-C is not a terminal.

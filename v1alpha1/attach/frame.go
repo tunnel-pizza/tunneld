@@ -64,6 +64,18 @@ var (
 // one is not left staring at nothing.
 const sizeGrace = 500 * time.Millisecond
 
+// armGrace is how long a session-ending key stays armed. Long enough to read
+// the border and answer it, short enough that walking away disarms it: a
+// second press minutes later is a new intention, not the other half of a
+// double tap.
+const armGrace = 2 * time.Second
+
+// disarmMsg is an arming expiring. It carries the arming it belongs to, so a
+// tick from one that was already spent cannot clear the next one — press,
+// type on, press again inside two seconds, and the stale tick would otherwise
+// disarm a key the viewer had just armed.
+type disarmMsg struct{ arming int }
+
 // settleMsg is the grace period expiring: draw at the session's size, since
 // whoever is watching has not said what theirs is.
 type settleMsg struct{}
@@ -107,7 +119,11 @@ type frame struct {
 	// armed is a session-ending control key waiting to be asked for a second
 	// time — 'c' or 'd', or zero when none is. Only ever set for a target
 	// that cannot be started again; see the guard in Update.
-	armed rune
+	//
+	// arming counts them, so the tick that expires one can tell whether it is
+	// still the one that is armed.
+	armed  rune
+	arming int
 
 	// sized is the window having been reported by the page rather than assumed.
 	// Until it is, the frame draws nothing rather than drawing at a size that
@@ -155,6 +171,13 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f.width, f.height = msg.Width, msg.Height
 		f.sized = true
 		f.sess.resizeViewer(f.v, msg.Width, msg.Height)
+		return f, nil
+
+	case disarmMsg:
+		// Only if this is still the arming that tick belongs to.
+		if msg.arming == f.arming {
+			f.armed = 0
+		}
 		return f, nil
 
 	case settleMsg:
@@ -212,7 +235,11 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if k := tea.Key(msg); k.Mod == tea.ModCtrl && (k.Code == 'c' || k.Code == 'd') && !f.sess.recoverable() {
 			if f.armed != k.Code {
 				f.armed = k.Code
-				return f, nil
+				f.arming++
+				arming := f.arming
+				return f, tea.Tick(armGrace, func(time.Time) tea.Msg {
+					return disarmMsg{arming: arming}
+				})
 			}
 			f.armed = 0
 		}

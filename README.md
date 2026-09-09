@@ -296,7 +296,9 @@ behind the origin. A program can be started again, so they go straight through
 — the worst a mistake does is send you back to the page. A container cannot:
 once its PID 1 has exited the container is gone and the terminal is over for
 everybody watching. So on a container the frame asks a second time, and says
-in its border which key is waiting.
+in its border which key is waiting. Typing anything else answers it, and so
+does waiting a couple of seconds — a press long after the first is a new
+intention rather than the other half of a pair.
 
 **The page is unauthenticated.** The tunnel hostname is the only secret, the
 same as every other origin tunneld exposes — but here the thing behind it is a

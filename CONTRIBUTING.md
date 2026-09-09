@@ -547,7 +547,9 @@ Two things there will bite if you change them without knowing why:
   is the split, and it is `attach.Repeatable` answering. The border names the
   key and says to press it again, and nothing about what it will do: most of
   the time these end nothing — Ctrl-C at a shell prompt clears the line — and
-  which time this is, is not knowable from here.
+  which time this is, is not knowable from here. The arming lets go after
+  `armGrace`, and the tick carries the arming it belongs to so a spent one
+  cannot disarm the next.
 - **A run is told its size when it starts, whether or not anything changed.**
   `negotiate` only speaks when the window moves, and the viewer who asks for a
   restart is the size the session already settled on — so a second run would
