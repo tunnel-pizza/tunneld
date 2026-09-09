@@ -20,6 +20,7 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
@@ -133,7 +134,8 @@ func WithCounter(c Counter) Option {
 }
 
 // Binder turns the origins the operator typed into the origins the tunnel
-// dials, standing a loopback server in for each container. The dialable list
+// dials, standing a loopback server in for each origin that names something to
+// serve rather than an address to reach — a container, a local program. The dialable list
 // keeps display's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
@@ -156,9 +158,10 @@ type Announcer interface {
 	Announce(public []string)
 }
 
-// WithBinder replaces what stands a loopback origin in for a container. The
-// default is attach.New(attach.WithTargets(docker.New()), attach.WithBanner(…)):
-// attach serves, docker resolves.
+// WithBinder replaces what stands a loopback origin in for a container or a
+// program. The default is
+// attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):
+// attach serves, and each provider resolves the one scheme it answers.
 func WithBinder(binder Binder) Option {
 	return func(b *BuilderImpl) { b.binder = binder }
 }
@@ -196,7 +199,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithBrowser(browser.New()),
 		WithCounter(counter.New()),
 		WithBinder(attach.New(
-			attach.WithTargets(docker.New()),
+			attach.WithTargets(docker.New(), shell.New()),
 			attach.WithBanner(VersionLine()),
 		)),
 	)

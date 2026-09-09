@@ -234,6 +234,50 @@ Every key reaches the container except one:
 Pasting works as it does in any terminal, and an app that asked to be told
 the difference between pasted and typed text still is.
 
+### Programs
+
+A `file://<program>` origin runs a program on this machine and exposes its
+terminal, the same way a container's is exposed:
+
+```sh
+tunneld file://htop
+```
+
+A bare argument that names a program on `$PATH` is that origin written short,
+since a word that resolves to a program is not a hostname anybody meant:
+
+```sh
+tunneld htop
+```
+
+What it becomes is the resolved path — `file:///usr/bin/htop` — which is what
+the frame shows, what the origin map prints, and what somebody pastes back to
+reach the same program rather than whatever their own `$PATH` finds. A bare
+name says which program only on the machine that looked it up.
+
+The lookup is this machine's own — `$PATH` and the executable bit on Unix,
+`PATHEXT` on Windows — so the same argument names a program here and a host
+somewhere else, and an explicit scheme always wins. A word that resolves only
+through the working directory is left alone: a file that happens to sit where
+you started tunneld does not become a public origin because you typed its name.
+
+The program starts when the first viewer opens the page and ends with the
+session. It gets a real pseudo-terminal, so a full-screen program draws,
+keystrokes reach it, and resizing the browser resizes it. Nothing replays when
+the page opens — unlike a container, it has not been running since before you
+looked.
+
+It is an origin like any other, so it takes an index, gets a multiview tile,
+frames itself as `file:///usr/bin/htop`, and mixes freely with the rest:
+
+```sh
+tunneld :3000 dockerd://my-container htop
+```
+
+A machine with no pseudo-terminals refuses at startup, with the reason, rather
+than minting a hostname in front of a page that cannot work.
+
+
 `Ctrl-D` is held back because the attach is shared and is never reopened: it is
 end of file to a shell, so on a shared terminal one person's habit ended the
 session for everybody, and the origin went on serving a screen that could never
@@ -353,8 +397,12 @@ tunneld :3000 :4000 dockerd://my-container
 A `dockerd://<container>` origin is not proxied but served: tunneld answers it
 with a browser terminal attached to the container, the way `docker attach`
 attaches, and `<container>` is a name, an id, or a Compose service name. See
-[Containers](#containers). Marking one origin `http+ws` (or `https+ws`) names
-the one that owns WebSockets; see [WebSockets](#websockets).
+[Containers](#containers). A `file://<program>` origin is served the same way,
+by running the program on a pseudo-terminal — and a bare argument this machine
+can run is that origin written short, so `tunneld htop` exposes htop rather
+than a hostname that resolves nowhere. See [Programs](#programs). Marking one
+origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
+[WebSockets](#websockets).
 
 Every flag has an environment mirror, and the flag wins: **flag > environment >
 default.**
@@ -553,15 +601,18 @@ Self-contained programs in [`./examples`](./examples):
 | `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
+| `shell` | A local program's terminal on the public hostname. Runs `k9s`, so it needs one on `$PATH`. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
-`attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not already
-local. All three block until interrupted:
+`attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not
+already local, and `shell` runs its program when the first viewer opens the
+page. All four block until interrupted:
 
 ```sh
 make run basic
 make run multi-origin
 make run attach
+make run shell
 ```
 
 `multi-origin` is the one to try in a browser — it serves a different page on

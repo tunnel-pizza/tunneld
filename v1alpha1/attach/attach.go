@@ -9,8 +9,10 @@
 // parameter, the multiview panel, the reported map — then treats a container
 // exactly the way it treats a local web server.
 //
-// It is an implementation subpackage and knows nothing about Docker: the
-// provider arrives as a Targets that opens Target values, and this package
+// It is an implementation subpackage and knows nothing about Docker except the
+// wire format Docker's attach protocol defined, which every provider here
+// speaks: the provider arrives as a Targets that opens Target values,
+// CopyOutput is the one place a target's stream is read, and this package
 // hosts the binder that resolves an origin through it. index.html travels
 // with the code: go:embed cannot reach outside its own package directory.
 package attach
@@ -18,6 +20,7 @@ package attach
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -25,11 +28,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 	"k8s.io/klog/v2"
 
@@ -59,10 +65,10 @@ var klogRouted sync.Once
 // Target is one attachable thing behind a Server: it streams, it says what it
 // can do, and it releases whatever it holds.
 //
-// Five methods is the whole provider contract — AttachContainer, from the
-// embedded remotecommand.Attacher, plus the four below — which is what keeps
-// this package free of Docker. A second provider — podman, or a local shell
-// over a pty — implements them and nothing here changes.
+// Six methods is the whole provider contract — AttachContainer, from the
+// embedded remotecommand.Attacher, plus the five below — which is what keeps
+// this package free of any particular provider. Another one — podman, say —
+// implements them and nothing here changes.
 type Target interface {
 	// AttachContainer streams between the caller's ends and the target's
 	// stdio, returning when the target's stream ends. The name, uid and
@@ -71,6 +77,11 @@ type Target interface {
 	remotecommand.Attacher
 	// Name is the reference the operator typed, used to title the page.
 	Name() string
+	// Scheme is the origin scheme this target was opened for — the provider's
+	// own, fixed. With Name it reconstructs the origin as typed, which is what
+	// the frame puts in its corner and what somebody pastes back into a
+	// command line.
+	Scheme() string
 	// TTY reports whether the target's stdout is a terminal. It decides
 	// whether resize means anything and whether stderr is a stream of its own.
 	TTY() bool
@@ -85,12 +96,61 @@ type Target interface {
 	Close() error
 }
 
-// Targets opens a container reference as a Target. It is the half of the
+// Targets opens an origin's reference as a Target. It is the half of the
 // provider contract the binder depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider
 // implements both, which is why both live here.
+//
+// The assertion that a provider satisfies these lives in the provider, not
+// here: attach/docker and attach/shell import this package for the contract,
+// so naming either of them from here is an import cycle.
 type Targets interface {
+	// Scheme is the origin scheme this provider answers, and the whole of how
+	// the binder chooses between providers. One provider, one scheme: a
+	// dockerd:// origin is a container and a file:// origin is a program, and
+	// nothing about either is a matter of degree.
+	Scheme() string
 	Open(ctx context.Context, ref string, log *slog.Logger) (Target, error)
+}
+
+// CopyOutput copies a target's output into the ends ServeAttach handed it. It
+// is the single place the wire format between a provider and this package is
+// decided, so a provider that uses it cannot drift from the others.
+//
+// Every provider streams one thing, whatever it has underneath: a container's
+// attach socket, a pseudo-terminal, a pipe. Whether that one stream carries a
+// second channel inside it is therefore the same question everywhere, and the
+// answer is the one Docker's attach protocol already gives.
+//
+// With a terminal there is nothing to split. The target merged stdout and
+// stderr at the source, the bytes are raw, and errw is left alone — ServeAttach
+// does not even open that channel, since Options.Stderr is !TTY and Kubernetes'
+// own clients treat a TTY session carrying one as malformed.
+//
+// Without a terminal the two arrive multiplexed: an 8-byte header per chunk
+// carrying stream id and length. Demultiplexing is what puts the target's
+// stderr on a channel of its own instead of printing the headers into
+// somebody's terminal.
+//
+// The stream ending is the normal end of an attach rather than a failure. The
+// process exiting, the visitor leaving and the tunnel shutting down all arrive
+// here as a dead reader, and each transport spells that its own way — EOF, a
+// closed socket, a closed file, the EIO a pseudo-terminal gives once its last
+// writer is gone. Every one of them comes back as nil, so a provider returns
+// this directly.
+func CopyOutput(out, errw io.Writer, r io.Reader, tty bool) error {
+	var err error
+	if tty {
+		_, err = io.Copy(out, r)
+	} else {
+		_, err = stdcopy.StdCopy(out, errw, r)
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EIO) ||
+		errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 // Option configures a BinderImpl at construction.
@@ -99,28 +159,46 @@ type Option = v1.Option[*BinderImpl]
 // BinderImpl turns the origins the operator typed into the origins libtunnel
 // can proxy to.
 //
-// An http or https origin passes through untouched; a dockerd:// origin is
-// served here, by a loopback attach server that takes its place in the list.
-// The two lists share a length and an order, which is the whole point: index n
-// still means origin n for the bare ?n routing parameter, for the addresses
-// reported, for the map printed and for the multiview tiles, so a container is
-// an origin like any other and nothing downstream learns a second shape.
+// An http or https origin passes through untouched; an origin whose scheme a
+// provider claims — dockerd:// for a container, file:// for a local program —
+// is served here, by a loopback attach server that takes its place in the
+// list. The two lists share a length and an order, which is the whole point:
+// index n still means origin n for the bare ?n routing parameter, for the
+// addresses reported, for the map printed and for the multiview tiles, so a
+// container is an origin like any other and nothing downstream learns a second
+// shape.
 type BinderImpl struct {
-	targets Targets
+	// targets is the providers by the scheme each one answers, which is how
+	// Bind picks between them. A map rather than a list because the lookup is
+	// the dispatch, and because two providers claiming one scheme is a wiring
+	// mistake that should collapse rather than depend on order.
+	targets map[string]Targets
 	banner  string
 }
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
-// WithTargets sets one; a dockerd:// origin met without one fails at Bind
-// rather than at construction.
+// WithTargets sets some; an origin whose scheme none of them answers fails at
+// Bind rather than at construction.
 func New(opts ...Option) *BinderImpl {
 	return v1.Apply(&BinderImpl{}, opts...)
 }
 
-// WithTargets sets what turns a container reference into something attach can
-// serve. The default is the Docker daemon, and a test hands in a stub.
-func WithTargets(t Targets) Option {
-	return func(b *BinderImpl) { b.targets = t }
+// WithTargets sets what turns an origin's reference into something attach can
+// serve, one provider per scheme. The defaults are the Docker daemon and this
+// machine's own programs; a test hands in a stub.
+//
+// Each provider names its own scheme, so there are no keys to keep in step
+// with the values. Repeating the option appends, and a later provider replaces
+// an earlier one that answered the same scheme.
+func WithTargets(targets ...Targets) Option {
+	return func(b *BinderImpl) {
+		if b.targets == nil {
+			b.targets = make(map[string]Targets, len(targets))
+		}
+		for _, t := range targets {
+			b.targets[t.Scheme()] = t
+		}
+	}
 }
 
 // WithBanner sets the build line every terminal this binder serves shows along
@@ -144,17 +222,26 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 	dialable := make([]*url.URL, 0, len(display))
 	var servers bound
 	for at, origin := range display {
-		if origin.Scheme != v1.DockerScheme {
+		// Anything no provider claims is an address the tunnel dials itself.
+		// http and https are the whole of that today; the origin parser
+		// refuses every other scheme, so this is a pass-through rather than a
+		// judgement.
+		provider, served := b.targets[origin.Scheme]
+		if !served {
+			if origin.Scheme != "http" && origin.Scheme != "https" {
+				_ = servers.Close()
+				return nil, nil, fmt.Errorf("attach: no Targets configured to open %s://%s", origin.Scheme, origin.Host+origin.Path)
+			}
 			dialable = append(dialable, origin)
 			continue
 		}
 
-		if b.targets == nil {
-			_ = servers.Close()
-			return nil, nil, fmt.Errorf("attach: no Targets configured to open %s://%s", v1.DockerScheme, origin.Host)
-		}
-
-		target, err := b.targets.Open(ctx, origin.Host, log)
+		// The reference is the authority, or the path when the origin carries
+		// one: file:///usr/bin/top names a program the only way a URL can hold
+		// an absolute path. Exactly one of the two is ever set — the origin
+		// parser refuses a served origin with both — so joining them is the
+		// whole rule.
+		target, err := provider.Open(ctx, origin.Host+origin.Path, log)
 		if err != nil {
 			_ = servers.Close()
 			return nil, nil, err
@@ -167,7 +254,7 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 		}
 		servers = append(servers, boundOrigin{at: at, srv: server})
 		dialable = append(dialable, server.URL())
-		log.Info("serving a container as an origin", "container", origin.Host, "origin", server.URL())
+		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
 	return dialable, servers, nil
 }

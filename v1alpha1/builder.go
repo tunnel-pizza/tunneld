@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -118,6 +119,27 @@ func (b *BuilderImpl) Name() string {
 // environment. It is not a flag name — origins have no flag — so it is spelled
 // here rather than in flagEnv, which exists to pair flags with variables.
 const originsKey = "origins"
+
+// servedSchemes is every scheme whose value names something tunneld serves on
+// the origin's behalf rather than an address it proxies to. The binder stands
+// a loopback attach server up for each one, and the provider behind that
+// scheme is what resolves the reference.
+//
+// The words are for the operator: a message that says "names no container" for
+// dockerd:// and "names no program" for file:// is one somebody can act on,
+// where a message about a malformed authority component is not. A scheme
+// absent from here is not served, which is what makes the parser and the
+// binder agree on the same list.
+var servedSchemes = map[string]struct {
+	noun, example string
+	// paths says the scheme's reference may be a path rather than an
+	// authority. A program is named either way and an absolute one has to be,
+	// since a URL cannot carry it as a host; a container never is.
+	paths bool
+}{
+	v1.DockerScheme: {noun: "container", example: "my-container"},
+	v1.FileScheme:   {noun: "program", example: "htop", paths: true},
+}
 
 // splitList parses a list-valued variable: comma-separated, surrounding space
 // trimmed, empty entries dropped so a trailing comma is not an origin. Comma
@@ -688,9 +710,13 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // localhost, so ":8000", "localhost:8000" and "http://localhost:8000" are one
 // origin written three ways.
 //
+// A bare word this machine can run is a program rather than a hostname, so it
+// is rewritten under v1.FileScheme before the http default claims it: `tunneld
+// htop` exposes htop's terminal, not the unresolvable host "htop".
+//
 // Anything else is dropped with a warning rather than failing the run — an
-// unparsable URL, a scheme that is none of http, https or v1.DockerScheme, a
-// dockerd:// value carrying more than a container reference, a URL with no
+// unparsable URL, a scheme that is none of http, https, v1.DockerScheme or
+// v1.FileScheme, a served value carrying more than a reference, a URL with no
 // host at all. One typo used to take every other origin down with it, and the
 // ones that work are what somebody is waiting on; the warning names the value
 // that did not, which is what a person needs to fix it. A run left with no
@@ -726,10 +752,22 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
 			continue
 		}
+		// Short circuit for executables: a path to a binary is not a URL, and the binder runs it
+		if path, ok := shell.Resolve(s); ok {
+			// Built rather than parsed, and done with: the reference resolved
+			// a line ago, so there is nothing for the checks below to add.
+			//
+			// The resolved path rather than the word typed, because the origin
+			// is what everything downstream shows and what somebody pastes
+			// back — "top" names a program only on the machine that looked it
+			// up. It goes in Path and not Host because that is the only shape
+			// an absolute path survives: url.URL escapes the separators of a
+			// host, so file:///usr/bin/top round-trips and file://%2Fusr%2Fbin
+			// is what the other spelling produces.
+			origins = append(origins, &url.URL{Scheme: v1.FileScheme, Path: path})
+			continue
+		}
 		if !strings.Contains(s, "://") {
-			// TODO(#70): check if s is an executable on $PATH and if so, prepend it
-			// with v1.FileScheme + "://" — today a bare word that names a program
-			// becomes http://<word>, a hostname that resolves nowhere.
 			s = "http://" + s
 		}
 		u, err := url.Parse(s)
@@ -737,18 +775,30 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			log.Warn("dropping an origin", "origin", s, "reason", "not a URL", "err", err)
 			continue
 		}
-		// A container is not proxied at all: it is served, by a loopback
-		// origin the binder stands up later. Everything the shorthands below
-		// fill in — a default scheme, a default host, a preserved path — is
-		// meaningless here, so the value is taken exactly as typed and
-		// anything extra is dropped rather than silently ignored.
-		if u.Scheme == v1.DockerScheme {
-			if u.Host == "" {
-				log.Warn("dropping an origin", "origin", s, "reason", "names no container, pass e.g. "+v1.DockerScheme+"://my-container")
+		// A served origin is not proxied at all: it names a thing the binder
+		// stands a loopback server up for — a container, a program — rather
+		// than an address to reach. Everything the shorthands below fill in — a
+		// default scheme, a default host, a preserved path — is meaningless
+		// here, so the value is taken exactly as typed and anything extra is
+		// dropped rather than silently ignored.
+		if what, served := servedSchemes[u.Scheme]; served {
+			// The reference is the authority — or the path, for a scheme whose
+			// references are paths. A program is named either way (file://top,
+			// file:///usr/bin/top), and only the path shape survives a round
+			// trip through url.URL, so it is the shape this parser produces
+			// for itself and has to read back.
+			ref := u.Host
+			if ref == "" && what.paths {
+				ref = u.Path
+			}
+			if ref == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "names no "+what.noun+", pass e.g. "+u.Scheme+"://"+what.example)
 				continue
 			}
-			if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a container reference, pass "+v1.DockerScheme+"://"+u.Host)
+			// A reference and nothing else: both halves filled in means one of
+			// them is not part of the name.
+			if (u.Host != "" && u.Path != "") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+ref)
 				continue
 			}
 			origins = append(origins, u)
@@ -772,7 +822,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			base, marked = s, true
 		}
 		if base != "http" && base != "https" {
-			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https or "+v1.DockerScheme, "scheme", u.Scheme)
+			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https, "+v1.DockerScheme+" or "+v1.FileScheme, "scheme", u.Scheme)
 			continue
 		}
 		if marked {

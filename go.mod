@@ -11,9 +11,11 @@ require (
 	charm.land/bubbletea/v2 v2.0.9
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7
+	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/vt v0.0.0-20260906004030-3986e9119cf9
 	github.com/cnuss/libtunnel v0.0.72
 	github.com/containerd/errdefs v1.0.0
+	github.com/creack/pty v1.1.24
 	github.com/go-logr/logr v1.4.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/moby/moby/api v1.56.0
@@ -32,7 +34,6 @@ require (
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect

@@ -18,14 +18,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"regexp"
 	"slices"
 	"strings"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/client"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
@@ -45,6 +43,10 @@ type TargetsImpl struct{}
 func New(opts ...Option) *TargetsImpl {
 	return v1.Apply(&TargetsImpl{}, opts...)
 }
+
+// Scheme is v1.DockerScheme: this provider answers dockerd:// origins and no
+// others, which is the whole of how the binder picks it.
+func (*TargetsImpl) Scheme() string { return v1.DockerScheme }
 
 // Open resolves ref — a container name, an id, or a Compose service — against
 // the daemon named by the environment ($DOCKER_HOST and friends) and inspects
@@ -143,6 +145,16 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach
 						preferred[id] = true
 					}
 				}
+			}
+			// A scan that stopped early read part of the file and said so only
+			// here: a mount path past bufio.Scanner's 64KiB line limit ends the
+			// loop with every id after it unseen. Whatever was found still
+			// stands — this whole block is a best-effort guess at our own
+			// container, and the ids are checked by being inspected — but a
+			// scoping that silently narrowed is worth a line, since the symptom
+			// is `web` going ambiguous on a machine where it never used to.
+			if err := scan.Err(); err != nil {
+				log.Debug("could not read all of mountinfo", "path", mountinfo, "error", err)
 			}
 
 			ids := make([]string, 0, len(order))
@@ -289,6 +301,10 @@ const candidateIDsMax = 4
 // they will recognize in a page title and a log line.
 func (a *TargetImpl) Name() string { return a.ref }
 
+// Scheme is v1.DockerScheme, which with Name reconstructs the origin exactly
+// as it was typed.
+func (a *TargetImpl) Scheme() string { return v1.DockerScheme }
+
 // TTY reports Config.Tty — whether the container was started with -t. It is
 // fixed at docker run time and nothing here can change it.
 func (a *TargetImpl) TTY() bool { return a.tty }
@@ -371,22 +387,9 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 		}()
 	}
 
-	// With a TTY the container merged the two streams itself and the bytes are
-	// raw. Without one they arrive stdcopy-framed — an 8-byte header per chunk
-	// carrying stream id and length — and demultiplexing is what puts the
-	// container's stderr on a channel of its own instead of printing the
-	// headers into somebody's terminal.
-	if tty {
-		_, err = io.Copy(out, resp.Reader)
-	} else {
-		_, err = stdcopy.StdCopy(out, errw, resp.Reader)
-	}
-
-	// PID 1 exiting, the visitor leaving, and the tunnel shutting down all
-	// arrive here as a closed pipe. None of them is a failure worth reporting:
-	// the stream ending is the normal end of an attach.
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
-		err = nil
-	}
-	return err
+	// The daemon's stream is raw with a TTY and multiplexed without one, which
+	// is the shape every provider here speaks; CopyOutput is where that is
+	// read, and where PID 1 exiting, the visitor leaving and the tunnel
+	// shutting down are all recognized as the normal end of an attach.
+	return attach.CopyOutput(out, errw, resp.Reader, tty)
 }

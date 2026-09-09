@@ -761,6 +761,7 @@ func TestExamples(t *testing.T) {
 		}},
 		{"multi-origin", "exposes: http://localhost:3000, http://localhost:4000", nil, nil},
 		{"attach", "exposes: dockerd://tunneld-example", nil, nil},
+		{"shell", "exposes: k9s", nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

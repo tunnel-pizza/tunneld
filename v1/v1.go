@@ -259,6 +259,29 @@ const (
 	// reading as dockerd's own socket — because the container reference is
 	// the authority component that follows it.
 	DockerScheme = "dockerd"
+
+	// FileScheme names something on the local filesystem as an origin instead
+	// of an HTTP service: a program to run, or a path to serve.
+	//
+	// It is also what a bare argument becomes when this machine can run it. A
+	// word that names a command on $PATH is rewritten while origins are
+	// settled, so `tunneld htop` says what somebody meant rather than becoming
+	// http://htop — a hostname that resolves nowhere, minted and published
+	// before anyone finds out. The check is the host's own PATH lookup, so the
+	// same argument is a program on one machine and a hostname on another;
+	// that is the cost of the shorthand, and the reason an explicit scheme
+	// always wins.
+	//
+	// The rewrite carries the resolved path, not the word: file:///usr/bin/top
+	// rather than file://top, because a bare name says which program only on
+	// the machine that looked it up. Both spellings are accepted — a name
+	// lands in the URL's authority and a path in its path, which is the only
+	// shape an absolute one survives.
+	//
+	// The program runs when somebody opens the page and ends when they leave,
+	// on the same public hostname and the same ?n index as any other origin —
+	// which is exactly what DockerScheme does for a container.
+	FileScheme = "file"
 )
 
 // DefaultOpen is whether a tunnel opens its public URL in a browser once it is
