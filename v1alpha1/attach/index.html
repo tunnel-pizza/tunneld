@@ -69,15 +69,27 @@
      had drawn and stays there. Over the top, the last screen is left exactly
      as it was — dimmed, because it is a photograph now rather than a terminal
      — and nothing has to be undone to come back. */
+  /* The origin, above what happened to it. The frame says the same thing in
+     its top-left corner, and that corner is behind this overlay — so without
+     it a page that has lost its socket stops naming what it was showing. */
+  #where { color: #e8e8e8; }
+  #why { color: #9a9a9a; }
+
   #gone[hidden] { display: none; }
   #gone {
     position: absolute;
     inset: 0;
+    /* Above the terminal, which since the WebGL renderer is a stack of
+       canvases carrying z-index of their own — the link layer sits at 2. An
+       overlay with none of its own paints under them: it is visible, because
+       the canvases are transparent where nothing is drawn, and its button is
+       not clickable, because the canvas is what the click lands on. */
+    z-index: 10;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
+    gap: 10px;
     background: rgba(0, 0, 0, 0.72);
     color: #cfcfcf;
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -110,8 +122,9 @@
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <div id="gone" hidden>
+  <span id="where">{{.Origin}}</span>
   <span id="why">detached</span>
-  <button id="again" type="button">reconnect</button>
+  <button id="again" type="button">{{if .Restarts}}restart{{else}}reconnect{{end}}</button>
 </div>
 <script>
 (() => {

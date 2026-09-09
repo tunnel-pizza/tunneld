@@ -268,8 +268,9 @@ the page opens — unlike a container, it has not been running since before you
 looked.
 
 **A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
-key the program quits on, or simply finishing — the origin stays up, and the
-next visit runs it once more on a clean screen. That is a new program and not a
+key the program quits on, or simply finishing — the origin stays up, the page
+offers a **restart** where a container's offers only a reconnect, and the next
+visit runs it once more on a clean screen. That is a new program and not a
 resumed one: nothing it had open before is still open. A container cannot be
 offered this, since once its PID 1 has exited there is nothing left to attach
 to.
@@ -617,7 +618,7 @@ Self-contained programs in [`./examples`](./examples):
 | `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
-| `shell` | A local program's terminal on the public hostname. Runs `k9s`, so it needs one on `$PATH`. |
+| `shell` | A local program's terminal on the public hostname. Runs `zsh`. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
 `attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not

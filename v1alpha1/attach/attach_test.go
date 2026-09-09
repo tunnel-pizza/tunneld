@@ -582,6 +582,69 @@ func TestResize(t *testing.T) {
 //
 // It is now also the sole pin for the notice text itself, since the switch
 // that computes it lives inline in the closure and has no test of its own.
+// TestThePageNamesTheOrigin pins that a page which has lost its socket still
+// says what it was showing. The frame names the origin in its top-left corner
+// and the overlay covers that corner, so the name has to be said here too.
+func TestThePageNamesTheOrigin(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.scheme = v1.FileScheme
+	s := serveFake(t, target)
+
+	resp, err := http.Get(s.URL().String() + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if want := "file://api"; !strings.Contains(string(raw), want) {
+		t.Errorf("page does not name the origin %q", want)
+	}
+}
+
+// TestThePageOffersWhatItCanDo pins the button's word. It is the only thing on
+// the page that says what pressing it will get you, and the two origins differ:
+// a program is run again, a container is only reconnected to — and reconnecting
+// to a stopped container gets the last screen and nothing else.
+func TestThePageOffersWhatItCanDo(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		repeat bool
+		want   string
+		avoid  string
+	}{
+		{"a program can be started again", true, ">restart<", ">reconnect<"},
+		{"a container cannot", false, ">reconnect<", ">restart<"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := newFakeTarget("api", true, true)
+			target.repeat = tc.repeat
+			s := serveFake(t, target)
+
+			resp, err := http.Get(s.URL().String() + "/")
+			if err != nil {
+				t.Fatalf("GET /: %v", err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(raw)
+
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("page does not offer %q", tc.want)
+			}
+			if strings.Contains(body, tc.avoid) {
+				t.Errorf("page offers %q, which is not what pressing it does", tc.avoid)
+			}
+		})
+	}
+}
+
 func TestNoticeOnThePage(t *testing.T) {
 	cases := []struct {
 		name  string

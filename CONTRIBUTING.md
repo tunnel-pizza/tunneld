@@ -550,6 +550,12 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **The page says what pressing it will do.** `restart` for a target that can
+  be started again, `reconnect` for one that cannot — the template picks from
+  `session.recoverable`, the same answer that decides whether a viewer's
+  arrival starts anything. Reconnecting to a stopped container gets the last
+  screen and nothing else, and a button promising otherwise is a lie the page
+  tells once per visit.
 - **A run is told its size when it starts, whether or not anything changed.**
   `negotiate` only speaks when the window moves, and the viewer who asks for a
   restart is the size the session already settled on — so a second run would

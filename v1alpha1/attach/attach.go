@@ -426,7 +426,19 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 		case !s.target.Stdin():
 			notice = "stdin closed (started without -i) — keystrokes go nowhere"
 		}
-		data := struct{ Notice string }{notice}
+		// Restarts decides what the page offers when the stream ends. A
+		// program can be run again, so the button says restart and means it;
+		// a container cannot, so it says reconnect and means only that —
+		// somebody arriving at a stopped container gets the last screen and
+		// nothing to press that would change it.
+		// Origin is what the frame puts in its top-left corner, said again
+		// here because the overlay covers that corner: a page that has lost
+		// its socket should still name what it was showing.
+		data := struct {
+			Notice   string
+			Origin   string
+			Restarts bool
+		}{notice, s.target.Scheme() + "://" + s.target.Name(), s.session.recoverable()}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
