@@ -245,10 +245,23 @@ The URL is printed first, then the frame takes the screen — the same frame a
 browser gets, joined to the same session. Both ends see one terminal, count
 each other in the viewer count, and interleave what they type.
 
-`^K d` gives the console back and leaves the tunnel up. `^K x` ends the run.
+`^K d` gives the console back and leaves the tunnel up — the run says how to
+stop it once you are looking at a prompt again. `^K x` ends the run.
 There is no `Ctrl-C` for tunneld while the frame is drawing: the console is in
 raw mode, so that keystroke belongs to the program, which is the same thing it
 means in the browser.
+
+Without a terminal to draw — several origins, an `http://` one, or a console
+that is not a terminal — the run says what to press instead:
+
+```
+https://thick-firefly.tunneled.pizza/
+  -> http://localhost:3000
+Press Ctrl+C to stop the tunnel...
+```
+
+It goes to stderr, like the origin lines above it: stdout is the machine
+interface and carries addresses alone.
 
 Nothing happens unless both of the command's own streams are terminals. stdout
 is a machine interface — one public URL per origin — and a frame drawn into a

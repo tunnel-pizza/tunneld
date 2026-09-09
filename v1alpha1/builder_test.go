@@ -1399,6 +1399,36 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	}
 }
 
+// TestStopHintTellsAWaitingConsoleWhatToPress covers the line a run prints
+// once there is nothing left for it to draw. It is chrome, so stderr — stdout
+// is the machine interface and a script reading addresses off it should not
+// have to skip prose — and it comes after the addresses, because reading the
+// last one is what tells a person the run is up.
+//
+// The harness writes to buffers, not terminals, so mirrorable is false here
+// and this is the branch under test. The mirrored branch says the same thing
+// on its way out of the frame, which needs a pty and is covered by hand.
+func TestStopHintTellsAWaitingConsoleWhatToPress(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if got := strings.Count(h.stderr.String(), stopHint); got != 1 {
+		t.Errorf("stop hint appears %d times on stderr, want 1:\n%s", got, h.stderr.String())
+	}
+	if strings.Contains(h.stdout.String(), "Ctrl+C") {
+		t.Errorf("stdout carries the hint, want addresses alone: %q", h.stdout.String())
+	}
+	origin, hint := strings.Index(h.stderr.String(), "  -> "), strings.Index(h.stderr.String(), stopHint)
+	if origin < 0 || hint < origin {
+		t.Errorf("hint at %d, first origin at %d, want the hint after it:\n%s", hint, origin, h.stderr.String())
+	}
+}
+
 // TestLogger covers the level resolution: the --log-level value wins, the
 // environment mirror is the fallback, and neither being set means silence.
 // The flag is strict — an operator typo must not vanish — and the

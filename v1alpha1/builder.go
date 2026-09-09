@@ -569,6 +569,19 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 					b.cache.Save(b.cacheDirs.GetSlice(), log)
 				}
 
+				// A viewer asking to end the run is the third way this
+				// stops, beside a signal and the tunnel failing. Nothing is
+				// wrong when it happens, so it reads as a clean exit — the
+				// deferred teardown below takes the origins, the programs
+				// they started and the tunnel with it.
+				//
+				// Read here rather than at the select that waits on it,
+				// because the mirror below consults it too.
+				var asked <-chan struct{}
+				if quitter, ok := closeOrigins.(Quitter); ok {
+					asked = quitter.Quit()
+				}
+
 				// The console this was started from is a viewer too, when
 				// there is exactly one terminal to show and a terminal to
 				// show it on.
@@ -585,7 +598,9 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 				// came for is on the screen before the frame takes it, and
 				// left behind when it ends: a detach gives the console back
 				// and the tunnel goes on without it.
-				if mirror, ok := closeOrigins.(Mirror); ok && mirrorable(cmd, origins) {
+				mirror, mirroring := closeOrigins.(Mirror)
+				mirroring = mirroring && mirrorable(cmd, origins)
+				if mirroring {
 					// The logs would land on the screen the frame is drawing.
 					// They are still kept — ^K l is where they go instead.
 					if b.recent != nil {
@@ -600,18 +615,29 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 						if err := mirror.Mirror(ctx, cmd.InOrStdin(), stdout); err != nil && ctx.Err() == nil {
 							log.Debug("the console stopped showing the terminal", "error", err)
 						}
+						// The frame is gone and the run is not: a detach
+						// gives back a console with a prompt on it and no
+						// sign that anything is still up. Said here rather
+						// than before the frame, where it would be true for
+						// a moment and then covered — and where Ctrl+C
+						// belongs to the program being served, not to us.
+						//
+						// Not said when the frame's exit is what ended it,
+						// which is already on its way to a prompt.
+						select {
+						case <-ctx.Done():
+						case <-asked:
+						default:
+							fmt.Fprintln(stderr, stopHint)
+						}
 					}()
+				} else {
+					// Nothing else is going to be drawn here. The addresses
+					// are up, the run blocks from now on, and the signal is
+					// the only thing left on this side of it.
+					fmt.Fprintln(stderr, stopHint)
 				}
 
-				// A viewer asking to end the run is the third way this
-				// stops, beside a signal and the tunnel failing. Nothing is
-				// wrong when it happens, so it reads as a clean exit — the
-				// deferred teardown below takes the origins, the programs
-				// they started and the tunnel with it.
-				var asked <-chan struct{}
-				if quitter, ok := closeOrigins.(Quitter); ok {
-					asked = quitter.Quit()
-				}
 				select {
 				case <-ctx.Done():
 				case <-tun.Done():
@@ -909,6 +935,12 @@ func (b *BuilderImpl) Origins() []*url.URL {
 	}
 	return origins
 }
+
+// stopHint is what a console with nothing left to draw is told. The addresses
+// are printed, the tunnel is up, and from here the run is a block on a signal
+// — which is worth saying out loud, because a terminal sitting at no prompt
+// with no cursor looks the same whether it is waiting or wedged.
+const stopHint = "Press Ctrl+C to stop the tunnel..."
 
 // mirrorable reports whether the console this command was given can be handed
 // a terminal: one origin, served rather than proxied, and a real terminal on
