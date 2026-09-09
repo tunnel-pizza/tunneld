@@ -50,7 +50,6 @@ func TestPaneLinesReproduceTheScreen(t *testing.T) {
 
 			// The terminal that watched it happen.
 			live := vt.NewSafeEmulator(cols, rows)
-			live.SetScrollbackSize(scrollbackLines)
 			if _, err := live.WriteString(tc.stream); err != nil {
 				t.Fatalf("write to the live emulator: %v", err)
 			}
@@ -60,7 +59,6 @@ func TestPaneLinesReproduceTheScreen(t *testing.T) {
 			// because the frame is on one and the cells are compared
 			// against the buffer the app is actually using.
 			restored := vt.NewSafeEmulator(cols, rows)
-			restored.SetScrollbackSize(scrollbackLines)
 			if _, err := restored.WriteString("\x1b[?1049h\x1b[H"); err != nil {
 				t.Fatalf("enter the alternate screen: %v", err)
 			}
@@ -68,7 +66,7 @@ func TestPaneLinesReproduceTheScreen(t *testing.T) {
 			// scrolls the screen a row, which is the whole screen wrong by
 			// one and exactly what a frame must not do.
 			s := &session{em: live}
-			drawn := strings.Join(s.paneLines(0, rows), "\x1b[0m\r\n")
+			drawn := strings.Join(s.paneLines(rows), "\x1b[0m\r\n")
 			if _, err := restored.WriteString(drawn); err != nil {
 				t.Fatalf("write the pane: %v", err)
 			}

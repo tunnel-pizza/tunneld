@@ -35,7 +35,6 @@ func newFrameHarness(t *testing.T) *harness {
 	t.Cleanup(func() { _ = pw.Close() })
 
 	em := vt.NewSafeEmulator(defaultCols-chromeWidth, defaultRows-chromeHeight)
-	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
 		Target: newFakeTarget("api", true, true),
@@ -350,56 +349,6 @@ func TestDetachLeavesTheSessionAlone(t *testing.T) {
 	h.silent(t)
 }
 
-// TestScrollbackIsReachedThroughTheFrame pins what the alternate screen takes
-// away and the frame gives back.
-//
-// A framed viewer has no browser scrollback: the frame is on the alternate
-// screen, which has none. So the emulator's own is what a viewer scrolls, and
-// typing puts them back where a terminal puts them — at the prompt.
-func TestScrollbackIsReachedThroughTheFrame(t *testing.T) {
-	h := newFrameHarness(t)
-
-	if _, err := h.s.em.WriteString(strings.Repeat("a line\r\n", defaultRows*3)); err != nil {
-		t.Fatalf("fill the screen: %v", err)
-	}
-
-	h.press(t, commandKey)
-	h.press(t, typing('k'))
-	if h.f.scroll != 1 {
-		t.Errorf("scroll = %d after one k, want 1", h.f.scroll)
-	}
-
-	h.press(t, commandKey)
-	h.press(t, typing('j'))
-	if h.f.scroll != 0 {
-		t.Errorf("scroll = %d after j, want it back to live", h.f.scroll)
-	}
-
-	// Scrolled back, then typed at: the keystroke is meant for the prompt, and
-	// the prompt is at the bottom.
-	h.press(t, commandKey)
-	h.press(t, typing('k'))
-	h.press(t, typing('x'))
-	if h.f.scroll != 0 {
-		t.Errorf("scroll = %d after typing, want the pane snapped live", h.f.scroll)
-	}
-	h.reached(t, "x")
-}
-
-// TestScrollStopsAtTheOldestLine pins that scrolling back cannot run off the
-// end of what the emulator kept.
-func TestScrollStopsAtTheOldestLine(t *testing.T) {
-	h := newFrameHarness(t)
-
-	for range h.s.em.ScrollbackLen() + 10 {
-		h.press(t, commandKey)
-		h.press(t, typing('k'))
-	}
-	if got, want := h.f.scroll, h.s.em.ScrollbackLen(); got > want {
-		t.Errorf("scrolled back %d lines, want no more than the %d kept", got, want)
-	}
-}
-
 // TestViewFitsTheWindow pins that the frame draws the window it was given and
 // not a column or row more. Either overrun paints over the container's screen,
 // and on a small window there is not much of it to lose.
@@ -632,8 +581,7 @@ func TestViewPlacesTheCursor(t *testing.T) {
 			view.Cursor.X, view.Cursor.Y, want.X, want.Y, pane.Min.X+want.X, pane.Min.Y+want.Y)
 	}
 
-	// Withheld where the live position means nothing: a command is pending, or
-	// the pane is showing something that scrolled off.
+	// Withheld where the live position means nothing: a command is pending.
 	h.press(t, commandKey)
 	if h.f.View().Cursor != nil {
 		t.Error("cursor shown in command mode, want it withheld")
@@ -746,27 +694,6 @@ func TestPasteIsBracketedWhenTheAppAsked(t *testing.T) {
 	}
 	h.paste(t, "echo pasted")
 	h.reached(t, "\x1b[200~echo pasted\x1b[201~")
-}
-
-// TestPasteSnapsThePaneLive pins that pasting into a scrolled-back pane puts
-// it back at the prompt, the same as typing does — what was pasted is meant
-// for the prompt, and the prompt is at the bottom.
-func TestPasteSnapsThePaneLive(t *testing.T) {
-	h := newFrameHarness(t)
-	if _, err := h.s.em.WriteString(strings.Repeat("a line\r\n", defaultRows*3)); err != nil {
-		t.Fatalf("fill the screen: %v", err)
-	}
-
-	h.press(t, commandKey)
-	h.press(t, typing('k'))
-	if h.f.scroll == 0 {
-		t.Fatal("the pane did not scroll back")
-	}
-
-	h.paste(t, "x")
-	if h.f.scroll != 0 {
-		t.Errorf("scroll = %d after a paste, want the pane snapped live", h.f.scroll)
-	}
 }
 
 // TestFirstDrawWaitsForTheWindow pins that a frame does not draw at a size it

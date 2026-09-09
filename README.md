@@ -229,7 +229,6 @@ Every key reaches the container except one:
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
-| then `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 
 `x` is the one way out of a terminal you opened from your own machine: the
@@ -294,9 +293,9 @@ than minting a hostname in front of a page that cannot work.
 
 `Ctrl+K` is the frame's, and it does cost you a key — kill-to-end-of-line — but
 it is the cheaper of the two on offer. The other candidate, `Ctrl-D`, ends a
-shared session for everybody watching. Scrolling is the frame's because the
-frame is drawn on the alternate screen, which has no scrollback of its own to
-give you.
+shared session for everybody watching. The frame is drawn on the alternate screen, so
+there is no scrolling back through what has gone past — a full-screen program
+redraws and has nothing to look back at, and a shell has `less`.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers
