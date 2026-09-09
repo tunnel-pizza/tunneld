@@ -584,9 +584,20 @@ Two things there will bite if you change them without knowing why:
   costs on the way in and out — a log ring that must stop writing through a
   full-screen frame, and a prompt that has to be told the tunnel is still up
   once the frame gives it back — so a package about browsers is not also the
-  thing that runs a terminal. `console.Origin` is the optional interface the
-  bound closer satisfies, declared there because that package is the only
-  thing that drives one.
+  thing that runs a terminal. `browser` imports `console` and not the other
+  way round: a tab and a console are two ways of doing one thing, and the
+  package that chooses between them is the one that names the other, so
+  `console.Drawer` is declared once rather than twice.
+
+  **Nobody counts origins to find out whether a console can draw.** `Bind`
+  answers by carrying the method: a closer satisfies `console.Origin` only
+  when it wrapped exactly one server, which is one served origin since nothing
+  else gets one. `console.For` asks that question and the stream question
+  together and returns nil for either no — nil being load-bearing, because
+  `browser` reads it to decide whether a tab is what this run gets instead.
+  It returns `console.Drawer` rather than `*ConsoleImpl` for the same reason:
+  a nil pointer in an interface field is not nil, and the guard on the other
+  side would wave it through.
 
   The seam moved the tests with it. `browser` owns the decision, so
   `TestOpenDecides` drives `Open` with a recording `WithLaunch` and asserts

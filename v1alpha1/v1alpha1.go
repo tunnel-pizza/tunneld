@@ -24,6 +24,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -87,6 +88,22 @@ func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
 
+// Console is the screen a run was started on, when it turns out to be one.
+//
+// For is the whole of it, and it answers rather than asks: given the bound
+// origins and the command's own streams, it says nil when there is nothing to
+// draw or nowhere to draw it, and a console ready to be handed the screen
+// otherwise. Nothing out here counts origins or tests a stream — the binder
+// already decided the first by carrying Mirror, and the second is a question
+// about streams that the thing drawing on them should be the one to ask.
+//
+// What comes back is what the browser package takes when it decides a console
+// is what this run gets shown on: one interface, declared where the console
+// is, named by the package that chooses between it and a tab.
+type Console interface {
+	For(bound io.Closer, in io.Reader, out, hintTo io.Writer) console.Drawer
+}
+
 // Browser puts the tunnel in front of a person: it answers the bare public
 // address when several origins have to share it, and it opens that address
 // once the edge serves it.
@@ -95,14 +112,14 @@ func WithCache(c Cache) Option {
 // same condition — "" and no interceptors when there is no panel to serve —
 // so the caller reads an answer rather than asking whether to ask.
 //
-// Open reads the same way. It is told what the run is doing, in browser.When,
-// and decides for itself whether that means a browser — there is no "should
-// I" for a caller to answer, and no second place where opening one is
+// Open reads the same way. It is told what the run is doing, in the options it
+// takes, and decides for itself whether that means a browser — there is no
+// "should I" for a caller to answer, and no second place where opening one is
 // decided.
 type Browser interface {
 	URL(enabled bool, public *url.URL, origins []*url.URL) string
 	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
-	Open(ctx context.Context, addr string, when browser.When, stderr io.Writer, log v1.Logger)
+	Open(ctx context.Context, log v1.Logger, opts ...browser.Option)
 }
 
 // WithBrowser replaces what serves the tunnel's bare address and opens it
@@ -177,6 +194,13 @@ type Quitter interface {
 	Quit() <-chan struct{}
 }
 
+// WithConsole replaces the console a run may draw its terminal on. Seeded by
+// New with the log ring and the hint; a caller replaces it to draw somewhere
+// else, or to draw nothing.
+func WithConsole(c Console) Option {
+	return func(b *BuilderImpl) { b.console = c }
+}
+
 // WithBinder replaces what stands a loopback origin in for a container or a
 // program. The default is
 // attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):
@@ -195,6 +219,7 @@ var (
 	_ Browser    = (*browser.BrowserImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
+	_ Console    = (*console.ConsoleImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -226,6 +251,10 @@ func New(opts ...Option) *BuilderImpl {
 		WithCache(cache.New()),
 		WithBrowser(browser.New()),
 		WithCounter(counter.New()),
+		WithConsole(console.New(
+			console.WithLogs(recent),
+			console.WithHint(stopHint),
+		)),
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			attach.WithBanner(VersionLine()),
@@ -287,6 +316,13 @@ type BuilderImpl struct {
 	// command wraps its log handler in this, and the binder was handed the
 	// same one at construction — see New, and Logs in v1alpha1/attach.
 	recent *logs.RingImpl
+
+	// console is the screen this run was started on, seeded with what
+	// outlives a single run — the ring to keep off a drawn frame, and the
+	// line to leave on a returned prompt. Run binds it to the origins and
+	// streams it actually got, and the browser package decides whether it is
+	// what the tunnel gets put in front of.
+	console Console
 
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once

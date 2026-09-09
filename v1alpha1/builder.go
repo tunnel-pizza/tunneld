@@ -21,7 +21,6 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"golang.org/x/term"
 )
 
@@ -632,79 +631,40 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		}
 	}
 
-	// The console this was started from is a viewer too, when there is
-	// exactly one terminal to show and a terminal to show it on.
-	//
-	// One origin, because a console has no way to say which of several it is
-	// watching — that is what the routing parameter is for. A served origin,
-	// because an http one is somebody else's server and has no terminal. And
-	// a real terminal on both of the command's own streams, because a frame
-	// drawn into a pipe is a wall of escapes where a script expected a URL —
-	// its streams and not os.Stdin and os.Stdout, since an embedding program
-	// redirects them and a frame drawn into whatever it redirected to is not
-	// a terminal anybody asked for.
-	//
-	// The first two are what the binder already worked out: it stands a
-	// server up only for a served origin, so a bound list of one is exactly
-	// this, and bound.Mirror refuses anything else on its own. Said again
-	// here because the answer is needed before the mirror is started — the
-	// browser is told about it, and the log ring is muted for it.
-	//
-	// Started after the addresses are reported, so what a person came for is
-	// on the screen before the frame takes it, and left behind when it ends:
-	// a detach gives the console back and the tunnel goes on without it.
 	// A viewer asking to end the run is the third way this stops, beside a
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it
 	// reads as a clean exit — the deferred teardown below takes the origins,
 	// the programs they started and the tunnel with it.
-	//
-	// Read here rather than at the select that waits on it, because the
-	// console the browser package may draw consults it too.
 	var asked <-chan struct{}
 	if quitter, ok := closeOrigins.(Quitter); ok {
 		asked = quitter.Quit()
 	}
 
-	from, mirroring := closeOrigins.(console.Origin)
-	if mirroring = mirroring && len(origins) == 1; mirroring {
-		_, served := servedSchemes[origins[0].Scheme]
-		mirroring = served && isTerminal(cmd.InOrStdin()) && isTerminal(cmd.OutOrStdout())
-	}
-
 	// Putting the tunnel in front of a person is the browser package's, both
 	// ways it can be done: a tab, or the console this was started from. What
-	// is reported here is only what it cannot see for itself — the console to
-	// hand over, the caller's own instruction, and whether one of the
-	// command's streams is a terminal. Its streams and not the process's,
-	// because an embedding program redirects them, which is exactly the case
-	// where nobody is watching.
+	// is reported here is only what it cannot see for itself.
 	//
-	// One page, never a fan of tabs: the panel when there is one, since it
-	// reaches every origin, and otherwise the default origin itself.
-	when := browser.When{
-		Interactive: isTerminal(cmd.InOrStdin()) || isTerminal(cmd.OutOrStdout()) || isTerminal(cmd.ErrOrStderr()),
-		Forced:      b.open,
-	}
-	if mirroring {
-		screen := []console.Option{
-			console.WithOrigin(from),
-			console.WithStreams(cmd.InOrStdin(), stdout, stderr),
-			console.WithEnded(asked),
-			console.WithHint(stopHint),
-		}
-		// Only when there is one. A nil *RingImpl handed to an interface
-		// field is not a nil interface, and the guard on the other side would
-		// wave it through to a method call on nothing.
-		if b.recent != nil {
-			screen = append(screen, console.WithLogs(b.recent))
-		}
-		when.Mirror = console.New(screen...)
-	}
-	b.browser.Open(ctx, cmp.Or(view, publicURL(public, 0, len(origins))), when, stderr, log)
-	if !mirroring {
-		// Nothing else is going to be drawn here. The addresses are up, the
-		// run blocks from now on, and the signal is the only thing left on
-		// this side of it.
+	// Whether there is a console at all is the console package's answer, not
+	// this function's: it is handed the bound origins and this command's own
+	// streams and says nil when there is nothing to draw or nowhere to draw
+	// it. One page, never a fan of tabs — the panel when there is one, since
+	// it reaches every origin, and otherwise the default origin itself.
+	//
+	// Reported after the addresses, so what a person came for is on the
+	// screen before a frame takes it, and left behind when that frame ends: a
+	// detach gives the console back and the tunnel goes on without it.
+	screen := b.console.For(closeOrigins, cmd.InOrStdin(), stdout, stderr)
+	b.browser.Open(ctx, log,
+		browser.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
+		browser.WithForced(b.open),
+		browser.WithStderr(stderr),
+		browser.WithInteractive(isTerminal(cmd.InOrStdin()) || isTerminal(cmd.OutOrStdout()) || isTerminal(cmd.ErrOrStderr())),
+		browser.WithMirror(screen),
+	)
+	if screen == nil {
+		// Nothing is going to be drawn here. The addresses are up, the run
+		// blocks from now on, and the signal is the only thing left on this
+		// side of it.
 		fmt.Fprintln(stderr, stopHint)
 	}
 

@@ -16,8 +16,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"golang.org/x/term"
 )
 
 // Origin is a bound origin that can draw its terminal on streams of the
@@ -31,16 +33,28 @@ type Origin interface {
 	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
 }
 
+// Drawer is a console bound to one run, ready to be handed the screen. It is
+// what the browser package takes when it decides a console is what this run
+// gets shown on, rather than a tab.
+//
+// For returns this rather than *ConsoleImpl because it returns nil when there
+// is nothing to draw, and a nil *ConsoleImpl in an interface field is not nil:
+// the guard on the other side would wave it through, and the browser would
+// decline to open a tab on behalf of a console that was never there.
+type Drawer interface {
+	Draw(ctx context.Context, log v1.Logger)
+}
+
 // Option configures a ConsoleImpl at construction.
 type Option = v1.Option[*ConsoleImpl]
 
 // ConsoleImpl is the default console: the run's own screen, handed to a bound
 // origin for as long as somebody is watching it there.
 //
-// Everything arrives through options, including what belongs to a single run,
-// because a console is a single run's — it is the screen this invocation was
-// typed at, holding this invocation's streams. Draw then takes only what every
-// call takes anyway.
+// Two tiers. What New is given outlives a single run — the log ring to keep
+// off a drawn screen, and the line to leave on a returned prompt — and what
+// For is given is one run's: the origin to draw, and the streams that are the
+// console itself.
 type ConsoleImpl struct {
 	// from is the bound origin that knows how to draw. Nil draws nothing,
 	// which is a console with no terminal to show rather than a broken one.
@@ -63,32 +77,9 @@ type ConsoleImpl struct {
 	hint string
 }
 
-// New returns a ConsoleImpl configured by opts. Unconfigured it draws nothing,
-// keeps no logs out of the way, and leaves nothing behind.
+// New returns a ConsoleImpl configured by opts — the template a run binds with
+// For. Unconfigured it keeps no logs out of the way and leaves nothing behind.
 func New(opts ...Option) *ConsoleImpl { return v1.Apply(&ConsoleImpl{}, opts...) }
-
-// WithOrigin sets the bound origin whose terminal is drawn.
-func WithOrigin(from Origin) Option {
-	return func(c *ConsoleImpl) { c.from = from }
-}
-
-// WithStreams sets the console to draw on, and where a line to a returned
-// prompt goes.
-//
-// out is the run's stdout, because a frame is what the machine interface
-// carries once there is a terminal on it; hintTo is its stderr, which is where
-// everything else meant for a person already goes.
-func WithStreams(in io.Reader, out, hintTo io.Writer) Option {
-	return func(c *ConsoleImpl) { c.in, c.out, c.hintTo = in, out, hintTo }
-}
-
-// WithEnded sets the channel that closes when the run has been asked to stop.
-// It is what tells a detach from an exit: one is going back to a prompt that
-// will stay, the other to one that is arriving anyway and wants nothing
-// written over it.
-func WithEnded(ended <-chan struct{}) Option {
-	return func(c *ConsoleImpl) { c.ended = ended }
-}
 
 // WithLogs sets the ring to mute while the frame has the screen.
 //
@@ -107,6 +98,36 @@ func WithLogs(logs interface{ Mute(bool) }) Option {
 // it.
 func WithHint(hint string) Option {
 	return func(c *ConsoleImpl) { c.hint = hint }
+}
+
+// For binds this console to one run, and returns nil when that run has no
+// terminal to show — no origin the console can draw, or streams that are not a
+// console at all.
+//
+// A copy, so the seeded original stays a template: what New was given is what
+// outlives a single run, and what this takes is what does not.
+func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer) Drawer {
+	// Two questions, both answered by asking rather than deriving. Whether
+	// there is a terminal to show is the binder's — a closer carries Mirror
+	// only when it has exactly one served origin, so the assertion is the
+	// whole check. Whether there is a console to show it on is these streams'
+	// own, and they are the command's rather than the process's, since an
+	// embedding program redirects them and a frame drawn into whatever it
+	// redirected to is not a terminal anybody asked for.
+	from, ok := origins.(Origin)
+	if !ok || !isTerminal(in) || !isTerminal(out) {
+		return nil
+	}
+	// A run that a viewer can end tells a detach from an exit: one is going
+	// back to a prompt that will stay, the other to one that is arriving
+	// anyway and wants nothing written over it.
+	var ended <-chan struct{}
+	if quitter, ok := origins.(interface{ Quit() <-chan struct{} }); ok {
+		ended = quitter.Quit()
+	}
+	drawing := *c
+	drawing.from, drawing.in, drawing.out, drawing.hintTo, drawing.ended = from, in, out, hintTo, ended
+	return &drawing
 }
 
 // Draw hands the console over and returns immediately; the drawing outlives
@@ -144,4 +165,10 @@ func (c *ConsoleImpl) Draw(ctx context.Context, log v1.Logger) {
 			fmt.Fprintln(c.hintTo, c.hint)
 		}
 	}()
+}
+
+// isTerminal reports whether a stream is a terminal a frame can be drawn on.
+func isTerminal(stream any) bool {
+	f, ok := stream.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }

@@ -24,50 +24,8 @@ import (
 	"github.com/cnuss/libtunnel"
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 )
-
-// When is what only the run knows about itself, handed to Open so Open can
-// decide: everything else it needs is knowledge about this machine, which is
-// the browser package's own.
-//
-// Facts, not a verdict. The caller reports what it is doing and Open works out
-// what that means, which is why there is no "should I" for a caller to get
-// wrong and no second place where opening a browser is decided.
-type When struct {
-	// Mirror is the console this run was started from, already able to draw
-	// the terminal being served, and nil when there is no console to draw on.
-	// Non-nil is the whole of "already in front of them": Open hands it the
-	// screen instead of launching, because putting the tunnel in front of a
-	// person is this package's job and a console is the other way of doing
-	// that.
-	//
-	// An interface rather than the thing itself, so what a console has to do
-	// on the way in and out — a log ring to keep off the screen, a prompt to
-	// leave a line on — belongs to v1alpha1/mirror and not to a package about
-	// browsers.
-	//
-	// It is not a preference. The terminal is on a screen they are looking
-	// at, and a tab on top of it is a second copy competing for the same
-	// keystrokes, so this outranks even a caller who insisted.
-	Mirror interface {
-		Draw(ctx context.Context, log v1.Logger)
-	}
-	// Interactive is whether any of the command's own streams is a terminal.
-	// Its streams and not this process's, because an embedding program
-	// redirects them — which is exactly the case where nobody is watching.
-	Interactive bool
-	// Forced is a caller who has already decided: WithOpen, and nil when
-	// nobody wrote one. It outranks everything except Mirror, which is a fact
-	// about the run rather than an opinion about it.
-	Forced *bool
-}
-
-// forwarded reports whether a display is reachable by name rather than by
-// assumption: the variables an X or Wayland session sets, and that ssh -X sets
-// on the far end.
-func forwarded() bool {
-	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
-}
 
 // Option configures a BrowserImpl at construction.
 type Option = v1.Option[*BrowserImpl]
@@ -77,6 +35,35 @@ type Option = v1.Option[*BrowserImpl]
 // by New; a bare BrowserImpl{} has none and is not a supported construction.
 type BrowserImpl struct {
 	launch func(string) error
+
+	// What follows is one run's, set by the options below and read by Open.
+	// Everything else Open needs is knowledge about this machine, which is
+	// this package's own — these are the facts it cannot see for itself.
+	//
+	// addr is the page to put in front of them: the panel when there is one,
+	// since it reaches every origin, and otherwise the default origin itself.
+	addr string
+	// mirror is the console this run was started from, already able to draw
+	// the terminal being served, and nil when there is no console to draw on.
+	// Non-nil is the whole of "already in front of them": Open hands it the
+	// screen instead of launching, because putting the tunnel in front of a
+	// person is this package's job and a console is the other way of doing
+	// that.
+	//
+	// It is not a preference. The terminal is on a screen they are looking
+	// at, and a tab on top of it is a second copy competing for the same
+	// keystrokes, so it outranks even a caller who insisted.
+	mirror console.Drawer
+	// forced is a caller who has already decided, and nil when nobody wrote
+	// one. It outranks everything except mirror.
+	forced *bool
+	// interactive is whether any of the command's own streams is a terminal.
+	// Its streams and not this process's, because an embedding program
+	// redirects them — which is exactly the case where nobody is watching.
+	interactive bool
+	// stderr is where a failed launch is reported, and where pkg/browser's
+	// own child output is pointed before it can write a word.
+	stderr io.Writer
 }
 
 // New returns a BrowserImpl that launches the host's browser, then configured
@@ -90,6 +77,43 @@ func New(opts ...Option) *BrowserImpl {
 // without a window appearing on whoever is running it.
 func WithLaunch(launch func(string) error) Option {
 	return func(b *BrowserImpl) { b.launch = launch }
+}
+
+// WithAddr sets the page Open puts in front of a person.
+func WithAddr(addr string) Option {
+	return func(b *BrowserImpl) { b.addr = addr }
+}
+
+// WithMirror sets the console this run was started from, when there is one to
+// draw on. Open hands it the screen in place of launching a tab. Nil is a run
+// with no console, which is the ordinary case.
+//
+// The type is v1alpha1/console's rather than one declared here, because two
+// identical interfaces is one too many and this is the package that has to
+// choose between them: a tab and a console are the two ways of doing the one
+// thing, so the package doing the choosing is the one that names the other.
+func WithMirror(mirror console.Drawer) Option {
+	return func(b *BrowserImpl) { b.mirror = mirror }
+}
+
+// WithForced settles the decision rather than leaving it to be worked out. Nil
+// is nobody having decided, which is the ordinary case.
+func WithForced(open *bool) Option {
+	return func(b *BrowserImpl) { b.forced = open }
+}
+
+// WithInteractive says whether any of the command's own streams is a terminal,
+// which is the run's answer to give and not this package's to find: an
+// embedding program redirects them, and that is exactly the case where nobody
+// is watching.
+func WithInteractive(interactive bool) Option {
+	return func(b *BrowserImpl) { b.interactive = interactive }
+}
+
+// WithStderr sets where a failed launch is reported and where pkg/browser's
+// child output is pointed. Unset, both go to the process's own stderr.
+func WithStderr(stderr io.Writer) Option {
+	return func(b *BrowserImpl) { b.stderr = stderr }
 }
 
 // pageHTML is the panel page: a rack panel of iframes, one per origin.
@@ -409,7 +433,19 @@ func (u *asTile) Write(b []byte) (int, error) {
 // addresses. Both are pointed at stderr before the child can write a word.
 // They are package globals, so this is process-wide; tunneld owns its process,
 // and an embedding program gets the same guarantee it wants anyway.
-func (b *BrowserImpl) Open(ctx context.Context, addr string, when When, stderr io.Writer, log v1.Logger) {
+// forwarded reports whether a display is reachable by name rather than by
+// assumption: the variables an X or Wayland session sets, and that ssh -X sets
+// on the far end.
+func forwarded() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+func (b *BrowserImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
+	// One run's facts, applied here rather than at construction: a browser is
+	// seeded once and opened once per run, and what it is opening is a thing
+	// only that run knows.
+	v1.Apply(b, opts...)
+
 	// Whether anybody is there to look at it, worked out rather than asked
 	// about. There is no flag behind this and no environment variable either:
 	// every environment without a browser — a pipeline, a service manager, a
@@ -423,16 +459,16 @@ func (b *BrowserImpl) Open(ctx context.Context, addr string, when When, stderr i
 	// to work — pkg/browser reports that by failing, which is a line in the
 	// log about a thing that was never going to happen.
 	switch {
-	case when.Mirror != nil:
+	case b.mirror != nil:
 		log.Debug("not opening a browser", "reason", "the console is showing this terminal instead")
-		when.Mirror.Draw(ctx, log)
+		b.mirror.Draw(ctx, log)
 		return
-	case when.Forced != nil:
-		log.Debug("browser decided by the caller", "open", *when.Forced)
-		if !*when.Forced {
+	case b.forced != nil:
+		log.Debug("browser decided by the caller", "open", *b.forced)
+		if !*b.forced {
 			return
 		}
-	case !when.Interactive:
+	case !b.interactive:
 		log.Debug("not opening a browser", "reason", "no terminal on any of the command's streams")
 		return
 	// A runner that allocates a tty is still a runner. Nearly every one of
@@ -461,8 +497,10 @@ func (b *BrowserImpl) Open(ctx context.Context, addr string, when When, stderr i
 		log.Debug("opening a browser", "reason", "a terminal with a display")
 	}
 
-	pkgbrowser.Stdout, pkgbrowser.Stderr = stderr, stderr
-	if err := b.launch(addr); err != nil {
-		log.Debug("could not open a browser", "url", addr, "error", err)
+	if b.stderr != nil {
+		pkgbrowser.Stdout, pkgbrowser.Stderr = b.stderr, b.stderr
+	}
+	if err := b.launch(b.addr); err != nil {
+		log.Debug("could not open a browser", "url", b.addr, "error", err)
 	}
 }

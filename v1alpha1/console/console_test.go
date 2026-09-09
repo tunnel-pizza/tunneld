@@ -6,9 +6,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/creack/pty"
 	"time"
 )
 
@@ -17,7 +20,8 @@ import (
 var discard = slog.New(slog.DiscardHandler)
 
 // fakeOrigin is a bound origin that reports what it was handed and ends when
-// told to, which is the whole of what a console does to one.
+// told to, which is the whole of what a console does to one. It is also the
+// closer For is given, since that is where For looks for both answers.
 type fakeOrigin struct {
 	mu      sync.Mutex
 	in      io.Reader
@@ -25,11 +29,16 @@ type fakeOrigin struct {
 	release chan struct{}
 	err     error
 	drew    chan struct{}
+	ended   chan struct{}
 }
 
 func newFakeOrigin(err error) *fakeOrigin {
-	return &fakeOrigin{release: make(chan struct{}), err: err, drew: make(chan struct{})}
+	return &fakeOrigin{release: make(chan struct{}), err: err, drew: make(chan struct{}), ended: make(chan struct{})}
 }
+
+func (f *fakeOrigin) Close() error { return nil }
+
+func (f *fakeOrigin) Quit() <-chan struct{} { return f.ended }
 
 func (f *fakeOrigin) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
 	f.mu.Lock()
@@ -63,6 +72,18 @@ func (r *ring) seen() []bool {
 	return append([]bool(nil), r.calls...)
 }
 
+// tty is a real terminal for a case to hand For, which asks whether the
+// streams it is given are a console at all — a buffer can never answer yes.
+func tty(t *testing.T) *os.File {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to be a console on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	return tty
+}
+
 // waitFor spins until want is true or the case has waited long enough to be
 // wrong. Draw hands the screen over and returns, so everything it is
 // responsible for happens on a goroutine and nothing can be asserted the
@@ -83,10 +104,13 @@ func waitFor(t *testing.T, what string, want func() bool) {
 // before the origin is handed the screen and unmuted once it gives it back —
 // a detached console gets its logs with its prompt.
 func TestDrawMutesForTheFrameAndUnmutesAfter(t *testing.T) {
-	origin, logs := newFakeOrigin(nil), &ring{}
-	c := New(WithOrigin(origin), WithLogs(logs), WithStreams(strings.NewReader(""), io.Discard, io.Discard))
+	origin, logs, screen := newFakeOrigin(nil), &ring{}, tty(t)
+	drawing := New(WithLogs(logs)).For(origin, screen, screen, io.Discard)
+	if drawing == nil {
+		t.Fatal("For() = nil, want a console — there is an origin and a terminal")
+	}
 
-	c.Draw(t.Context(), discard)
+	drawing.Draw(t.Context(), discard)
 	<-origin.drew
 	if got := logs.seen(); len(got) != 1 || !got[0] {
 		t.Errorf("ring saw %v before the frame drew, want one mute", got)
@@ -115,20 +139,18 @@ func TestDrawLeavesTheHintOnADetach(t *testing.T) {
 		{"an exit is already on its way to a prompt", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			origin := newFakeOrigin(nil)
+			origin, screen := newFakeOrigin(nil), tty(t)
 			var hintTo lockedBuffer
-			ended := make(chan struct{})
-			c := New(
-				WithOrigin(origin),
-				WithStreams(strings.NewReader(""), io.Discard, &hintTo),
-				WithEnded(ended),
-				WithHint("Press Ctrl+C to stop the tunnel..."),
-			)
+			drawing := New(WithHint("Press Ctrl+C to stop the tunnel...")).
+				For(origin, screen, screen, &hintTo)
+			if drawing == nil {
+				t.Fatal("For() = nil, want a console")
+			}
 
-			c.Draw(t.Context(), discard)
+			drawing.Draw(t.Context(), discard)
 			<-origin.drew
 			if tc.end {
-				close(ended)
+				close(origin.ended)
 			}
 			close(origin.release)
 
@@ -146,37 +168,55 @@ func TestDrawLeavesTheHintOnADetach(t *testing.T) {
 	}
 }
 
-// TestDrawWithoutAnOriginDoesNothing pins the empty console: no origin is a
-// run with no terminal to show, not a broken one, and it must not mute a ring
-// it is never going to unmute.
-func TestDrawWithoutAnOriginDoesNothing(t *testing.T) {
-	logs := &ring{}
-	New(WithLogs(logs)).Draw(t.Context(), discard)
-	if got := logs.seen(); len(got) != 0 {
-		t.Errorf("ring saw %v, want nothing — there was no frame to keep off the screen", got)
-	}
+// TestForRefusesWhatItCannotDraw pins the two questions For asks, and that a
+// no to either is nil rather than a console that draws nothing.
+//
+// Nil is the whole of the answer on purpose: the browser package reads it to
+// decide whether a tab is what this run gets instead, and a console that
+// existed but declined to draw would suppress that tab and leave the run with
+// nothing in front of anybody.
+func TestForRefusesWhatItCannotDraw(t *testing.T) {
+	t.Run("a closer with no terminal behind it", func(t *testing.T) {
+		screen := tty(t)
+		if got := New().For(noOrigin{}, screen, screen, io.Discard); got != nil {
+			t.Errorf("For() = %v, want nil — the binder offered nothing to draw", got)
+		}
+	})
+	t.Run("a terminal but nowhere to draw it", func(t *testing.T) {
+		if got := New().For(newFakeOrigin(nil), strings.NewReader(""), io.Discard, io.Discard); got != nil {
+			t.Errorf("For() = %v, want nil — a pipe is not a console", got)
+		}
+	})
 }
+
+// noOrigin is a bound closer that cannot be mirrored, which is what the binder
+// hands back for anything but a single served origin.
+type noOrigin struct{}
+
+func (noOrigin) Close() error { return nil }
 
 // TestDrawHandsOverTheStreamsItWasGiven pins that the console the origin draws
 // on is the one configured, and that a failure is a debug line rather than
 // anything a run has to act on.
 func TestDrawHandsOverTheStreamsItWasGiven(t *testing.T) {
-	origin := newFakeOrigin(errors.New("the terminal went away"))
-	in, out := strings.NewReader("typed"), &lockedBuffer{}
-	c := New(WithOrigin(origin), WithStreams(in, out, io.Discard))
+	origin, screen := newFakeOrigin(errors.New("the terminal went away")), tty(t)
+	drawing := New().For(origin, screen, screen, io.Discard)
+	if drawing == nil {
+		t.Fatal("For() = nil, want a console")
+	}
 
-	c.Draw(t.Context(), discard)
+	drawing.Draw(t.Context(), discard)
 	<-origin.drew
 	close(origin.release)
 	waitFor(t, "the draw to finish", func() bool { return origin.done() })
 
 	origin.mu.Lock()
 	defer origin.mu.Unlock()
-	if origin.in != in {
-		t.Error("the origin was handed a different reader than the console was configured with")
+	if origin.in != io.Reader(screen) {
+		t.Error("the origin was handed a different reader than the console was bound with")
 	}
-	if origin.out != out {
-		t.Error("the origin was handed a different writer than the console was configured with")
+	if origin.out != io.Writer(screen) {
+		t.Error("the origin was handed a different writer than the console was bound with")
 	}
 }
 

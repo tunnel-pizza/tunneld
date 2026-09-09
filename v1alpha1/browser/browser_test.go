@@ -74,17 +74,17 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // suite runs under $CI, which is one of the signals.
 func TestOpenDecides(t *testing.T) {
 	const ssh = "10.0.0.1 51234 10.0.0.2 22"
-	watched := When{Interactive: true}
-	drawing := func() When { return When{Interactive: true, Mirror: stillMirror{}} }
+	watched := []Option{WithInteractive(true)}
+	drawing := append(watched, WithMirror(stillMirror{}))
 	for _, tc := range []struct {
 		name string
-		when When
+		when []Option
 		env  map[string]string
 		want bool
 	}{
 		{"a desktop session", watched, map[string]string{"DISPLAY": ":0"}, true},
 		{"a wayland session", watched, map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
-		{"nothing is watching a pipe", When{}, map[string]string{"DISPLAY": ":0"}, false},
+		{"nothing is watching a pipe", nil, map[string]string{"DISPLAY": ":0"}, false},
 		{"a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
 		{"CI set to a falsehood is not a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
 		{"ssh with nothing forwarded", watched, map[string]string{"SSH_CONNECTION": ssh}, false},
@@ -95,11 +95,11 @@ func TestOpenDecides(t *testing.T) {
 		{"a runner reached over ssh", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
 		// The console is already showing it, which outranks every signal
 		// below and the caller's own instruction above.
-		{"a console already drawing it", drawing(), map[string]string{"DISPLAY": ":0"}, false},
-		{"a caller who insists cannot beat that", When{Interactive: true, Mirror: stillMirror{}, Forced: ptr(true)}, map[string]string{"DISPLAY": ":0"}, false},
+		{"a console already drawing it", drawing, map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists cannot beat that", append(drawing, WithForced(ptr(true))), map[string]string{"DISPLAY": ":0"}, false},
 		// The caller beats everything the machine has to say.
-		{"a caller who declines", When{Interactive: true, Forced: ptr(false)}, map[string]string{"DISPLAY": ":0"}, false},
-		{"a caller who insists over a pipe", When{Forced: ptr(true)}, map[string]string{"CI": "true"}, true},
+		{"a caller who declines", append(watched, WithForced(ptr(false))), map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists over a pipe", []Option{WithForced(ptr(true))}, map[string]string{"CI": "true"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
@@ -110,7 +110,7 @@ func TestOpenDecides(t *testing.T) {
 				launched = append(launched, addr)
 				return nil
 			}))
-			b.Open(t.Context(), "https://foo.tunneled.pizza/", tc.when, io.Discard, discard)
+			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneled.pizza/")}, tc.when...)...)
 			if got := len(launched) > 0; got != tc.want {
 				t.Errorf("launched %q, want a browser: %v", launched, tc.want)
 			}
@@ -618,7 +618,7 @@ func TestOpen(t *testing.T) {
 		}))
 
 		var stderr bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", When{Forced: ptr(true)}, &stderr, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true)), WithStderr(&stderr))
 
 		if want := "https://striped-worm.tunneled.pizza/"; opened != want {
 			t.Errorf("opened %q, want %q", opened, want)
@@ -642,7 +642,7 @@ func TestOpen(t *testing.T) {
 		defer srv.Close()
 
 		o := New(WithLaunch(func(string) error { return nil }))
-		o.Open(t.Context(), srv.URL, When{Forced: ptr(true)}, io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr(srv.URL), WithForced(ptr(true)), WithStderr(io.Discard))
 
 		if got := requests.Load(); got != 0 {
 			t.Errorf("made %d requests to the address, want none", got)
@@ -661,7 +661,7 @@ func TestOpen(t *testing.T) {
 			launched = true
 			return nil
 		}))
-		o.Open(ctx, "https://striped-worm.tunneled.pizza/", When{Forced: ptr(true)}, io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(ctx, slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true)), WithStderr(io.Discard))
 
 		if !launched {
 			t.Error("a cancelled context stopped the launch, want it to open anyway")
@@ -676,18 +676,16 @@ func TestOpen(t *testing.T) {
 		o := New(WithLaunch(func(string) error { return errors.New("no browser here") }))
 		// Forced, so the decision above cannot be what keeps it quiet: the
 		// launch has to be attempted for its failure to be the thing tested.
-		anyway := When{Forced: ptr(true)}
+		anyway := []Option{WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true))}
 
 		var quiet bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", anyway, io.Discard,
-			slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		o.Open(t.Context(), slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})), anyway...)
 		if quiet.Len() != 0 {
 			t.Errorf("log = %q, want nothing at warn level", quiet.String())
 		}
 
 		var logged bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", anyway, io.Discard,
-			slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		o.Open(t.Context(), slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})), anyway...)
 		if !strings.Contains(logged.String(), "could not open a browser") {
 			t.Errorf("log = %q, want the failure in the debug log", logged.String())
 		}

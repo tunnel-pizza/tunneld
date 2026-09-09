@@ -219,28 +219,34 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestBrowserIsToldWhatTheRunIsDoing covers the run's half of the browser
-// decision, which is not the decision: Open is told what this run is doing and
-// works out what that means. What is asserted here is that the facts arriving
-// are the true ones.
+// TestBrowserOpensWhenSomebodyIsWatching covers the run's half of the browser
+// decision. The decision itself is browser.TestOpenDecides; what is pinned
+// here is that the facts reaching it are the true ones, read off the only
+// thing a case can see from out here — whether a tab was actually launched.
 //
-// The terminal is a real pty, because Interactive is a question about the
-// command's own streams and a buffer can never answer yes.
-func TestBrowserIsToldWhatTheRunIsDoing(t *testing.T) {
+// The terminal is a real pty, because whether a stream is one is exactly what
+// the run reports and a buffer can never answer yes. $CI is cleared and a
+// display named, since this suite runs under both conditions and one of them
+// is a signal.
+func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	for _, tc := range []struct {
 		name     string
 		open     *bool
 		terminal bool
-		mirrored bool
-		want     browser.When
+		want     bool
 	}{
-		{name: "a pipe is nobody watching", want: browser.When{}},
-		{name: "a terminal is somebody", terminal: true, want: browser.When{Interactive: true}},
-		{name: "the caller travels with it", open: ptr(false), want: browser.When{Forced: ptr(false)}},
-		{name: "either way", open: ptr(true), terminal: true, want: browser.When{Interactive: true, Forced: ptr(true)}},
+		{name: "a pipe is nobody watching", want: false},
+		{name: "a terminal is somebody", terminal: true, want: true},
+		{name: "a caller who declined outranks the terminal", open: ptr(false), terminal: true, want: false},
+		{name: "a caller who insisted outranks the pipe", open: ptr(true), want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CI", "")
+			t.Setenv("SSH_CONNECTION", "")
+			t.Setenv("SSH_TTY", "")
+			t.Setenv("DISPLAY", ":0")
+
 			h := newRunHarness(t, live(public), ":3000")
 			if tc.open != nil {
 				v1.Apply(h.b, WithOpen(*tc.open))
@@ -259,15 +265,8 @@ func TestBrowserIsToldWhatTheRunIsDoing(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			got := h.browser.when
-			if (got.Mirror != nil) != tc.mirrored || got.Interactive != tc.want.Interactive {
-				t.Errorf("When = %+v, want %+v", got, tc.want)
-			}
-			switch {
-			case (got.Forced == nil) != (tc.want.Forced == nil):
-				t.Errorf("When.Forced = %v, want %v", got.Forced, tc.want.Forced)
-			case got.Forced != nil && *got.Forced != *tc.want.Forced:
-				t.Errorf("When.Forced = %v, want %v", *got.Forced, *tc.want.Forced)
+			if got := len(h.browser.opened) > 0; got != tc.want {
+				t.Errorf("opened %q, want a browser: %v", h.browser.opened, tc.want)
 			}
 		})
 	}
@@ -685,22 +684,29 @@ func (f *fakeCache) Save([]string, v1.Logger) {
 // launch is faked: the panel half of the contract is the real one, embedded,
 // because the address TestRun expects reported and opened is the one the
 // panel computes.
+// fakeBrowser is the real browser with a launcher that records instead of
+// launching. It is not a stub: deciding whether to open is BrowserImpl's, and
+// a stub that skipped that decision would let a case assert "nothing opened"
+// while asserting nothing at all.
 type fakeBrowser struct {
 	*browser.BrowserImpl
 	opened []string
-	// when is what the run reported about itself on the last call. Deciding
-	// what it means is Open's, so what a case here can assert is that the
-	// facts arriving are the true ones.
-	when  browser.When
-	order *[]string
+	order  *[]string
 }
 
-func (f *fakeBrowser) Open(_ context.Context, addr string, when browser.When, _ io.Writer, _ v1.Logger) {
-	f.opened = append(f.opened, addr)
-	f.when = when
-	if f.order != nil {
-		*f.order = append(*f.order, "open")
-	}
+func (f *fakeBrowser) Open(ctx context.Context, log v1.Logger, opts ...browser.Option) {
+	// The recorder goes on first so the run's own options still win, and the
+	// effect is recorded where it actually happens: a launch that the
+	// decision declined never reaches this.
+	f.BrowserImpl.Open(ctx, log, append([]browser.Option{
+		browser.WithLaunch(func(addr string) error {
+			f.opened = append(f.opened, addr)
+			if f.order != nil {
+				*f.order = append(*f.order, "open")
+			}
+			return nil
+		}),
+	}, opts...)...)
 }
 
 // fakeBinder stands in for the attach package: it hands display back
@@ -711,20 +717,30 @@ type fakeBinder struct {
 	// asked is what a viewer's exit closes. Non-nil makes this binder a
 	// Quitter, which is how the run learns a terminal asked it to stop.
 	asked chan struct{}
+	// mirrors makes what Bind returns carry Mirror, which is how the real
+	// binder reports a single served origin — the only shape a console can
+	// draw.
+	mirrors bool
 }
 
 func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, io.Closer, error) {
+	// Carrying Mirror is how the real binder says a run has exactly one
+	// served origin, so it is a wrapper here too rather than a method on the
+	// binder itself: a fake that always carried it would mirror every case
+	// that happens to have a terminal, and a browser would never open.
+	if f.mirrors {
+		return display, mirrorableBinder{f}, f.err
+	}
 	return display, f, f.err
 }
 
-// Mirror makes the bound closer a Mirror, which is what the run type-asserts
-// for before it will draw on the console. It blocks until the run ends, like
-// the real one, so a case can assert on what happened while it was drawing.
-//
-// Being a Mirror is not enough on its own — mirrorable still has to agree
-// there is a terminal to draw on — so every case that hands the command
-// buffers is unaffected by this.
-func (f *fakeBinder) Mirror(ctx context.Context, _ io.Reader, _ io.Writer) error {
+// mirrorableBinder is a bound closer with a terminal to draw, which is what
+// the binder hands back for a single served origin.
+type mirrorableBinder struct{ *fakeBinder }
+
+// Mirror blocks until the run ends, like the real one, so a case can assert on
+// what happened while it was drawing.
+func (mirrorableBinder) Mirror(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -1380,45 +1396,6 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 }
 
-// TestMirroringRefusesWhatItCannotDraw pins the gate on handing the console a
-// terminal, which is mostly a list of times not to.
-//
-// The costly one is a stream that is not a terminal: stdout is a machine
-// interface, one public URL per origin, and a frame drawn into a pipe is a
-// wall of escapes where a script expected an address. Every row here runs on
-// the harness's buffers, which are not terminals — so the last two are the
-// ones that would be true on a console, and false here for that reason alone.
-//
-// Read off what the browser was told, since the gate is four lines inside the
-// run and not a function of its own, and Mirrored is the run's own answer
-// travelling out of it.
-func TestMirroringRefusesWhatItCannotDraw(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
-	for _, tc := range []struct {
-		name string
-		in   []string
-	}{
-		{"an http origin is somebody else's server", []string{":3000"}},
-		{"a container beside another origin", []string{"dockerd://api", ":3000"}},
-		{"two terminals and one console", []string{"dockerd://api", "dockerd://db"}},
-		{"one container, but into a buffer", []string{"dockerd://api"}},
-		{"one program, but into a buffer", []string{"file:///bin/zsh"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newRunHarness(t, live(public), tc.in...)
-			ctx, cancel := context.WithCancel(t.Context())
-			h.cache.onSave = cancel
-
-			if err := h.run(t, ctx); err != nil {
-				t.Fatalf("run() = %v", err)
-			}
-			if h.browser.when.Mirror != nil {
-				t.Error("the browser was told the console is drawing this, want false — nothing here can be drawn on")
-			}
-		})
-	}
-}
-
 // TestAViewerCanEndTheRun pins the last link of the frame's exit: a keystroke
 // in a browser tab stops the process.
 //
@@ -1523,12 +1500,13 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 // of it would be a second copy of the one thing they can already see, counted
 // as another viewer and competing for the same keys.
 //
-// What that means is Open's — browser.TestOpenDecides has the row where
-// Mirrored beats even a caller who insisted. What is pinned here is that the
-// fact reaches it, which is the half a fake browser cannot answer for.
+// WithOpen(true) is asked for so the console is the only thing that can be
+// suppressing the tab — otherwise a runner with $CI set would pass this for
+// the wrong reason.
 //
-// A real pty, because mirrorable asks about the command's own streams and a
-// buffer can never answer yes. Skipped where there is none, which is Windows.
+// A real pty, because the console package asks whether the command's own
+// streams are one and a buffer can never answer yes. Skipped where there is
+// none, which is Windows.
 func TestMirroringTellsTheBrowser(t *testing.T) {
 	ptmx, tty, err := pty.Open()
 	if err != nil {
@@ -1538,6 +1516,7 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h.binder.mirrors = true
 	// Asked for, so the mirror is the only thing that can be suppressing it —
 	// otherwise a runner with $CI set would pass this for the wrong reason.
 	v1.Apply(h.b, WithOpen(true))
@@ -1548,8 +1527,8 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	if err := h.run(t, ctx); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	if h.browser.when.Mirror == nil {
-		t.Error("the browser was not told the console is drawing this terminal")
+	if len(h.browser.opened) != 0 {
+		t.Errorf("opened %q, want nothing — the console is already showing it", h.browser.opened)
 	}
 }
 
