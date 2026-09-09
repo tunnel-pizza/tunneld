@@ -306,6 +306,21 @@ func (s *session) recoverable() bool {
 	return ok && again.Repeatable()
 }
 
+// attachable reports whether a new viewer would find a terminal: the run is
+// still going, or it has ended and the target can be started again.
+//
+// False is the end of the road, and the page needs to know: a container whose
+// PID 1 has exited has nothing to come back to, and offering a button that
+// reconnects to nothing is worse than offering none.
+func (s *session) attachable() bool {
+	select {
+	case <-s.ended():
+		return s.recoverable()
+	default:
+		return true
+	}
+}
+
 // ended is the channel that closes when the current run is over. Read through
 // a lock rather than off the field, because revive replaces it: a run that has
 // finished and a run that is about to start are two different channels, and a

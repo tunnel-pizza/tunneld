@@ -451,6 +451,24 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 			s.log.Debug("attach write failed", "error", err) // visitor went away
 		}
 	})
+	// Whether coming back is worth offering, asked after a socket has gone
+	// rather than answered when the page was built: a page is served while the
+	// terminal is live and read when it is not, and the two endings a viewer
+	// sees are the same. Their own socket dropping — a lid, an idle timeout —
+	// leaves a terminal that is still there, and the session ending on a
+	// container leaves nothing at all.
+	//
+	// 204 or 410, because the page needs one bit and the status line carries
+	// it without a body to parse.
+	mux.HandleFunc("GET /alive", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !s.session.attachable() {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// The attach handler hands the request to ServeAttach, which owns the
 	// websocket upgrade and the v4.channel.k8s.io framing on it.
 	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {

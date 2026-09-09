@@ -550,6 +550,14 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
+- **The page asks whether coming back is worth offering.** A socket ending
+  says nothing about why: this viewer's own connection dropping leaves a
+  terminal still running, and a container whose shell exited leaves nothing at
+  all, and both arrive at the overlay identically. So `gone()` fetches
+  `/alive`, which is 204 while a run is up or the target can be started again
+  and 410 when it cannot, and the button stays hidden until the answer comes.
+  `make run attach` is the case: zsh is the image's entrypoint, so Ctrl-D ends
+  PID 1 and the container with it.
 - **The page says what pressing it will do.** `restart` for a target that can
   be started again, `reconnect` for one that cannot — the template picks from
   `session.recoverable`, the same answer that decides whether a viewer's

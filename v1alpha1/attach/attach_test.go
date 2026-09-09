@@ -219,6 +219,7 @@ func TestPage(t *testing.T) {
 		// A dead socket is reported over the terminal, not into it.
 		{"the page can say the socket is gone", "/", http.StatusOK, `id="gone"`},
 		{"and offers a way back", "/", http.StatusOK, "location.reload()"},
+		{"after asking whether there is one", "/", http.StatusOK, "/alive"},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}
@@ -582,6 +583,58 @@ func TestResize(t *testing.T) {
 //
 // It is now also the sole pin for the notice text itself, since the switch
 // that computes it lives inline in the closure and has no test of its own.
+// TestAliveSaysWhetherComingBackIsWorthIt pins the one bit the page asks for
+// after its socket has gone.
+//
+// The two endings a viewer sees are identical — their own connection dropping
+// leaves a terminal still running, and a container whose shell exited leaves
+// nothing — so the page cannot tell them apart and the server answers.
+func TestAliveSaysWhetherComingBackIsWorthIt(t *testing.T) {
+	alive := func(t *testing.T, s *Server) int {
+		t.Helper()
+		resp, err := http.Get(s.URL().String() + "/alive")
+		if err != nil {
+			t.Fatalf("GET /alive: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	t.Run("a running terminal", func(t *testing.T) {
+		target := newRerunTarget(false)
+		target.holdFrom = 1 // still going
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitRun(t, 1)
+
+		if got := alive(t, s); got != http.StatusNoContent {
+			t.Errorf("GET /alive = %d, want %d while the terminal is up", got, http.StatusNoContent)
+		}
+	})
+
+	t.Run("a container whose shell exited", func(t *testing.T) {
+		target := newRerunTarget(false)
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitOver(t, 1)
+
+		if got := alive(t, s); got != http.StatusGone {
+			t.Errorf("GET /alive = %d, want %d — there is nothing to come back to", got, http.StatusGone)
+		}
+	})
+
+	t.Run("a program that can be run again", func(t *testing.T) {
+		target := newRerunTarget(true)
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitOver(t, 1)
+
+		if got := alive(t, s); got != http.StatusNoContent {
+			t.Errorf("GET /alive = %d, want %d — coming back starts it again", got, http.StatusNoContent)
+		}
+	})
+}
+
 // TestThePageNamesTheOrigin pins that a page which has lost its socket still
 // says what it was showing. The frame names the origin in its top-left corner
 // and the overlay covers that corner, so the name has to be said here too.

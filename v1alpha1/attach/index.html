@@ -258,11 +258,24 @@
   // closing, and of the two reasons the first is the one worth reading: the
   // second only says the connection went with it.
   const overlay = document.getElementById('gone'), why = document.getElementById('why');
-  document.getElementById('again').onclick = () => location.reload();
+  const again = document.getElementById('again');
+  again.onclick = () => location.reload();
   const gone = (reason) => {
     if (!overlay.hidden) return;
     why.textContent = reason;
     overlay.hidden = false;
+
+    // Only offer a way back when there is one. A socket ending says nothing
+    // about why: this viewer's own connection dropping — a lid, an idle
+    // timeout — leaves a terminal still running, and a container whose shell
+    // exited leaves nothing at all, and both arrive here identically. So ask.
+    //
+    // Hidden until the answer comes, because a button that appears and then
+    // vanishes is worse than one that arrives a moment late.
+    again.hidden = true;
+    fetch('/alive' + location.search, { cache: 'no-store' })
+      .then((r) => { again.hidden = !r.ok; })
+      .catch(() => { again.hidden = true; });
   };
 
   term.onData((data) => send(STDIN, encoder.encode(data)));

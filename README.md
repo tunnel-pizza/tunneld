@@ -292,6 +292,11 @@ shared session for everybody watching. Scrolling is the frame's because the
 frame is drawn on the alternate screen, which has no scrollback of its own to
 give you.
 
+When a terminal goes, the page says so — and offers a way back only when there
+is one. Your own connection dropping leaves the terminal running, so it offers
+to reconnect; a container whose shell has exited leaves nothing, so it offers
+nothing.
+
 `Ctrl-C` and `Ctrl-D` end the program, and what that costs depends on what is
 behind the origin. A program can be started again, so they go straight through
 — the worst a mistake does is send you back to the page. A container cannot:
