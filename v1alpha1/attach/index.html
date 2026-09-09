@@ -124,7 +124,7 @@
 <div id="gone" hidden>
   <span id="where">{{.Origin}}</span>
   <span id="why">detached</span>
-  <button id="again" type="button">{{if .Restarts}}restart{{else}}reconnect{{end}}</button>
+  <button id="again" type="button">reconnect</button>
 </div>
 <script>
 (() => {
@@ -278,9 +278,17 @@
     again.hidden = true;
     if (reason) return; // an explicit one is already the whole story
     fetch('/alive' + location.search, { cache: 'no-store' })
-      .then((r) => {
-        again.hidden = !r.ok;
-        why.textContent = r.ok ? 'detached' : 'ended';
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((offer) => {
+        // Both words are the server's, because only it knows whether the run
+        // is still going. Reconnecting to a shell somebody detached from is
+        // not the same as starting one over — saying "restart" to the first of
+        // those tells them their shell is about to be replaced — and a run
+        // that has ended has ended whether or not it can be started again, so
+        // only the first of the three is a detachment.
+        why.textContent = offer === 'reconnect' ? 'detached' : 'ended';
+        again.textContent = offer;
+        again.hidden = !offer;
       })
       .catch(() => { why.textContent = 'ended'; });
   };

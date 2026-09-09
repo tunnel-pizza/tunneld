@@ -704,6 +704,9 @@ func (f *fakeBrowser) Open(_ context.Context, addr string, _ io.Writer, _ v1.Log
 type fakeBinder struct {
 	err    error
 	closed bool
+	// asked is what a viewer's exit closes. Non-nil makes this binder a
+	// Quitter, which is how the run learns a terminal asked it to stop.
+	asked chan struct{}
 }
 
 func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, io.Closer, error) {
@@ -711,6 +714,8 @@ func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([
 }
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
+
+func (f *fakeBinder) Quit() <-chan struct{} { return f.asked }
 
 // runHarness is run with every collaborator faked except the two that are
 // pure: the browser's panel half, because its URL and interceptor order are
@@ -1262,6 +1267,31 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), v1.OriginsEnv) {
 		t.Errorf("error %q does not name %s", err, v1.OriginsEnv)
+	}
+}
+
+// TestAViewerCanEndTheRun pins the last link of the frame's exit: a keystroke
+// in a browser tab stops the process.
+//
+// The command is the only thing that can — ending the run takes its context
+// and everything started under it — so what the terminal does is ask, on the
+// closer Bind handed back, and this is the arm that listens. It is a clean
+// exit, not a failure: nothing went wrong, somebody chose it.
+func TestAViewerCanEndTheRun(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	h.binder.asked = make(chan struct{})
+
+	// Asked once the run is up, so what is pinned is the wait ending rather
+	// than a start that never happened. The cache save is the last thing
+	// before the wait, which makes it the moment a viewer could be looking.
+	h.cache.onSave = func() { close(h.binder.asked) }
+
+	if err := h.run(t, t.Context()); err != nil {
+		t.Fatalf("run() = %v, want a clean exit", err)
+	}
+	if !h.binder.closed {
+		t.Error("the origins were left up after the run ended")
 	}
 }
 

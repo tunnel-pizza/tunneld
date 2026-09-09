@@ -158,6 +158,19 @@ type Announcer interface {
 	Announce(public []string)
 }
 
+// Quitter is a bound origin that can be asked, from inside, to end the run.
+//
+// Discovered on the closer Bind returns, the same way Announcer is and for the
+// same reason: an implementation lives in a subpackage and cannot name a type
+// declared here. A binder with nothing to ask on simply is not one.
+//
+// The channel closes at most once and carries nothing. What it means is that
+// somebody watching a terminal chose to end the process serving it — the one
+// way out of a terminal you opened from your own machine.
+type Quitter interface {
+	Quit() <-chan struct{}
+}
+
 // WithBinder replaces what stands a loopback origin in for a container or a
 // program. The default is
 // attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):

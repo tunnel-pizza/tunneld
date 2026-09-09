@@ -310,20 +310,31 @@ func TestOrdinaryKeysReachTheContainerUnchanged(t *testing.T) {
 	h.reached(t, "echo Hi There")
 }
 
-// TestCommandModeEndsTheSessionOnPurpose pins the deliberate half of the
-// guard. Ctrl-D no longer ends a shared session by accident, so there has to
-// be a way to end one on purpose, and q is it: the end of file the key used to
-// deliver, asked for rather than tripped over.
-func TestCommandModeEndsTheSessionOnPurpose(t *testing.T) {
+// TestCommandModeEndsTheRun pins x: the one way out of a terminal somebody
+// opened from their own machine.
+//
+// It ends the run rather than the viewer or the target — the process, its
+// context, and everything started under it — so what the frame does is ask,
+// and the command is what stops. The keystroke reaches the target either way,
+// which is the point of asking rather than writing an end of file into a
+// shared stdin.
+func TestCommandModeEndsTheRun(t *testing.T) {
+	asked := make(chan struct{})
 	h := newFrameHarness(t)
+	h.s.quit = func() { close(asked) }
 
 	h.press(t, commandKey)
 	h.silent(t)
 
-	if cmd := h.press(t, typing('q')); cmd == nil {
-		t.Error("q returned no command, want the frame to quit with it")
+	if cmd := h.press(t, typing('x')); cmd == nil {
+		t.Error("x returned no command, want the frame to quit with it")
 	}
-	h.reached(t, "\x04")
+	select {
+	case <-asked:
+	default:
+		t.Error("x did not ask the run to end")
+	}
+	h.silent(t) // and nothing was typed at the target on the way
 }
 
 // TestDetachLeavesTheSessionAlone pins the difference between the two ways out

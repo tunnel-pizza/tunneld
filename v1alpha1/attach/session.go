@@ -63,6 +63,11 @@ const scrollbackLines = 1000
 type session struct {
 	Target
 
+	// quit says a viewer asked the whole run to end. What it reaches is the
+	// Server, which says so to the command; nothing here acts on it, because
+	// what a frame can end is its own viewer and what this ends is a process.
+	quit func()
+
 	// ctx is the origin's own lifetime, from Serve. Held because a run can
 	// outlive the viewer who started it and a later run needs a context that
 	// is not some departed socket's — see revive.
@@ -213,13 +218,14 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 	em.SetScrollbackSize(scrollbackLines)
 
 	s := &session{
 		Target:  target,
 		ctx:     ctx,
+		quit:    quit,
 		log:     log,
 		banner:  banner,
 		resize:  make(chan remotecommand.TerminalSize),
@@ -306,18 +312,34 @@ func (s *session) recoverable() bool {
 	return ok && again.Repeatable()
 }
 
-// attachable reports whether a new viewer would find a terminal: the run is
-// still going, or it has ended and the target can be started again.
+// What a viewer arriving now would get, and the words the page puts on the
+// button that gets it.
+const (
+	// offerReconnect is a run still going: the same terminal, still there,
+	// with whatever was on it.
+	offerReconnect = "reconnect"
+	// offerRestart is a run that has ended and a target that can be started
+	// again: a new program on a clean screen, which is a different thing and
+	// says so.
+	offerRestart = "restart"
+)
+
+// offer is what coming back would do, or "" when nothing would.
 //
-// False is the end of the road, and the page needs to know: a container whose
-// PID 1 has exited has nothing to come back to, and offering a button that
-// reconnects to nothing is worse than offering none.
-func (s *session) attachable() bool {
+// Asked at the moment somebody's socket has gone rather than when the page was
+// built, because the answer changes and the page is long-lived: a viewer who
+// detaches from a running shell is reconnecting to it, and the same viewer an
+// hour later, after the shell has exited, is starting a new one. A page that
+// decided this at load time would tell one of them the wrong thing.
+func (s *session) offer() string {
 	select {
 	case <-s.ended():
-		return s.recoverable()
+		if s.recoverable() {
+			return offerRestart
+		}
+		return ""
 	default:
-		return true
+		return offerReconnect
 	}
 }
 
@@ -377,16 +399,16 @@ func (s *session) close() error {
 	return s.stdin.Close()
 }
 
-// eof asks the target to end, which is what a shell does with an end of file.
-// It is the deliberate half of the guard the frame puts on Ctrl-D: the key no
-// longer ends a shared session by accident, and this is how somebody ends one
-// on purpose.
-func (s *session) eof() {
-	s.mu.Lock()
-	stdin := s.stdin
-	s.mu.Unlock()
-	if _, err := stdin.Write([]byte{0x04}); err != nil {
-		s.log.Debug("end of file not delivered", "container", s.Name(), "error", err)
+// endRun says a viewer has asked the whole run to end. What it reaches is the
+// Server, which tells the command; the command is what actually ends, taking
+// its context and everything started under it.
+//
+// Not the target and not this origin. A frame can end its own viewer and it
+// can ask for this, and the difference is worth keeping: one of them is a tab
+// closing and the other is a process exiting.
+func (s *session) endRun() {
+	if s.quit != nil {
+		s.quit()
 	}
 }
 

@@ -285,12 +285,13 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// This viewer only. The stream is shared and stays up; the socket
 		// closing is all that happens, and the page says "detached".
 		return f, tea.Quit
-	case 'q':
-		// What Ctrl-D would have done if the frame were not holding it: end of
-		// file to the shared stdin, which is the shell's cue to exit and the
-		// session's to be over for everyone. Deliberate now rather than
-		// accidental, which is the whole of the guard.
-		f.sess.eof()
+	case 'x':
+		// The whole run, not this viewer and not this origin: the command ends,
+		// its context goes with it, and everything it started — the programs,
+		// the attach servers, the tunnel — comes down together. Somebody who
+		// opened a terminal from their own machine has no other way to close
+		// it from inside, which is the point.
+		f.sess.endRun()
 		return f, tea.Quit
 	case 'k', tea.KeyUp:
 		f.scroll = f.sess.scrollUp(f.scroll)
@@ -633,8 +634,7 @@ func (f frame) hint() string {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
-		chipStyle.Styled(" q ") + hintStyle.Styled(" end ") +
-		chipStyle.Styled(" k/j ") + hintStyle.Styled(" scroll ") +
+		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
 		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
 }
 

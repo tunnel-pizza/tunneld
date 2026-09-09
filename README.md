@@ -228,8 +228,14 @@ Every key reaches the container except one:
 | --- | --- |
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
-| then `q` | End the session for everyone — the end of file a shell reads from `Ctrl-D`. |
+| then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
 | then `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
+| then `esc` | Cancel, and the keystroke is spent on cancelling. |
+
+`x` is the one way out of a terminal you opened from your own machine: the
+command ends, and its context takes the tunnel and everything under it. A
+container is not tunneld's to stop and keeps running; a program is, and does
+not.
 
 Pasting works as it does in any terminal, and an app that asked to be told
 the difference between pasted and typed text still is.
