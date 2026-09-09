@@ -252,10 +252,10 @@ func WithBanner(banner string) Option {
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, Bound, error) {
-	dialable := make([]*url.URL, 0, len(display))
+func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logger) ([]*url.URL, Bound, error) {
+	dialable := make([]*url.URL, 0, len(shown))
 	var servers bound
-	for at, origin := range display {
+	for at, origin := range shown {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
@@ -336,7 +336,7 @@ type Bound interface {
 // The index is kept because that is the only thing that connects a server to
 // the address it will answer on: the tunnel hands back one public URL and the
 // origins are told apart by their routing parameter, so origin n's address is
-// derived from n. Same length and order as display, like everything else here.
+// derived from n. Same length and order as shown, like everything else here.
 type bound []boundOrigin
 
 // show puts the one origin bound here on the given streams.

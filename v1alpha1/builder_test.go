@@ -23,8 +23,8 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -220,8 +220,8 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestBrowserOpensWhenSomebodyIsWatching covers the run's half of the browser
-// decision. The decision itself is browser.TestOpenDecides; what is pinned
+// TestBrowserOpensWhenSomebodyIsWatching covers the run's half of the display
+// decision. The decision itself is display.TestOpenDecides; what is pinned
 // here is that the facts reaching it are the true ones, read off the only
 // thing a case can see from out here — whether a tab was actually launched.
 //
@@ -266,8 +266,8 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			if got := len(h.browser.opened) > 0; got != tc.want {
-				t.Errorf("opened %q, want a browser: %v", h.browser.opened, tc.want)
+			if got := len(h.display.opened) > 0; got != tc.want {
+				t.Errorf("opened %q, want a browser: %v", h.display.opened, tc.want)
 			}
 		})
 	}
@@ -603,7 +603,7 @@ func (f *fakeTunnel) URL() *url.URL {
 		*f.order = append(*f.order, "url")
 	}
 	// A tunnel that has a URL has been accepted by the edge, so it announces
-	// the connection the run waits for before it opens a browser. A silent
+	// the connection the run waits for before it opens a display. A silent
 	// tunnel is the case where that announcement never comes.
 	if f.url != nil && f.listen != nil && !f.silent {
 		f.listen(libtunnel.Event{Kind: libtunnel.EventConnected, Hostname: f.url.Host})
@@ -681,26 +681,26 @@ func (f *fakeCache) Save([]string, v1.Logger) {
 	}
 }
 
-// fakeBrowser records what it was asked to open and opens nothing. Only the
+// fakeDisplay records what it was asked to open and opens nothing. Only the
 // launch is faked: the panel half of the contract is the real one, embedded,
 // because the address TestRun expects reported and opened is the one the
 // panel computes.
-// fakeBrowser is the real browser with a launcher that records instead of
-// launching. It is not a stub: deciding whether to open is BrowserImpl's, and
+// fakeDisplay is the real display with a launcher that records instead of
+// launching. It is not a stub: deciding whether to open is DisplayImpl's, and
 // a stub that skipped that decision would let a case assert "nothing opened"
 // while asserting nothing at all.
-type fakeBrowser struct {
-	*browser.BrowserImpl
+type fakeDisplay struct {
+	*display.DisplayImpl
 	opened []string
 	order  *[]string
 }
 
-func (f *fakeBrowser) Open(ctx context.Context, log v1.Logger, opts ...browser.Option) {
+func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.Option) {
 	// The recorder goes on first so the run's own options still win, and the
 	// effect is recorded where it actually happens: a launch that the
 	// decision declined never reaches this.
-	f.BrowserImpl.Open(ctx, log, append([]browser.Option{
-		browser.WithLaunch(func(addr string) error {
+	f.DisplayImpl.Open(ctx, log, append([]display.Option{
+		display.WithLaunch(func(addr string) error {
 			f.opened = append(f.opened, addr)
 			if f.order != nil {
 				*f.order = append(*f.order, "open")
@@ -710,7 +710,7 @@ func (f *fakeBrowser) Open(ctx context.Context, log v1.Logger, opts ...browser.O
 	}, opts...)...)
 }
 
-// fakeBinder stands in for the attach package: it hands display back
+// fakeBinder stands in for the attach package: it hands the origins back
 // unchanged and closes nothing, so TestRun never stands up a real listener.
 type fakeBinder struct {
 	err    error
@@ -726,15 +726,15 @@ type fakeBinder struct {
 	mirrors bool
 }
 
-func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
+func (f *fakeBinder) Bind(_ context.Context, shown []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
 	// Carrying Mirror is how the real binder says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
 	// binder itself: a fake that always carried it would mirror every case
 	// that happens to have a terminal, and a browser would never open.
 	if f.mirrors {
-		return display, mirrorableBinder{f}, f.err
+		return shown, mirrorableBinder{f}, f.err
 	}
-	return display, f, f.err
+	return shown, f, f.err
 }
 
 // mirrorableBinder is a bound closer with a terminal to draw, which is what
@@ -758,14 +758,14 @@ func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 func (f *fakeBinder) Announce(public []string) { f.announced = public }
 
 // runHarness is run with every collaborator faked except the two that are
-// pure: the browser's panel half, because its URL and interceptor order are
+// pure: the shown's panel half, because its URL and interceptor order are
 // what the assertions check, and a real counter armed at one, because the
 // verdict logic is what the gone case is about. order records the effects
 // that matter in the sequence they landed.
 type runHarness struct {
 	engine  *fakeEngine
 	cache   *fakeCache
-	browser *fakeBrowser
+	display *fakeDisplay
 	binder  *fakeBinder
 	order   []string
 	stdout  bytes.Buffer
@@ -782,7 +782,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Setenv(v1.LogEnv, "") // a developer's shell must not turn the log on
 	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
 	h.cache = &fakeCache{order: &h.order}
-	h.browser = &fakeBrowser{BrowserImpl: browser.New(), order: &h.order}
+	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
@@ -792,7 +792,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
 		WithCache(h.cache),
-		WithBrowser(h.browser),
+		WithDisplay(h.display),
 		WithBinder(h.binder),
 		// A short connect bound so no case can sit on the production default
 		// waiting for an announcement its tunnel may never make.
@@ -865,7 +865,7 @@ func captureStderr(t *testing.T) func() string {
 }
 
 // TestRun is the composition under test: every effect run has, against fakes
-// for the edge, the disk, the browser and the daemon. Each case asserts what
+// for the edge, the disk, the shown and the daemon. Each case asserts what
 // the code did before it was split, so a case going red is a behaviour
 // change, not a refactor.
 func TestRun(t *testing.T) {
@@ -889,8 +889,8 @@ func TestRun(t *testing.T) {
 		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
 		}
-		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-			t.Errorf("opened %q, want the panel address %q", h.browser.opened, want)
+		if want := []string{public}; !slices.Equal(h.display.opened, want) {
+			t.Errorf("opened %q, want the panel address %q", h.display.opened, want)
 		}
 		// TestReportNamesTheMultiviewPanel: the panel's own address is the
 		// one stdout carries when there is one — it answers for every origin
@@ -1002,8 +1002,8 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-			t.Errorf("opened %q, want the plain URL %q", h.browser.opened, want)
+		if want := []string{public}; !slices.Equal(h.display.opened, want) {
+			t.Errorf("opened %q, want the plain URL %q", h.display.opened, want)
 		}
 		if n := len(h.engine.tunnels[0].ics); n != 0 {
 			t.Errorf("registered %d interceptors for one origin, want none", n)
@@ -1455,8 +1455,8 @@ func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
 	if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 		t.Errorf("effects in order %v, want %v — the wait swallowed what follows it", h.order, want)
 	}
-	if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-		t.Errorf("opened %q, want the address anyway %q", h.browser.opened, want)
+	if want := []string{public}; !slices.Equal(h.display.opened, want) {
+		t.Errorf("opened %q, want the address anyway %q", h.display.opened, want)
 	}
 }
 
@@ -1535,8 +1535,8 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	if err := h.run(t, ctx); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	if len(h.browser.opened) != 0 {
-		t.Errorf("opened %q, want nothing — the console is already showing it", h.browser.opened)
+	if len(h.display.opened) != 0 {
+		t.Errorf("opened %q, want nothing — the console is already showing it", h.display.opened)
 	}
 }
 

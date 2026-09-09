@@ -1,6 +1,6 @@
 // Package console draws a served terminal on the console tunneld was started
 // from, which is the other way of putting a tunnel in front of a person: the
-// browser package opens a tab, this one takes the screen already in front of
+// display package opens a tab, this one takes the screen already in front of
 // them.
 //
 // Its own subpackage because what it does is not what either of its neighbours
@@ -185,7 +185,7 @@ func (c *ConsoleImpl) Show(ctx context.Context, log v1.Logger) {
 
 // IsTerminal reports whether a stream is a terminal a frame can be drawn on.
 //
-// Exported because the browser package asks the same question for its own
+// Exported because the display package asks the same question for its own
 // reasons — whether anybody is watching this run at all — and one answer to
 // what counts as a terminal is better than two that could drift.
 func IsTerminal(stream any) bool {

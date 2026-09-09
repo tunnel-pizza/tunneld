@@ -1,4 +1,4 @@
-package browser
+package display
 
 import (
 	"bytes"
@@ -67,6 +67,26 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
 // the whole design: the panel answers the tunnel's own address and nothing
 // else, because everything else belongs to an origin.
+// TestIsInteractive covers the one question a run answers for itself: is any
+// of what it was given a terminal. A pty for yes, since nothing else says so,
+// and pipes for no — which is a pipeline, a service manager, a CI step and a
+// container all at once.
+func TestIsInteractive(t *testing.T) {
+	if !IsInteractive(onATerminal(t)) {
+		t.Error("IsInteractive() = false for a terminal, want true")
+	}
+	if IsInteractive(inAPipe{}) {
+		t.Error("IsInteractive() = true for pipes, want false — nobody is watching")
+	}
+}
+
+// inAPipe is a run with nothing on a terminal.
+type inAPipe struct{}
+
+func (inAPipe) InOrStdin() io.Reader   { return strings.NewReader("") }
+func (inAPipe) OutOrStdout() io.Writer { return io.Discard }
+func (inAPipe) ErrOrStderr() io.Writer { return io.Discard }
+
 // TestOpenDecides covers the browser decision, which has no flag and no
 // variable behind it any more. Each row is somewhere somebody actually runs,
 // and the answer is the one they would give without being asked.
@@ -80,7 +100,7 @@ func TestOpenDecides(t *testing.T) {
 	// watched and drawing are the two shapes a row starts from. The terminal
 	// they name is a real pty, because that is what WithInteractive asks the
 	// streams about and a buffer can never answer yes.
-	watched := func(t *testing.T) []Option { return []Option{WithInteractive(onATerminal(t))} }
+	watched := func(t *testing.T) []Option { return []Option{WithInteractive(IsInteractive(onATerminal(t)))} }
 	drawing := func(t *testing.T) []Option { return append(watched(t), WithScreen(stillScreen{})) }
 	pipe := func(*testing.T) []Option { return nil }
 	for _, tc := range []struct {
@@ -132,7 +152,7 @@ func forced(base func(*testing.T) []Option, open bool) func(*testing.T) []Option
 }
 
 // onATerminal is a run whose output goes somewhere a person can see, which is
-// what WithInteractive asks the streams about — a real pty, since nothing else
+// what IsInteractive asks the streams about — a real pty, since nothing else
 // answers yes.
 func onATerminal(t *testing.T) console.Streams {
 	t.Helper()

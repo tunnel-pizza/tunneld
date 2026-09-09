@@ -20,7 +20,7 @@ Deep-link by filename; line numbers will drift.
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
-| Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
+| Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
@@ -77,8 +77,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `CacheDirs`, `Engine`,
-`Cache`, `Browser`, `Counter`, `Binder`, implemented respectively by
-`cachedir`, `engine`, `cache`, `browser`, `counter`, `attach`. Each
+`Cache`, `Display`, `Counter`, `Binder`, implemented respectively by
+`cachedir`, `engine`, `cache`, `display`, `counter`, `attach`. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
 subpackage, seeded by `New` and replaceable with the matching `With*` option.
 A function that maps a value to a value (`publicURL`, `Version`) gets no
@@ -567,9 +567,9 @@ Two things there will bite if you change them without knowing why:
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The browser decision is derived, and split where the knowledge is.**
   `--no-open` and `TUNNELD_NO_OPEN` are gone, and so is the gate at the call
-  site. `Browser.Open` decides, because putting the tunnel in front of a
+  site. `Display.Open` decides, because putting the tunnel in front of a
   person is that package's job and there are two ways to do it: a tab, or the
-  console the run was started from. The run hands it `browser.When` — a
+  console the run was started from. The run hands it `display.When` — a
   console to draw on if there is one, the caller's own instruction, and
   whether any of the command's streams is a terminal — and everything else it
   needs is knowledge about this machine (`$CI`, ssh, the display variables),
@@ -584,7 +584,7 @@ Two things there will bite if you change them without knowing why:
   costs on the way in and out — a log ring that must stop writing through a
   full-screen frame, and a prompt that has to be told the tunnel is still up
   once the frame gives it back — so a package about browsers is not also the
-  thing that runs a terminal. `browser` imports `console` and not the other
+  thing that runs a terminal. `display` imports `console` and not the other
   way round: a tab and a console are two ways of doing one thing, and the
   package that chooses between them is the one that names the other, so
   `console.Screen` is declared once rather than twice.
@@ -599,12 +599,12 @@ Two things there will bite if you change them without knowing why:
   three times: a context is done, a tunnel is done, and so are the origins.
 
   **A run is asked where its output goes, not what that means.** `console.For`
-  and `browser.WithInteractive` both take `console.Streams` — the three
-  accessors `*cobra.Command` already has — so neither package imports cobra,
-  neither call site spells out an `isTerminal` chain, and what counts as a
-  terminal is `console.IsTerminal` in one place. `Streams` is declared in
-  `console` because that is where terminal knowledge lives; `browser` names it
-  the way it names `console.Screen`.
+  and `display.IsInteractive` both take `console.Streams` — the three accessors
+  `*cobra.Command` already has — so neither package imports cobra, neither call
+  site spells out an `IsTerminal` chain, and what counts as a terminal is
+  `console.IsTerminal` in one place. `Streams` is declared in `console` because
+  that is where terminal knowledge lives; `display` names it the way it names
+  `console.Screen`.
 
   **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
   `Terminal` is what the binder hands back, `Screen` is what a run was started
@@ -616,7 +616,7 @@ Two things there will bite if you change them without knowing why:
   when it wrapped exactly one server, which is one served origin since nothing
   else gets one. `console.For` asks that question and the stream question
   together and returns nil for either no — nil being load-bearing, because
-  `browser` reads it to decide whether a tab is what this run gets instead.
+  `display` reads it to decide whether a tab is what this run gets instead.
   It returns `console.Screen` rather than `*ConsoleImpl` for the same reason:
   a nil pointer in an interface field is not nil, and the guard on the other
   side would wave it through.

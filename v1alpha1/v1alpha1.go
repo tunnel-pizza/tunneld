@@ -21,11 +21,11 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 )
@@ -104,7 +104,7 @@ type Console interface {
 	For(bound attach.Bound, streams console.Streams) console.Screen
 }
 
-// Browser puts the tunnel in front of a person: it answers the bare public
+// Display puts the tunnel in front of a person: it answers the bare public
 // address when several origins have to share it, and it opens that address
 // once the edge serves it.
 //
@@ -116,17 +116,17 @@ type Console interface {
 // takes, and decides for itself whether that means a browser — there is no
 // "should I" for a caller to answer, and no second place where opening one is
 // decided.
-type Browser interface {
+type Display interface {
 	URL(enabled bool, public *url.URL, origins []*url.URL) string
 	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
-	Open(ctx context.Context, log v1.Logger, opts ...browser.Option)
+	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
 }
 
-// WithBrowser replaces what serves the tunnel's bare address and opens it
-// once the tunnel is live. The default is browser.New(): the panel from
+// WithDisplay replaces what serves the tunnel's bare address and opens it
+// once the tunnel is live. The default is display.New(): the panel from
 // multiview.html, and the host's browser launched as-is.
-func WithBrowser(browser Browser) Option {
-	return func(b *BuilderImpl) { b.browser = browser }
+func WithDisplay(display Display) Option {
+	return func(b *BuilderImpl) { b.display = display }
 }
 
 // Counter folds tunnel events into a verdict: has the edge disowned it.
@@ -159,10 +159,10 @@ func WithCounter(c Counter) Option {
 // Binder turns the origins the operator typed into the origins the tunnel
 // dials, standing a loopback server in for each origin that names something to
 // serve rather than an address to reach — a container, a local program. The dialable list
-// keeps display's length and order — index n means origin n everywhere
+// keeps shown's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
-	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
+	Bind(ctx context.Context, shown []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
 }
 
 // WithConsole replaces the console a run may draw its terminal on. Seeded by
@@ -187,7 +187,7 @@ var (
 	_ CacheDirs  = (*cachedir.ValueImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
-	_ Browser    = (*browser.BrowserImpl)(nil)
+	_ Display    = (*display.DisplayImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
@@ -220,7 +220,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
-		WithBrowser(browser.New()),
+		WithDisplay(display.New()),
 		WithCounter(counter.New()),
 		WithConsole(console.New(
 			console.WithLogs(recent),
@@ -271,7 +271,7 @@ type BuilderImpl struct {
 	cacheDirs CacheDirs
 	engine    Engine
 	cache     Cache
-	browser   Browser
+	display   Display
 	counter   Counter
 	binder    Binder
 

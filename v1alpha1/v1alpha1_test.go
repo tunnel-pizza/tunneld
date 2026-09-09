@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
 // TestNewSatisfiesTheContract pins that the implementation is assignable to
@@ -72,7 +72,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		{"cacheDirs", New(WithOrigin(":3000"), WithCacheDirs(nil))},
 		{"engine", New(WithOrigin(":3000"), WithEngine(nil))},
 		{"cache", New(WithOrigin(":3000"), WithCache(nil))},
-		{"browser", New(WithOrigin(":3000"), WithBrowser(nil))},
+		{"browser", New(WithOrigin(":3000"), WithDisplay(nil))},
 		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
 	} {
@@ -95,11 +95,11 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	d, e, c, o, n, g := cachedir.New(), &fakeEngine{}, &fakeCache{}, &fakeBrowser{BrowserImpl: browser.New()}, counter.New(), &fakeBinder{}
-	b := New(WithCacheDirs(d), WithEngine(e), WithCache(c), WithBrowser(o), WithCounter(n), WithBinder(g))
+	d, e, c, o, n, g := cachedir.New(), &fakeEngine{}, &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
+	b := New(WithCacheDirs(d), WithEngine(e), WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
 
 	if b.cacheDirs != CacheDirs(d) || b.engine != Engine(e) || b.cache != Cache(c) ||
-		b.browser != Browser(o) || b.counter != Counter(n) || b.binder != Binder(g) {
+		b.display != Display(o) || b.counter != Counter(n) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}
 }

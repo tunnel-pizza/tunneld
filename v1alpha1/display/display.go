@@ -1,12 +1,18 @@
-// Package browser puts a public address in front of a person: it launches
-// whatever browser the host has, and it serves what that browser lands on
-// when a tunnel carries more than one origin — the page that frames every
-// origin, and the header surgery that lets those frames render.
+// Package display puts a public address in front of a person, and decides
+// which way to do that: a browser tab, or the console the run was started from.
+// It also serves what a tab lands on when a tunnel carries more than one
+// origin — the page that frames every origin, and the header surgery that lets
+// those frames render.
+//
+// Named for the job rather than for one of its two answers. It launched a
+// browser and nothing else once, which is where the old name came from; a
+// console is the other way of showing somebody their tunnel, and picking
+// between them is the whole point of this package.
 //
 // Its own subpackage because pkg/browser is a world the root has no reason to
 // see, and because multiview.html travels with the code: go:embed cannot reach
 // outside its own package directory.
-package browser
+package display
 
 import (
 	"context"
@@ -27,13 +33,13 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 )
 
-// Option configures a BrowserImpl at construction.
-type Option = v1.Option[*BrowserImpl]
+// Option configures a DisplayImpl at construction.
+type Option = v1.Option[*DisplayImpl]
 
-// BrowserImpl is the default browser: whatever the host has, launched as-is,
+// DisplayImpl is the default display: whatever browser the host has, launched as-is,
 // pointed at the panel this same type serves below. Its launcher is seeded
-// by New; a bare BrowserImpl{} has none and is not a supported construction.
-type BrowserImpl struct {
+// by New; a bare DisplayImpl{} has none and is not a supported construction.
+type DisplayImpl struct {
 	launch func(string) error
 
 	// What follows is one run's, set by the options below and read by Open.
@@ -56,30 +62,30 @@ type BrowserImpl struct {
 	// forced is a caller who has already decided, and nil when nobody wrote
 	// one. It outranks everything except screen.
 	forced *bool
-	// interactive is whether any of the command's own streams is a terminal,
-	// which WithInteractive works out from the streams themselves.
+	// interactive is whether anybody is there to look, which IsInteractive
+	// answers and WithInteractive carries in.
 	interactive bool
 	// stderr is where a failed launch is reported, and where pkg/browser's
 	// own child output is pointed before it can write a word.
 	stderr io.Writer
 }
 
-// New returns a BrowserImpl that launches the host's browser, then configured
+// New returns a DisplayImpl that launches the host's browser, then configured
 // by opts.
-func New(opts ...Option) *BrowserImpl {
-	b := v1.Apply(&BrowserImpl{}, WithLaunch(pkgbrowser.OpenURL))
+func New(opts ...Option) *DisplayImpl {
+	b := v1.Apply(&DisplayImpl{}, WithLaunch(pkgbrowser.OpenURL))
 	return v1.Apply(b, opts...)
 }
 
 // WithLaunch replaces the browser launcher, so a test can observe the call
 // without a window appearing on whoever is running it.
 func WithLaunch(launch func(string) error) Option {
-	return func(b *BrowserImpl) { b.launch = launch }
+	return func(b *DisplayImpl) { b.launch = launch }
 }
 
 // WithAddr sets the page Open puts in front of a person.
 func WithAddr(addr string) Option {
-	return func(b *BrowserImpl) { b.addr = addr }
+	return func(b *DisplayImpl) { b.addr = addr }
 }
 
 // WithScreen sets the console this run was started from, when there is one.
@@ -91,35 +97,44 @@ func WithAddr(addr string) Option {
 // choose between them: a tab and a console are the two ways of doing the one
 // thing, so the package doing the choosing is the one that names the other.
 func WithScreen(screen console.Screen) Option {
-	return func(b *BrowserImpl) { b.screen = screen }
+	return func(b *DisplayImpl) { b.screen = screen }
 }
 
 // WithForced settles the decision rather than leaving it to be worked out. Nil
 // is nobody having decided, which is the ordinary case.
 func WithForced(open *bool) Option {
-	return func(b *BrowserImpl) { b.forced = open }
+	return func(b *DisplayImpl) { b.forced = open }
 }
 
-// WithInteractive says where the run's output actually goes, and Open works
-// out whether that means anybody is there. The type is v1alpha1/console's,
-// which is where what counts as a terminal is decided.
+// IsInteractive reports whether anybody is there to look at what this run
+// puts on a screen: whether any of the command's own streams is a terminal.
 //
-// One test for four environments: a pipeline, a service manager, a CI step and
-// a container all arrive with none of their three streams on a terminal, and a
+// One test for four environments — a pipeline, a service manager, a CI step
+// and a container all arrive with none of their three on a terminal, and a
 // person at a shell keeps at least one of the three however they redirect the
 // others.
-func WithInteractive(streams console.Streams) Option {
-	return func(b *BrowserImpl) {
-		b.interactive = console.IsTerminal(streams.InOrStdin()) ||
-			console.IsTerminal(streams.OutOrStdout()) ||
-			console.IsTerminal(streams.ErrOrStderr())
-	}
+//
+// The command's own streams and not this process's, because an embedding
+// program redirects them, and that is exactly the case where nobody is
+// watching. Exported because it is a question worth asking outside this
+// package too, and because a caller reading the answer off a name is better
+// than one spelling the same three checks out again.
+func IsInteractive(streams console.Streams) bool {
+	return console.IsTerminal(streams.InOrStdin()) ||
+		console.IsTerminal(streams.OutOrStdout()) ||
+		console.IsTerminal(streams.ErrOrStderr())
+}
+
+// WithInteractive says whether anybody is there to look — see IsInteractive,
+// which is where a caller gets the answer.
+func WithInteractive(interactive bool) Option {
+	return func(b *DisplayImpl) { b.interactive = interactive }
 }
 
 // WithStderr sets where a failed launch is reported and where pkg/browser's
 // child output is pointed. Unset, both go to the process's own stderr.
 func WithStderr(stderr io.Writer) Option {
-	return func(b *BrowserImpl) { b.stderr = stderr }
+	return func(b *DisplayImpl) { b.stderr = stderr }
 }
 
 // pageHTML is the panel page: a rack panel of iframes, one per origin.
@@ -160,7 +175,7 @@ type tile struct {
 // flag and something to compare: one origin framed alone is a worse view of
 // it than the origin itself, so a lone origin keeps the bare address for
 // itself. URL answers "" over exactly the same condition.
-func (*BrowserImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
+func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
 	if !enabled || len(origins) < 2 {
 		return nil
 	}
@@ -320,7 +335,7 @@ func (*BrowserImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 // appended. Reported and opened as-is, and "" when there is no panel to
 // answer — the same condition Interceptors registers nothing over, so the
 // caller has one answer to read rather than a question to ask twice.
-func (*BrowserImpl) URL(enabled bool, public *url.URL, origins []*url.URL) string {
+func (*DisplayImpl) URL(enabled bool, public *url.URL, origins []*url.URL) string {
 	if !enabled || len(origins) < 2 {
 		return ""
 	}
@@ -446,7 +461,7 @@ func forwarded() bool {
 	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
-func (b *BrowserImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
+func (b *DisplayImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
 	// One run's facts, applied here rather than at construction: a browser is
 	// seeded once and opened once per run, and what it is opening is a thing
 	// only that run knows.

@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -220,7 +220,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			{"cacheDirs", b.cacheDirs == nil},
 			{"engine", b.engine == nil},
 			{"cache", b.cache == nil},
-			{"browser", b.browser == nil},
+			{"browser", b.display == nil},
 			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
 		} {
@@ -490,7 +490,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// port of its own and no origin ever sees the request. The
 		// list is empty when there is no panel to serve, which is
 		// the only place that decision is made.
-		for _, ic := range b.browser.Interceptors(b.multiview, origins, log) {
+		for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
 			tun.WithInterceptor(ic)
 		}
 		return tun
@@ -570,7 +570,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
 	// reads the answer.
-	view := b.browser.URL(b.multiview, public, origins)
+	view := b.display.URL(b.multiview, public, origins)
 
 	// The report: write the human-readable map to stderr, a line
 	// per public address with the origins it reaches indented
@@ -599,7 +599,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// a browser opened into it shows an error page for a tunnel
 	// that is about to work. Both readers are served by the same
 	// wait, so it sits above the report rather than beside the
-	// browser.
+	// display.
 	//
 	// The counter answers whether the edge is up; how long that
 	// is worth waiting for is this caller's policy, so the bound
@@ -642,12 +642,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// screen before a frame takes it, and left behind when that frame ends: a
 	// detach gives the console back and the tunnel goes on without it.
 	screen := b.console.For(bound, cmd)
-	b.browser.Open(ctx, log,
-		browser.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
-		browser.WithForced(b.open),
-		browser.WithStderr(stderr),
-		browser.WithInteractive(cmd),
-		browser.WithScreen(screen),
+	b.display.Open(ctx, log,
+		display.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
+		display.WithForced(b.open),
+		display.WithStderr(stderr),
+		display.WithInteractive(display.IsInteractive(cmd)),
+		display.WithScreen(screen),
 	)
 	if screen == nil {
 		// Nothing is going to be drawn here. The addresses are up, the run
