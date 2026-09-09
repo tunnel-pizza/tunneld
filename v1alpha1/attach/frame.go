@@ -595,13 +595,12 @@ func (f frame) meta() string {
 // the commands themselves once it has.
 func (f frame) hint() string {
 	if f.armed != 0 {
-		// What is said is a fact about this terminal, not a prediction about
-		// the key. Ctrl-C at a shell prompt clears the line and nothing else,
-		// and a frame claiming otherwise would be crying wolf at the most
-		// ordinary keystroke there is. What is always true is the reason for
-		// asking twice: whatever this does end, nobody here can bring back.
+		// Which key, and what to do about it. Nothing about what it will do:
+		// Ctrl-C at a shell prompt clears the line and nothing else, and a
+		// frame warning of an ending at the most ordinary keystroke there is
+		// would be worth nothing by the third time somebody saw it.
 		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
-			hintStyle.Styled(" again to send it — this terminal cannot be reopened ")
+			hintStyle.Styled(" again to send it ")
 	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
