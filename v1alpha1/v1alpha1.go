@@ -210,8 +210,12 @@ var (
 // Of the flag seeds, only the booleans need seeding here — their defaults are
 // on, and a bool field cannot express "unset" separately from "off". Setting
 // them here rather than at the flag binding keeps one rule for every knob: a
-// flag's default is always the field it binds over, so WithOpen(false) is
+// flag's default is always the field it binds over, so WithMultiview(false) is
 // honoured exactly like every other seed.
+//
+// WithOpen is the exception, and is not seeded: whether to open a browser is
+// derived per run rather than defaulted, so "unset" is the state that matters
+// and its field is a pointer for exactly that reason.
 func New(opts ...Option) *BuilderImpl {
 	// Built before the builder, because two things need the same one: the
 	// terminal, which shows the lines, and the logger the command assembles
@@ -219,7 +223,6 @@ func New(opts ...Option) *BuilderImpl {
 	recent := logs.New()
 
 	b := v1.Apply(&BuilderImpl{recent: recent},
-		WithOpen(v1.DefaultOpen),
 		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
@@ -248,14 +251,11 @@ type BuilderImpl struct {
 	logLevel  string
 	multiview bool
 
-	// open is the seed WithOpen writes; noOpen is what --no-open binds over.
-	// Two fields rather than one because the command line reads negative and
-	// the Go knob reads positive: Command registers --no-open defaulting to
-	// !open, and pflag writes that default straight into noOpen, so noOpen is
-	// authoritative from Command onwards and open is only ever the seed it
-	// came from.
-	open   bool
-	noOpen bool
+	// open is what WithOpen wrote, and nil is nobody having written anything.
+	// A pointer because the three states are real: open, do not open, and
+	// work it out — the last of which is the one nearly every run wants, and
+	// a bool cannot hold beside the other two.
+	open *bool
 
 	// shellFallback is whether Origins answers "nothing settled anywhere"
 	// with $SHELL. Flag-backed like the two above, so an embedding program

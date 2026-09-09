@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"golang.org/x/term"
 )
 
@@ -66,15 +67,22 @@ func WithLogLevel(level string) Option {
 	return func(b *BuilderImpl) { b.logLevel = level }
 }
 
-// WithOpen sets whether a public URL is opened in a browser once the tunnel
+// WithOpen settles whether a public URL is opened in a browser once the tunnel
 // is live — the multiview panel when there is one, otherwise the default
-// origin. Exactly one page is opened either way, since a fan of tabs is
-// rarely what anyone wanted. Unset, the behaviour is v1.DefaultOpen.
+// origin. Exactly one page is opened either way, since a fan of tabs is rarely
+// what anyone wanted.
 //
-// It seeds the default of --no-open, which reads inverted: WithOpen(false)
-// makes --no-open default to true.
+// Unset, and that is the ordinary case, the run works it out: see opening. The
+// signals it reads are the ones a person would — a terminal to have been
+// started from, a display to open on, a console already drawing the terminal —
+// and they are right often enough that there is no flag for this and no
+// environment variable either.
+//
+// This is the lever for the run they are wrong about, and for a program with
+// an opinion of its own: a service embedding tunneld knows nobody is watching,
+// however interactive its own streams look.
 func WithOpen(open bool) Option {
-	return func(b *BuilderImpl) { b.open = open }
+	return func(b *BuilderImpl) { b.open = &open }
 }
 
 // WithMultiview sets whether the tunnel's own address answers with a panel
@@ -178,7 +186,6 @@ var flagEnv = map[string]string{
 	"provider":  v1.ProviderEnv,
 	"cache-dir": v1.CacheDirEnv,
 	"log-level": v1.LogEnv,
-	"no-open":   v1.NoOpenEnv,
 	"multiview": v1.MultiviewEnv,
 
 	"shell-fallback": v1.ShellFallbackEnv,
@@ -328,8 +335,6 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 		cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
 			"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
-		cmd.Flags().BoolVar(&b.noOpen, "no-open", !b.open,
-			"do not open a public URL in a browser once the tunnel is live [$"+v1.NoOpenEnv+"]")
 		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
@@ -645,16 +650,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	mirror, mirroring := closeOrigins.(Mirror)
 	mirroring = mirroring && mirrorable(cmd, origins)
 
-	// Not with a browser in front of it. Mirroring already puts
-	// the terminal on a screen the person is looking at, and a
-	// tab opening on top of it is a second copy of the one thing
-	// they can already see — counted as another viewer, competing
-	// for the same keystrokes.
-	//
-	// The field is left alone rather than set: it is bound to
-	// --no-open, and a builder whose Command is called twice must
-	// not carry one run's terminal into the next one's flags.
-	if !b.noOpen && !mirroring {
+	// Whether anybody is there to look at it, worked out rather than asked
+	// about — see opening, which says on the log why it decided as it did.
+	if b.opening(cmd, mirroring, log) {
 		// One page, never a fan of tabs: the panel when there is
 		// one, since it reaches every origin, and otherwise the
 		// default origin itself.
@@ -1031,6 +1029,44 @@ func (b *BuilderImpl) Origins() []*url.URL {
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
+
+// opening reports whether this run should put a public URL in front of
+// somebody, and the reason, which is logged: a decision nobody typed has to be
+// able to say why.
+//
+// There is no flag behind this and no environment variable either. Every
+// environment without a browser — a pipeline, a service manager, a CI step, a
+// container — used to have to say so one variable at a time, while the run
+// already knew: mirrorable a few lines below asks a strictly harder version of
+// the same question and gets it right. These are the signals a person reads.
+//
+// Order matters. Mirroring comes before the caller's own answer because it is
+// a fact about the run rather than an opinion about it — the terminal is
+// already on a screen they are looking at, and a tab on top of it is a second
+// copy competing for the same keystrokes. Everything after it is the guess,
+// and WithOpen is where somebody who knows better says so.
+func (b *BuilderImpl) opening(cmd *cobra.Command, mirroring bool, log v1.Logger) bool {
+	if mirroring {
+		log.Debug("not opening a browser", "reason", "the console is already showing this terminal")
+		return false
+	}
+	if b.open != nil {
+		log.Debug("browser decided by the caller", "open", *b.open)
+		return *b.open
+	}
+	// Nobody is watching. One test for four environments: a pipeline, a
+	// service manager, a CI step and a container all arrive with none of
+	// their three streams on a terminal, and a person at a shell keeps at
+	// least one of the three however they redirect the others.
+	if !isTerminal(cmd.InOrStdin()) && !isTerminal(cmd.OutOrStdout()) && !isTerminal(cmd.ErrOrStderr()) {
+		log.Debug("not opening a browser", "reason", "no terminal on any of this command's streams")
+		return false
+	}
+	// Whether the machine has a browser worth opening is the browser
+	// package's question, not this one's. What is left here is what only the
+	// command knows: what it is serving, and what its own streams are.
+	return browser.Reachable(log)
+}
 
 // mirrorable reports whether the console this command was given can be handed
 // a terminal: one origin, served rather than proxied, and a real terminal on

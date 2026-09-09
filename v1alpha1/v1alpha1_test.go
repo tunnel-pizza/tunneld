@@ -36,13 +36,13 @@ func TestNewIsUnconfigured(t *testing.T) {
 }
 
 // TestCallerOptionBeatsDefault pins the two tiers in New: the defaults are
-// applied first and the caller's options after, so WithOpen(false) is not
-// overwritten by the seeded DefaultOpen. Swapping the two Apply calls in New
+// applied first and the caller's options after, so WithMultiview(false) is not
+// overwritten by the seeded DefaultMultiview. Swapping the two Apply calls in New
 // fails this.
 func TestCallerOptionBeatsDefault(t *testing.T) {
-	b := New(WithOrigin("http://localhost:3000"), WithOpen(false))
-	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
-		t.Errorf("--no-open default = %q, want %q (WithOpen(false) lost to the default)", got, "true")
+	b := New(WithOrigin("http://localhost:3000"), WithMultiview(false))
+	if got := b.Command().Flags().Lookup("multiview").DefValue; got != "false" {
+		t.Errorf("--multiview default = %q, want %q (WithMultiview(false) lost to the default)", got, "false")
 	}
 }
 

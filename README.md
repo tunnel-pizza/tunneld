@@ -409,8 +409,8 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 
 One iframe per origin, two columns, and an odd count gives the last tile the
 full width of the final row. Each tile is labelled with its routing index and
-its local address, and links out to that origin on its own. Unless `--no-open`
-is passed, this is the page that opens.
+its local address, and links out to that origin on its own. When a browser is
+opened at all, this is the page it lands on.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
@@ -515,7 +515,6 @@ default.**
 | `--cache-dir` | `TUNNELD_CACHE_DIR` | Directory to cache the tunnel spec in — `TUNNEL.env`, the credentials that let the next run replay the same hostname instead of minting a new one. Repeat the flag for more; comma-separated in the variable. Empty or `true` means the default: a per-project directory under the user's cache directory, named for the working directory. Never the working directory itself — a spec is credentials, and a checkout is the one place they must not land by default. `false` anywhere in the list turns caching off. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
-| `--no-open` | `TUNNELD_NO_OPEN` | Do not open a public URL in a browser once the tunnel is live. Opening is **on by default** — the panel when there is one, else the default origin — so this is the flag for a server or CI. A browser that cannot be opened is not an error: the tunnel is up either way, and the failure goes to `--log-level=debug` rather than stderr. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
 
@@ -607,7 +606,7 @@ func WithOrigin(origins ...string) Option         // origins, in order; appends 
 func WithProvider(host string) Option             // quick-tunnel host; default tunnel.pizza
 func WithCacheDir(dirs ...string) Option          // spec cache directories; true/false are instructions
 func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
-func WithOpen(open bool) Option                   // open a browser when live; default true
+func WithOpen(open bool) Option                   // force the browser decision; unset means derived
 func WithMultiview(mv bool) Option                // frame the origins together; default true
 func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
 func WithEstablishDeadline(d time.Duration) Option // wait for the URL to answer; default 10s
@@ -654,15 +653,43 @@ const LogEnv          = "TUNNELD_LOG"
 const OriginsEnv      = "TUNNELD_ORIGINS"
 const ProviderEnv     = "TUNNELD_PROVIDER"
 const CacheDirEnv     = "TUNNELD_CACHE_DIR"
-const NoOpenEnv       = "TUNNELD_NO_OPEN"
 const MultiviewEnv    = "TUNNELD_MULTIVIEW"
 const ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
 const CommandName     = "tunneld"
 const DefaultProvider = "tunnel.pizza"
-const DefaultOpen      = true
 const DefaultMultiview = true
 const DefaultShellFallback = true
 ```
+
+### The browser
+
+Nothing configures this. Once the tunnel is live, tunneld works out whether
+anybody is there to look at it:
+
+| It opens a page when | It stays quiet when |
+| --- | --- |
+| a terminal is on one of its own streams | none of stdin, stdout or stderr is a terminal — a pipeline, a service manager, a CI step, a container |
+| the machine has a display | `$CI` is set to anything truthy |
+| an ssh session forwarded one (`ssh -X`) | an ssh session did not, so the tab would open where nobody is sitting |
+| | the console is already drawing the terminal, which would make the tab a second copy competing for the same keystrokes |
+
+Every branch says on `--log-level=debug` why it went the way it did, which is
+the only account of a decision nobody typed:
+
+```
+DEBUG not opening a browser reason="an ssh session with no display to open on"
+```
+
+`WithOpen` is the override, and the only one — there is no flag and no
+environment variable:
+
+```go
+v1alpha1.New(v1alpha1.WithOpen(false))  // never
+v1alpha1.New(v1alpha1.WithOpen(true))   // always, unless the console is drawing it
+```
+
+A service embedding tunneld wants that: it knows nobody is watching however
+interactive its own streams happen to look.
 
 ### A tunnel without a CLI
 
@@ -700,7 +727,6 @@ after construction still lands.
 | `TUNNELD_CACHE_DIR` | `--cache-dir` | Spec cache directories, comma-separated and in order. `true` or an empty entry is the default location, `false` anywhere in the list turns caching off, anything else is a path. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
-| `TUNNELD_NO_OPEN` | `--no-open` | Whether to leave the browser alone once the tunnel is live. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 
@@ -755,7 +781,7 @@ pass them through `go run`, since make would read a leading `--` as one of its
 own options:
 
 ```sh
-go run ./examples/basic http://localhost:8080 --no-open
+go run ./examples/basic http://localhost:8080
 ```
 
 ## Testing

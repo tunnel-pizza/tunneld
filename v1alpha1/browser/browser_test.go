@@ -63,6 +63,46 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
 // the whole design: the panel answers the tunnel's own address and nothing
 // else, because everything else belongs to an origin.
+// TestReachable covers the machine-level half of the browser decision, which
+// has no flag and no variable behind it any more. Every row is somewhere
+// somebody actually runs, and the answer is the one they would give without
+// being asked.
+//
+// Every variable it reads is set explicitly, the ones a runner sets for itself
+// included: this suite runs under $CI, which is one of the signals. Why it
+// decided goes on the log rather than into a return value, so what is asserted
+// here is the decision.
+func TestReachable(t *testing.T) {
+	const ssh = "10.0.0.1 51234 10.0.0.2 22"
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"a desktop session", map[string]string{"DISPLAY": ":0"}, true},
+		{"a wayland session", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"a runner", map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
+		{"CI set to a falsehood is not a runner", map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
+		{"ssh with nothing forwarded", map[string]string{"SSH_CONNECTION": ssh}, false},
+		{"ssh by its tty alone", map[string]string{"SSH_TTY": "/dev/pts/0"}, false},
+		{"ssh -X", map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0"}, true},
+		// $CI is asked before ssh, because a runner reached over ssh is still
+		// a runner and the display it forwarded is still nobody's.
+		{"a runner reached over ssh", map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
+				t.Setenv(name, tc.env[name])
+			}
+			// Every row that expects a browser names a display of its own, so
+			// none of them depends on the machine the suite runs on.
+			if got := Reachable(discard); got != tc.want {
+				t.Errorf("Reachable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsPanelRequest(t *testing.T) {
 	cases := []struct {
 		name    string

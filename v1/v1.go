@@ -224,17 +224,6 @@ const (
 	// repository is the one place they must not be written by default.
 	CacheDirEnv = "TUNNELD_CACHE_DIR"
 
-	// NoOpenEnv names whether to leave the browser alone once the tunnel is
-	// live — the mirror of --no-open, which beats it. Any value
-	// strconv.ParseBool accepts works; anything else is an error. Set it to
-	// true on a server or in CI, where there is no browser to open.
-	//
-	// It is spelled as the negative because that is the only thing anyone ever
-	// asks for: opening is the default, so the flag exists to be turned on,
-	// and `--no-open` says on the command line what `--open=false` needed an
-	// argument to say.
-	NoOpenEnv = "TUNNELD_NO_OPEN"
-
 	// MultiviewEnv names whether to serve the multiview panel — the mirror of
 	// --multiview, which beats it. Any value strconv.ParseBool accepts works.
 	// Turning it off hands the tunnel's bare address back to the default
@@ -294,16 +283,6 @@ const (
 	// which is exactly what DockerScheme does for a container.
 	FileScheme = "file"
 )
-
-// DefaultOpen is whether a tunnel opens its public URL in a browser once it is
-// live. On, because the overwhelmingly common case is a developer exposing
-// something they are about to look at; the lever for every other case is
-// --no-open or NoOpenEnv.
-//
-// The Go knob stays positive where the command line reads negative: a caller
-// writing WithOpen(false) is being explicit in a way a bare flag cannot be,
-// and WithNoOpen(false) would be a double negative to mean "open".
-const DefaultOpen = true
 
 // DefaultMultiview is whether the tunnel's own address answers with a panel
 // framing every origin. On, because the alternative for someone exposing three

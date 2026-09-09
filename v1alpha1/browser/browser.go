@@ -16,6 +16,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -23,6 +25,62 @@ import (
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
+
+// Reachable reports whether this machine has a browser worth opening, and says
+// on log why it decided as it did: nobody typed this, so the only account of
+// why a tab did or did not appear is the one it writes itself.
+//
+// It answers for the machine and not for the run — whether anybody is watching
+// this particular command, and whether what it serves is already on a screen,
+// are questions its caller holds the answers to. What is here is the part that
+// belongs beside Open: the same knowledge about where a window can go, asked
+// before the attempt rather than discovered by making it.
+func Reachable(log v1.Logger) bool {
+	// A runner that allocates a tty is still a runner. Nearly every one of
+	// them sets this, and none of them has anybody watching.
+	if ci := os.Getenv("CI"); ci != "" && ci != "false" && ci != "0" {
+		log.Debug("not opening a browser", "reason", "$CI is set")
+		return false
+	}
+	// The terminal is here and the machine is there, so its browser would
+	// open where nobody is sitting. A forwarded display is the exception and
+	// says so by name — not the platform's assumption that a desktop exists,
+	// which is the thing that is wrong over ssh.
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "" {
+		if forwarded() {
+			log.Debug("opening a browser", "reason", "an ssh session with a forwarded display")
+			return true
+		}
+		log.Debug("not opening a browser", "reason", "an ssh session with no display to open on")
+		return false
+	}
+	if !hasDisplay() {
+		log.Debug("not opening a browser", "reason", "no display to open on")
+		return false
+	}
+	log.Debug("opening a browser", "reason", "a display to open on")
+	return true
+}
+
+// forwarded reports whether a display is reachable by name rather than by
+// assumption: the variables an X or Wayland session sets, and that ssh -X sets
+// on the far end.
+func forwarded() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+// hasDisplay reports whether this machine has somewhere to put a window.
+//
+// macOS and Windows have one by construction — neither has a headless spelling
+// that also has a terminal open — so the question is only ever really asked of
+// the platforms where a display is a thing that may or may not be running.
+func hasDisplay() bool {
+	switch runtime.GOOS {
+	case "darwin", "windows":
+		return true
+	}
+	return forwarded()
+}
 
 // Option configures a BrowserImpl at construction.
 type Option = v1.Option[*BrowserImpl]
@@ -354,9 +412,10 @@ func (u *asTile) Write(b []byte) (int, error) {
 // A failure goes to the debug log and nowhere else: the tunnel is up and
 // serving either way, and a headless host — a server, a container, CI — is a
 // normal place to run this, not a broken one. A warning on stderr told those
-// runs, every time, about a thing they were never going to do. --no-open (or
-// v1.NoOpenEnv) skips the attempt entirely, and --log-level=debug is where to
-// look when a browser was wanted and none appeared.
+// runs, every time, about a thing they were never going to do. Reachable is
+// what keeps the attempt from being made where it was never going to work, and
+// --log-level=debug is where to look when a browser was wanted and none
+// appeared — including the reason nobody tried.
 //
 // pkg/browser wires the spawned process's output to its package-level Stdout,
 // which defaults to os.Stdout — the stream a running tunnel keeps for its

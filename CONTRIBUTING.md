@@ -97,8 +97,8 @@ and each implementation's tunables alike, and a package with no tunables still
 takes the variadic so adding one changes no caller. An option is a plain
 function, so it can be applied anywhere a setter used to be called: `New`
 seeds its own defaults with the same `With*` options a caller passes —
-`WithOpen(v1.DefaultOpen)` goes through the same `v1.Apply` path as a
-caller's own `WithOpen(false)`.
+`WithMultiview(v1.DefaultMultiview)` goes through the same `v1.Apply` path as
+a caller's own `WithMultiview(false)`.
 
 **Command assembles once.** `Command` is guarded by `commandOnce` (see
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
@@ -162,7 +162,7 @@ make run multi-origin
 
 `go run` rather than a make target wherever flags are involved: make reads a
 leading `--` as one of its own options and refuses. The `run` target takes an
-example *name*, which is a bare word, so it works — `make run basic --no-open`
+example *name*, which is a bare word, so it works — `make run basic --provider x`
 does not.
 
 ## Test layout
@@ -564,6 +564,18 @@ Two things there will bite if you change them without knowing why:
   a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
+- **The browser decision is derived, and split where the knowledge is.**
+  `--no-open` and `TUNNELD_NO_OPEN` are gone. `BuilderImpl.opening` holds what
+  only the command knows — is the console already drawing this terminal, did
+  the caller say, is any of its three streams a terminal — and delegates the
+  machine's half to `browser.Reachable`, which owns `$CI`, ssh and the display
+  variables because that is knowledge about where a window can go. Order is
+  load-bearing: the mirror comes before `WithOpen`, because it is a fact about
+  the run rather than an opinion about it. Neither returns a reason; each logs
+  its own at debug, which is the only record of a decision nobody typed.
+  `newRunHarness` seeds `WithOpen(true)` — its streams are buffers, so every
+  case about what gets opened would otherwise be testing that a pipe has no
+  display.
 - **`RunE` is one line; the run is `Run`.** The body used to be a 357-line
   closure inside `Command`'s struct literal, reachable only by executing a
   cobra command. It is a method now, and `RunE` calls it with `cmd.Context()`.
@@ -584,10 +596,8 @@ Two things there will bite if you change them without knowing why:
   scheme, and a terminal on both of the command's own streams — checked there
   and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
   them. It is decided before the browser rather than beside the frame, because
-  the browser asks about it: a mirrored run opens no tab, `--open` or not. The
-  answer gates that `if` and never writes `b.noOpen`, which is bound to
-  `--no-open` — a builder whose `Command` is called twice must not carry one
-  run's terminal into the next one's flags.
+  `opening` asks about it first: a mirrored run opens no tab, `WithOpen(true)`
+  or not.
 - **A drawing console mutes the log ring.** stderr writes straight through a
   full-screen frame. `recent.Mute(true)` stops records reaching the handler
   while the ring keeps every line, so nothing is lost and `^K l` is where they

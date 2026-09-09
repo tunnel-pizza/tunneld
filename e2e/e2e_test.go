@@ -117,7 +117,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--no-open", "--multiview", "--shell-fallback", "tunneld [origin ...]"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--shell-fallback", "tunneld [origin ...]"}},
 	}
 
 	for _, tc := range cases {
@@ -168,7 +168,7 @@ func TestRefusedInvocations(t *testing.T) {
 		// Both are unusable, so the run is still refused.
 		{"a later origin is still parsed", []string{"ftp://localhost:21", "ftp://nope", "--log-level", "warn"}, "ftp://nope"},
 		{"unknown flag", []string{"http://localhost:3000", "--nope"}, "nope"},
-		{"unparsable boolean flag", []string{"http://localhost:3000", "--no-open=nonsense"}, "no-open"},
+		{"unparsable boolean flag", []string{"http://localhost:3000", "--multiview=nonsense"}, "multiview"},
 	}
 
 	for _, tc := range cases {
@@ -256,11 +256,6 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			// A typed flag is where the environment's strictness is visible:
 			// pflag refuses the value and PersistentPreRunE reports it as
 			// ErrInvalidEnv, naming the variable rather than the flag.
-			name: "TUNNELD_NO_OPEN is validated",
-			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "nonsense"},
-			want: "TUNNELD_NO_OPEN=\"nonsense\": invalid environment value",
-		},
-		{
 			name: "TUNNELD_MULTIVIEW is validated",
 			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
 			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
@@ -285,8 +280,8 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			want: "TUNNELD_SHELL_FALLBACK=\"nonsense\": invalid environment value",
 		},
 		{
-			name: "TUNNELD_NO_OPEN accepts a boolean",
-			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "true", "TUNNELD_LOG": "loud"},
+			name: "TUNNELD_MULTIVIEW accepts a boolean",
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "true", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 	}
@@ -754,7 +749,10 @@ func assertHelp(t *testing.T, r *runner, want string) {
 // launch one per run, and CI has none to launch.
 func assertLive(t *testing.T, r *runner, asserts []func(t *testing.T, r *runner)) {
 	t.Helper()
-	r.start(t, "--no-open")
+	// No --no-open any more, and none needed: start gives the child pipes for
+	// stdout and stderr and no stdin at all, which is the derivation's own
+	// test for nobody watching. A browser opening here would be the bug.
+	r.start(t)
 	for _, assert := range asserts {
 		assert(t, r)
 	}

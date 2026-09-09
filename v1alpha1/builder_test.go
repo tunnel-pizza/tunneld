@@ -219,69 +219,68 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestOpenDefaultsOn pins that a plain invocation opens a browser and that
-// both levers turn it off. The default is the whole point of the flag — a
-// developer exposing something is about to look at it — so a silent flip to
-// off would be a real regression. want is --no-open, so it reads inverted:
-// true means no browser.
-func TestOpenDefaultsOn(t *testing.T) {
-	cases := []struct {
-		name string
-		env  string
-		args []string
-		want bool
+// TestOpeningIsDerived covers the browser decision, which no longer has a flag
+// or a variable behind it. Each row is an environment somebody actually runs
+// in, and the answer is the one they would give without being asked.
+//
+// The terminal is a real pty, because that is what the derivation reads and a
+// buffer can never answer yes. Every variable it consults is set explicitly,
+// the ones a runner sets for itself included: this suite runs under $CI.
+//
+// What is tabled here is the composition — the mirror, then the caller, then
+// this command's own streams, then the machine. The machine's own half is
+// browser.Reachable, tabled beside it.
+func TestOpeningIsDerived(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name      string
+		open      *bool
+		mirroring bool
+		terminal  bool
+		env       map[string]string
+		want      bool
 	}{
-		{name: "default", want: false},
-		{name: "flag turns it off", args: []string{"--no-open"}, want: true},
-		{name: "variable turns it off", env: "true", want: true},
-		{name: "flag beats the variable", env: "true", args: []string{"--no-open=false"}, want: false},
-	}
-
-	for _, tc := range cases {
+		{name: "a terminal with a display", terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: true},
+		{name: "nothing is watching a pipe", want: false},
+		// The machine-level signals belong to browser.Reachable and are
+		// tabled there; one row here to pin that they are still consulted.
+		{name: "and it asks the browser package too", terminal: true, env: map[string]string{"DISPLAY": ":0", "CI": "true"}, want: false},
+		{name: "a console already drawing it", mirroring: true, terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
+		// The caller is asked after the mirror and before the guess, so it
+		// overrules every signal below it and none above it.
+		{name: "the caller declines", open: &no, terminal: true, env: map[string]string{"DISPLAY": ":0"}, want: false},
+		{name: "the caller insists over a pipe", open: &yes, want: true},
+		{name: "the caller does not outrank the mirror", open: &yes, mirroring: true, terminal: true, want: false},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(v1.NoOpenEnv, tc.env)
-
-			b := New(WithOrigin("http://localhost:3000"))
-			// A deliberately bad level stops the run once the flags have
-			// settled, before anything dials or any window opens.
-			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
-			if !errors.Is(err, v1.ErrInvalidLogLevel) {
-				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
+				t.Setenv(name, tc.env[name])
 			}
 
-			got, err := b.Command().Flags().GetBool("no-open")
-			if err != nil {
-				t.Fatalf("GetBool: %v", err)
+			b := New(WithOrigin(":3000"))
+			if tc.open != nil {
+				v1.Apply(b, WithOpen(*tc.open))
 			}
-			if got != tc.want {
-				t.Errorf("--no-open = %v, want %v", got, tc.want)
+			cmd := b.Command()
+			if tc.terminal {
+				ptmx, tty, err := pty.Open()
+				if err != nil {
+					t.Skipf("no pty to be a terminal on: %v", err)
+				}
+				t.Cleanup(func() { tty.Close(); ptmx.Close() })
+				cmd.SetIn(tty)
+				cmd.SetOut(tty)
+				cmd.SetErr(tty)
+			} else {
+				cmd.SetIn(&bytes.Buffer{})
+				cmd.SetOut(&bytes.Buffer{})
+				cmd.SetErr(&bytes.Buffer{})
+			}
+
+			if got := b.opening(cmd, tc.mirroring, slog.New(slog.DiscardHandler)); got != tc.want {
+				t.Errorf("opening() = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-// TestWithOpenSeedsTheDefault pins that an embedder can flip the default
-// without forbidding the flag: WithOpen(false) makes --no-open default to
-// true, and a user passing --no-open=false still gets a browser. The Go knob
-// stays positive while the flag reads negative, so this is also what pins the
-// two staying in step.
-func TestWithOpenSeedsTheDefault(t *testing.T) {
-	b := New(WithOrigin("http://localhost:3000"), WithOpen(false))
-
-	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
-		t.Errorf("--no-open default = %q, want %q", got, "true")
-	}
-
-	_, _, err := execute(t, b, "--no-open=false", "--log-level", "loud")
-	if !errors.Is(err, v1.ErrInvalidLogLevel) {
-		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
-	}
-	got, err := b.Command().Flags().GetBool("no-open")
-	if err != nil {
-		t.Fatalf("GetBool: %v", err)
-	}
-	if got {
-		t.Error("--no-open = true after --no-open=false was passed, want the flag to beat the seed")
 	}
 }
 
@@ -765,6 +764,11 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
+		// Its streams are buffers, so the derivation would decline a browser
+		// for every case here — including the ones whose whole subject is
+		// what gets opened. Said out loud so those cases test opening rather
+		// than testing that a pipe has no display.
+		WithOpen(true),
 		WithEstablishDeadline(50*time.Millisecond),
 		WithOrigin(urls...),
 		WithProvider("example.test"),
@@ -786,7 +790,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
@@ -967,12 +971,13 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("--no-open opens nothing", func(t *testing.T) {
+	t.Run("a caller who declined opens nothing", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
+		v1.Apply(h.b, WithOpen(false))
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel
 
-		if err := h.run(t, ctx, "--no-open"); err != nil {
+		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
 		if len(h.browser.opened) != 0 {
@@ -1170,7 +1175,7 @@ func originStrings(origins []*url.URL) []string {
 func TestRunIsTheOtherDoor(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), ":3000")
-	for _, name := range []string{v1.OriginsEnv, v1.CacheDirEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.CacheDirEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(v1.ProviderEnv, "from-the-environment.test")
@@ -1693,7 +1698,7 @@ func TestPublicURL(t *testing.T) {
 // and the offending value, since that is the whole lever an operator has to
 // recover from the error.
 func TestEnvErrorNamesTheLever(t *testing.T) {
-	t.Setenv(v1.NoOpenEnv, "maybe")
+	t.Setenv(v1.MultiviewEnv, "maybe")
 
 	cmd := New(WithOrigin(":3000")).Command()
 	cmd.SetOut(io.Discard)
@@ -1702,12 +1707,12 @@ func TestEnvErrorNamesTheLever(t *testing.T) {
 
 	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
-		t.Fatal("ExecuteContext() = nil error for an unparsable NoOpenEnv value")
+		t.Fatal("ExecuteContext() = nil error for an unparsable MultiviewEnv value")
 	}
 	if !errors.Is(err, v1.ErrInvalidEnv) {
 		t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
 	}
-	for _, want := range []string{v1.NoOpenEnv, "maybe"} {
+	for _, want := range []string{v1.MultiviewEnv, "maybe"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}
