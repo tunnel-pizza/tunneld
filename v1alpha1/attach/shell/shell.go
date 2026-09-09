@@ -36,8 +36,9 @@ import (
 // than beside the interfaces: attach cannot import this package, since this one
 // imports attach for the contract it implements.
 var (
-	_ attach.Target  = (*TargetImpl)(nil)
-	_ attach.Targets = (*TargetsImpl)(nil)
+	_ attach.Target     = (*TargetImpl)(nil)
+	_ attach.Targets    = (*TargetsImpl)(nil)
+	_ attach.Repeatable = (*TargetImpl)(nil)
 )
 
 // Resolve answers whether s names a program this machine can run, and with
@@ -168,6 +169,19 @@ func (a *TargetImpl) TTY() bool { return true }
 // and a terminal that cannot be typed into is a log viewer.
 func (a *TargetImpl) Stdin() bool { return true }
 
+// Repeatable is true while the program is still there to run. Each attach
+// starts it — AttachContainer builds the command itself — so a second one is a
+// second run rather than a resumed one, which is what lets an origin outlive
+// the program that was serving it.
+//
+// The path is checked again rather than remembered: a program uninstalled
+// since the origin was resolved cannot be run, and answering yes would trade a
+// terminal that says the program ended for one that fails to start it.
+func (a *TargetImpl) Repeatable() bool {
+	_, err := os.Stat(a.path)
+	return err == nil
+}
+
 // Close ends the program and releases its terminal. It tolerates a second
 // call, which it has to: Server.Close calls it unconditionally from both the
 // context.AfterFunc registered in Serve and a caller's own defer.
@@ -225,6 +239,13 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	if err != nil {
 		return fmt.Errorf("run %s: %w", a.ref, err)
 	}
+	// Software flow control off before the program can write a byte, so
+	// nobody's Ctrl-S freezes the screen for everybody else. Not fatal if it
+	// fails: what is lost is a key behaving oddly, where refusing to run the
+	// program at all would lose the origin.
+	if err := unmeter(term); err != nil {
+		a.log.Debug("could not turn off flow control", "program", a.ref, "error", err)
+	}
 
 	// Published under the lock so Close can reach them, and refused outright
 	// if Close already happened: a target closed while the program was
@@ -245,11 +266,30 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 		_ = a.stop()
 	}()
 
-	// Sizes arrive until the channel closes, which ServeAttach does when the
-	// socket ends. A zero is the page saying it does not know yet; forwarding
+	// Sizes arrive until the channel closes or this attach ends, whichever
+	// comes first. A zero is the page saying it does not know yet; forwarding
 	// it would tell the program it has no room at all.
+	//
+	// Ending with the attach is the load-bearing half. The channel belongs to
+	// the caller and outlives one attach, so a reader that only stopped when
+	// it closed would go on taking sizes meant for whatever ran next — and a
+	// size taken by a terminal that is already gone is a size the running
+	// program never hears, which for a full-screen program means a pty left at
+	// nothing and a screen left blank.
+	attached, done := context.WithCancel(ctx)
+	defer done()
 	go func() {
-		for size := range resize {
+		for {
+			var size remotecommand.TerminalSize
+			select {
+			case s, ok := <-resize:
+				if !ok {
+					return
+				}
+				size = s
+			case <-attached.Done():
+				return
+			}
 			if size.Width == 0 || size.Height == 0 {
 				continue
 			}

@@ -69,15 +69,27 @@
      had drawn and stays there. Over the top, the last screen is left exactly
      as it was — dimmed, because it is a photograph now rather than a terminal
      — and nothing has to be undone to come back. */
+  /* The origin, above what happened to it. The frame says the same thing in
+     its top-left corner, and that corner is behind this overlay — so without
+     it a page that has lost its socket stops naming what it was showing. */
+  #where { color: #e8e8e8; }
+  #why { color: #9a9a9a; }
+
   #gone[hidden] { display: none; }
   #gone {
     position: absolute;
     inset: 0;
+    /* Above the terminal, which since the WebGL renderer is a stack of
+       canvases carrying z-index of their own — the link layer sits at 2. An
+       overlay with none of its own paints under them: it is visible, because
+       the canvases are transparent where nothing is drawn, and its button is
+       not clickable, because the canvas is what the click lands on. */
+    z-index: 10;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
+    gap: 10px;
     background: rgba(0, 0, 0, 0.72);
     color: #cfcfcf;
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -110,8 +122,9 @@
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <div id="gone" hidden>
+  <span id="where">{{.Origin}}</span>
   <span id="why">detached</span>
-  <button id="again" type="button">reconnect</button>
+  <button id="again" type="button">{{if .Restarts}}restart{{else}}reconnect{{end}}</button>
 </div>
 <script>
 (() => {
@@ -183,6 +196,12 @@
 
   fit.fit();
 
+  // Typing should work without clicking first. Nothing else on the page wants
+  // the keyboard, and every arrival here is somebody who came to use a
+  // terminal — including the one who just pressed the overlay's button, whose
+  // focus is on a button that this reload has now replaced.
+  term.focus();
+
   // location.search is the tunnel's own bare routing parameter, carried over
   // verbatim: the page was served at /?1, so its socket goes to /attach?1 and
   // lands on the same origin. Leaning on the sticky origin cookie instead
@@ -239,14 +258,60 @@
   // closing, and of the two reasons the first is the one worth reading: the
   // second only says the connection went with it.
   const overlay = document.getElementById('gone'), why = document.getElementById('why');
-  document.getElementById('again').onclick = () => location.reload();
+  const again = document.getElementById('again');
+  again.onclick = () => location.reload();
+  // reason is what to say, or nothing to have the server asked. A socket
+  // ending says nothing about why: this viewer's own connection dropping — a
+  // lid, an idle timeout — leaves a terminal still running, and a container
+  // whose shell exited leaves nothing at all, and both arrive here
+  // identically.
+  //
+  // So the word starts as the half that is always true — your socket is gone,
+  // whatever else is — and becomes "ended" when the answer says nothing can
+  // bring it back. The button waits for that answer rather than appearing and
+  // vanishing.
   const gone = (reason) => {
     if (!overlay.hidden) return;
-    why.textContent = reason;
+    why.textContent = reason || 'detached';
     overlay.hidden = false;
+
+    again.hidden = true;
+    if (reason) return; // an explicit one is already the whole story
+    fetch('/alive' + location.search, { cache: 'no-store' })
+      .then((r) => {
+        again.hidden = !r.ok;
+        why.textContent = r.ok ? 'detached' : 'ended';
+      })
+      .catch(() => { why.textContent = 'ended'; });
   };
 
   term.onData((data) => send(STDIN, encoder.encode(data)));
+
+  // The frame's own key, and the only one this page takes from the terminal:
+  // Ctrl+K, on every platform.
+  //
+  // The page has to be in the way even though xterm would encode this key by
+  // itself, because the browser claims it first — Ctrl+K opens the address bar
+  // for a search — and a page that does not preventDefault loses the keystroke
+  // before the terminal ever sees it. Sending the byte here rather than letting
+  // xterm send it is what makes refusing the key and delivering it the same
+  // decision.
+  //
+  // The byte is the one a terminal sends for Ctrl+K, so the frame's rule is
+  // about a key rather than about a private signal, and a keystroke that
+  // reaches xterm some other way still opens the commands.
+  //
+  // It costs the program a real key — Ctrl+K is kill-to-end-of-line in
+  // readline, and bound in plenty of full-screen programs. That is the price
+  // of the frame having a key at all, and it is cheaper than the price of
+  // taking Ctrl-D, which ends a shared session for everybody.
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || e.key !== 'k') return true;
+    if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return true;
+    e.preventDefault();
+    send(STDIN, encoder.encode('\x0b'));
+    return false;
+  });
 
   new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
 
@@ -257,7 +322,7 @@
 
   ws.onclose = () => {
     clearInterval(beat);
-    gone('detached');
+    gone();
   };
 })();
 </script>

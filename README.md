@@ -195,7 +195,7 @@ are watching, and the size everyone has settled on.
 ╭─ dockerd://tunneld-example ─────────────────────────── https://striped-worm.tunneled.pizza/ ╮
 │➜  ~ ls                                                                                      │
 │                                                                                             │
-╰─ ^D  commands ──── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
+╰─ ^K  commands ───── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
 ```
 
 The origin is written the way you typed it, so the same string pasted back into
@@ -226,10 +226,10 @@ Every key reaches the container except one:
 
 | Key | |
 | --- | --- |
-| `Ctrl-D` | Opens the frame's commands. The container never sees it. |
-| `Ctrl-D` `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
-| `Ctrl-D` `q` | End the session for everyone — the end of file `Ctrl-D` used to deliver. |
-| `Ctrl-D` `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
+| `Ctrl+K` | Opens the frame's commands. The container never sees it. |
+| then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
+| then `q` | End the session for everyone — the end of file a shell reads from `Ctrl-D`. |
+| then `k` / `j` | Scroll back and forward. Typing returns to the prompt. |
 
 Pasting works as it does in any terminal, and an app that asked to be told
 the difference between pasted and typed text still is.
@@ -267,6 +267,14 @@ keystrokes reach it, and resizing the browser resizes it. Nothing replays when
 the page opens — unlike a container, it has not been running since before you
 looked.
 
+**A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
+key the program quits on, or simply finishing — the origin stays up, the page
+offers a **restart** where a container's offers only a reconnect, and the next
+visit runs it once more on a clean screen. That is a new program and not a
+resumed one: nothing it had open before is still open. A container cannot be
+offered this, since once its PID 1 has exited there is nothing left to attach
+to.
+
 It is an origin like any other, so it takes an index, gets a multiview tile,
 frames itself as `file:///usr/bin/htop`, and mixes freely with the rest:
 
@@ -278,11 +286,25 @@ A machine with no pseudo-terminals refuses at startup, with the reason, rather
 than minting a hostname in front of a page that cannot work.
 
 
-`Ctrl-D` is held back because the attach is shared and is never reopened: it is
-end of file to a shell, so on a shared terminal one person's habit ended the
-session for everybody, and the origin went on serving a screen that could never
-produce another byte. Scrolling is the frame's because the frame is drawn on
-the alternate screen, which has no scrollback of its own to give you.
+`Ctrl+K` is the frame's, and it does cost you a key — kill-to-end-of-line — but
+it is the cheaper of the two on offer. The other candidate, `Ctrl-D`, ends a
+shared session for everybody watching. Scrolling is the frame's because the
+frame is drawn on the alternate screen, which has no scrollback of its own to
+give you.
+
+When a terminal goes, the page says so — and offers a way back only when there
+is one. Your own connection dropping leaves the terminal running, so it offers
+to reconnect; a container whose shell has exited leaves nothing, so it offers
+nothing.
+
+`Ctrl-C` and `Ctrl-D` end the program, and what that costs depends on what is
+behind the origin. A program can be started again, so they go straight through
+— the worst a mistake does is send you back to the page. A container cannot:
+once its PID 1 has exited the container is gone and the terminal is over for
+everybody watching. So on a container the frame asks a second time, and says
+in its border which key is waiting. Typing anything else answers it, and so
+does waiting a couple of seconds — a press long after the first is a new
+intention rather than the other half of a pair.
 
 **The page is unauthenticated.** The tunnel hostname is the only secret, the
 same as every other origin tunneld exposes — but here the thing behind it is a
@@ -601,7 +623,7 @@ Self-contained programs in [`./examples`](./examples):
 | `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
-| `shell` | A local program's terminal on the public hostname. Runs `k9s`, so it needs one on `$PATH`. |
+| `shell` | A local program's terminal on the public hostname. Runs `zsh`. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
 `attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not

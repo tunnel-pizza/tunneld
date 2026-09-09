@@ -15,6 +15,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -112,6 +113,10 @@ type fakeTarget struct {
 	// scheme is the origin scheme this target was opened for, "" meaning
 	// dockerd — what most cases here are about.
 	scheme string
+	// repeat is whether this target can be started again, which is what
+	// decides whether the frame stands in front of Ctrl-C and Ctrl-D. False
+	// is the container's answer and the default here.
+	repeat bool
 	tty    bool
 	stdin  bool
 	out    string      // written to stdout as soon as the attach begins
@@ -131,11 +136,12 @@ func newFakeTarget(name string, tty, stdin bool) *fakeTarget {
 	}
 }
 
-func (f *fakeTarget) Name() string   { return f.name }
-func (f *fakeTarget) Scheme() string { return cmp.Or(f.scheme, v1.DockerScheme) }
-func (f *fakeTarget) TTY() bool      { return f.tty }
-func (f *fakeTarget) Stdin() bool    { return f.stdin }
-func (f *fakeTarget) Close() error   { return nil }
+func (f *fakeTarget) Name() string     { return f.name }
+func (f *fakeTarget) Scheme() string   { return cmp.Or(f.scheme, v1.DockerScheme) }
+func (f *fakeTarget) Repeatable() bool { return f.repeat }
+func (f *fakeTarget) TTY() bool        { return f.tty }
+func (f *fakeTarget) Stdin() bool      { return f.stdin }
+func (f *fakeTarget) Close() error     { return nil }
 
 func (f *fakeTarget) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, _ io.WriteCloser, _ bool, resize <-chan remotecommand.TerminalSize) error {
 	defer close(f.done)
@@ -213,6 +219,7 @@ func TestPage(t *testing.T) {
 		// A dead socket is reported over the terminal, not into it.
 		{"the page can say the socket is gone", "/", http.StatusOK, `id="gone"`},
 		{"and offers a way back", "/", http.StatusOK, "location.reload()"},
+		{"after asking whether there is one", "/", http.StatusOK, "/alive"},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}
@@ -576,6 +583,121 @@ func TestResize(t *testing.T) {
 //
 // It is now also the sole pin for the notice text itself, since the switch
 // that computes it lives inline in the closure and has no test of its own.
+// TestAliveSaysWhetherComingBackIsWorthIt pins the one bit the page asks for
+// after its socket has gone.
+//
+// The two endings a viewer sees are identical — their own connection dropping
+// leaves a terminal still running, and a container whose shell exited leaves
+// nothing — so the page cannot tell them apart and the server answers.
+func TestAliveSaysWhetherComingBackIsWorthIt(t *testing.T) {
+	alive := func(t *testing.T, s *Server) int {
+		t.Helper()
+		resp, err := http.Get(s.URL().String() + "/alive")
+		if err != nil {
+			t.Fatalf("GET /alive: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	t.Run("a running terminal", func(t *testing.T) {
+		target := newRerunTarget(false)
+		target.holdFrom = 1 // still going
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitRun(t, 1)
+
+		if got := alive(t, s); got != http.StatusNoContent {
+			t.Errorf("GET /alive = %d, want %d while the terminal is up", got, http.StatusNoContent)
+		}
+	})
+
+	t.Run("a container whose shell exited", func(t *testing.T) {
+		target := newRerunTarget(false)
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitOver(t, 1)
+
+		if got := alive(t, s); got != http.StatusGone {
+			t.Errorf("GET /alive = %d, want %d — there is nothing to come back to", got, http.StatusGone)
+		}
+	})
+
+	t.Run("a program that can be run again", func(t *testing.T) {
+		target := newRerunTarget(true)
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitOver(t, 1)
+
+		if got := alive(t, s); got != http.StatusNoContent {
+			t.Errorf("GET /alive = %d, want %d — coming back starts it again", got, http.StatusNoContent)
+		}
+	})
+}
+
+// TestThePageNamesTheOrigin pins that a page which has lost its socket still
+// says what it was showing. The frame names the origin in its top-left corner
+// and the overlay covers that corner, so the name has to be said here too.
+func TestThePageNamesTheOrigin(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.scheme = v1.FileScheme
+	s := serveFake(t, target)
+
+	resp, err := http.Get(s.URL().String() + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if want := "file://api"; !strings.Contains(string(raw), want) {
+		t.Errorf("page does not name the origin %q", want)
+	}
+}
+
+// TestThePageOffersWhatItCanDo pins the button's word. It is the only thing on
+// the page that says what pressing it will get you, and the two origins differ:
+// a program is run again, a container is only reconnected to — and reconnecting
+// to a stopped container gets the last screen and nothing else.
+func TestThePageOffersWhatItCanDo(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		repeat bool
+		want   string
+		avoid  string
+	}{
+		{"a program can be started again", true, ">restart<", ">reconnect<"},
+		{"a container cannot", false, ">reconnect<", ">restart<"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := newFakeTarget("api", true, true)
+			target.repeat = tc.repeat
+			s := serveFake(t, target)
+
+			resp, err := http.Get(s.URL().String() + "/")
+			if err != nil {
+				t.Fatalf("GET /: %v", err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			body := string(raw)
+
+			if !strings.Contains(body, tc.want) {
+				t.Errorf("page does not offer %q", tc.want)
+			}
+			if strings.Contains(body, tc.avoid) {
+				t.Errorf("page offers %q, which is not what pressing it does", tc.avoid)
+			}
+		})
+	}
+}
+
 func TestNoticeOnThePage(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -810,6 +932,222 @@ func TestBindRefusesAnUnservedScheme(t *testing.T) {
 	if !strings.Contains(err.Error(), "file://htop") {
 		t.Errorf("error %q does not name the origin", err)
 	}
+}
+
+// rerunTarget is a program that exits the moment it has said its piece, which
+// is the case a program origin has to survive: `tunneld ls` is over before
+// anybody opens the page.
+type rerunTarget struct {
+	mu     sync.Mutex
+	runs   int
+	repeat bool
+	ran    chan int                        // each run announces its number
+	over   chan int                        // and again when it has returned
+	sized  chan remotecommand.TerminalSize // and every size it is given
+	// holdFrom is the first run that stays open rather than exiting the moment
+	// it has said its piece, so a test can ask a live run what it was told.
+	// Zero holds none, which is the program-that-exits this fake is mostly
+	// here to be.
+	//
+	// A held run returns when it receives a token, one run per token, so a
+	// test can end one and keep the next — which is the sequence a restart
+	// actually has. Closing lets every held run go at once.
+	holdFrom int
+	hold     chan struct{}
+	letGo    sync.Once
+}
+
+func newRerunTarget(repeat bool) *rerunTarget {
+	return &rerunTarget{
+		repeat: repeat,
+		ran:    make(chan int, 8),
+		over:   make(chan int, 8),
+		sized:  make(chan remotecommand.TerminalSize, 8),
+		hold:   make(chan struct{}),
+	}
+}
+
+// letOneGo ends the run currently being held, and only that one.
+func (r *rerunTarget) letOneGo() { r.hold <- struct{}{} }
+
+// release lets every held run return. Idempotent, because a test releases when
+// it is ready and again on the way out.
+func (r *rerunTarget) release() { r.letGo.Do(func() { close(r.hold) }) }
+
+func (r *rerunTarget) Name() string     { return "prog" }
+func (r *rerunTarget) Scheme() string   { return v1.FileScheme }
+func (r *rerunTarget) TTY() bool        { return true }
+func (r *rerunTarget) Stdin() bool      { return true }
+func (r *rerunTarget) Close() error     { return nil }
+func (r *rerunTarget) Repeatable() bool { return r.repeat }
+
+func (r *rerunTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.Reader, out, _ io.WriteCloser, _ bool, resize <-chan remotecommand.TerminalSize) error {
+	r.mu.Lock()
+	r.runs++
+	n := r.runs
+	r.mu.Unlock()
+	defer func() { r.over <- n }()
+
+	// Sizes only while attached, which is the contract a provider that shares
+	// a channel with the runs after it has to keep.
+	attached, done := context.WithCancel(ctx)
+	defer done()
+	go func() {
+		for {
+			select {
+			case size, ok := <-resize:
+				if !ok {
+					return
+				}
+				r.sized <- size
+			case <-attached.Done():
+				return
+			}
+		}
+	}()
+
+	_, _ = fmt.Fprintf(out, "run %d", n)
+	r.ran <- n
+
+	// Held open only from the run a test wants to interrogate: an earlier one
+	// has to end, or there would be nothing for a viewer to restart.
+	if r.holdFrom > 0 && n >= r.holdFrom {
+		<-r.hold
+	}
+	return nil
+}
+
+// awaitOver waits for a run to have returned. Distinct from awaitRun, which
+// fires while the run is still going: a viewer arriving before the previous
+// run has actually ended finds a session that is still running and asks for
+// nothing, which is a race a test must not depend on losing.
+func (r *rerunTarget) awaitOver(t *testing.T, want int) {
+	t.Helper()
+	for {
+		select {
+		case n := <-r.over:
+			if n == want {
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("run %d never ended", want)
+		}
+	}
+}
+
+// awaitSize waits for a run to be told a particular size, ignoring the ones
+// before it — a run is told the session's default the moment it starts, and
+// what a test is usually waiting for is the one a viewer settled on.
+func (r *rerunTarget) awaitSize(t *testing.T, want remotecommand.TerminalSize) {
+	t.Helper()
+	var seen []remotecommand.TerminalSize
+	for {
+		select {
+		case size := <-r.sized:
+			if size == want {
+				return
+			}
+			seen = append(seen, size)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("never told %v; was told %v", want, seen)
+		}
+	}
+}
+
+// awaitRun waits for a particular run to have started, so a test asserts on
+// something that has happened rather than on a sleep.
+func (r *rerunTarget) awaitRun(t *testing.T, want int) {
+	t.Helper()
+	for {
+		select {
+		case n := <-r.ran:
+			if n == want {
+				return
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("run %d never started", want)
+		}
+	}
+}
+
+// TestAViewerStartsARepeatableTargetAgain pins the answer to a program origin
+// outliving its program.
+//
+// The run ends on its own — the program exited — which drops every viewer
+// there was, so the person who opens the page afterwards is the only one left
+// to ask for another. What they get is a new run and a clean screen: this is a
+// second program, and a screen still carrying the first one's output would
+// claim a state the target was never in.
+func TestAViewerStartsARepeatableTargetAgain(t *testing.T) {
+	target := newRerunTarget(true)
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitOver(t, 1)
+
+	dial(t, s)
+	target.awaitRun(t, 2)
+
+	// The screen belongs to the run that drew it.
+	screen := s.session.em.Render()
+	if strings.Contains(screen, "run 1") {
+		t.Errorf("screen = %q, want the first run's output gone", screen)
+	}
+}
+
+// TestAViewerDoesNotStartAnUnrepeatableTargetAgain pins the other half. A
+// container that has stopped is gone: attaching again would find nothing, so
+// the frozen final screen is the honest thing to serve.
+func TestAViewerDoesNotStartAnUnrepeatableTargetAgain(t *testing.T) {
+	target := newRerunTarget(false)
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+	target.awaitOver(t, 1)
+
+	dial(t, s)
+
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started; a target that says it is not repeatable must not be", n)
+	case <-time.After(time.Second):
+	}
+}
+
+// TestEveryRunIsToldItsSize pins what a restarted program needs before it can
+// draw anything at all.
+//
+// A run starts at whatever size its target made — for a pty, nothing — and the
+// window only speaks when it changes. The viewer who asks for a later run is
+// the same size the session already settled on, so nothing would tell that run
+// how big it is, and a full-screen program with no room draws an empty screen.
+// That is what this looked like from the outside: a program plainly running,
+// and a blank page.
+func TestEveryRunIsToldItsSize(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 2 // held while a viewer settles the session on a size
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+	target.awaitOver(t, 1)
+
+	// A viewer, whose window settles the session on a size of its own.
+	settled := remotecommand.TerminalSize{Width: 100 - chromeWidth, Height: 40 - chromeHeight}
+	c := dial(t, s)
+	target.awaitRun(t, 2)
+	readFrame(t, c) // the established frame, before the socket carries anything else
+	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
+	target.awaitSize(t, settled)
+
+	// That run ends, which drops the viewer with it.
+	target.letOneGo()
+	target.awaitOver(t, 2)
+
+	// The next viewer never reports a size at all — and even if it did, it
+	// would be the one the session is already on, which the window has nothing
+	// to say about. The run it starts still has to be told.
+	dial(t, s)
+	target.awaitRun(t, 3)
+	target.awaitSize(t, settled)
 }
 
 // mustURLs parses raw as URLs, failing the test on the first one that is not.

@@ -64,6 +64,18 @@ var (
 // one is not left staring at nothing.
 const sizeGrace = 500 * time.Millisecond
 
+// armGrace is how long a session-ending key stays armed. Long enough to read
+// the border and answer it, short enough that walking away disarms it: a
+// second press minutes later is a new intention, not the other half of a
+// double tap.
+const armGrace = 2 * time.Second
+
+// disarmMsg is an arming expiring. It carries the arming it belongs to, so a
+// tick from one that was already spent cannot clear the next one — press,
+// type on, press again inside two seconds, and the stale tick would otherwise
+// disarm a key the viewer had just armed.
+type disarmMsg struct{ arming int }
+
 // settleMsg is the grace period expiring: draw at the session's size, since
 // whoever is watching has not said what theirs is.
 type settleMsg struct{}
@@ -100,9 +112,18 @@ type frame struct {
 	// a larger window renders it with unused margin.
 	width, height int
 
-	// command is Ctrl-D having been pressed: the next keystroke belongs to the
-	// frame and the container will not see it.
+	// command is the frame's key having been pressed: the next keystroke
+	// belongs to the frame and the container will not see it.
 	command bool
+
+	// armed is a session-ending control key waiting to be asked for a second
+	// time — 'c' or 'd', or zero when none is. Only ever set for a target
+	// that cannot be started again; see the guard in Update.
+	//
+	// arming counts them, so the tick that expires one can tell whether it is
+	// still the one that is armed.
+	armed  rune
+	arming int
 
 	// sized is the window having been reported by the page rather than assumed.
 	// Until it is, the frame draws nothing rather than drawing at a size that
@@ -152,6 +173,13 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f.sess.resizeViewer(f.v, msg.Width, msg.Height)
 		return f, nil
 
+	case disarmMsg:
+		// Only if this is still the arming that tick belongs to.
+		if msg.arming == f.arming {
+			f.armed = 0
+		}
+		return f, nil
+
 	case settleMsg:
 		// Whatever size is known by now, said again so the renderer has it.
 		// A page that answered in time has already set one and this restates
@@ -186,7 +214,52 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
-		if k := tea.Key(msg); k.Code == 'd' && k.Mod == tea.ModCtrl {
+		// The two keystrokes most likely to end a terminal nobody can reopen,
+		// held until they are asked for twice.
+		//
+		// Most of the time they end nothing: Ctrl-C at a shell prompt clears
+		// the line, and Ctrl-D closes a nested shell somebody meant to leave.
+		// Which of those it is, is not knowable from here — the same byte
+		// exits the session and edits a command line — so the guard is on the
+		// keystroke that might, not on one that will.
+		//
+		// Only where nothing can come back. On a program origin these go
+		// straight through: the origin is a path, the program can be run
+		// again, and a terminal that argues with Ctrl-C is not a terminal. On
+		// a container, PID 1 exiting is the end of it for everybody watching,
+		// and one press is a low bar for something with no way back.
+		//
+		// The first press is not swallowed silently — the border says which
+		// key is waiting and that pressing it again sends it — because a key
+		// that appears to do nothing reads as a key that is broken.
+		if k := tea.Key(msg); k.Mod == tea.ModCtrl && (k.Code == 'c' || k.Code == 'd') && !f.sess.recoverable() {
+			if f.armed != k.Code {
+				f.armed = k.Code
+				f.arming++
+				arming := f.arming
+				return f, tea.Tick(armGrace, func(time.Time) tea.Msg {
+					return disarmMsg{arming: arming}
+				})
+			}
+			f.armed = 0
+		}
+		// Anything else spends the arming: somebody who typed on is no longer
+		// answering the question the border asked.
+		if k := tea.Key(msg); f.armed != 0 && f.armed != k.Code {
+			f.armed = 0
+		}
+
+		// The frame's own key, and the only one it keeps. Ctrl+K on every
+		// platform: the page has to be in the way regardless, since the
+		// browser claims that chord for its address bar, but the byte that
+		// arrives is the one a terminal sends — so this is a rule about a key
+		// rather than about a private signal between the two halves.
+		//
+		// It costs the program kill-to-end-of-line, which is a real key and a
+		// cheaper one than Ctrl-D. That reaches the program now: it is a
+		// shared session's most dangerous keystroke and no longer this frame's
+		// to hold, and `q` below is how somebody ends one on purpose.
+		if k := tea.Key(msg); k.Code == 'k' && k.Mod == tea.ModCtrl {
 			f.command = true
 			return f, nil
 		}
@@ -548,8 +621,16 @@ func (f frame) meta() string {
 // hint is the keys, in the bottom border: the one that opens the commands, or
 // the commands themselves once it has.
 func (f frame) hint() string {
+	if f.armed != 0 {
+		// Which key, and what to do about it. Nothing about what it will do:
+		// Ctrl-C at a shell prompt clears the line and nothing else, and a
+		// frame warning of an ending at the most ordinary keystroke there is
+		// would be worth nothing by the third time somebody saw it.
+		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
+			hintStyle.Styled(" again to send it ")
+	}
 	if !f.command {
-		return chipStyle.Styled(" ^D ") + hintStyle.Styled(" commands ")
+		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" q ") + hintStyle.Styled(" end ") +

@@ -23,7 +23,7 @@ Deep-link by filename; line numbers will drift.
 | Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `IsExecutable`         | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)              |
+| Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -404,7 +404,7 @@ Two things there will bite if you change them without knowing why:
   [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea model
   rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
   feeds. Per viewer, because command mode is per viewer — a shared model would
-  put everyone into it when one person pressed `Ctrl-D` — and because a frame
+  put everyone into it when one person opened it — and because a frame
   that is new renders a whole screen, which is what a late joiner needs anyway.
   The split is worth keeping: `session.go` is locks, pipes and goroutines,
   `frame.go` is a value type with none of them.
@@ -518,10 +518,75 @@ Two things there will bite if you change them without knowing why:
   *this* app wants its pastes bracketed, and text written past it arrives as
   though it had been typed — which is a shell running a half-finished command
   off a pasted newline.
-- **`Ctrl-D` belongs to the frame.** It is end of file to a shell, the attach
-  is shared, and it is never reopened, so one viewer pressing it used to end
-  the terminal for everyone. `frame.commanded`'s `q` is the deliberate way to
-  do what it used to do by accident.
+- **The frame's key is `Ctrl+K`, and the page is in the way of it.** Not
+  because xterm could not encode it — it could — but because the browser claims
+  the chord for its address bar, so `index.html` `preventDefault`s it and sends
+  the byte itself. The byte is the one a terminal sends, so `frame.go`'s rule
+  is about a key rather than about a private signal, and a keystroke that
+  reaches xterm some other way still works. It costs the program
+  kill-to-end-of-line, which is the cheaper of the two keys on offer: `Ctrl-D`
+  reaches the shell and ends a shared session for everyone, and
+  `frame.commanded`'s `q` is how to ask for that on purpose.
+- **A viewer arriving after the run ended starts the next one.** Only for a
+  target that implements `attach.Repeatable` and says yes, which today is a
+  program: its origin is a path, so running it again is as well defined as
+  running it the first time. `session.stream` builds one run — the pipe, the
+  replies goroutine, the `done` channel — and `session.revive` builds another,
+  which is why `stdin` and `done` are guarded by `mu` and read through
+  `ended()` rather than off the field. The screen is reset with RIS rather than
+  replaced, so every viewer keeps drawing the same emulator; a screen carrying
+  the last program's output would claim a state the new one was never in. A
+  container implements none of this: once PID 1 exits there is nothing to
+  attach to, and the frozen final screen is the honest thing to serve.
+- **Ctrl-C and Ctrl-D are asked for twice, and only where nothing can come
+  back.** A program origin lets them straight through: the origin is a path, so
+  the cost of a mistake is opening the page again, and a terminal that argues
+  with Ctrl-C is not a terminal. A container cannot come back, so the frame
+  holds the first press and says in its border which key is waiting — a key
+  that appears to do nothing reads as a key that is broken. `session.recoverable`
+  is the split, and it is `attach.Repeatable` answering. The border names the
+  key and says to press it again, and nothing about what it will do: most of
+  the time these end nothing — Ctrl-C at a shell prompt clears the line — and
+  which time this is, is not knowable from here. The arming lets go after
+  `armGrace`, and the tick carries the arming it belongs to so a spent one
+  cannot disarm the next.
+- **The page asks whether coming back is worth offering.** A socket ending
+  says nothing about why: this viewer's own connection dropping leaves a
+  terminal still running, and a container whose shell exited leaves nothing at
+  all, and both arrive at the overlay identically. So `gone()` fetches
+  `/alive`, which is 204 while a run is up or the target can be started again
+  and 410 when it cannot, and the button stays hidden until the answer comes.
+  `make run attach` is the case: zsh is the image's entrypoint, so Ctrl-D ends
+  PID 1 and the container with it.
+- **The page says what pressing it will do.** `restart` for a target that can
+  be started again, `reconnect` for one that cannot — the template picks from
+  `session.recoverable`, the same answer that decides whether a viewer's
+  arrival starts anything. Reconnecting to a stopped container gets the last
+  screen and nothing else, and a button promising otherwise is a lie the page
+  tells once per visit.
+- **A run is told its size when it starts, whether or not anything changed.**
+  `negotiate` only speaks when the window moves, and the viewer who asks for a
+  restart is the size the session already settled on — so a second run would
+  sit at whatever `pty.Start` made, which is nothing, and a full-screen program
+  with no room draws an empty screen. `stream` pushes `paneOf(s.size)` at every
+  run for that reason.
+- **A provider stops reading the resize channel when its attach ends.** The
+  channel belongs to the session and outlives one run, so a reader that only
+  stopped when it closed goes on taking sizes meant for the run after it —
+  which is the same blank screen, arrived at from the other side. Both
+  providers select on a context cancelled by their own return.
+- **`s.Target.AttachContainer`, never `s.AttachContainer`.** A session has an
+  `AttachContainer` of its own — the per-viewer one — so the embedded Target's
+  is shadowed, and the short spelling has the session attach to itself.
+- **Software flow control is off on a pty this package creates.** A pty arrives
+  with `IXON` set, so `Ctrl-S` never reaches the program: the line discipline
+  eats it and stops the program's writes, which freezes the screen for every
+  viewer at once with the session perfectly healthy behind it. Flow control is
+  there to stop a sender overrunning a serial line, and there is no serial line
+  — the path is a websocket over a tunnel with a pipe and an emulator in it,
+  all of which buffer or block on their own — so `shell.unmeter` clears `IXON`,
+  `IXOFF` and `IXANY` before the program writes a byte. Only available for a
+  program origin: a container's tty belongs to the container.
 - **Keys go to the container through the emulator, not around it.**
   `session.sendKey` hands the decoded key to `vt`, which encodes what a
   terminal in the app's current modes would send; bytes written straight to

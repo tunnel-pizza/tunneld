@@ -2,7 +2,7 @@
 // program origin, opens the public URL in a browser, and blocks until
 // interrupted.
 //
-// Nothing else needs to be running and nothing is proxied — k9s is started by
+// Nothing else needs to be running and nothing is proxied — zsh is started by
 // tunneld itself, on a pseudo-terminal, when the first viewer opens the page.
 // A bare word this machine can run is a program origin, so the seed is the
 // command as somebody would type it; what the frame shows is the path it
@@ -32,7 +32,7 @@ func main() {
 	defer stop()
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithOrigin("k9s"),
+		v1alpha1.WithOrigin("zsh"),
 		v1alpha1.WithLogLevel("debug"),
 	).Command()
 

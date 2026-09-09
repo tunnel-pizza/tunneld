@@ -96,6 +96,23 @@ type Target interface {
 	Close() error
 }
 
+// Repeatable is a Target that can be attached to more than once, because each
+// attach starts it rather than resuming it.
+//
+// Discovered on the Target rather than required by it, the way http.Flusher is:
+// most targets are not repeatable and say so by not implementing this. A
+// container is the example — once its PID 1 has exited there is nothing left
+// to attach to — and a local program is the counter-example, since its origin
+// is a path and running it again is exactly as well defined as running it the
+// first time.
+//
+// The method answers rather than merely existing so that a provider can decide
+// per target: a program whose path has since been removed is no more
+// repeatable than a container.
+type Repeatable interface {
+	Repeatable() bool
+}
+
 // Targets opens an origin's reference as a Target. It is the half of the
 // provider contract the binder depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider
@@ -409,7 +426,19 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 		case !s.target.Stdin():
 			notice = "stdin closed (started without -i) — keystrokes go nowhere"
 		}
-		data := struct{ Notice string }{notice}
+		// Restarts decides what the page offers when the stream ends. A
+		// program can be run again, so the button says restart and means it;
+		// a container cannot, so it says reconnect and means only that —
+		// somebody arriving at a stopped container gets the last screen and
+		// nothing to press that would change it.
+		// Origin is what the frame puts in its top-left corner, said again
+		// here because the overlay covers that corner: a page that has lost
+		// its socket should still name what it was showing.
+		data := struct {
+			Notice   string
+			Origin   string
+			Restarts bool
+		}{notice, s.target.Scheme() + "://" + s.target.Name(), s.session.recoverable()}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
@@ -422,6 +451,24 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 			s.log.Debug("attach write failed", "error", err) // visitor went away
 		}
 	})
+	// Whether coming back is worth offering, asked after a socket has gone
+	// rather than answered when the page was built: a page is served while the
+	// terminal is live and read when it is not, and the two endings a viewer
+	// sees are the same. Their own socket dropping — a lid, an idle timeout —
+	// leaves a terminal that is still there, and the session ending on a
+	// container leaves nothing at all.
+	//
+	// 204 or 410, because the page needs one bit and the status line carries
+	// it without a body to parse.
+	mux.HandleFunc("GET /alive", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if !s.session.attachable() {
+			w.WriteHeader(http.StatusGone)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	// The attach handler hands the request to ServeAttach, which owns the
 	// websocket upgrade and the v4.channel.k8s.io framing on it.
 	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {

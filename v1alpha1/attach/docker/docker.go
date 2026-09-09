@@ -353,13 +353,28 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	defer stop()
 
 	// This forwards terminal sizes to the container, and returns when the
-	// channel closes — which ServeAttach does when the socket ends.
+	// channel closes or this attach ends, whichever comes first. The channel
+	// belongs to the caller and can outlive one attach, so a reader that only
+	// stopped when it closed would go on taking sizes meant for whatever came
+	// after it.
 	//
 	// Without a TTY there is nothing to resize, but the channel is still
 	// drained: the page sends its size as a heartbeat regardless, and a
 	// blocked send would stall the whole stream.
+	attached, done := context.WithCancel(ctx)
+	defer done()
 	go func() {
-		for size := range resize {
+		for {
+			var size remotecommand.TerminalSize
+			select {
+			case s, ok := <-resize:
+				if !ok {
+					return
+				}
+				size = s
+			case <-attached.Done():
+				return
+			}
 			if !a.tty || size.Width == 0 || size.Height == 0 {
 				continue
 			}

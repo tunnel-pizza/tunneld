@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
@@ -185,6 +186,39 @@ func TestAttachRunsTheProgram(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "TUNNELD_FIXTURE_OK") {
 		t.Errorf("attach wrote %q, want the program's own output", got)
+	}
+}
+
+// TestResizeStopsWithTheAttach pins the contract a provider owes a caller
+// whose resize channel outlives one attach.
+//
+// The session hands the same channel to every run it starts, so a reader that
+// only stopped when the channel closed would go on taking sizes meant for
+// whatever ran next. A size taken by a terminal that is already gone is a size
+// the running program never hears — and for a full-screen program that is a
+// pty left at nothing and a page left blank, with the program plainly running.
+func TestResizeStopsWithTheAttach(t *testing.T) {
+	needsPTY(t)
+
+	dir := t.TempDir()
+	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
+
+	target, err := New().Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	defer func() { _ = target.Close() }()
+
+	// Unbuffered, so a send succeeds only if something is actually reading.
+	resize := make(chan remotecommand.TerminalSize)
+	if err := target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), &sink{}, &sink{}, true, resize); err != nil {
+		t.Fatalf("AttachContainer() = %v", err)
+	}
+
+	select {
+	case resize <- remotecommand.TerminalSize{Width: 80, Height: 24}:
+		t.Error("a size was taken after the attach ended; the next run will never hear it")
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
