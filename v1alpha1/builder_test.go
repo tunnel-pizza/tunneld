@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 )
@@ -1166,21 +1166,30 @@ func originStrings(origins []*url.URL) []string {
 // A seed or an argument outranks it: the fallback is for having nothing, and
 // anything settled above is something.
 func TestOriginsFallsBackToTheShell(t *testing.T) {
-	real, err := exec.LookPath("sh")
-	if err != nil {
-		t.Skipf("no sh to resolve: %v", err)
+	// Resolved the way Origins resolves it, so the case pins where $SHELL
+	// ends up rather than re-deriving how a path is spelled — LookPath
+	// answers a PATH hit absolutely and Resolve makes it absolute again, and
+	// on Windows the answer is C:\Program Files\Git\usr\bin\sh.exe.
+	real, ok := shell.Resolve("sh")
+	if !ok {
+		t.Skip("no sh on PATH to fall back to")
 	}
+	// Compared as fields rather than as strings, because a Windows shell is
+	// C:\Program Files\Git\usr\bin\sh.exe and url.URL.String escapes every
+	// separator in it — file://C:%5CProgram%20Files%5C... is correct and
+	// nothing anybody would write down. Path is the claim worth pinning
+	// anyway: the resolved program, not the word that named it.
 	for _, tc := range []struct {
 		name    string
 		shell   string
 		args    []string
-		want    []string
+		want    []*url.URL
 		mention string
 	}{
-		{"a runnable shell is the origin", real, nil, []string{v1.FileScheme + "://" + real}, ""},
+		{"a runnable shell is the origin", real, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
 		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), nil, nil, "not exposing a shell"},
 		{"unset is nothing to fall back to", "", nil, nil, ""},
-		{"an argument outranks it", real, []string{":3000"}, []string{"http://localhost:3000"}, ""},
+		{"an argument outranks it", real, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.OriginsEnv, "") // a developer's shell must not seed this
@@ -1191,12 +1200,9 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
 
-			var got []string
-			for _, u := range b.Origins() {
-				got = append(got, u.String())
-			}
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("Origins() = %v, want %v", got, tc.want)
+			got := b.Origins()
+			if !slices.EqualFunc(got, tc.want, func(a, b *url.URL) bool { return *a == *b }) {
+				t.Errorf("Origins() = %+v, want %+v", got, tc.want)
 			}
 			if tc.mention != "" && !strings.Contains(stderr.String(), tc.mention) {
 				t.Errorf("stderr %q does not mention %q", stderr.String(), tc.mention)
