@@ -1122,25 +1122,25 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	target.awaitSize(t, settled)
 }
 
-// TestMirrorIsOfferedOnlyForOneOrigin pins how a caller finds out whether a
-// run can be drawn on a console: by asking the closer, not by counting
-// origins itself.
+// TestShowIsOfferedOnlyForOneOrigin pins how a caller finds out whether a run
+// can be put on a console: by asking the closer, not by counting origins
+// itself.
 //
-// Carrying Mirror is the answer. With several origins a console has no way to
+// Carrying Show is the answer. With several origins a console has no way to
 // say which it is watching and no room to watch them at once — that is what
 // the public hostname and its routing parameter are for — so the method is not
 // there to call. One origin is one served origin, since nothing else gets a
 // server, which makes the assertion the whole check.
-func TestMirrorIsOfferedOnlyForOneOrigin(t *testing.T) {
+func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		display []string
 		want    bool
 	}{
-		{"one container is a console's to draw", []string{"dockerd://api"}, true},
+		{"one container is a console's to show", []string{"dockerd://api"}, true},
 		{"two is nobody's", []string{"dockerd://api", "dockerd://db"}, false},
 		{"a served origin beside a proxied one is still one", []string{"dockerd://api", "http://localhost:3000"}, true},
-		{"nothing served is nothing to draw", []string{"http://localhost:3000"}, false},
+		{"nothing served is nothing to show", []string{"http://localhost:3000"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			targets := &stubTargets{scheme: v1.DockerScheme}
@@ -1153,10 +1153,10 @@ func TestMirrorIsOfferedOnlyForOneOrigin(t *testing.T) {
 			defer func() { _ = closer.Close() }()
 
 			_, got := closer.(interface {
-				Mirror(context.Context, io.Reader, io.Writer) error
+				Show(context.Context, io.Reader, io.Writer) error
 			})
 			if got != tc.want {
-				t.Errorf("closer offers Mirror = %v, want %v", got, tc.want)
+				t.Errorf("closer offers Show = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -587,15 +587,20 @@ Two things there will bite if you change them without knowing why:
   thing that runs a terminal. `browser` imports `console` and not the other
   way round: a tab and a console are two ways of doing one thing, and the
   package that chooses between them is the one that names the other, so
-  `console.Drawer` is declared once rather than twice.
+  `console.Screen` is declared once rather than twice.
 
-  **Nobody counts origins to find out whether a console can draw.** `Bind`
-  answers by carrying the method: a closer satisfies `console.Origin` only
+  **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
+  `Terminal` is what the binder hands back, `Screen` is what a run was started
+  on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them
+  meaning the same thing. `attach` implements `Show` on its side.
+
+  **Nobody counts origins to find out whether a console can show one.** `Bind`
+  answers by carrying the method: a closer satisfies `console.Terminal` only
   when it wrapped exactly one server, which is one served origin since nothing
   else gets one. `console.For` asks that question and the stream question
   together and returns nil for either no — nil being load-bearing, because
   `browser` reads it to decide whether a tab is what this run gets instead.
-  It returns `console.Drawer` rather than `*ConsoleImpl` for the same reason:
+  It returns `console.Screen` rather than `*ConsoleImpl` for the same reason:
   a nil pointer in an interface field is not nil, and the guard on the other
   side would wave it through.
 

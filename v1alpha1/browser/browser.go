@@ -43,19 +43,18 @@ type BrowserImpl struct {
 	// addr is the page to put in front of them: the panel when there is one,
 	// since it reaches every origin, and otherwise the default origin itself.
 	addr string
-	// mirror is the console this run was started from, already able to draw
-	// the terminal being served, and nil when there is no console to draw on.
-	// Non-nil is the whole of "already in front of them": Open hands it the
-	// screen instead of launching, because putting the tunnel in front of a
-	// person is this package's job and a console is the other way of doing
-	// that.
+	// screen is the console this run was started from, already able to show
+	// the terminal being served, and nil when there is no such console.
+	// Non-nil is the whole of "already in front of them": Open hands it over
+	// instead of launching, because putting the tunnel in front of a person
+	// is this package's job and a console is the other way of doing it.
 	//
 	// It is not a preference. The terminal is on a screen they are looking
 	// at, and a tab on top of it is a second copy competing for the same
 	// keystrokes, so it outranks even a caller who insisted.
-	mirror console.Drawer
+	screen console.Screen
 	// forced is a caller who has already decided, and nil when nobody wrote
-	// one. It outranks everything except mirror.
+	// one. It outranks everything except screen.
 	forced *bool
 	// interactive is whether any of the command's own streams is a terminal.
 	// Its streams and not this process's, because an embedding program
@@ -84,16 +83,16 @@ func WithAddr(addr string) Option {
 	return func(b *BrowserImpl) { b.addr = addr }
 }
 
-// WithMirror sets the console this run was started from, when there is one to
-// draw on. Open hands it the screen in place of launching a tab. Nil is a run
-// with no console, which is the ordinary case.
+// WithScreen sets the console this run was started from, when there is one.
+// Open hands it over in place of launching a tab. Nil is a run with no
+// console, which is the ordinary case.
 //
 // The type is v1alpha1/console's rather than one declared here, because two
 // identical interfaces is one too many and this is the package that has to
 // choose between them: a tab and a console are the two ways of doing the one
 // thing, so the package doing the choosing is the one that names the other.
-func WithMirror(mirror console.Drawer) Option {
-	return func(b *BrowserImpl) { b.mirror = mirror }
+func WithScreen(screen console.Screen) Option {
+	return func(b *BrowserImpl) { b.screen = screen }
 }
 
 // WithForced settles the decision rather than leaving it to be worked out. Nil
@@ -459,9 +458,9 @@ func (b *BrowserImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
 	// to work — pkg/browser reports that by failing, which is a line in the
 	// log about a thing that was never going to happen.
 	switch {
-	case b.mirror != nil:
+	case b.screen != nil:
 		log.Debug("not opening a browser", "reason", "the console is showing this terminal instead")
-		b.mirror.Draw(ctx, log)
+		b.screen.Show(ctx, log)
 		return
 	case b.forced != nil:
 		log.Debug("browser decided by the caller", "open", *b.forced)

@@ -91,17 +91,17 @@ func WithCache(c Cache) Option {
 // Console is the screen a run was started on, when it turns out to be one.
 //
 // For is the whole of it, and it answers rather than asks: given the bound
-// origins and the command's own streams, it says nil when there is nothing to
-// draw or nowhere to draw it, and a console ready to be handed the screen
+// origins and the command's own streams, it says nil when there is no screen —
+// nothing to show, or nowhere to show it — and one ready to be handed over
 // otherwise. Nothing out here counts origins or tests a stream — the binder
-// already decided the first by carrying Mirror, and the second is a question
+// already decided the first by carrying Show, and the second is a question
 // about streams that the thing drawing on them should be the one to ask.
 //
 // What comes back is what the browser package takes when it decides a console
 // is what this run gets shown on: one interface, declared where the console
 // is, named by the package that chooses between it and a tab.
 type Console interface {
-	For(bound io.Closer, in io.Reader, out, hintTo io.Writer) console.Drawer
+	For(bound io.Closer, in io.Reader, out, hintTo io.Writer) console.Screen
 }
 
 // Browser puts the tunnel in front of a person: it answers the bare public

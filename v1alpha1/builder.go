@@ -659,7 +659,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		browser.WithForced(b.open),
 		browser.WithStderr(stderr),
 		browser.WithInteractive(isTerminal(cmd.InOrStdin()) || isTerminal(cmd.OutOrStdout()) || isTerminal(cmd.ErrOrStderr())),
-		browser.WithMirror(screen),
+		browser.WithScreen(screen),
 	)
 	if screen == nil {
 		// Nothing is going to be drawn here. The addresses are up, the run

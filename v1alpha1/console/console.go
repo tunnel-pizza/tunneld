@@ -22,27 +22,28 @@ import (
 	"golang.org/x/term"
 )
 
-// Origin is a bound origin that can draw its terminal on streams of the
-// caller's choosing. It returns when that viewer leaves or the run ends, and
-// leaves the console as it found it.
+// Terminal is a bound origin that can show itself on streams of the caller's
+// choosing. It returns when that viewer leaves or the run ends, and leaves the
+// console as it found it.
 //
 // Discovered by type assertion on the closer a Binder returns, like the other
 // optional interfaces beside it, and declared here rather than there because
-// this package is the only thing that drives one.
-type Origin interface {
-	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
+// this package is the only thing that shows one.
+type Terminal interface {
+	Show(ctx context.Context, in io.Reader, out io.Writer) error
 }
 
-// Drawer is a console bound to one run, ready to be handed the screen. It is
-// what the browser package takes when it decides a console is what this run
-// gets shown on, rather than a tab.
+// Screen is a console bound to one run: the Terminal it shows, the streams it
+// shows it on, and everything owed to the prompt underneath when it stops. It
+// is what the browser package is handed when a console is what this run gets
+// shown on rather than a tab.
 //
 // For returns this rather than *ConsoleImpl because it returns nil when there
-// is nothing to draw, and a nil *ConsoleImpl in an interface field is not nil:
-// the guard on the other side would wave it through, and the browser would
-// decline to open a tab on behalf of a console that was never there.
-type Drawer interface {
-	Draw(ctx context.Context, log v1.Logger)
+// is no screen, and a nil *ConsoleImpl in an interface field is not nil: the
+// guard on the other side would wave it through, and the browser would decline
+// to open a tab on behalf of a console that was never there.
+type Screen interface {
+	Show(ctx context.Context, log v1.Logger)
 }
 
 // Option configures a ConsoleImpl at construction.
@@ -56,9 +57,8 @@ type Option = v1.Option[*ConsoleImpl]
 // For is given is one run's: the origin to draw, and the streams that are the
 // console itself.
 type ConsoleImpl struct {
-	// from is the bound origin that knows how to draw. Nil draws nothing,
-	// which is a console with no terminal to show rather than a broken one.
-	from Origin
+	// terminal is the bound origin that knows how to show itself.
+	terminal Terminal
 	// in, out are the console itself; hintTo is where a line to a returned
 	// prompt goes, which is stderr rather than the machine interface out
 	// carries.
@@ -101,20 +101,19 @@ func WithHint(hint string) Option {
 }
 
 // For binds this console to one run, and returns nil when that run has no
-// terminal to show — no origin the console can draw, or streams that are not a
-// console at all.
+// screen — no terminal to show, or nothing to show it on.
 //
 // A copy, so the seeded original stays a template: what New was given is what
 // outlives a single run, and what this takes is what does not.
-func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer) Drawer {
+func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer) Screen {
 	// Two questions, both answered by asking rather than deriving. Whether
-	// there is a terminal to show is the binder's — a closer carries Mirror
+	// there is a terminal to show is the binder's — a closer carries Show
 	// only when it has exactly one served origin, so the assertion is the
 	// whole check. Whether there is a console to show it on is these streams'
 	// own, and they are the command's rather than the process's, since an
 	// embedding program redirects them and a frame drawn into whatever it
 	// redirected to is not a terminal anybody asked for.
-	from, ok := origins.(Origin)
+	terminal, ok := origins.(Terminal)
 	if !ok || !isTerminal(in) || !isTerminal(out) {
 		return nil
 	}
@@ -125,19 +124,19 @@ func (c *ConsoleImpl) For(origins io.Closer, in io.Reader, out, hintTo io.Writer
 	if quitter, ok := origins.(interface{ Quit() <-chan struct{} }); ok {
 		ended = quitter.Quit()
 	}
-	drawing := *c
-	drawing.from, drawing.in, drawing.out, drawing.hintTo, drawing.ended = from, in, out, hintTo, ended
-	return &drawing
+	showing := *c
+	showing.terminal, showing.in, showing.out, showing.hintTo, showing.ended = terminal, in, out, hintTo, ended
+	return &showing
 }
 
-// Draw hands the console over and returns immediately; the drawing outlives
-// the call and ends when that viewer leaves or the run does.
+// Show hands the console over and returns immediately; what it started
+// outlives the call and ends when that viewer leaves or the run does.
 //
 // It returns rather than blocking because the run has more to do — it is still
 // the thing waiting on the tunnel, and a console is one viewer among however
 // many are watching through the hostname.
-func (c *ConsoleImpl) Draw(ctx context.Context, log v1.Logger) {
-	if c.from == nil {
+func (c *ConsoleImpl) Show(ctx context.Context, log v1.Logger) {
+	if c.terminal == nil {
 		return
 	}
 	if c.logs != nil {
@@ -149,7 +148,7 @@ func (c *ConsoleImpl) Draw(ctx context.Context, log v1.Logger) {
 				c.logs.Mute(false)
 			}
 		}()
-		if err := c.from.Mirror(ctx, c.in, c.out); err != nil && ctx.Err() == nil {
+		if err := c.terminal.Show(ctx, c.in, c.out); err != nil && ctx.Err() == nil {
 			log.Debug("the console stopped showing the terminal", "error", err)
 		}
 		// Said here rather than before the frame, where it would be true for a

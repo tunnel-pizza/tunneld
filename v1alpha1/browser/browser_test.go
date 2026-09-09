@@ -75,7 +75,7 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 func TestOpenDecides(t *testing.T) {
 	const ssh = "10.0.0.1 51234 10.0.0.2 22"
 	watched := []Option{WithInteractive(true)}
-	drawing := append(watched, WithMirror(stillMirror{}))
+	drawing := append(watched, WithScreen(stillScreen{}))
 	for _, tc := range []struct {
 		name string
 		when []Option
@@ -118,11 +118,11 @@ func TestOpenDecides(t *testing.T) {
 	}
 }
 
-// stillMirror is a console that draws nothing. The rows using it are about
-// what a console being there means, not about what it draws.
-type stillMirror struct{}
+// stillScreen is a console that shows nothing. The rows using it are about
+// what a console being there means, not about what it shows.
+type stillScreen struct{}
 
-func (stillMirror) Draw(context.Context, v1.Logger) {}
+func (stillScreen) Show(context.Context, v1.Logger) {}
 
 // ptr is a *bool for a literal, which When.Forced needs and Go has no spelling
 // for inline.

@@ -40,7 +40,7 @@ func (f *fakeOrigin) Close() error { return nil }
 
 func (f *fakeOrigin) Quit() <-chan struct{} { return f.ended }
 
-func (f *fakeOrigin) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+func (f *fakeOrigin) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	f.mu.Lock()
 	f.in, f.out = in, out
 	f.mu.Unlock()
@@ -105,12 +105,12 @@ func waitFor(t *testing.T, what string, want func() bool) {
 // a detached console gets its logs with its prompt.
 func TestDrawMutesForTheFrameAndUnmutesAfter(t *testing.T) {
 	origin, logs, screen := newFakeOrigin(nil), &ring{}, tty(t)
-	drawing := New(WithLogs(logs)).For(origin, screen, screen, io.Discard)
-	if drawing == nil {
+	showing := New(WithLogs(logs)).For(origin, screen, screen, io.Discard)
+	if showing == nil {
 		t.Fatal("For() = nil, want a console — there is an origin and a terminal")
 	}
 
-	drawing.Draw(t.Context(), discard)
+	showing.Show(t.Context(), discard)
 	<-origin.drew
 	if got := logs.seen(); len(got) != 1 || !got[0] {
 		t.Errorf("ring saw %v before the frame drew, want one mute", got)
@@ -141,13 +141,13 @@ func TestDrawLeavesTheHintOnADetach(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			origin, screen := newFakeOrigin(nil), tty(t)
 			var hintTo lockedBuffer
-			drawing := New(WithHint("Press Ctrl+C to stop the tunnel...")).
+			showing := New(WithHint("Press Ctrl+C to stop the tunnel...")).
 				For(origin, screen, screen, &hintTo)
-			if drawing == nil {
+			if showing == nil {
 				t.Fatal("For() = nil, want a console")
 			}
 
-			drawing.Draw(t.Context(), discard)
+			showing.Show(t.Context(), discard)
 			<-origin.drew
 			if tc.end {
 				close(origin.ended)
@@ -200,12 +200,12 @@ func (noOrigin) Close() error { return nil }
 // anything a run has to act on.
 func TestDrawHandsOverTheStreamsItWasGiven(t *testing.T) {
 	origin, screen := newFakeOrigin(errors.New("the terminal went away")), tty(t)
-	drawing := New().For(origin, screen, screen, io.Discard)
-	if drawing == nil {
+	showing := New().For(origin, screen, screen, io.Discard)
+	if showing == nil {
 		t.Fatal("For() = nil, want a console")
 	}
 
-	drawing.Draw(t.Context(), discard)
+	showing.Show(t.Context(), discard)
 	<-origin.drew
 	close(origin.release)
 	waitFor(t, "the draw to finish", func() bool { return origin.done() })

@@ -740,7 +740,7 @@ type mirrorableBinder struct{ *fakeBinder }
 
 // Mirror blocks until the run ends, like the real one, so a case can assert on
 // what happened while it was drawing.
-func (mirrorableBinder) Mirror(ctx context.Context, _ io.Reader, _ io.Writer) error {
+func (mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

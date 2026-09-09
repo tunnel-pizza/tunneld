@@ -290,29 +290,29 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
-	// A closer that can be mirrored says so by carrying the method, and only
+	// A closer that can be shown on a console says so by carrying the method, and only
 	// when it can: one origin, which is one served origin because nothing
 	// else gets a server. A caller then asks by type assertion and gets a
 	// straight answer, rather than re-deriving from the origin list what was
 	// already decided here.
 	if len(servers) == 1 {
-		return dialable, mirrorable{servers}, nil
+		return dialable, sole{servers}, nil
 	}
 	return dialable, servers, nil
 }
 
-// mirrorable is a bound list of exactly one, which is the only shape that can
-// draw a terminal on a console: with several, a console has no way to say
+// sole is a bound list of exactly one, which is the only shape that can put a
+// terminal on a console: with several, a console has no way to say
 // which it is watching and no room to watch them at once — that is what the
 // public hostname and its routing parameter are for.
 //
 // A wrapper rather than a flag, because what a caller wants to know is whether
-// to ask, and a method set is how Go says that. bound keeps Mirror unexported
+// to ask, and a method set is how Go says that. bound keeps show unexported
 // to this file so the only way to reach it is through here.
-type mirrorable struct{ bound }
+type sole struct{ bound }
 
-func (m mirrorable) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
-	return m.bound.mirror(ctx, in, out)
+func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
+	return s.bound.show(ctx, in, out)
 }
 
 // bound is every attach server a Bind call started, with the place in the
@@ -324,17 +324,17 @@ func (m mirrorable) Mirror(ctx context.Context, in io.Reader, out io.Writer) err
 // derived from n. Same length and order as display, like everything else here.
 type bound []boundOrigin
 
-// mirror draws the one origin bound here on the given streams.
+// show puts the one origin bound here on the given streams.
 //
-// Unexported, and reached only through the mirrorable wrapper Bind returns
+// Unexported, and reached only through the sole wrapper Bind returns
 // when there is exactly one: a bound list of several has nothing to draw, and
 // the length check that used to live here was a guard against a caller that
 // can no longer exist.
-func (b bound) mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 	if len(b) != 1 {
 		return fmt.Errorf("attach: %d origins to mirror, want exactly one", len(b))
 	}
-	return b[0].srv.Mirror(ctx, in, out)
+	return b[0].srv.Show(ctx, in, out)
 }
 
 // Quit closes when a viewer of any of these origins asks the run to end. One
@@ -417,9 +417,9 @@ type Server struct {
 	quit     chan struct{}
 }
 
-// Mirror draws this origin's terminal on the given streams, as one more viewer
+// Show puts this origin's terminal on the given streams, as one more viewer
 // of the same session. It returns when that viewer leaves or the run ends.
-func (s *Server) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+func (s *Server) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.session.viewLocally(ctx, in, out)
 }
 
