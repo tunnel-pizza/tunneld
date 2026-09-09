@@ -312,18 +312,34 @@ func (s *session) recoverable() bool {
 	return ok && again.Repeatable()
 }
 
-// attachable reports whether a new viewer would find a terminal: the run is
-// still going, or it has ended and the target can be started again.
+// What a viewer arriving now would get, and the words the page puts on the
+// button that gets it.
+const (
+	// offerReconnect is a run still going: the same terminal, still there,
+	// with whatever was on it.
+	offerReconnect = "reconnect"
+	// offerRestart is a run that has ended and a target that can be started
+	// again: a new program on a clean screen, which is a different thing and
+	// says so.
+	offerRestart = "restart"
+)
+
+// offer is what coming back would do, or "" when nothing would.
 //
-// False is the end of the road, and the page needs to know: a container whose
-// PID 1 has exited has nothing to come back to, and offering a button that
-// reconnects to nothing is worse than offering none.
-func (s *session) attachable() bool {
+// Asked at the moment somebody's socket has gone rather than when the page was
+// built, because the answer changes and the page is long-lived: a viewer who
+// detaches from a running shell is reconnecting to it, and the same viewer an
+// hour later, after the shell has exited, is starting a new one. A page that
+// decided this at load time would tell one of them the wrong thing.
+func (s *session) offer() string {
 	select {
 	case <-s.ended():
-		return s.recoverable()
+		if s.recoverable() {
+			return offerRestart
+		}
+		return ""
 	default:
-		return true
+		return offerReconnect
 	}
 }
 

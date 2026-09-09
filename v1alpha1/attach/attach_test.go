@@ -583,54 +583,60 @@ func TestResize(t *testing.T) {
 //
 // It is now also the sole pin for the notice text itself, since the switch
 // that computes it lives inline in the closure and has no test of its own.
-// TestAliveSaysWhetherComingBackIsWorthIt pins the one bit the page asks for
-// after its socket has gone.
+// TestAliveSaysWhatComingBackWouldDo pins the three outcomes, which is one
+// more than the page can work out for itself.
 //
-// The two endings a viewer sees are identical — their own connection dropping
-// leaves a terminal still running, and a container whose shell exited leaves
-// nothing — so the page cannot tell them apart and the server answers.
-func TestAliveSaysWhetherComingBackIsWorthIt(t *testing.T) {
-	alive := func(t *testing.T, s *Server) int {
+// Reconnecting to a run still going is not the same as starting a program
+// over, and calling both of them the same thing told somebody who had just
+// detached from their shell that pressing the button would replace it.
+func TestAliveSaysWhatComingBackWouldDo(t *testing.T) {
+	ask := func(t *testing.T, s *Server) (int, string) {
 		t.Helper()
 		resp, err := http.Get(s.URL().String() + "/alive")
 		if err != nil {
 			t.Fatalf("GET /alive: %v", err)
 		}
 		defer resp.Body.Close()
-		return resp.StatusCode
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp.StatusCode, string(body)
 	}
 
-	t.Run("a running terminal", func(t *testing.T) {
+	t.Run("a run still going is reconnected to", func(t *testing.T) {
 		target := newRerunTarget(false)
-		target.holdFrom = 1 // still going
+		target.holdFrom = 1
 		t.Cleanup(target.release)
 		s := serveFake(t, target)
 		target.awaitRun(t, 1)
 
-		if got := alive(t, s); got != http.StatusNoContent {
-			t.Errorf("GET /alive = %d, want %d while the terminal is up", got, http.StatusNoContent)
+		code, offer := ask(t, s)
+		if code != http.StatusOK || offer != "reconnect" {
+			t.Errorf("GET /alive = %d %q, want 200 %q — the terminal is still there", code, offer, "reconnect")
 		}
 	})
 
-	t.Run("a container whose shell exited", func(t *testing.T) {
-		target := newRerunTarget(false)
-		t.Cleanup(target.release)
-		s := serveFake(t, target)
-		target.awaitOver(t, 1)
-
-		if got := alive(t, s); got != http.StatusGone {
-			t.Errorf("GET /alive = %d, want %d — there is nothing to come back to", got, http.StatusGone)
-		}
-	})
-
-	t.Run("a program that can be run again", func(t *testing.T) {
+	t.Run("a program that ended is started over", func(t *testing.T) {
 		target := newRerunTarget(true)
 		t.Cleanup(target.release)
 		s := serveFake(t, target)
 		target.awaitOver(t, 1)
 
-		if got := alive(t, s); got != http.StatusNoContent {
-			t.Errorf("GET /alive = %d, want %d — coming back starts it again", got, http.StatusNoContent)
+		code, offer := ask(t, s)
+		if code != http.StatusOK || offer != "restart" {
+			t.Errorf("GET /alive = %d %q, want 200 %q — a new program on a clean screen", code, offer, "restart")
+		}
+	})
+
+	t.Run("a container that ended offers nothing", func(t *testing.T) {
+		target := newRerunTarget(false)
+		t.Cleanup(target.release)
+		s := serveFake(t, target)
+		target.awaitOver(t, 1)
+
+		if code, offer := ask(t, s); code != http.StatusGone {
+			t.Errorf("GET /alive = %d %q, want %d — there is nothing to come back to", code, offer, http.StatusGone)
 		}
 	})
 }
@@ -655,46 +661,6 @@ func TestThePageNamesTheOrigin(t *testing.T) {
 
 	if want := "file://api"; !strings.Contains(string(raw), want) {
 		t.Errorf("page does not name the origin %q", want)
-	}
-}
-
-// TestThePageOffersWhatItCanDo pins the button's word. It is the only thing on
-// the page that says what pressing it will get you, and the two origins differ:
-// a program is run again, a container is only reconnected to — and reconnecting
-// to a stopped container gets the last screen and nothing else.
-func TestThePageOffersWhatItCanDo(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		repeat bool
-		want   string
-		avoid  string
-	}{
-		{"a program can be started again", true, ">restart<", ">reconnect<"},
-		{"a container cannot", false, ">reconnect<", ">restart<"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target := newFakeTarget("api", true, true)
-			target.repeat = tc.repeat
-			s := serveFake(t, target)
-
-			resp, err := http.Get(s.URL().String() + "/")
-			if err != nil {
-				t.Fatalf("GET /: %v", err)
-			}
-			defer resp.Body.Close()
-			raw, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("read body: %v", err)
-			}
-			body := string(raw)
-
-			if !strings.Contains(body, tc.want) {
-				t.Errorf("page does not offer %q", tc.want)
-			}
-			if strings.Contains(body, tc.avoid) {
-				t.Errorf("page offers %q, which is not what pressing it does", tc.avoid)
-			}
-		})
 	}
 }
 

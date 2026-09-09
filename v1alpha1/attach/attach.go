@@ -472,19 +472,17 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 		case !s.target.Stdin():
 			notice = "stdin closed (started without -i) — keystrokes go nowhere"
 		}
-		// Restarts decides what the page offers when the stream ends. A
-		// program can be run again, so the button says restart and means it;
-		// a container cannot, so it says reconnect and means only that —
-		// somebody arriving at a stopped container gets the last screen and
-		// nothing to press that would change it.
 		// Origin is what the frame puts in its top-left corner, said again
 		// here because the overlay covers that corner: a page that has lost
 		// its socket should still name what it was showing.
+		//
+		// What the button offers is not decided here. It depends on whether
+		// the run is still going, which is not knowable when the page is
+		// built and is exactly knowable when it is asked — see /alive.
 		data := struct {
-			Notice   string
-			Origin   string
-			Restarts bool
-		}{notice, s.target.Scheme() + "://" + s.target.Name(), s.session.recoverable()}
+			Notice string
+			Origin string
+		}{notice, s.target.Scheme() + "://" + s.target.Name()}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
@@ -504,15 +502,20 @@ func Serve(ctx context.Context, target Target, banner string, log *slog.Logger) 
 	// leaves a terminal that is still there, and the session ending on a
 	// container leaves nothing at all.
 	//
-	// 204 or 410, because the page needs one bit and the status line carries
-	// it without a body to parse.
+	// The answer is the word to put on the button, because there are three
+	// outcomes and not two: reconnecting to a run still going is not the same
+	// as starting a program over, and a page that called both of them the same
+	// thing told somebody who had just detached from their shell that pressing
+	// it would replace it.
 	mux.HandleFunc("GET /alive", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if !s.session.attachable() {
+		offer := s.session.offer()
+		if offer == "" {
 			w.WriteHeader(http.StatusGone)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, offer)
 	})
 
 	// The attach handler hands the request to ServeAttach, which owns the
