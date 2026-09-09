@@ -260,22 +260,29 @@
   const overlay = document.getElementById('gone'), why = document.getElementById('why');
   const again = document.getElementById('again');
   again.onclick = () => location.reload();
+  // reason is what to say, or nothing to have the server asked. A socket
+  // ending says nothing about why: this viewer's own connection dropping — a
+  // lid, an idle timeout — leaves a terminal still running, and a container
+  // whose shell exited leaves nothing at all, and both arrive here
+  // identically.
+  //
+  // So the word starts as the half that is always true — your socket is gone,
+  // whatever else is — and becomes "ended" when the answer says nothing can
+  // bring it back. The button waits for that answer rather than appearing and
+  // vanishing.
   const gone = (reason) => {
     if (!overlay.hidden) return;
-    why.textContent = reason;
+    why.textContent = reason || 'detached';
     overlay.hidden = false;
 
-    // Only offer a way back when there is one. A socket ending says nothing
-    // about why: this viewer's own connection dropping — a lid, an idle
-    // timeout — leaves a terminal still running, and a container whose shell
-    // exited leaves nothing at all, and both arrive here identically. So ask.
-    //
-    // Hidden until the answer comes, because a button that appears and then
-    // vanishes is worse than one that arrives a moment late.
     again.hidden = true;
+    if (reason) return; // an explicit one is already the whole story
     fetch('/alive' + location.search, { cache: 'no-store' })
-      .then((r) => { again.hidden = !r.ok; })
-      .catch(() => { again.hidden = true; });
+      .then((r) => {
+        again.hidden = !r.ok;
+        why.textContent = r.ok ? 'detached' : 'ended';
+      })
+      .catch(() => { why.textContent = 'ended'; });
   };
 
   term.onData((data) => send(STDIN, encoder.encode(data)));
@@ -315,7 +322,7 @@
 
   ws.onclose = () => {
     clearInterval(beat);
-    gone('detached');
+    gone();
   };
 })();
 </script>
