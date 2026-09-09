@@ -90,6 +90,17 @@ type session struct {
 	title    string
 	subtitle string
 
+	// cursorMu guards hidden, and is separate from titleMu for the same reason
+	// titleMu is separate from mu: the callback that writes it fires with the
+	// emulator's own lock held.
+	//
+	// hidden is what the program asked for with DECTCEM. A full-screen program
+	// hides the cursor once, at startup, and then leaves it wherever its last
+	// write ended — so a frame that draws one anyway shows a cursor skating
+	// around the screen on every redraw.
+	cursorMu sync.Mutex
+	hidden   bool
+
 	// mu guards the viewer set, the size negotiated from it, and the public
 	// address, and nothing else.
 	mu      sync.Mutex
@@ -112,27 +123,11 @@ type viewer struct {
 	size remotecommand.TerminalSize
 }
 
-// newSession opens the one attach and starts feeding the emulator from it. It
-// returns as soon as the stream is running; a target that fails is reported
-// through the log, because by this point the tunnel is already up and a dead
-// terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
-	pr, pw := io.Pipe()
-	em := vt.NewSafeEmulator(defaultCols, defaultRows)
-	em.SetScrollbackSize(scrollbackLines)
-
-	s := &session{
-		Target:  target,
-		log:     log,
-		banner:  banner,
-		stdin:   pw,
-		resize:  make(chan remotecommand.TerminalSize),
-		done:    make(chan struct{}),
-		em:      em,
-		viewers: map[*viewer]struct{}{},
-		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
-	}
-
+// watch installs everything the terminal says about itself: the emulator's
+// callbacks, and the one raw OSC handler the callbacks cannot express. Split
+// out of newSession so a frame can be tested against a session whose emulator
+// reports the way a real one does.
+func (s *session) watch() {
 	// Everything the terminal says about itself, in the debug log, and the one
 	// thing the frame acts on.
 	//
@@ -162,38 +157,38 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	// negotiate takes mu and then reaches for that same emulator lock. Nothing
 	// is woken from them either: what they report only ever changes as part of
 	// output, and sink wakes everybody the moment that write returns.
-	name := target.Name()
-	em.SetCallbacks(vt.Callbacks{
+	s.em.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
-			log.Debug("terminal title", "container", name, "title", title)
+			s.log.Debug("terminal title", "container", s.Name(), "title", title)
 			s.setTitle(title)
 		},
 		IconName: func(subtitle string) {
-			log.Debug("terminal subtitle", "container", name, "subtitle", subtitle)
+			s.log.Debug("terminal subtitle", "container", s.Name(), "subtitle", subtitle)
 			s.setSubtitle(subtitle)
 		},
 		WorkingDirectory: func(dir string) {
-			log.Debug("terminal working directory", "container", name, "dir", dir)
+			s.log.Debug("terminal working directory", "container", s.Name(), "dir", dir)
 		},
-		Bell:      func() { log.Debug("terminal bell", "container", name) },
-		AltScreen: func(on bool) { log.Debug("terminal alternate screen", "container", name, "on", on) },
+		Bell:      func() { s.log.Debug("terminal bell", "container", s.Name()) },
+		AltScreen: func(on bool) { s.log.Debug("terminal alternate screen", "container", s.Name(), "on", on) },
 		CursorVisibility: func(visible bool) {
-			log.Debug("terminal cursor visibility", "container", name, "visible", visible)
+			s.log.Debug("terminal cursor visibility", "container", s.Name(), "visible", visible)
+			s.setCursorHidden(!visible)
 		},
 		CursorStyle: func(style vt.CursorStyle, blink bool) {
-			log.Debug("terminal cursor style", "container", name, "style", style, "blink", blink)
+			s.log.Debug("terminal cursor style", "container", s.Name(), "style", style, "blink", blink)
 		},
 		CursorColor: func(c color.Color) {
-			log.Debug("terminal cursor colour", "container", name, "colour", c)
+			s.log.Debug("terminal cursor colour", "container", s.Name(), "colour", c)
 		},
 		ForegroundColor: func(c color.Color) {
-			log.Debug("terminal foreground colour", "container", name, "colour", c)
+			s.log.Debug("terminal foreground colour", "container", s.Name(), "colour", c)
 		},
 		BackgroundColor: func(c color.Color) {
-			log.Debug("terminal background colour", "container", name, "colour", c)
+			s.log.Debug("terminal background colour", "container", s.Name(), "colour", c)
 		},
-		EnableMode:  func(m ansi.Mode) { log.Debug("terminal mode enabled", "container", name, "mode", m) },
-		DisableMode: func(m ansi.Mode) { log.Debug("terminal mode disabled", "container", name, "mode", m) },
+		EnableMode:  func(m ansi.Mode) { s.log.Debug("terminal mode enabled", "container", s.Name(), "mode", m) },
+		DisableMode: func(m ansi.Mode) { s.log.Debug("terminal mode disabled", "container", s.Name(), "mode", m) },
 	})
 
 	// OSC 0 sets both names at once, which the callbacks above cannot show:
@@ -201,11 +196,35 @@ func newSession(ctx context.Context, target Target, banner string, log *slog.Log
 	// OSC 2, and knowing which is how you tell an app that has one name from
 	// one that has two. Registered for the log alone, and returning false so
 	// the emulator goes on to handle it as it would have.
-	em.RegisterOscHandler(0, func(data []byte) bool {
+	s.em.RegisterOscHandler(0, func(data []byte) bool {
 		_, title, _ := strings.Cut(string(data), ";")
-		log.Debug("terminal title, both at once", "container", name, "title", title)
+		s.log.Debug("terminal title, both at once", "container", s.Name(), "title", title)
 		return false
 	})
+}
+
+// newSession opens the one attach and starts feeding the emulator from it. It
+// returns as soon as the stream is running; a target that fails is reported
+// through the log, because by this point the tunnel is already up and a dead
+// terminal origin is not worth taking it down.
+func newSession(ctx context.Context, target Target, banner string, log *slog.Logger) *session {
+	pr, pw := io.Pipe()
+	em := vt.NewSafeEmulator(defaultCols, defaultRows)
+	em.SetScrollbackSize(scrollbackLines)
+
+	s := &session{
+		Target:  target,
+		log:     log,
+		banner:  banner,
+		stdin:   pw,
+		resize:  make(chan remotecommand.TerminalSize),
+		done:    make(chan struct{}),
+		em:      em,
+		viewers: map[*viewer]struct{}{},
+		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
+	}
+
+	s.watch()
 
 	// The emulator answers what a real terminal answers — a device-attributes
 	// query, a cursor-position report — and those replies have to reach the
@@ -523,6 +542,24 @@ func (s *session) remember(into *string, said string) {
 	s.titleMu.Lock()
 	*into = said
 	s.titleMu.Unlock()
+}
+
+// setCursorHidden records what the program asked for with DECTCEM. Called from
+// the emulator's own callback, which is why it takes a lock of its own.
+func (s *session) setCursorHidden(hidden bool) {
+	s.cursorMu.Lock()
+	s.hidden = hidden
+	s.cursorMu.Unlock()
+}
+
+// cursorHidden reports whether the program has asked for no cursor. A frame
+// asks before drawing one: the emulator keeps a position whether or not
+// anything should be shown there, and a full-screen program leaves that
+// position wherever its last write ended.
+func (s *session) cursorHidden() bool {
+	s.cursorMu.Lock()
+	defer s.cursorMu.Unlock()
+	return s.hidden
 }
 
 // titles are the two names the terminal goes by, either "" if it has never

@@ -27,6 +27,23 @@
         integrity="sha384-txoiwu4RR2GD3qySbaj+BbzibkLbSJRcfqGYMu6z1EqHil4A2dyBiBW5dlacG6OR"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
+<!-- The WebGL renderer. Without it xterm draws every cell as text in a clipped
+     row, which a terminal program's box drawing does not survive: at this font
+     size U+2502 carries 16.5px of ink through a 15px row, so every vertical
+     rule loses its ends once per row and reads as a dashed line, and a
+     fractional cell advance (7.83px) puts each row's glyphs on different
+     device pixels, so the columns furthest right stop lining up with each
+     other. Neither is a font problem — it is what the DOM renderer is.
+
+     With this loaded, xterm draws box-drawing and block characters itself,
+     sized to the cell, which is what makes the lines continuous. Its own
+     `customGlyphs` option says so, and says it "doesn't work with the DOM
+     renderer". VS Code's terminal is the same library making the same choice:
+     gpuAcceleration defaults to "auto", which loads this addon. -->
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.19.0/lib/addon-webgl.js"
+        integrity="sha384-8/2DNT7OeuMQVc7wBPoMHAQ+NmEoYSx27k7IdbsItiomGC5D9+LTrbo8jtY6YZv8"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 
 <style>
   /* The terminal is the page. No chrome, no header, nothing to explain — what
@@ -147,6 +164,23 @@
   term.onTitleChange((title) => { document.title = title; });
 
   term.open(document.getElementById('term'));
+
+  // Loaded after open, because the addon needs the element xterm attached to.
+  //
+  // Every failure here is survivable and none of them is worth a message: a
+  // context this machine will not give, a driver that refuses, a GPU that
+  // takes the context back later when the tab is buried or the laptop
+  // switches cards. Dispose and the terminal falls back to the renderer it
+  // would have had — dashed rules and all, which is a worse terminal and
+  // still a terminal.
+  try {
+    const webgl = new WebglAddon.WebglAddon();
+    webgl.onContextLoss(() => webgl.dispose());
+    term.loadAddon(webgl);
+  } catch (e) {
+    console.warn('attach: falling back to the DOM renderer', e);
+  }
+
   fit.fit();
 
   // location.search is the tunnel's own bare routing parameter, carried over

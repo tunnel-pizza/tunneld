@@ -52,6 +52,11 @@ func newFrameHarness(t *testing.T) *harness {
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 	}
 
+	// The same reporting a real session installs, so what the frame reads back
+	// about the terminal — its names, whether it wants a cursor — arrives the
+	// way the emulator delivers it rather than by a test writing the field.
+	s.watch()
+
 	// The one wire the frame depends on: a key handed to the emulator comes
 	// back out of it encoded, and that is what the container reads.
 	go func() { _, _ = io.Copy(pw, em) }()
@@ -501,6 +506,41 @@ func TestViewPlacesTheCursor(t *testing.T) {
 	h.press(t, ctrlD)
 	if h.f.View().Cursor != nil {
 		t.Error("cursor shown in command mode, want it withheld")
+	}
+}
+
+// TestViewWithholdsAHiddenCursor pins the third reason not to draw one: the
+// program asked for no cursor.
+//
+// A full-screen program hides it at startup and then leaves the position
+// wherever its last write ended, so a frame that draws one anyway shows a
+// cursor skating around the screen on every redraw. The emulator keeps
+// answering with a position either way — which is the trap.
+func TestViewWithholdsAHiddenCursor(t *testing.T) {
+	h := newFrameHarness(t)
+
+	// DECTCEM, the way a program sends it, so the emulator's own callback is
+	// what records this rather than the test reaching past it.
+	if _, err := h.s.em.WriteString("hello\x1b[?25l"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !h.s.cursorHidden() {
+		t.Fatal("the session did not record DECTCEM; the emulator's callback is not wired")
+	}
+	if got := h.f.View().Cursor; got != nil {
+		t.Errorf("cursor drawn at (%d,%d), want none — the program asked for none", got.X, got.Y)
+	}
+
+	// And it comes back, because a program that hides the cursor to redraw
+	// shows it again to ask for something.
+	if _, err := h.s.em.WriteString("\x1b[?25h"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if h.s.cursorHidden() {
+		t.Fatal("the session kept the cursor hidden after DECTCEM set it visible")
+	}
+	if h.f.View().Cursor == nil {
+		t.Error("no cursor after the program asked for one again")
 	}
 }
 

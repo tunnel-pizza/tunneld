@@ -447,8 +447,25 @@ Two things there will bite if you change them without knowing why:
   The handler opens with `noopener,noreferrer`, because the container's output
   reaches this terminal and an origin that printed its own OSC 8 would
   otherwise be handed a reference to the window.
+- **The page needs the WebGL renderer, and it is not an optimization.** xterm's
+  DOM renderer draws every cell as text in a clipped row, which a full-screen
+  program's box drawing does not survive: at the page's font size U+2502
+  carries 16.5px of ink through a 15px row, so a vertical rule loses its ends
+  once per row and reads as dashes, and a fractional cell advance puts each
+  row's glyphs on different device pixels so the rightmost columns stop lining
+  up. The addon draws box-drawing and block characters itself, sized to the
+  cell. xterm's own `customGlyphs` option says it "doesn't work with the DOM
+  renderer"; VS Code's terminal is the same library making the same choice.
+  Loading it is allowed to fail — a context the machine will not give, a GPU
+  that takes it back later — and disposing falls back to the DOM renderer,
+  which is a worse terminal and still a terminal.
+- **A cursor is drawn only when the program wants one.** The emulator answers
+  with a position whether or not anything should be shown there, and a
+  full-screen program hides the cursor at startup and then leaves the position
+  wherever its last write ended. `session.watch` records DECTCEM and the frame
+  asks before drawing, or the cursor skates around the screen on every redraw.
 - **Everything the terminal says about itself is in the debug log.** The
-  `vt.Callbacks` block in `newSession` logs titles, working directory, bell,
+  `vt.Callbacks` block in `session.watch` logs titles, working directory, bell,
   modes, cursor and colour changes, because the only way to learn what a given
   app sends is to watch one send it — Claude Code, for instance, sets no title
   at its login screen but does once a session is running. `CursorPosition` is
