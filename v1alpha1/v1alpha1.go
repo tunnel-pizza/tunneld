@@ -21,10 +21,11 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 )
@@ -87,24 +88,45 @@ func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
 
-// Browser puts the tunnel in front of a person: it answers the bare public
+// Console is the screen a run was started on, when it turns out to be one.
+//
+// For is the whole of it, and it answers rather than asks: given the bound
+// origins and the command's own streams, it says nil when there is no screen —
+// nothing to show, or nowhere to show it — and one ready to be handed over
+// otherwise. Nothing out here counts origins or tests a stream — the binder
+// already decided the first by carrying Show, and the second is a question
+// about streams that the thing drawing on them should be the one to ask.
+//
+// What comes back is what the browser package takes when it decides a console
+// is what this run gets shown on: one interface, declared where the console
+// is, named by the package that chooses between it and a tab.
+type Console interface {
+	For(bound attach.Bound, streams console.Streams) console.Screen
+}
+
+// Display puts the tunnel in front of a person: it answers the bare public
 // address when several origins have to share it, and it opens that address
 // once the edge serves it.
 //
 // URL and Interceptors are two halves of one decision and answer over the
 // same condition — "" and no interceptors when there is no panel to serve —
 // so the caller reads an answer rather than asking whether to ask.
-type Browser interface {
+//
+// Open reads the same way. It is told what the run is doing, in the options it
+// takes, and decides for itself whether that means a browser — there is no
+// "should I" for a caller to answer, and no second place where opening one is
+// decided.
+type Display interface {
 	URL(enabled bool, public *url.URL, origins []*url.URL) string
 	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
-	Open(ctx context.Context, addr string, stderr io.Writer, log v1.Logger)
+	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
 }
 
-// WithBrowser replaces what serves the tunnel's bare address and opens it
-// once the tunnel is live. The default is browser.New(): the panel from
+// WithDisplay replaces what serves the tunnel's bare address and opens it
+// once the tunnel is live. The default is display.New(): the panel from
 // multiview.html, and the host's browser launched as-is.
-func WithBrowser(browser Browser) Option {
-	return func(b *BuilderImpl) { b.browser = browser }
+func WithDisplay(display Display) Option {
+	return func(b *BuilderImpl) { b.display = display }
 }
 
 // Counter folds tunnel events into a verdict: has the edge disowned it.
@@ -137,49 +159,17 @@ func WithCounter(c Counter) Option {
 // Binder turns the origins the operator typed into the origins the tunnel
 // dials, standing a loopback server in for each origin that names something to
 // serve rather than an address to reach — a container, a local program. The dialable list
-// keeps display's length and order — index n means origin n everywhere
+// keeps shown's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
-	Bind(ctx context.Context, display []*url.URL, log v1.Logger) (dialable []*url.URL, close io.Closer, err error)
+	Bind(ctx context.Context, shown []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
 }
 
-// Announcer is a bound origin that can be told the public address it answers
-// on, once the tunnel has one.
-//
-// Discovered on the closer Bind returns rather than required by Binder, and
-// that is an import direction rather than a preference: an implementation
-// lives in a subpackage, the subpackage cannot name a type declared here, and
-// a contract whose method signature mentions one could never be satisfied from
-// there. So the capability is optional in the way http.Flusher is — a binder
-// that has nothing to announce simply is not one.
-//
-// The addresses are indexed the way display was, which is the same rule
-// everything downstream of Bind already follows.
-type Announcer interface {
-	Announce(public []string)
-}
-
-// Mirror is a bound origin that can draw its terminal on streams of the
-// caller's choosing — the console tunneld was started from.
-//
-// Discovered on the closer Bind returns, like Announcer and Quitter, and for
-// the same reason. It returns when that viewer leaves or the run ends, and
-// leaves the console as it found it.
-type Mirror interface {
-	Mirror(ctx context.Context, in io.Reader, out io.Writer) error
-}
-
-// Quitter is a bound origin that can be asked, from inside, to end the run.
-//
-// Discovered on the closer Bind returns, the same way Announcer is and for the
-// same reason: an implementation lives in a subpackage and cannot name a type
-// declared here. A binder with nothing to ask on simply is not one.
-//
-// The channel closes at most once and carries nothing. What it means is that
-// somebody watching a terminal chose to end the process serving it — the one
-// way out of a terminal you opened from your own machine.
-type Quitter interface {
-	Quit() <-chan struct{}
+// WithConsole replaces the console a run may draw its terminal on. Seeded by
+// New with the log ring and the hint; a caller replaces it to draw somewhere
+// else, or to draw nothing.
+func WithConsole(c Console) Option {
+	return func(b *BuilderImpl) { b.console = c }
 }
 
 // WithBinder replaces what stands a loopback origin in for a container or a
@@ -197,9 +187,10 @@ var (
 	_ CacheDirs  = (*cachedir.ValueImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
-	_ Browser    = (*browser.BrowserImpl)(nil)
+	_ Display    = (*display.DisplayImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
+	_ Console    = (*console.ConsoleImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -210,8 +201,12 @@ var (
 // Of the flag seeds, only the booleans need seeding here — their defaults are
 // on, and a bool field cannot express "unset" separately from "off". Setting
 // them here rather than at the flag binding keeps one rule for every knob: a
-// flag's default is always the field it binds over, so WithOpen(false) is
+// flag's default is always the field it binds over, so WithMultiview(false) is
 // honoured exactly like every other seed.
+//
+// WithOpen is the exception, and is not seeded: whether to open a browser is
+// derived per run rather than defaulted, so "unset" is the state that matters
+// and its field is a pointer for exactly that reason.
 func New(opts ...Option) *BuilderImpl {
 	// Built before the builder, because two things need the same one: the
 	// terminal, which shows the lines, and the logger the command assembles
@@ -219,14 +214,18 @@ func New(opts ...Option) *BuilderImpl {
 	recent := logs.New()
 
 	b := v1.Apply(&BuilderImpl{recent: recent},
-		WithOpen(v1.DefaultOpen),
 		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
+		WithShellFallback(v1.DefaultShellFallback),
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
-		WithBrowser(browser.New()),
+		WithDisplay(display.New()),
 		WithCounter(counter.New()),
+		WithConsole(console.New(
+			console.WithLogs(recent),
+			console.WithHint(stopHint),
+		)),
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			attach.WithBanner(VersionLine()),
@@ -247,14 +246,17 @@ type BuilderImpl struct {
 	logLevel  string
 	multiview bool
 
-	// open is the seed WithOpen writes; noOpen is what --no-open binds over.
-	// Two fields rather than one because the command line reads negative and
-	// the Go knob reads positive: Command registers --no-open defaulting to
-	// !open, and pflag writes that default straight into noOpen, so noOpen is
-	// authoritative from Command onwards and open is only ever the seed it
-	// came from.
-	open   bool
-	noOpen bool
+	// open is what WithOpen wrote, and nil is nobody having written anything.
+	// A pointer because the three states are real: open, do not open, and
+	// work it out — the last of which is the one nearly every run wants, and
+	// a bool cannot hold beside the other two.
+	open *bool
+
+	// shellFallback is whether Origins answers "nothing settled anywhere"
+	// with $SHELL. Flag-backed like the two above, so an embedding program
+	// seeds it, an operator overrides it, and neither has to reach into the
+	// process environment to find out what a run will do.
+	shellFallback bool
 
 	// establishDeadline bounds the wait for the public URL to answer before
 	// the addresses are reported. The counter that answers that wait
@@ -269,7 +271,7 @@ type BuilderImpl struct {
 	cacheDirs CacheDirs
 	engine    Engine
 	cache     Cache
-	browser   Browser
+	display   Display
 	counter   Counter
 	binder    Binder
 
@@ -285,6 +287,13 @@ type BuilderImpl struct {
 	// command wraps its log handler in this, and the binder was handed the
 	// same one at construction — see New, and Logs in v1alpha1/attach.
 	recent *logs.RingImpl
+
+	// console is the screen this run was started on, seeded with what
+	// outlives a single run — the ring to keep off a drawn frame, and the
+	// line to leave on a returned prompt. Run binds it to the origins and
+	// streams it actually got, and the browser package decides whether it is
+	// what the tunnel gets put in front of.
+	console Console
 
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once

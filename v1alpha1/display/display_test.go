@@ -1,4 +1,4 @@
-package browser
+package display
 
 import (
 	"bytes"
@@ -9,12 +9,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/cnuss/libtunnel"
+	"github.com/creack/pty"
 	pkgbrowser "github.com/pkg/browser"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 )
 
 // discard is the logger every test hands to Interceptors: nothing under test
@@ -63,6 +67,119 @@ func unframeOf(t *testing.T) libtunnel.Interceptor {
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
 // the whole design: the panel answers the tunnel's own address and nothing
 // else, because everything else belongs to an origin.
+// TestIsInteractive covers the one question a run answers for itself: is any
+// of what it was given a terminal. A pty for yes, since nothing else says so,
+// and pipes for no — which is a pipeline, a service manager, a CI step and a
+// container all at once.
+func TestIsInteractive(t *testing.T) {
+	if !IsInteractive(onATerminal(t)) {
+		t.Error("IsInteractive() = false for a terminal, want true")
+	}
+	if IsInteractive(inAPipe{}) {
+		t.Error("IsInteractive() = true for pipes, want false — nobody is watching")
+	}
+}
+
+// inAPipe is a run with nothing on a terminal.
+type inAPipe struct{}
+
+func (inAPipe) InOrStdin() io.Reader   { return strings.NewReader("") }
+func (inAPipe) OutOrStdout() io.Writer { return io.Discard }
+func (inAPipe) ErrOrStderr() io.Writer { return io.Discard }
+
+// TestOpenDecides covers the browser decision, which has no flag and no
+// variable behind it any more. Each row is somewhere somebody actually runs,
+// and the answer is the one they would give without being asked.
+//
+// Driven through Open with a launcher that records rather than launches, since
+// what is under test is whether the attempt is made at all. Every variable it
+// reads is set explicitly, the ones a runner sets for itself included: this
+// suite runs under $CI, which is one of the signals.
+func TestOpenDecides(t *testing.T) {
+	const ssh = "10.0.0.1 51234 10.0.0.2 22"
+	// watched and drawing are the two shapes a row starts from. The terminal
+	// they name is a real pty, because that is what WithInteractive asks the
+	// streams about and a buffer can never answer yes.
+	watched := func(t *testing.T) []Option { return []Option{WithInteractive(IsInteractive(onATerminal(t)))} }
+	drawing := func(t *testing.T) []Option { return append(watched(t), WithScreen(stillScreen{})) }
+	pipe := func(*testing.T) []Option { return nil }
+	for _, tc := range []struct {
+		name string
+		when func(*testing.T) []Option
+		env  map[string]string
+		want bool
+	}{
+		{"a desktop session", watched, map[string]string{"DISPLAY": ":0"}, true},
+		{"a wayland session", watched, map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"nothing is watching a pipe", pipe, map[string]string{"DISPLAY": ":0"}, false},
+		{"a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "true"}, false},
+		{"CI set to a falsehood is not a runner", watched, map[string]string{"DISPLAY": ":0", "CI": "false"}, true},
+		{"ssh with nothing forwarded", watched, map[string]string{"SSH_CONNECTION": ssh}, false},
+		{"ssh by its tty alone", watched, map[string]string{"SSH_TTY": "/dev/pts/0"}, false},
+		{"ssh -X", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0"}, true},
+		// $CI is asked before ssh, because a runner reached over ssh is still
+		// a runner and the display it forwarded is still nobody's.
+		{"a runner reached over ssh", watched, map[string]string{"SSH_CONNECTION": ssh, "DISPLAY": "localhost:10.0", "CI": "true"}, false},
+		// The console is already showing it, which outranks every signal
+		// below and the caller's own instruction above.
+		{"a console already showing it", drawing, map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists cannot beat that", forced(drawing, true), map[string]string{"DISPLAY": ":0"}, false},
+		// The caller beats everything the machine has to say.
+		{"a caller who declines", forced(watched, false), map[string]string{"DISPLAY": ":0"}, false},
+		{"a caller who insists over a pipe", forced(pipe, true), map[string]string{"CI": "true"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range []string{"CI", "SSH_CONNECTION", "SSH_TTY", "DISPLAY", "WAYLAND_DISPLAY"} {
+				t.Setenv(name, tc.env[name])
+			}
+			var launched []string
+			b := New(WithLaunch(func(addr string) error {
+				launched = append(launched, addr)
+				return nil
+			}))
+			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneled.pizza/")}, tc.when(t)...)...)
+			if got := len(launched) > 0; got != tc.want {
+				t.Errorf("launched %q, want a browser: %v", launched, tc.want)
+			}
+		})
+	}
+}
+
+// forced is a row's options with a caller's own answer appended, which reads
+// better in a table than an append inside a composite literal.
+func forced(base func(*testing.T) []Option, open bool) func(*testing.T) []Option {
+	return func(t *testing.T) []Option { return append(base(t), WithForced(&open)) }
+}
+
+// onATerminal is a run whose output goes somewhere a person can see, which is
+// what IsInteractive asks the streams about — a real pty, since nothing else
+// answers yes.
+func onATerminal(t *testing.T) console.Streams {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to be a terminal on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	return streams{tty}
+}
+
+type streams struct{ tty *os.File }
+
+func (s streams) InOrStdin() io.Reader   { return s.tty }
+func (s streams) OutOrStdout() io.Writer { return s.tty }
+func (s streams) ErrOrStderr() io.Writer { return s.tty }
+
+// stillScreen is a console that shows nothing. The rows using it are about
+// what a console being there means, not about what it shows.
+type stillScreen struct{}
+
+func (stillScreen) Show(context.Context, v1.Logger) {}
+
+// ptr is a *bool for a literal, which When.Forced needs and Go has no spelling
+// for inline.
+func ptr(b bool) *bool { return &b }
+
 func TestIsPanelRequest(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -553,7 +670,7 @@ func TestOpen(t *testing.T) {
 		}))
 
 		var stderr bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", &stderr, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true)), WithStderr(&stderr))
 
 		if want := "https://striped-worm.tunneled.pizza/"; opened != want {
 			t.Errorf("opened %q, want %q", opened, want)
@@ -577,7 +694,7 @@ func TestOpen(t *testing.T) {
 		defer srv.Close()
 
 		o := New(WithLaunch(func(string) error { return nil }))
-		o.Open(t.Context(), srv.URL, io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr(srv.URL), WithForced(ptr(true)), WithStderr(io.Discard))
 
 		if got := requests.Load(); got != 0 {
 			t.Errorf("made %d requests to the address, want none", got)
@@ -596,7 +713,7 @@ func TestOpen(t *testing.T) {
 			launched = true
 			return nil
 		}))
-		o.Open(ctx, "https://striped-worm.tunneled.pizza/", io.Discard, slog.New(slog.DiscardHandler))
+		o.Open(ctx, slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true)), WithStderr(io.Discard))
 
 		if !launched {
 			t.Error("a cancelled context stopped the launch, want it to open anyway")
@@ -609,17 +726,18 @@ func TestOpen(t *testing.T) {
 	// browser that did not appear.
 	t.Run("a failure is quiet outside the debug log", func(t *testing.T) {
 		o := New(WithLaunch(func(string) error { return errors.New("no browser here") }))
+		// Forced, so the decision above cannot be what keeps it quiet: the
+		// launch has to be attempted for its failure to be the thing tested.
+		anyway := []Option{WithAddr("https://striped-worm.tunneled.pizza/"), WithForced(ptr(true))}
 
 		var quiet bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", io.Discard,
-			slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		o.Open(t.Context(), slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})), anyway...)
 		if quiet.Len() != 0 {
 			t.Errorf("log = %q, want nothing at warn level", quiet.String())
 		}
 
 		var logged bytes.Buffer
-		o.Open(t.Context(), "https://striped-worm.tunneled.pizza/", io.Discard,
-			slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		o.Open(t.Context(), slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})), anyway...)
 		if !strings.Contains(logged.String(), "could not open a browser") {
 			t.Errorf("log = %q, want the failure in the debug log", logged.String())
 		}

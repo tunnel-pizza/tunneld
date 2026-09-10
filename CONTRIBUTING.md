@@ -20,11 +20,12 @@ Deep-link by filename; line numbers will drift.
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
-| Browser launch, multiview panel, framing headers, template (`Browser`) | [`v1alpha1/browser/`](./v1alpha1/browser) |
+| Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
@@ -76,8 +77,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `CacheDirs`, `Engine`,
-`Cache`, `Browser`, `Counter`, `Binder`, implemented respectively by
-`cachedir`, `engine`, `cache`, `browser`, `counter`, `attach`. Each
+`Cache`, `Display`, `Counter`, `Binder`, implemented respectively by
+`cachedir`, `engine`, `cache`, `display`, `counter`, `attach`. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
 subpackage, seeded by `New` and replaceable with the matching `With*` option.
 A function that maps a value to a value (`publicURL`, `Version`) gets no
@@ -97,8 +98,8 @@ and each implementation's tunables alike, and a package with no tunables still
 takes the variadic so adding one changes no caller. An option is a plain
 function, so it can be applied anywhere a setter used to be called: `New`
 seeds its own defaults with the same `With*` options a caller passes —
-`WithOpen(v1.DefaultOpen)` goes through the same `v1.Apply` path as a
-caller's own `WithOpen(false)`.
+`WithMultiview(v1.DefaultMultiview)` goes through the same `v1.Apply` path as
+a caller's own `WithMultiview(false)`.
 
 **Command assembles once.** `Command` is guarded by `commandOnce` (see
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)) and that is correctness, not
@@ -162,7 +163,7 @@ make run multi-origin
 
 `go run` rather than a make target wherever flags are involved: make reads a
 leading `--` as one of its own options and refuses. The `run` target takes an
-example *name*, which is a bare word, so it works — `make run basic --no-open`
+example *name*, which is a bare word, so it works — `make run basic --provider x`
 does not.
 
 ## Test layout
@@ -551,12 +552,104 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
-- **Zero origins means `$SHELL`, resolved before it is adopted.** The parse
+- **Zero origins means `$SHELL` when `--shell-fallback` allows it, resolved
+  before it is adopted.** The knob is asked before the variable is read, so a
+  run that declines the fallback never consults the environment at all — which
+  is the point: it is how a caller says "nothing to expose" and means it, and
+  how a test says the same without unsetting a variable the run reads behind
+  its back. `e2e` still strips `SHELL` in `strippedEnv` rather than passing the
+  flag, because the flag is itself under test and a case proving it works has
+  to start from a run that would otherwise fall back. The parse
   loop's fallback for a word it cannot resolve is to read it as an address, so
   an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
   a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
+- **The browser decision is derived, and split where the knowledge is.**
+  `--no-open` and `TUNNELD_NO_OPEN` are gone, and so is the gate at the call
+  site. `Display.Open` decides, because putting the tunnel in front of a
+  person is that package's job and there are two ways to do it: a tab, or the
+  console the run was started from. The run hands it `display.When` — a
+  console to draw on if there is one, the caller's own instruction, and
+  whether any of the command's streams is a terminal — and everything else it
+  needs is knowledge about this machine (`$CI`, ssh, the display variables),
+  which is the browser package's own. Facts in, no verdict, so there is no
+  "should I" for a caller to get wrong and no second place where this is
+  decided. Order inside is load-bearing: `Mirror` comes before `Forced`,
+  because a console already showing the thing is a fact about the run rather
+  than an opinion about it. Every branch logs its reason at debug, the only
+  record of a decision nobody typed.
+
+  `Open` decides but does not draw. `v1alpha1/console` owns what a console
+  costs on the way in and out — a log ring that must stop writing through a
+  full-screen frame, and a prompt that has to be told the tunnel is still up
+  once the frame gives it back — so a package about browsers is not also the
+  thing that runs a terminal. `display` imports `console` and not the other
+  way round: a tab and a console are two ways of doing one thing, and the
+  package that chooses between them is the one that names the other, so
+  `console.Screen` is declared once rather than twice.
+
+  **`Bind` hands back an `attach.Bound`, not an `io.Closer` with secrets.**
+  Close, `Announce` and `Done` are on the type, because every bound list can
+  do all three — they were spelled as optional interfaces discovered by type
+  assertion, which is a lie a caller has to write an `if` around. Exactly one
+  thing is conditional: `Show`, which only a single served origin carries, and
+  that one stays an assertion because it is the only one that can answer no.
+  `Done` rather than `Quit` so the select it belongs in reads the same way
+  three times: a context is done, a tunnel is done, and so are the origins.
+
+  **A run is asked where its output goes, not what that means.** `console.For`
+  and `display.IsInteractive` both take `console.Streams` — the three accessors
+  `*cobra.Command` already has — so neither package imports cobra, neither call
+  site spells out an `IsTerminal` chain, and what counts as a terminal is
+  `console.IsTerminal` in one place. `Streams` is declared in `console` because
+  that is where terminal knowledge lives; `display` names it the way it names
+  `console.Screen`.
+
+  **`console.Loading` blocks, and that is the design.** A spinner and its
+  caller write to the same stream, so anything that let the caller carry on
+  would race a public address against a frame landing on top of it. Waiting
+  means the line is the caller's again the moment it returns, with no handle
+  to remember. It takes `ctx` and a `ready` channel and ends on either; taking
+  `tun.Ready()` steals nothing, because libtunnel hands out a channel per call
+  that delivers once and closes, so the run's own receive still gets the
+  value. It goes on **stderr** — stdout is one public address per origin, and
+  a carriage return in it is a corrupted machine interface — and only when
+  `display.IsInteractive` and the logger is silent, since a log line lands on
+  top of a spinner.
+
+  **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
+  `Terminal` is what the binder hands back, `Screen` is what a run was started
+  on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them
+  meaning the same thing. `attach` implements `Show` on its side.
+
+  **Nobody counts origins to find out whether a console can show one.** `Bind`
+  answers by carrying the method: a closer satisfies `console.Terminal` only
+  when it wrapped exactly one server, which is one served origin since nothing
+  else gets one. `console.For` asks that question and the stream question
+  together and returns nil for either no — nil being load-bearing, because
+  `display` reads it to decide whether a tab is what this run gets instead.
+  It returns `console.Screen` rather than `*ConsoleImpl` for the same reason:
+  a nil pointer in an interface field is not nil, and the guard on the other
+  side would wave it through.
+
+  The seam moved the tests with it. `browser` owns the decision, so
+  `TestOpenDecides` drives `Open` with a recording `WithLaunch` and asserts
+  whether the attempt was made. `v1alpha1` owns reporting the facts, so its
+  cases read `h.browser.when` — a fake browser never runs the decision, and a
+  case there asserting "nothing opened" would be asserting nothing at all.
+  `h.run` sets stdin either way, since cobra otherwise falls back to the
+  process's own, which is a terminal when the suite is run from one.
+- **`RunE` is one line; the run is `Run`.** The body used to be a 357-line
+  closure inside `Command`'s struct literal, reachable only by executing a
+  cobra command. It is a method now, and `RunE` calls it with `cmd.Context()`.
+  Two consequences worth keeping: `Run` assembles the command itself rather
+  than taking one, because `Command` is cached and that is where the streams
+  and the flag values live — from inside `RunE` it is the same command already
+  running. And `applyEnv` is called from both `PersistentPreRunE` and `Run`,
+  because nothing runs `PersistentPreRunE` for a direct caller and env has to
+  beat code on both paths. It is idempotent: a flag it set is marked `Changed`,
+  and a `Changed` flag is skipped.
 - **The console is a viewer, and the gate is where the care is.**
   `session.viewLocally` is `AttachContainer` without the two things that exist
   only for a websocket: the stated colour profile and TERM, which a real
@@ -566,11 +659,12 @@ Two things there will bite if you change them without knowing why:
   whether to draw at all is `mirrorable` in the builder: one origin, a served
   scheme, and a terminal on both of the command's own streams — checked there
   and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
-  them. It is decided before the browser rather than beside the frame, because
-  the browser asks about it: a mirrored run opens no tab, `--open` or not. The
-  answer gates that `if` and never writes `b.noOpen`, which is bound to
-  `--no-open` — a builder whose `Command` is called twice must not carry one
-  run's terminal into the next one's flags.
+  them. It is decided before the browser because the browser is told about it:
+  a mirrored run opens no tab, `WithOpen(true)` or not. Its first two checks —
+  one origin, served scheme — are what the binder already worked out, since it
+  stands a server up only for a served origin and `bound.Mirror` refuses
+  anything but a list of one. They are said again because the answer is needed
+  before the mirror starts: the browser is told, and the log ring is muted.
 - **A drawing console mutes the log ring.** stderr writes straight through a
   full-screen frame. `recent.Mute(true)` stops records reaching the handler
   while the ring keeps every line, so nothing is lost and `^K l` is where they

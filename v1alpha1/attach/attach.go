@@ -252,10 +252,10 @@ func WithBanner(banner string) Option {
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Logger) ([]*url.URL, io.Closer, error) {
-	dialable := make([]*url.URL, 0, len(display))
+func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logger) ([]*url.URL, Bound, error) {
+	dialable := make([]*url.URL, 0, len(shown))
 	var servers bound
-	for at, origin := range display {
+	for at, origin := range shown {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
@@ -290,7 +290,44 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
+	// A closer that can be shown on a console says so by carrying the method, and only
+	// when it can: one origin, which is one served origin because nothing
+	// else gets a server. A caller then asks by type assertion and gets a
+	// straight answer, rather than re-deriving from the origin list what was
+	// already decided here.
+	if len(servers) == 1 {
+		return dialable, sole{servers}, nil
+	}
 	return dialable, servers, nil
+}
+
+// sole is a bound list of exactly one, which is the only shape that can put a
+// terminal on a console: with several, a console has no way to say
+// which it is watching and no room to watch them at once — that is what the
+// public hostname and its routing parameter are for.
+//
+// A wrapper rather than a flag, because what a caller wants to know is whether
+// to ask, and a method set is how Go says that. bound keeps show unexported
+// to this file so the only way to reach it is through here.
+type sole struct{ bound }
+
+func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
+	return s.bound.show(ctx, in, out)
+}
+
+// Bound is what a Bind call hands back: the servers it started, and the three
+// things every one of them can do — be closed, be told the public addresses,
+// and say when a viewer has asked the run to end.
+//
+// None of those is conditional, which is why they are here rather than
+// discovered by type assertion one at a time. Exactly one thing is: a bound
+// list of one served origin also carries Show, since that is the only shape a
+// console can put on a screen. That one stays an assertion, because it is the
+// only one that can answer no.
+type Bound interface {
+	io.Closer
+	Announce(public []string)
+	Done() <-chan struct{}
 }
 
 // bound is every attach server a Bind call started, with the place in the
@@ -299,35 +336,46 @@ func (b *BinderImpl) Bind(ctx context.Context, display []*url.URL, log *slog.Log
 // The index is kept because that is the only thing that connects a server to
 // the address it will answer on: the tunnel hands back one public URL and the
 // origins are told apart by their routing parameter, so origin n's address is
-// derived from n. Same length and order as display, like everything else here.
+// derived from n. Same length and order as shown, like everything else here.
 type bound []boundOrigin
 
-// Mirror draws the one origin bound here on the given streams.
+// show puts the one origin bound here on the given streams.
 //
-// Only when there is exactly one. With several, a console has no way to say
-// which it is watching and no room to watch them at once — that is what the
-// public hostname and its routing parameter are for.
-func (b bound) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+// Unexported, and reached only through the sole wrapper Bind returns
+// when there is exactly one: a bound list of several has nothing to draw, and
+// the length check that used to live here was a guard against a caller that
+// can no longer exist.
+func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 	if len(b) != 1 {
-		return fmt.Errorf("attach: %d origins to mirror, want exactly one", len(b))
+		return fmt.Errorf("attach: %d origins to show, want exactly one", len(b))
 	}
-	return b[0].srv.Mirror(ctx, in, out)
+	return b[0].srv.Show(ctx, in, out)
 }
 
-// Quit closes when a viewer of any of these origins asks the run to end. One
+// Done closes when a viewer of any of these origins asks the run to end. One
 // channel for all of them, because what they are asking for is the process,
 // which there is only one of.
+//
+// Named for what a caller does with it rather than what fills it, so the
+// select it belongs in reads the same way three times over: a context is
+// done, a tunnel is done, and so is this.
 //
 // The watchers live as long as the origins do, which is as long as the run: a
 // closer that has been closed has nothing left to watch for, and a run that is
 // over is not waiting on this.
-func (b bound) Quit() <-chan struct{} {
+//
+// Callable more than once, and called that way: the run waits on this to know
+// it should stop, and a console waits on it to tell a detach from an exit.
+// Each call gets watchers and a channel of its own — every one of them closes
+// on the same ask, and they cost a goroutine per served origin, which is one
+// in the only case where two callers exist.
+func (b bound) Done() <-chan struct{} {
 	asked := make(chan struct{})
 	var once sync.Once
 	for _, o := range b {
 		go func(srv *Server) {
 			select {
-			case <-srv.Quit():
+			case <-srv.Done():
 				once.Do(func() { close(asked) })
 			case <-srv.ctx.Done():
 			}
@@ -357,11 +405,10 @@ func (b bound) Close() error {
 // Announce gives each server the public address it answers on, taken from
 // public by the index the origin had.
 //
-// It is what the root's Announcer asks for. Discovered by assertion rather
-// than named in the Binder contract, because this package cannot refer to that
-// contract's types — v1alpha1 imports attach, not the other way round — so the
-// closer Bind hands back is asked whether it can do this rather than required
-// to.
+// It is what the root's Announce reaches. Declared on Bound, which the Binder
+// contract names, so a caller has it rather than having to ask for it: every
+// bound list can be told its addresses, and an interface that says so is
+// better than one a caller discovers by type assertion and a happy guess.
 //
 // A short list is not an error. It means the caller had fewer addresses than
 // origins, and a server without one simply has nothing to show.
@@ -394,15 +441,15 @@ type Server struct {
 	quit     chan struct{}
 }
 
-// Mirror draws this origin's terminal on the given streams, as one more viewer
+// Show puts this origin's terminal on the given streams, as one more viewer
 // of the same session. It returns when that viewer leaves or the run ends.
-func (s *Server) Mirror(ctx context.Context, in io.Reader, out io.Writer) error {
+func (s *Server) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.session.viewLocally(ctx, in, out)
 }
 
 // Quit closes when a viewer has asked the run to end. The channel is never
 // sent on and closes at most once, so a caller may select on it forever.
-func (s *Server) Quit() <-chan struct{} { return s.quit }
+func (s *Server) Done() <-chan struct{} { return s.quit }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
 // returning as soon as the port is live so the tunnel never proxies to a

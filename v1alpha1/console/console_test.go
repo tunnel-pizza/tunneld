@@ -1,0 +1,344 @@
+package console
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/creack/pty"
+	"time"
+)
+
+// discard is the logger every case hands Draw: nothing here asserts on the
+// log, and a test that printed would be one nobody could read the output of.
+var discard = slog.New(slog.DiscardHandler)
+
+// fakeOrigin is a bound origin that reports what it was handed and ends when
+// told to, which is the whole of what a console does to one. It is also the
+// closer For is given, since that is where For looks for both answers.
+type fakeOrigin struct {
+	mu      sync.Mutex
+	in      io.Reader
+	out     io.Writer
+	release chan struct{}
+	err     error
+	drew    chan struct{}
+	ended   chan struct{}
+}
+
+func newFakeOrigin(err error) *fakeOrigin {
+	return &fakeOrigin{release: make(chan struct{}), err: err, drew: make(chan struct{}), ended: make(chan struct{})}
+}
+
+func (f *fakeOrigin) Close() error { return nil }
+
+func (f *fakeOrigin) Announce([]string) {}
+
+func (f *fakeOrigin) Done() <-chan struct{} { return f.ended }
+
+func (f *fakeOrigin) Show(ctx context.Context, in io.Reader, out io.Writer) error {
+	f.mu.Lock()
+	f.in, f.out = in, out
+	f.mu.Unlock()
+	close(f.drew)
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return f.err
+}
+
+// ring records what it was told, in the order it was told, which is the only
+// thing that matters about muting: on before the frame draws, off after.
+type ring struct {
+	mu    sync.Mutex
+	calls []bool
+}
+
+func (r *ring) Mute(on bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, on)
+}
+
+func (r *ring) seen() []bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]bool(nil), r.calls...)
+}
+
+// tty is a real terminal for a case to hand For, which asks whether the
+// streams it is given are a console at all — a buffer can never answer yes.
+func tty(t *testing.T) *os.File {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to be a console on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	return tty
+}
+
+// streams is a console: a real terminal for both halves, and somewhere to
+// leave the line a returned prompt gets.
+type streams struct {
+	tty    *os.File
+	hintTo io.Writer
+}
+
+func (s streams) InOrStdin() io.Reader   { return s.tty }
+func (s streams) OutOrStdout() io.Writer { return s.tty }
+func (s streams) ErrOrStderr() io.Writer { return s.hintTo }
+
+// pipes is a run with nowhere to draw, which is what every environment
+// without somebody watching looks like.
+type pipes struct{}
+
+func (pipes) InOrStdin() io.Reader   { return strings.NewReader("") }
+func (pipes) OutOrStdout() io.Writer { return io.Discard }
+func (pipes) ErrOrStderr() io.Writer { return io.Discard }
+
+// waitFor spins until want is true or the case has waited long enough to be
+// wrong. Draw hands the screen over and returns, so everything it is
+// responsible for happens on a goroutine and nothing can be asserted the
+// instant the call comes back.
+func waitFor(t *testing.T, what string, want func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !want() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestDrawMutesForTheFrameAndUnmutesAfter pins the console's housekeeping.
+// stderr writes straight through a full-screen frame, so the ring is muted
+// before the origin is handed the screen and unmuted once it gives it back —
+// a detached console gets its logs with its prompt.
+func TestDrawMutesForTheFrameAndUnmutesAfter(t *testing.T) {
+	origin, logs, screen := newFakeOrigin(nil), &ring{}, tty(t)
+	showing := New(WithLogs(logs)).For(origin, streams{screen, io.Discard})
+	if showing == nil {
+		t.Fatal("For() = nil, want a console — there is an origin and a terminal")
+	}
+
+	showing.Show(t.Context(), discard)
+	<-origin.drew
+	if got := logs.seen(); len(got) != 1 || !got[0] {
+		t.Errorf("ring saw %v before the frame drew, want one mute", got)
+	}
+
+	close(origin.release)
+	waitFor(t, "the ring to be unmuted", func() bool { return len(logs.seen()) == 2 })
+	if want := []bool{true, false}; !equal(logs.seen(), want) {
+		t.Errorf("ring saw %v, want %v", logs.seen(), want)
+	}
+}
+
+// TestDrawLeavesTheHintOnADetach covers the line a returned prompt gets. A
+// detach hands back a console with no sign that anything is still up, and the
+// run is: the tunnel goes on without the console that was watching it.
+//
+// It is not said when the run is ending anyway, which is already on its way to
+// a prompt and wants nothing written over it.
+func TestDrawLeavesTheHintOnADetach(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  bool
+		want bool
+	}{
+		{"a detach leaves the console up", false, true},
+		{"an exit is already on its way to a prompt", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin, screen := newFakeOrigin(nil), tty(t)
+			var hintTo lockedBuffer
+			showing := New(WithHint("Press Ctrl+C to stop the tunnel...")).
+				For(origin, streams{screen, &hintTo})
+			if showing == nil {
+				t.Fatal("For() = nil, want a console")
+			}
+
+			showing.Show(t.Context(), discard)
+			<-origin.drew
+			if tc.end {
+				close(origin.ended)
+			}
+			close(origin.release)
+
+			if tc.want {
+				waitFor(t, "the hint", func() bool { return strings.Contains(hintTo.String(), "Ctrl+C") })
+				return
+			}
+			// Nothing to wait for, so wait for the thing that would have
+			// happened first and then check that this did not.
+			waitFor(t, "the draw to finish", func() bool { return origin.done() })
+			if got := hintTo.String(); got != "" {
+				t.Errorf("console got %q, want nothing said over an arriving prompt", got)
+			}
+		})
+	}
+}
+
+// TestForRefusesWhatItCannotDraw pins the two questions For asks, and that a
+// no to either is nil rather than a console that draws nothing.
+//
+// Nil is the whole of the answer on purpose: the browser package reads it to
+// decide whether a tab is what this run gets instead, and a console that
+// existed but declined to draw would suppress that tab and leave the run with
+// nothing in front of anybody.
+func TestForRefusesWhatItCannotDraw(t *testing.T) {
+	t.Run("a closer with no terminal behind it", func(t *testing.T) {
+		screen := tty(t)
+		if got := New().For(noOrigin{}, streams{screen, io.Discard}); got != nil {
+			t.Errorf("For() = %v, want nil — the binder offered nothing to draw", got)
+		}
+	})
+	t.Run("a terminal but nowhere to draw it", func(t *testing.T) {
+		if got := New().For(newFakeOrigin(nil), pipes{}); got != nil {
+			t.Errorf("For() = %v, want nil — a pipe is not a console", got)
+		}
+	})
+}
+
+// noOrigin is a bound closer that cannot be mirrored, which is what the binder
+// hands back for anything but a single served origin.
+type noOrigin struct{}
+
+func (noOrigin) Close() error          { return nil }
+func (noOrigin) Announce([]string)     {}
+func (noOrigin) Done() <-chan struct{} { return nil }
+
+// TestDrawHandsOverTheStreamsItWasGiven pins that the console the origin draws
+// on is the one configured, and that a failure is a debug line rather than
+// anything a run has to act on.
+func TestDrawHandsOverTheStreamsItWasGiven(t *testing.T) {
+	origin, screen := newFakeOrigin(errors.New("the terminal went away")), tty(t)
+	showing := New().For(origin, streams{screen, io.Discard})
+	if showing == nil {
+		t.Fatal("For() = nil, want a console")
+	}
+
+	showing.Show(t.Context(), discard)
+	<-origin.drew
+	close(origin.release)
+	waitFor(t, "the draw to finish", func() bool { return origin.done() })
+
+	origin.mu.Lock()
+	defer origin.mu.Unlock()
+	if origin.in != io.Reader(screen) {
+		t.Error("the origin was handed a different reader than the console was bound with")
+	}
+	if origin.out != io.Writer(screen) {
+		t.Error("the origin was handed a different writer than the console was bound with")
+	}
+}
+
+func (f *fakeOrigin) done() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.in != nil
+}
+
+// lockedBuffer is a bytes.Buffer a case can read while the goroutine Draw
+// started may still be writing to it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func equal(got, want []bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestLoadingSpinsAndErases pins the two things a spinner owes the line it
+// borrowed: it turns, and it gives the line back before returning.
+//
+// Erasing matters more than turning. Whatever prints next is a public address
+// or an error, and either one arriving on a line with a half-drawn spinner on
+// it is worse than no spinner at all — which is why this blocks rather than
+// handing back something to call.
+func TestLoadingSpinsAndErases(t *testing.T) {
+	var w lockedBuffer
+	ready := make(chan struct{})
+
+	// Let it turn a few times, then deliver what it was waiting for.
+	go func() {
+		waitFor(t, "a second frame", func() bool {
+			return strings.Count(w.String(), "Creating tunnel...") > 1
+		})
+		close(ready)
+	}()
+	Loading(&w, ready, "Creating tunnel...")
+
+	got := w.String()
+	if !strings.HasSuffix(got, "\r\x1b[K") {
+		t.Errorf("output ends %q, want the line erased", got[max(0, len(got)-16):])
+	}
+	// Returning is the promise that the stream is the caller's again, so
+	// nothing may be written after it.
+	before := len(got)
+	time.Sleep(200 * time.Millisecond)
+	if after := len(w.String()); after != before {
+		t.Errorf("wrote %d more bytes after returning, want none", after-before)
+	}
+
+	seen := map[rune]bool{}
+	for _, r := range got {
+		if strings.ContainsRune("⣾⣽⣻⢿⡿⣟⣯⣷", r) {
+			seen[r] = true
+		}
+	}
+	if len(seen) < 2 {
+		t.Errorf("saw %d distinct frames, want it to turn", len(seen))
+	}
+}
+
+// TestLoadingStopsOnAClosedChannel covers the other way a wait ends: the thing
+// it was waiting for never arriving, and the channel closing to say so. A
+// signal reaches this the same way, since the channel a caller passes is one
+// that answers to its context. The line is given back either way — a console
+// left with half a spinner on it is the one outcome worth ruling out.
+func TestLoadingStopsOnAClosedChannel(t *testing.T) {
+	never := make(chan struct{})
+	var w lockedBuffer
+
+	go func() {
+		waitFor(t, "the first frame", func() bool { return w.String() != "" })
+		close(never)
+	}()
+	Loading(&w, never, "Creating tunnel...")
+
+	if got := w.String(); !strings.HasSuffix(got, "\r\x1b[K") {
+		t.Errorf("output ends %q, want the line erased when it gives up", got[max(0, len(got)-16):])
+	}
+}

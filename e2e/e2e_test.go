@@ -40,12 +40,16 @@ func build(t *testing.T) string {
 // developer's shell must not change what a case asserts, and a live case must
 // not inherit a cache directory pointing at that developer's own tunnels.
 //
-// SHELL is stripped because it is an origin now: a run given nothing else
-// exposes it. Left in, "no origin at all" would not be a refused invocation on
-// any machine a person or a runner ever uses — it would mint a hostname and
-// put an interactive shell behind it, and the case asserting a clean refusal
-// would hang until the suite's timeout with a public shell open the whole
-// time. Cases that want the fallback set SHELL back through runEnv.
+// SHELL is stripped because it is an origin: a run given nothing else exposes
+// it. Left in, a case with no origin would not be a refused invocation on any
+// machine a person or a runner ever uses — it would mint a hostname and put an
+// interactive shell behind it, and a case asserting a clean refusal would hang
+// until the suite's timeout with a public shell open the whole time.
+//
+// Stripped rather than turned off with --shell-fallback, because that flag is
+// itself under test and a case proving it works has to start from a run that
+// would otherwise fall back. Cases set SHELL back through runEnv when they
+// want one.
 func strippedEnv() []string {
 	env := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
@@ -113,7 +117,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--no-open", "--multiview", "tunneld [origin ...]"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--shell-fallback", "tunneld [origin ...]"}},
 	}
 
 	for _, tc := range cases {
@@ -149,8 +153,9 @@ func TestRefusedInvocations(t *testing.T) {
 	}{
 		// With nothing settled anywhere, the last thing tried is $SHELL —
 		// which strippedEnv has removed, so there is genuinely nothing left
-		// and the refusal is reachable. That is the only way it is: on a
-		// machine with a shell, no arguments is a valid invocation.
+		// and the refusal is reachable. On a machine that has a shell, no
+		// arguments is a valid invocation instead; the cases below turn the
+		// fallback off with a shell present and get this same refusal back.
 		{"no origin at all", nil, "TUNNELD_ORIGINS"},
 		// An unusable origin is dropped rather than refused, so a run whose
 		// only origin was unusable is refused for having none — the same
@@ -163,7 +168,7 @@ func TestRefusedInvocations(t *testing.T) {
 		// Both are unusable, so the run is still refused.
 		{"a later origin is still parsed", []string{"ftp://localhost:21", "ftp://nope", "--log-level", "warn"}, "ftp://nope"},
 		{"unknown flag", []string{"http://localhost:3000", "--nope"}, "nope"},
-		{"unparsable boolean flag", []string{"http://localhost:3000", "--no-open=nonsense"}, "no-open"},
+		{"unparsable boolean flag", []string{"http://localhost:3000", "--multiview=nonsense"}, "multiview"},
 	}
 
 	for _, tc := range cases {
@@ -251,18 +256,32 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			// A typed flag is where the environment's strictness is visible:
 			// pflag refuses the value and PersistentPreRunE reports it as
 			// ErrInvalidEnv, naming the variable rather than the flag.
-			name: "TUNNELD_NO_OPEN is validated",
-			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "nonsense"},
-			want: "TUNNELD_NO_OPEN=\"nonsense\": invalid environment value",
-		},
-		{
 			name: "TUNNELD_MULTIVIEW is validated",
 			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
 			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
 		},
 		{
-			name: "TUNNELD_NO_OPEN accepts a boolean",
-			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_NO_OPEN": "true", "TUNNELD_LOG": "loud"},
+			// A shell is present and runnable, so the run has an origin and
+			// would start. The flag is the whole difference between that and
+			// the refusal, which is what makes this the case that proves it.
+			name: "--shell-fallback=false refuses a run with only a shell",
+			env:  map[string]string{"SHELL": "/bin/sh"},
+			args: []string{"--shell-fallback=false"},
+			want: "no origin",
+		},
+		{
+			name: "TUNNELD_SHELL_FALLBACK says the same thing",
+			env:  map[string]string{"SHELL": "/bin/sh", "TUNNELD_SHELL_FALLBACK": "false"},
+			want: "no origin",
+		},
+		{
+			name: "TUNNELD_SHELL_FALLBACK is validated",
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_SHELL_FALLBACK": "nonsense"},
+			want: "TUNNELD_SHELL_FALLBACK=\"nonsense\": invalid environment value",
+		},
+		{
+			name: "TUNNELD_MULTIVIEW accepts a boolean",
+			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "true", "TUNNELD_LOG": "loud"},
 			want: "invalid log level",
 		},
 	}
@@ -730,7 +749,10 @@ func assertHelp(t *testing.T, r *runner, want string) {
 // launch one per run, and CI has none to launch.
 func assertLive(t *testing.T, r *runner, asserts []func(t *testing.T, r *runner)) {
 	t.Helper()
-	r.start(t, "--no-open")
+	// No --no-open any more, and none needed: start gives the child pipes for
+	// stdout and stderr and no stdin at all, which is the derivation's own
+	// test for nobody watching. A browser opening here would be the bug.
+	r.start(t)
 	for _, assert := range asserts {
 		assert(t, r)
 	}

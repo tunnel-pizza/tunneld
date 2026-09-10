@@ -1,12 +1,18 @@
-// Package browser puts a public address in front of a person: it launches
-// whatever browser the host has, and it serves what that browser lands on
-// when a tunnel carries more than one origin — the page that frames every
-// origin, and the header surgery that lets those frames render.
+// Package display puts a public address in front of a person, and decides
+// which way to do that: a browser tab, or the console the run was started from.
+// It also serves what a tab lands on when a tunnel carries more than one
+// origin — the page that frames every origin, and the header surgery that lets
+// those frames render.
+//
+// Named for the job rather than for one of its two answers. It launched a
+// browser and nothing else once, which is where the old name came from; a
+// console is the other way of showing somebody their tunnel, and picking
+// between them is the whole point of this package.
 //
 // Its own subpackage because pkg/browser is a world the root has no reason to
 // see, and because multiview.html travels with the code: go:embed cannot reach
 // outside its own package directory.
-package browser
+package display
 
 import (
 	"context"
@@ -16,35 +22,119 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/cnuss/libtunnel"
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 )
 
-// Option configures a BrowserImpl at construction.
-type Option = v1.Option[*BrowserImpl]
+// Option configures a DisplayImpl at construction.
+type Option = v1.Option[*DisplayImpl]
 
-// BrowserImpl is the default browser: whatever the host has, launched as-is,
+// DisplayImpl is the default display: whatever browser the host has, launched as-is,
 // pointed at the panel this same type serves below. Its launcher is seeded
-// by New; a bare BrowserImpl{} has none and is not a supported construction.
-type BrowserImpl struct {
+// by New; a bare DisplayImpl{} has none and is not a supported construction.
+type DisplayImpl struct {
 	launch func(string) error
+
+	// What follows is one run's, set by the options below and read by Open.
+	// Everything else Open needs is knowledge about this machine, which is
+	// this package's own — these are the facts it cannot see for itself.
+	//
+	// addr is the page to put in front of them: the panel when there is one,
+	// since it reaches every origin, and otherwise the default origin itself.
+	addr string
+	// screen is the console this run was started from, already able to show
+	// the terminal being served, and nil when there is no such console.
+	// Non-nil is the whole of "already in front of them": Open hands it over
+	// instead of launching, because putting the tunnel in front of a person
+	// is this package's job and a console is the other way of doing it.
+	//
+	// It is not a preference. The terminal is on a screen they are looking
+	// at, and a tab on top of it is a second copy competing for the same
+	// keystrokes, so it outranks even a caller who insisted.
+	screen console.Screen
+	// forced is a caller who has already decided, and nil when nobody wrote
+	// one. It outranks everything except screen.
+	forced *bool
+	// interactive is whether anybody is there to look, which IsInteractive
+	// answers and WithInteractive carries in.
+	interactive bool
+	// stderr is where a failed launch is reported, and where pkg/browser's
+	// own child output is pointed before it can write a word.
+	stderr io.Writer
 }
 
-// New returns a BrowserImpl that launches the host's browser, then configured
+// New returns a DisplayImpl that launches the host's browser, then configured
 // by opts.
-func New(opts ...Option) *BrowserImpl {
-	b := v1.Apply(&BrowserImpl{}, WithLaunch(pkgbrowser.OpenURL))
+func New(opts ...Option) *DisplayImpl {
+	b := v1.Apply(&DisplayImpl{}, WithLaunch(pkgbrowser.OpenURL))
 	return v1.Apply(b, opts...)
 }
 
 // WithLaunch replaces the browser launcher, so a test can observe the call
 // without a window appearing on whoever is running it.
 func WithLaunch(launch func(string) error) Option {
-	return func(b *BrowserImpl) { b.launch = launch }
+	return func(b *DisplayImpl) { b.launch = launch }
+}
+
+// WithAddr sets the page Open puts in front of a person.
+func WithAddr(addr string) Option {
+	return func(b *DisplayImpl) { b.addr = addr }
+}
+
+// WithScreen sets the console this run was started from, when there is one.
+// Open hands it over in place of launching a tab. Nil is a run with no
+// console, which is the ordinary case.
+//
+// The type is v1alpha1/console's rather than one declared here, because two
+// identical interfaces is one too many and this is the package that has to
+// choose between them: a tab and a console are the two ways of doing the one
+// thing, so the package doing the choosing is the one that names the other.
+func WithScreen(screen console.Screen) Option {
+	return func(b *DisplayImpl) { b.screen = screen }
+}
+
+// WithForced settles the decision rather than leaving it to be worked out. Nil
+// is nobody having decided, which is the ordinary case.
+func WithForced(open *bool) Option {
+	return func(b *DisplayImpl) { b.forced = open }
+}
+
+// IsInteractive reports whether anybody is there to look at what this run
+// puts on a screen: whether any of the command's own streams is a terminal.
+//
+// One test for four environments — a pipeline, a service manager, a CI step
+// and a container all arrive with none of their three on a terminal, and a
+// person at a shell keeps at least one of the three however they redirect the
+// others.
+//
+// The command's own streams and not this process's, because an embedding
+// program redirects them, and that is exactly the case where nobody is
+// watching. Exported because it is a question worth asking outside this
+// package too, and because a caller reading the answer off a name is better
+// than one spelling the same three checks out again.
+func IsInteractive(streams console.Streams) bool {
+	return console.IsTerminal(streams.InOrStdin()) ||
+		console.IsTerminal(streams.OutOrStdout()) ||
+		console.IsTerminal(streams.ErrOrStderr())
+}
+
+// WithInteractive says whether anybody is there to look — see IsInteractive,
+// which is where a caller gets the answer.
+func WithInteractive(interactive bool) Option {
+	return func(b *DisplayImpl) { b.interactive = interactive }
+}
+
+// WithStderr sets where a failed launch is reported and where pkg/browser's
+// child output is pointed. Unset, both go to the process's own stderr.
+func WithStderr(stderr io.Writer) Option {
+	return func(b *DisplayImpl) { b.stderr = stderr }
 }
 
 // pageHTML is the panel page: a rack panel of iframes, one per origin.
@@ -85,7 +175,7 @@ type tile struct {
 // flag and something to compare: one origin framed alone is a worse view of
 // it than the origin itself, so a lone origin keeps the bare address for
 // itself. URL answers "" over exactly the same condition.
-func (*BrowserImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
+func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
 	if !enabled || len(origins) < 2 {
 		return nil
 	}
@@ -245,7 +335,7 @@ func (*BrowserImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 // appended. Reported and opened as-is, and "" when there is no panel to
 // answer — the same condition Interceptors registers nothing over, so the
 // caller has one answer to read rather than a question to ask twice.
-func (*BrowserImpl) URL(enabled bool, public *url.URL, origins []*url.URL) string {
+func (*DisplayImpl) URL(enabled bool, public *url.URL, origins []*url.URL) string {
 	if !enabled || len(origins) < 2 {
 		return ""
 	}
@@ -354,18 +444,85 @@ func (u *asTile) Write(b []byte) (int, error) {
 // A failure goes to the debug log and nowhere else: the tunnel is up and
 // serving either way, and a headless host — a server, a container, CI — is a
 // normal place to run this, not a broken one. A warning on stderr told those
-// runs, every time, about a thing they were never going to do. --no-open (or
-// v1.NoOpenEnv) skips the attempt entirely, and --log-level=debug is where to
-// look when a browser was wanted and none appeared.
+// runs, every time, about a thing they were never going to do. Reachable is
+// what keeps the attempt from being made where it was never going to work, and
+// --log-level=debug is where to look when a browser was wanted and none
+// appeared — including the reason nobody tried.
 //
 // pkg/browser wires the spawned process's output to its package-level Stdout,
 // which defaults to os.Stdout — the stream a running tunnel keeps for its
 // addresses. Both are pointed at stderr before the child can write a word.
 // They are package globals, so this is process-wide; tunneld owns its process,
 // and an embedding program gets the same guarantee it wants anyway.
-func (b *BrowserImpl) Open(_ context.Context, addr string, stderr io.Writer, log v1.Logger) {
-	pkgbrowser.Stdout, pkgbrowser.Stderr = stderr, stderr
-	if err := b.launch(addr); err != nil {
-		log.Debug("could not open a browser", "url", addr, "error", err)
+// forwarded reports whether a display is reachable by name rather than by
+// assumption: the variables an X or Wayland session sets, and that ssh -X sets
+// on the far end.
+func forwarded() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+func (b *DisplayImpl) Open(ctx context.Context, log v1.Logger, opts ...Option) {
+	// One run's facts, applied here rather than at construction: a browser is
+	// seeded once and opened once per run, and what it is opening is a thing
+	// only that run knows.
+	v1.Apply(b, opts...)
+
+	// Whether anybody is there to look at it, worked out rather than asked
+	// about. There is no flag behind this and no environment variable either:
+	// every environment without a browser — a pipeline, a service manager, a
+	// CI step, a container — used to have to say so one variable at a time,
+	// while the run already knew.
+	//
+	// Every branch says on the log why it went the way it did, because a
+	// decision nobody typed is the one somebody will want explained. Decided
+	// here rather than at the call site so there is one answer and not one
+	// per caller, and so the attempt is never made where it was never going
+	// to work — pkg/browser reports that by failing, which is a line in the
+	// log about a thing that was never going to happen.
+	switch {
+	case b.screen != nil:
+		log.Debug("not opening a browser", "reason", "the console is showing this terminal instead")
+		b.screen.Show(ctx, log)
+		return
+	case b.forced != nil:
+		log.Debug("browser decided by the caller", "open", *b.forced)
+		if !*b.forced {
+			return
+		}
+	// Nobody is watching.
+	case !b.interactive:
+		log.Debug("not opening a browser", "reason", "no terminal on any of the command's streams")
+		return
+	// A runner that allocates a tty is still a runner. Nearly every one of
+	// them sets this, and none of them has anybody watching.
+	case os.Getenv("CI") != "" && os.Getenv("CI") != "false" && os.Getenv("CI") != "0":
+		log.Debug("not opening a browser", "reason", "$CI is set")
+		return
+	// The terminal is here and the machine is there, so its browser would
+	// open where nobody is sitting. A forwarded display is the exception and
+	// says so by name — not the platform's assumption that a desktop exists,
+	// which is the thing that is wrong over ssh.
+	case os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_TTY") != "":
+		if !forwarded() {
+			log.Debug("not opening a browser", "reason", "an ssh session with no display to open on")
+			return
+		}
+		log.Debug("opening a browser", "reason", "an ssh session with a forwarded display")
+	// macOS and Windows have somewhere to put a window by construction —
+	// neither has a headless spelling that also has a terminal open — so the
+	// question is only ever really asked of the platforms where a display is
+	// a thing that may or may not be running.
+	case runtime.GOOS != "darwin" && runtime.GOOS != "windows" && !forwarded():
+		log.Debug("not opening a browser", "reason", "no display to open on")
+		return
+	default:
+		log.Debug("opening a browser", "reason", "a terminal with a display")
+	}
+
+	if b.stderr != nil {
+		pkgbrowser.Stdout, pkgbrowser.Stderr = b.stderr, b.stderr
+	}
+	if err := b.launch(b.addr); err != nil {
+		log.Debug("could not open a browser", "url", b.addr, "error", err)
 	}
 }

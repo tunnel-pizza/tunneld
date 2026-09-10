@@ -21,9 +21,10 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/browser"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -107,10 +108,11 @@ func TestCommandIsIdempotent(t *testing.T) {
 // fix it.
 func TestOriginRequiredWhenUnseeded(t *testing.T) {
 	// $SHELL is the last origin tried, and a developer's shell has one — so
-	// without this the case does not assert a refusal, it mints a tunnel and
-	// blocks on it. Nothing to expose has to mean nothing.
-	t.Setenv("SHELL", "")
-	_, _, err := execute(t, New())
+	// without turning the fallback off the case does not assert a refusal, it
+	// mints a tunnel and blocks on it. Said with the option rather than by
+	// unsetting the variable, so what the case means is on the line that
+	// means it.
+	_, _, err := execute(t, New(WithShellFallback(false)))
 	if !errors.Is(err, v1.ErrNoOrigin) {
 		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
 	}
@@ -218,71 +220,62 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	}
 }
 
-// TestOpenDefaultsOn pins that a plain invocation opens a browser and that
-// both levers turn it off. The default is the whole point of the flag — a
-// developer exposing something is about to look at it — so a silent flip to
-// off would be a real regression. want is --no-open, so it reads inverted:
-// true means no browser.
-func TestOpenDefaultsOn(t *testing.T) {
-	cases := []struct {
-		name string
-		env  string
-		args []string
-		want bool
+// TestBrowserOpensWhenSomebodyIsWatching covers the run's half of the display
+// decision. The decision itself is display.TestOpenDecides; what is pinned
+// here is that the facts reaching it are the true ones, read off the only
+// thing a case can see from out here — whether a tab was actually launched.
+//
+// The terminal is a real pty, because whether a stream is one is exactly what
+// the run reports and a buffer can never answer yes. $CI is cleared and a
+// display named, since this suite runs under both conditions and one of them
+// is a signal.
+func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	for _, tc := range []struct {
+		name     string
+		open     *bool
+		terminal bool
+		want     bool
 	}{
-		{name: "default", want: false},
-		{name: "flag turns it off", args: []string{"--no-open"}, want: true},
-		{name: "variable turns it off", env: "true", want: true},
-		{name: "flag beats the variable", env: "true", args: []string{"--no-open=false"}, want: false},
-	}
-
-	for _, tc := range cases {
+		{name: "a pipe is nobody watching", want: false},
+		{name: "a terminal is somebody", terminal: true, want: true},
+		{name: "a caller who declined outranks the terminal", open: ptr(false), terminal: true, want: false},
+		{name: "a caller who insisted outranks the pipe", open: ptr(true), want: true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(v1.NoOpenEnv, tc.env)
+			t.Setenv("CI", "")
+			t.Setenv("SSH_CONNECTION", "")
+			t.Setenv("SSH_TTY", "")
+			t.Setenv("DISPLAY", ":0")
 
-			b := New(WithOrigin("http://localhost:3000"))
-			// A deliberately bad level stops the run once the flags have
-			// settled, before anything dials or any window opens.
-			_, _, err := execute(t, b, append(append([]string{}, tc.args...), "--log-level", "loud")...)
-			if !errors.Is(err, v1.ErrInvalidLogLevel) {
-				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
+			h := newRunHarness(t, live(public), ":3000")
+			if tc.open != nil {
+				v1.Apply(h.b, WithOpen(*tc.open))
 			}
+			if tc.terminal {
+				ptmx, tty, err := pty.Open()
+				if err != nil {
+					t.Skipf("no pty to be a terminal on: %v", err)
+				}
+				t.Cleanup(func() { tty.Close(); ptmx.Close() })
+				h.console = tty
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
 
-			got, err := b.Command().Flags().GetBool("no-open")
-			if err != nil {
-				t.Fatalf("GetBool: %v", err)
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
 			}
-			if got != tc.want {
-				t.Errorf("--no-open = %v, want %v", got, tc.want)
+			if got := len(h.display.opened) > 0; got != tc.want {
+				t.Errorf("opened %q, want a browser: %v", h.display.opened, tc.want)
 			}
 		})
 	}
 }
 
-// TestWithOpenSeedsTheDefault pins that an embedder can flip the default
-// without forbidding the flag: WithOpen(false) makes --no-open default to
-// true, and a user passing --no-open=false still gets a browser. The Go knob
-// stays positive while the flag reads negative, so this is also what pins the
-// two staying in step.
-func TestWithOpenSeedsTheDefault(t *testing.T) {
-	b := New(WithOrigin("http://localhost:3000"), WithOpen(false))
-
-	if got := b.Command().Flags().Lookup("no-open").DefValue; got != "true" {
-		t.Errorf("--no-open default = %q, want %q", got, "true")
-	}
-
-	_, _, err := execute(t, b, "--no-open=false", "--log-level", "loud")
-	if !errors.Is(err, v1.ErrInvalidLogLevel) {
-		t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
-	}
-	got, err := b.Command().Flags().GetBool("no-open")
-	if err != nil {
-		t.Fatalf("GetBool: %v", err)
-	}
-	if got {
-		t.Error("--no-open = true after --no-open=false was passed, want the flag to beat the seed")
-	}
-}
+// ptr is a *bool for a literal, which When.Forced needs and Go has no spelling
+// for inline.
+func ptr(b bool) *bool { return &b }
 
 // TestCacheDir pins how a cache directory list is read: which spellings mean
 // the working directory, that entries become absolute before repeats collapse,
@@ -610,7 +603,7 @@ func (f *fakeTunnel) URL() *url.URL {
 		*f.order = append(*f.order, "url")
 	}
 	// A tunnel that has a URL has been accepted by the edge, so it announces
-	// the connection the run waits for before it opens a browser. A silent
+	// the connection the run waits for before it opens a display. A silent
 	// tunnel is the case where that announcement never comes.
 	if f.url != nil && f.listen != nil && !f.silent {
 		f.listen(libtunnel.Event{Kind: libtunnel.EventConnected, Hostname: f.url.Host})
@@ -688,62 +681,91 @@ func (f *fakeCache) Save([]string, v1.Logger) {
 	}
 }
 
-// fakeBrowser records what it was asked to open and opens nothing. Only the
+// fakeDisplay records what it was asked to open and opens nothing. Only the
 // launch is faked: the panel half of the contract is the real one, embedded,
 // because the address TestRun expects reported and opened is the one the
 // panel computes.
-type fakeBrowser struct {
-	*browser.BrowserImpl
+// fakeDisplay is the real display with a launcher that records instead of
+// launching. It is not a stub: deciding whether to open is DisplayImpl's, and
+// a stub that skipped that decision would let a case assert "nothing opened"
+// while asserting nothing at all.
+type fakeDisplay struct {
+	*display.DisplayImpl
 	opened []string
 	order  *[]string
 }
 
-func (f *fakeBrowser) Open(_ context.Context, addr string, _ io.Writer, _ v1.Logger) {
-	f.opened = append(f.opened, addr)
-	if f.order != nil {
-		*f.order = append(*f.order, "open")
-	}
+func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.Option) {
+	// The recorder goes on first so the run's own options still win, and the
+	// effect is recorded where it actually happens: a launch that the
+	// decision declined never reaches this.
+	f.DisplayImpl.Open(ctx, log, append([]display.Option{
+		display.WithLaunch(func(addr string) error {
+			f.opened = append(f.opened, addr)
+			if f.order != nil {
+				*f.order = append(*f.order, "open")
+			}
+			return nil
+		}),
+	}, opts...)...)
 }
 
-// fakeBinder stands in for the attach package: it hands display back
+// fakeBinder stands in for the attach package: it hands the origins back
 // unchanged and closes nothing, so TestRun never stands up a real listener.
 type fakeBinder struct {
 	err    error
 	closed bool
-	// asked is what a viewer's exit closes. Non-nil makes this binder a
-	// Quitter, which is how the run learns a terminal asked it to stop.
+	// asked is what a viewer's exit closes, and what Done hands back: how the
+	// run learns a terminal asked it to stop.
 	asked chan struct{}
+	// announced is what Announce was handed.
+	announced []string
+	// mirrors makes what Bind returns carry Show, which is how the real
+	// binder reports a single served origin — the only shape a console can
+	// draw.
+	mirrors bool
 }
 
-func (f *fakeBinder) Bind(_ context.Context, display []*url.URL, _ v1.Logger) ([]*url.URL, io.Closer, error) {
-	return display, f, f.err
+func (f *fakeBinder) Bind(_ context.Context, shown []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
+	// Carrying Mirror is how the real binder says a run has exactly one
+	// served origin, so it is a wrapper here too rather than a method on the
+	// binder itself: a fake that always carried it would mirror every case
+	// that happens to have a terminal, and a browser would never open.
+	if f.mirrors {
+		return shown, mirrorableBinder{f}, f.err
+	}
+	return shown, f, f.err
 }
 
-// Mirror makes the bound closer a Mirror, which is what the run type-asserts
-// for before it will draw on the console. It blocks until the run ends, like
-// the real one, so a case can assert on what happened while it was drawing.
-//
-// Being a Mirror is not enough on its own — mirrorable still has to agree
-// there is a terminal to draw on — so every case that hands the command
-// buffers is unaffected by this.
-func (f *fakeBinder) Mirror(ctx context.Context, _ io.Reader, _ io.Writer) error {
+// mirrorableBinder is a bound closer with a terminal to draw, which is what
+// the binder hands back for a single served origin.
+type mirrorableBinder struct{ *fakeBinder }
+
+// Mirror blocks until the run ends, like the real one, so a case can assert on
+// what happened while it was drawing.
+func (mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
 
-func (f *fakeBinder) Quit() <-chan struct{} { return f.asked }
+func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
+
+// Announce is what a bound closer is told the public addresses through. Every
+// one of them can be, which is why it is on the type Bind returns rather than
+// an interface a caller has to go looking for.
+func (f *fakeBinder) Announce(public []string) { f.announced = public }
 
 // runHarness is run with every collaborator faked except the two that are
-// pure: the browser's panel half, because its URL and interceptor order are
+// pure: the shown's panel half, because its URL and interceptor order are
 // what the assertions check, and a real counter armed at one, because the
 // verdict logic is what the gone case is about. order records the effects
 // that matter in the sequence they landed.
 type runHarness struct {
 	engine  *fakeEngine
 	cache   *fakeCache
-	browser *fakeBrowser
+	display *fakeDisplay
 	binder  *fakeBinder
 	order   []string
 	stdout  bytes.Buffer
@@ -760,7 +782,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Setenv(v1.LogEnv, "") // a developer's shell must not turn the log on
 	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
 	h.cache = &fakeCache{order: &h.order}
-	h.browser = &fakeBrowser{BrowserImpl: browser.New(), order: &h.order}
+	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
@@ -770,7 +792,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
 		WithCache(h.cache),
-		WithBrowser(h.browser),
+		WithDisplay(h.display),
 		WithBinder(h.binder),
 		// A short connect bound so no case can sit on the production default
 		// waiting for an announcement its tunnel may never make.
@@ -785,14 +807,18 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.NoOpenEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
+	// Stdin is set either way: unset, cobra falls back to the process's own,
+	// which is a terminal when the suite is run from one — and whether a
+	// stream is a terminal is a thing the run now reads.
 	if h.console != nil {
 		cmd.SetIn(h.console)
 		cmd.SetOut(h.console)
 	} else {
+		cmd.SetIn(&bytes.Buffer{})
 		cmd.SetOut(&h.stdout)
 	}
 	cmd.SetErr(&h.stderr)
@@ -839,7 +865,7 @@ func captureStderr(t *testing.T) func() string {
 }
 
 // TestRun is the composition under test: every effect run has, against fakes
-// for the edge, the disk, the browser and the daemon. Each case asserts what
+// for the edge, the disk, the shown and the daemon. Each case asserts what
 // the code did before it was split, so a case going red is a behaviour
 // change, not a refactor.
 func TestRun(t *testing.T) {
@@ -847,6 +873,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("a mint reports, opens the panel, then saves", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
+		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel // the signal, arriving once the tunnel is live
 
@@ -862,8 +889,8 @@ func TestRun(t *testing.T) {
 		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
 		}
-		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-			t.Errorf("opened %q, want the panel address %q", h.browser.opened, want)
+		if want := []string{public}; !slices.Equal(h.display.opened, want) {
+			t.Errorf("opened %q, want the panel address %q", h.display.opened, want)
 		}
 		// TestReportNamesTheMultiviewPanel: the panel's own address is the
 		// one stdout carries when there is one — it answers for every origin
@@ -966,32 +993,17 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("--no-open opens nothing", func(t *testing.T) {
-		h := newRunHarness(t, live(public), ":3000", ":4000")
-		ctx, cancel := context.WithCancel(t.Context())
-		h.cache.onSave = cancel
-
-		if err := h.run(t, ctx, "--no-open"); err != nil {
-			t.Fatalf("run() = %v", err)
-		}
-		if len(h.browser.opened) != 0 {
-			t.Errorf("opened %q, want nothing", h.browser.opened)
-		}
-		if want := []string{"url", "save"}; !slices.Equal(h.order, want) {
-			t.Errorf("effects %v, want %v", h.order, want)
-		}
-	})
-
 	t.Run("one origin keeps the bare address and no panel", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
+		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel
 
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-			t.Errorf("opened %q, want the plain URL %q", h.browser.opened, want)
+		if want := []string{public}; !slices.Equal(h.display.opened, want) {
+			t.Errorf("opened %q, want the plain URL %q", h.display.opened, want)
 		}
 		if n := len(h.engine.tunnels[0].ics); n != 0 {
 			t.Errorf("registered %d interceptors for one origin, want none", n)
@@ -1157,6 +1169,42 @@ func originStrings(origins []*url.URL) []string {
 // warning names the value that did not — a drop nobody is told about is just a
 // missing origin. Origins is called directly rather than through a run, so
 // nothing here dials.
+// TestRunIsTheOtherDoor covers the run reached without a command line: a
+// program that configured the builder with options and wants a tunnel, not a
+// CLI. Same work and the same streams as executing the command, with no argv
+// parsed on the way and no command anybody will ever see.
+//
+// The environment is asserted on this path too, because binding it is
+// PersistentPreRunE's job when a command is executed and nothing runs
+// PersistentPreRunE here. Run calls applyEnv itself so env still beats code,
+// and TUNNELD_PROVIDER reaching the engine is what proves it.
+func TestRunIsTheOtherDoor(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	for _, name := range []string{v1.OriginsEnv, v1.CacheDirEnv, v1.MultiviewEnv} {
+		t.Setenv(name, "")
+	}
+	t.Setenv(v1.ProviderEnv, "from-the-environment.test")
+
+	var stdout, stderr bytes.Buffer
+	v1.Apply(h.b, WithStdout(&stdout), WithStderr(&stderr))
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.b.Run(ctx); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if want := public + "\n"; stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if want := "  -> http://localhost:3000\n"; !strings.Contains(stderr.String(), want) {
+		t.Errorf("stderr %q does not contain %q", stderr.String(), want)
+	}
+	if !slices.Contains(h.engine.providers, "from-the-environment.test") {
+		t.Errorf("engine saw providers %v, want the one the environment set", h.engine.providers)
+	}
+}
+
 // TestOriginsFallsBackToTheShell covers the answer to being given nothing:
 // the one origin every machine has. It is resolved before it is adopted,
 // because the parse loop's fallback for an unresolvable word is to read it as
@@ -1180,22 +1228,27 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	// nothing anybody would write down. Path is the claim worth pinning
 	// anyway: the resolved program, not the word that named it.
 	for _, tc := range []struct {
-		name    string
-		shell   string
-		args    []string
-		want    []*url.URL
-		mention string
+		name     string
+		shell    string
+		fallback bool
+		args     []string
+		want     []*url.URL
+		mention  string
 	}{
-		{"a runnable shell is the origin", real, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
-		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), nil, nil, "not exposing a shell"},
-		{"unset is nothing to fall back to", "", nil, nil, ""},
-		{"an argument outranks it", real, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+		{"a runnable shell is the origin", real, true, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
+		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), true, nil, nil, "not exposing a shell"},
+		{"unset is nothing to fall back to", "", true, nil, nil, ""},
+		{"an argument outranks it", real, true, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+		// The knob is asked before the variable is read, so a shell that is
+		// there and runnable is still not an origin when nobody wanted one.
+		{"the option declines it", real, false, nil, nil, ""},
+		{"declining does not touch an argument", real, false, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.OriginsEnv, "") // a developer's shell must not seed this
 			t.Setenv("SHELL", tc.shell)
 			var stderr bytes.Buffer
-			b := New(WithLogLevel("warn"), WithStderr(&stderr))
+			b := New(WithLogLevel("warn"), WithStderr(&stderr), WithShellFallback(tc.fallback))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
@@ -1351,37 +1404,6 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 	}
 }
 
-// TestMirrorableRefusesWhatItCannotDraw pins the gate on handing the console a
-// terminal, which is mostly a list of times not to.
-//
-// The costly one is a stream that is not a terminal: stdout is a machine
-// interface, one public URL per origin, and a frame drawn into a pipe is a
-// wall of escapes where a script expected an address. Every case here runs
-// with the test's own buffers, which are not terminals — so the last two rows
-// are the ones that would be true on a console, and false here for that reason
-// alone.
-func TestMirrorableRefusesWhatItCannotDraw(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   []string
-	}{
-		{"nothing to show", nil},
-		{"an http origin is somebody else's server", []string{"http://localhost:3000"}},
-		{"a container beside another origin", []string{"dockerd://api", "http://localhost:3000"}},
-		{"two terminals and one console", []string{"dockerd://api", "dockerd://db"}},
-		{"one container, but into a buffer", []string{"dockerd://api"}},
-		{"one program, but into a buffer", []string{"file:///bin/zsh"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var sink bytes.Buffer
-			b := New(WithOrigin(tc.in...), WithStdout(&sink), WithStderr(&sink))
-			if mirrorable(b.Command(), b.Origins()) {
-				t.Error("mirrorable() = true, want false — nothing here can be drawn on")
-			}
-		})
-	}
-}
-
 // TestAViewerCanEndTheRun pins the last link of the frame's exit: a keystroke
 // in a browser tab stops the process.
 //
@@ -1423,6 +1445,7 @@ func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
 	tun.silent = true
 
 	h := newRunHarness(t, tun, ":3000")
+	v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
 
@@ -1432,8 +1455,8 @@ func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
 	if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 		t.Errorf("effects in order %v, want %v — the wait swallowed what follows it", h.order, want)
 	}
-	if want := []string{public}; !slices.Equal(h.browser.opened, want) {
-		t.Errorf("opened %q, want the address anyway %q", h.browser.opened, want)
+	if want := []string{public}; !slices.Equal(h.display.opened, want) {
+		t.Errorf("opened %q, want the address anyway %q", h.display.opened, want)
 	}
 }
 
@@ -1480,14 +1503,19 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	}
 }
 
-// TestMirroringKeepsTheBrowserShut covers what a drawn console does to the
-// browser: nothing opens. The terminal is already on a screen the person is
-// looking at, and a tab on top of it is a second copy of the one thing they
-// can already see — counted as another viewer, competing for the same keys.
+// TestMirroringTellsTheBrowser covers what a drawn console reports: the
+// terminal is already on a screen the person is looking at, and a tab on top
+// of it would be a second copy of the one thing they can already see, counted
+// as another viewer and competing for the same keys.
 //
-// A real pty, because that is the whole of what mirrorable asks about and a
-// buffer can never answer yes. Skipped where there is none, which is Windows.
-func TestMirroringKeepsTheBrowserShut(t *testing.T) {
+// WithOpen(true) is asked for so the console is the only thing that can be
+// suppressing the tab — otherwise a runner with $CI set would pass this for
+// the wrong reason.
+//
+// A real pty, because the console package asks whether the command's own
+// streams are one and a buffer can never answer yes. Skipped where there is
+// none, which is Windows.
+func TestMirroringTellsTheBrowser(t *testing.T) {
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		t.Skipf("no pty to draw on: %v", err)
@@ -1496,6 +1524,10 @@ func TestMirroringKeepsTheBrowserShut(t *testing.T) {
 
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h.binder.mirrors = true
+	// Asked for, so the mirror is the only thing that can be suppressing it —
+	// otherwise a runner with $CI set would pass this for the wrong reason.
+	v1.Apply(h.b, WithOpen(true))
 	h.console = tty
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
@@ -1503,8 +1535,8 @@ func TestMirroringKeepsTheBrowserShut(t *testing.T) {
 	if err := h.run(t, ctx); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	if len(h.browser.opened) != 0 {
-		t.Errorf("browser opened %v, want nothing opened", h.browser.opened)
+	if len(h.display.opened) != 0 {
+		t.Errorf("opened %q, want nothing — the console is already showing it", h.display.opened)
 	}
 }
 
@@ -1651,7 +1683,7 @@ func TestPublicURL(t *testing.T) {
 // and the offending value, since that is the whole lever an operator has to
 // recover from the error.
 func TestEnvErrorNamesTheLever(t *testing.T) {
-	t.Setenv(v1.NoOpenEnv, "maybe")
+	t.Setenv(v1.MultiviewEnv, "maybe")
 
 	cmd := New(WithOrigin(":3000")).Command()
 	cmd.SetOut(io.Discard)
@@ -1660,12 +1692,12 @@ func TestEnvErrorNamesTheLever(t *testing.T) {
 
 	err := cmd.ExecuteContext(t.Context())
 	if err == nil {
-		t.Fatal("ExecuteContext() = nil error for an unparsable NoOpenEnv value")
+		t.Fatal("ExecuteContext() = nil error for an unparsable MultiviewEnv value")
 	}
 	if !errors.Is(err, v1.ErrInvalidEnv) {
 		t.Errorf("err = %v, want it to wrap v1.ErrInvalidEnv", err)
 	}
-	for _, want := range []string{v1.NoOpenEnv, "maybe"} {
+	for _, want := range []string{v1.MultiviewEnv, "maybe"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}

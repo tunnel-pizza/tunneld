@@ -1122,28 +1122,43 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	target.awaitSize(t, settled)
 }
 
-// TestMirrorNeedsExactlyOneOrigin pins the other half of the same gate, on the
-// side that would have to draw. A console has no way to say which of several
-// terminals it is watching and no room to watch them at once — the public
-// hostname and its routing parameter are what several origins are for.
-func TestMirrorNeedsExactlyOneOrigin(t *testing.T) {
-	targets := &stubTargets{scheme: v1.DockerScheme}
-	display := mustURLs(t, "dockerd://api", "dockerd://db")
+// TestShowIsOfferedOnlyForOneOrigin pins how a caller finds out whether a run
+// can be put on a console: by asking the closer, not by counting origins
+// itself.
+//
+// Carrying Show is the answer. With several origins a console has no way to
+// say which it is watching and no room to watch them at once — that is what
+// the public hostname and its routing parameter are for — so the method is not
+// there to call. One origin is one served origin, since nothing else gets a
+// server, which makes the assertion the whole check.
+func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		display []string
+		want    bool
+	}{
+		{"one container is a console's to show", []string{"dockerd://api"}, true},
+		{"two is nobody's", []string{"dockerd://api", "dockerd://db"}, false},
+		{"a served origin beside a proxied one is still one", []string{"dockerd://api", "http://localhost:3000"}, true},
+		{"nothing served is nothing to show", []string{"http://localhost:3000"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			targets := &stubTargets{scheme: v1.DockerScheme}
+			display := mustURLs(t, tc.display...)
 
-	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("Bind: %v", err)
-	}
-	defer func() { _ = closer.Close() }()
+			_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("Bind: %v", err)
+			}
+			defer func() { _ = closer.Close() }()
 
-	mirror, ok := closer.(interface {
-		Mirror(context.Context, io.Reader, io.Writer) error
-	})
-	if !ok {
-		t.Fatal("the closer offers no Mirror")
-	}
-	if err := mirror.Mirror(t.Context(), strings.NewReader(""), &bytes.Buffer{}); err == nil {
-		t.Error("mirrored two origins onto one console, want a refusal")
+			_, got := closer.(interface {
+				Show(context.Context, io.Reader, io.Writer) error
+			})
+			if got != tc.want {
+				t.Errorf("closer offers Show = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1151,7 +1166,7 @@ func TestMirrorNeedsExactlyOneOrigin(t *testing.T) {
 // thing that can act on it. The frame asks its Server, the Server says so on
 // Quit, and the closer Bind handed back is where the command is listening —
 // which is the only reason a key inside a browser tab can end a process.
-func TestQuitReachesTheBinder(t *testing.T) {
+func TestDoneReachesTheBinder(t *testing.T) {
 	targets := &stubTargets{scheme: v1.DockerScheme}
 	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "dockerd://db")
 
@@ -1161,11 +1176,9 @@ func TestQuitReachesTheBinder(t *testing.T) {
 	}
 	defer func() { _ = closer.Close() }()
 
-	quitter, ok := closer.(interface{ Quit() <-chan struct{} })
-	if !ok {
-		t.Fatal("the closer offers no Quit; the command has nothing to watch")
-	}
-	asked := quitter.Quit()
+	// No assertion: Bound carries Done, because every bound list can say when
+	// a viewer asked the run to end. Only Show is conditional.
+	asked := closer.Done()
 
 	select {
 	case <-asked:
