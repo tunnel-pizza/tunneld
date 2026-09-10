@@ -1494,6 +1494,36 @@ func TestBindUnwindsOnFailure(t *testing.T) {
 	}
 }
 
+// TestBindHasRoomForASecondVerb pins that the shape leaves room for a second
+// way into the same provider without touching the parser or the binder.
+//
+// exec://dockerd/api is the future row #101 names: the same daemon as
+// attach://dockerd/api, asked for a different thing. Nothing answers it in a
+// real build, so what this registers is a stub — and the point is that
+// registering one is the whole of the work. If a later change narrows the
+// parser to the pairs that exist today, this fails.
+func TestBindHasRoomForASecondVerb(t *testing.T) {
+	execInto := &stubTargets{verb: v1.ExecScheme, provider: v1.DockerProvider}
+	display := mustURLs(t, "exec://dockerd/api")
+
+	dialable, closer, err := New(WithTargets(execInto)).
+		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	if want := []string{"api"}; !slices.Equal(execInto.asked, want) {
+		t.Errorf("the provider was asked for %v, want %v", execInto.asked, want)
+	}
+	if len(dialable) != 1 || dialable[0].Scheme != "http" {
+		t.Errorf("dialable = %v, want the loopback server standing in for the origin", dialable)
+	}
+	if got := execInto.opened[0].Origin(); got != "exec://dockerd/api" {
+		t.Errorf("the target's origin = %q, want it spelled back whole", got)
+	}
+}
+
 // TestBindWithoutTargets pins that an attach:// origin met with no Targets
 // configured fails with a message naming the missing dependency, rather than
 // panicking on a nil interface.
