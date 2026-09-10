@@ -33,7 +33,6 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
@@ -51,7 +50,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithOrigin(v1.AttachScheme+"://"+v1.DockerProvider+"/"+name),
+		v1alpha1.WithOrigin("attach://dockerd/"+name),
 		v1alpha1.WithLogLevel("debug"),
 	).Command()
 
