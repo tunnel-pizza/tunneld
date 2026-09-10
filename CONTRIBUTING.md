@@ -580,6 +580,18 @@ Two things there will bite if you change them without knowing why:
   than an opinion about it. Every branch logs its reason at debug, the only
   record of a decision nobody typed.
 
+  **`OPEN=false` is the hammer, and the one exception.** No flag, no
+  `TUNNELD_` mirror, no README row: every other variable read here is half of
+  a knob an operator is meant to find, and this is a way out of the console
+  for the case the console is in the way — reading the run's own log lines
+  while it happens, which a full-screen frame is drawn over. The builder reads
+  it and hands `Open` the two facts that follow rather than gating the call:
+  no screen to draw on, and a caller who decided against a tab. So there is
+  still one switch deciding how a run is shown, and `stopHint` still fires,
+  because a run under the hammer is a run with no screen. Only the exact value
+  `false` swings it, which is what makes a bare word cheap to claim — anything
+  else in the environment spelled `OPEN` leaves the derived decision alone.
+
   `Open` decides but does not draw. `v1alpha1/console` owns what a console
   costs on the way in and out — a log ring that must stop writing through a
   full-screen frame, and a prompt that has to be told the tunnel is still up
