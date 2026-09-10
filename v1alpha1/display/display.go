@@ -263,9 +263,9 @@ func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 						scheme, _, _ := strings.Cut(origin.Scheme, "+")
 						local := origin.Host
 						if scheme != "http" && scheme != "https" {
-							// A served origin's reference is its authority or
-							// its path — a container name, a program's path —
-							// and exactly one of the two is set.
+							// A served origin is the verb, the provider that
+							// answers it and the reference — and the reference is
+							// always the path, so the three join in order.
 							local = origin.Scheme + "://" + origin.Host + origin.Path
 						}
 						data.Origins = append(data.Origins, tile{

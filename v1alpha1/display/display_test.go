@@ -372,7 +372,7 @@ func TestLabel(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"http://localhost:3000", "localhost:3000"},
 		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
-		{"dockerd://api", "dockerd://api"},
+		{"attach://dockerd/api", "attach://dockerd/api"},
 		{"http+ws://localhost:5173", "localhost:5173"},
 		{"https+wss://localhost:5173", "localhost:5173"},
 	}
@@ -395,7 +395,7 @@ func TestLabel(t *testing.T) {
 	ic.installed(rec, r)
 
 	body := rec.Body.String()
-	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "dockerd://api"} {
+	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "attach://dockerd/api"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page does not contain label %q", want)
 		}

@@ -492,16 +492,16 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 // container — it is what says this is a container at all, and the same string
 // pasted back into a command line is a working origin.
 //
-// The scheme comes from the Target rather than from a guess here: a provider
-// carries its own, so a program frames itself as file://htop where a container
-// frames itself as dockerd://api.
+// The origin comes whole from the Target rather than being assembled here: a
+// provider knows its own verb and authority, so a program frames itself as
+// exec:///usr/bin/htop where a container frames itself as attach://dockerd/api.
 func (f frame) titleLabel() string {
 	return nameStyle.Styled(" " + f.title() + " ")
 }
 
 // title is the origin, unstyled, for the places that cannot carry styling.
 func (f frame) title() string {
-	return f.sess.Scheme() + "://" + f.sess.Name()
+	return f.sess.Origin()
 }
 
 // subtitleLabel is what the terminal says it is doing, centred along the top.
@@ -559,7 +559,7 @@ func (f frame) subtitle() string {
 //
 // What the terminal is doing goes first and the origin after it, because a
 // browser tab is narrow and loses its end: a row of them all beginning with
-// the same dockerd:// would be a row that says nothing. A terminal that has
+// the same attach://dockerd/ would be a row that says nothing. A terminal that has
 // not named itself leaves the origin on its own rather than a word standing in
 // for one — there is nothing to say, and saying so is not better.
 func (f frame) pageTitle() string {

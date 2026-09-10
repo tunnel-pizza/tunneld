@@ -339,7 +339,7 @@ Easy to get wrong from the diff alone:
 
 ### Container origins
 
-`v1alpha1/attach/` serves a `dockerd://` origin as a browser terminal, and
+`v1alpha1/attach/` serves an `attach://dockerd/` origin as a browser terminal, and
 `v1alpha1/attach/docker/` is the provider behind it. The split is
 load-bearing: `attach` knows HTTP and the `v4.channel.k8s.io` stream protocol
 and nothing about Docker, and `docker` is the reverse. Another provider
@@ -351,22 +351,40 @@ a local program run on a pseudo-terminal. What opens one by reference —
 `TargetsImpl.Open` in either — sits behind `attach`'s own `Targets` contract,
 which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
 
-**One provider, one scheme.** `Targets.Scheme()` is the whole of the dispatch:
-`WithTargets` is variadic and keys the providers by what each one says it
-answers, so there are no keys to keep in step with values, and `Bind` looks a
-scheme up rather than branching on it. A scheme no provider claims and that is
-not `http`/`https` is an error there — dialing `file://htop` as an address
-would mint a hostname in front of nothing. `Target.Scheme()` is the other half:
-the frame reconstructs the origin as typed from `Scheme()` and `Name()`, which
-is why `dockerd://` is not spelled anywhere in `frame.go`.
+**A served origin is spelled by verb, provider, reference.** The scheme says
+what tunneld does — `attach`, `exec` — the authority says where it does it, and
+the path is what it does it to. `attach://dockerd/api` and a future
+`exec://dockerd/api` are the same daemon asked for different things;
+`exec:///usr/bin/htop` and a future `exec://dockerd/api` are the same thing
+asked of different places. The empty authority is this machine, which only
+`exec://` has.
 
-A served origin's reference is its authority **or** its path, never both, and
-`Host + Path` is how everything downstream reads it — `Bind`, the multiview
-tile, the frame. A container is always an authority (`dockerd://api`); a
-program is either (`file://htop`, `file:///usr/bin/htop`), and an absolute path
-has to be the URL's path because `url.URL` percent-escapes the separators of a
-host. The parser resolves a bare word to its absolute path for exactly that
-reason: the origin then names the same program on any machine that reads it.
+**One provider, one pair.** `Targets.Verb()` and `Targets.Provider()` are the
+whole of the dispatch: `WithTargets` keys providers by the pair each one says
+it answers (`answers()` builds that key, and both sides call it, so a provider
+cannot be registered under a key no origin can produce), and `Bind` looks the
+pair up rather than branching on it. A pair no provider claims and a scheme
+that is not `http`/`https` is an error there, naming what *is* answered —
+dialing `exec:///usr/bin/htop` as an address would mint a hostname in front of
+nothing. `Target.Origin()` is the other half: the provider spells the whole
+origin, because the parts join differently with and without an authority, which
+is why neither scheme is spelled anywhere in `frame.go`.
+
+**The reference is the path, and the authority decides how much of it.** With a
+provider named, the leading separator belongs to the URL rather than the
+reference — `attach://dockerd/api` is the container `api`. Without one the path
+is a filesystem path and keeps every byte, because an absolute path has to be
+the URL's path: `url.URL` percent-escapes the separators of a host. `Bind` is
+the one place that rule lives. The parser resolves a bare word to its absolute
+path for the same reason the origin carries it: it then names the same program
+on any machine that reads it.
+
+**An authority with nothing after it is looked up as a program first.**
+`exec://htop` cannot be a provider being asked for something — there is nothing
+to ask for — so the reading that can succeed wins over the one that cannot. The
+lookup is `shell.Resolve`, held in the `servedSchemes` table rather than called
+by name in the loop, so whatever the bare-word shorthand accepts, `exec://`
+accepts.
 
 The parser has to agree about which schemes are served, and `servedSchemes` in
 [`v1alpha1/builder.go`](./v1alpha1/builder.go) is that list. A scheme added to
@@ -429,7 +447,7 @@ Two things there will bite if you change them without knowing why:
   of their own size and are blitted, which is also what makes a label truncate
   instead of erasing the border to its right.
 - **The public address arrives after the servers do, by assertion.** A
-  `dockerd://` origin is bound *before* the tunnel is minted — the binding is
+  `attach://dockerd/` origin is bound *before* the tunnel is minted — the binding is
   what the tunnel is handed to proxy to — so at the only moment `Bind` could be
   told where it answers from outside, nobody knows. `RunE` asks the closer
   `Bind` returned whether it is an `Announcer` once `public` is known, and
@@ -478,7 +496,7 @@ Two things there will bite if you change them without knowing why:
   The frame joins them when they differ and says one when they do not, and the
   same pair names the browser tab through `View.WindowTitle` — ahead of the
   origin, because a tab loses its end and a row of them all starting
-  `dockerd://` would say nothing.
+  `attach://dockerd/` would say nothing.
 - **A title is arbitrary text from somebody else's program.** It is drawn over
   the top border, so anything in it that measures wide and paints blank —
   control characters, zero-width joiners, a byte that is not a character —

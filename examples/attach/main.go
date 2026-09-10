@@ -3,10 +3,10 @@
 // It starts the container too — nothing else needs to be running — and puts a
 // shell in it on a public hostname:
 //
-//	https://<host>/   -> dockerd://tunneld-example
+//	https://<host>/   -> attach://dockerd/tunneld-example
 //
-// A dockerd:// origin is not proxied like the others. A container is not an
-// HTTP service, so tunneld becomes one on its behalf: it serves a terminal
+// An attach://dockerd/ origin is not proxied like the others. A container is not
+// an HTTP service, so tunneld becomes one on its behalf: it serves a terminal
 // page and streams the container's stdio to it, and the origin behaves like
 // any other from there — it takes an index, it gets a multiview tile, and it
 // mixes freely with http:// origins.
@@ -33,6 +33,7 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
@@ -50,7 +51,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	cmd := v1alpha1.New(
-		v1alpha1.WithOrigin("dockerd://"+name),
+		v1alpha1.WithOrigin(v1.AttachScheme+"://"+v1.DockerProvider+"/"+name),
 		v1alpha1.WithLogLevel("debug"),
 	).Command()
 

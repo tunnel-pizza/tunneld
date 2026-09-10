@@ -5,7 +5,7 @@
 // this package resolves a command through the machine tunneld is running on,
 // then runs it on a pseudo-terminal and streams that. The parser asks
 // IsExecutable one question while origins are settled — is this word something
-// we can run — and rewrites what it says yes to under v1.FileScheme, so a
+// we can run — and rewrites what it says yes to under v1.ExecScheme, so a
 // program is an origin like any other from there onwards.
 //
 // It knows nothing about the tunnel or the page: attach.Target is the whole of
@@ -75,7 +75,7 @@ func Resolve(s string) (string, bool) {
 	// was given, so this is what makes the two agree.
 	//
 	// On Windows the absolute form is C:\..., which has no spelling inside a
-	// file:// URL — whichever half of the URL it is put in, url.URL escapes
+	// exec:// URL — whichever half of the URL it is put in, url.URL escapes
 	// the separators. The origin is still correct where it counts, since the
 	// binder reads the path off the URL rather than off its printed form, and
 	// the platform has no pseudo-terminals to serve it on either way.
@@ -99,9 +99,11 @@ func New(opts ...Option) *TargetsImpl {
 	return v1.Apply(&TargetsImpl{}, opts...)
 }
 
-// Scheme is v1.FileScheme: this provider answers file:// origins and no
+// Verb is v1.ExecScheme and Provider is empty: this provider answers exec://
+// origins with no authority — the empty one being this machine — and no
 // others, which is the whole of how the binder picks it.
-func (*TargetsImpl) Scheme() string { return v1.FileScheme }
+func (*TargetsImpl) Verb() string     { return v1.ExecScheme }
+func (*TargetsImpl) Provider() string { return "" }
 
 // Open resolves ref — a command name, or a path to an executable — against
 // this machine, and checks that the machine can give it a terminal.
@@ -155,9 +157,10 @@ type TargetImpl struct {
 // they will recognize in a page title and a log line.
 func (a *TargetImpl) Name() string { return a.ref }
 
-// Scheme is v1.FileScheme, which with Name reconstructs the origin exactly as
-// it was typed — including the bare word the parser rewrote into one.
-func (a *TargetImpl) Scheme() string { return v1.FileScheme }
+// Origin is this program's origin: the verb, no authority because the program
+// runs here, and the resolved path — which is what the parser rewrote a bare
+// word into, so the origin reads the same however it was typed.
+func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 
 // TTY is always true. A program run here is given a pseudo-terminal whether or
 // not it would have had one, because the point of the origin is the terminal:

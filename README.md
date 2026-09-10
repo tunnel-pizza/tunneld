@@ -52,13 +52,13 @@ docker run --rm -e TUNNELD_ORIGINS=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
 
-A `dockerd://` origin needs the daemon socket, which is root-equivalent on the
+An `attach://dockerd/` origin needs the daemon socket, which is root-equivalent on the
 host — a container holding it can start a privileged container and own the
 machine:
 
 ```sh
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  -e TUNNELD_ORIGINS=dockerd://my-container ghcr.io/tunnel-pizza/tunneld
+  -e TUNNELD_ORIGINS=attach://dockerd/my-container ghcr.io/tunnel-pizza/tunneld
 ```
 
 Images are signed by digest, so a moved tag cannot inherit a signature:
@@ -151,12 +151,18 @@ container terminal below, and every tile of the multiview panel — is unaffecte
 
 ### Containers
 
-A `dockerd://<container>` origin exposes a terminal attached to a running
-container instead of an HTTP service:
+An `attach://dockerd/<container>` origin exposes a terminal attached to a
+running container instead of an HTTP service:
 
 ```sh
-tunneld dockerd://my-container
+tunneld attach://dockerd/my-container
 ```
+
+The scheme is the verb and the authority is where it happens: `attach` is what
+tunneld does, `dockerd` is the daemon it does it to. That is what leaves room
+for a second way into the same container to sit beside the first — the day
+there is one it is `exec://dockerd/<container>`, differing in the word that
+says what, not in the word that says to what.
 
 `<container>` is a container name or id, or — when neither matches — a Compose
 service name. Compose calls a service `web` in project `proj` by the container
@@ -164,7 +170,7 @@ name `proj-web-1`, so the name you wrote in the compose file is never the name
 the daemon knows; tunneld looks it up by the labels Compose already wrote:
 
 ```sh
-tunneld dockerd://web
+tunneld attach://dockerd/web
 ```
 
 A container literally named `web` still wins. The lookup is scoped to tunneld's
@@ -176,7 +182,7 @@ It is an origin like any other, so it takes an index, gets a multiview tile,
 and mixes freely with HTTP origins:
 
 ```sh
-tunneld :3000 dockerd://my-container
+tunneld :3000 attach://dockerd/my-container
 ```
 
 The semantics are `docker attach`'s, which means most of the behaviour was
@@ -196,7 +202,7 @@ along the bottom the keys, the build, the machine serving it, how many people
 are watching, and the size everyone has settled on.
 
 ```
-╭─ dockerd://tunneld-example ─────────────────────────── https://striped-worm.tunneled.pizza/ ╮
+╭─ attach://dockerd/tunneld-example ──────────────────── https://striped-worm.tunneled.pizza/ ╮
 │➜  ~ ls                                                                                      │
 │                                                                                             │
 ╰─ ^K  commands ───── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
@@ -217,7 +223,7 @@ a title and a subtitle and they are not the same thing — a prompt framework
 sets the title to the running command's whole line and the subtitle to its name
 — so they are joined when they differ and said once when they do not. The same
 pair names the browser tab, ahead of the origin — a tab loses its end when the
-row gets crowded, and a row all beginning `dockerd://` would say nothing. That is the shell talking, not tunneld guessing: a prompt framework
+row gets crowded, and a row all beginning `attach://dockerd/` would say nothing. That is the shell talking, not tunneld guessing: a prompt framework
 like Oh My Zsh sets the terminal's tab title from its `preexec` hook, which is
 the same thing your terminal reads to name a tab. A shell that sets none leaves
 the space empty, and one that has not spoken since you connected shows whatever
@@ -248,7 +254,7 @@ console as well:
 
 ```
 https://thick-firefly.tunneled.pizza/
-  -> file:///bin/zsh
+  -> exec:///bin/zsh
 ```
 
 An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
@@ -265,7 +271,7 @@ forgot one rather than handed a public terminal onto the machine.
 
 ### The console you started it from
 
-With exactly one `dockerd://` or `file://` origin, the terminal is drawn on
+With exactly one `attach://` or `exec://` origin, the terminal is drawn on
 your own console too:
 
 ```sh
@@ -321,12 +327,15 @@ the difference between pasted and typed text still is.
 
 ### Programs
 
-A `file://<program>` origin runs a program on this machine and exposes its
+An `exec:///<path>` origin runs a program on this machine and exposes its
 terminal, the same way a container's is exposed:
 
 ```sh
-tunneld file://htop
+tunneld exec:///usr/bin/htop
 ```
+
+The empty authority is this machine — that is the whole of what `exec://` with
+no provider says, and why the path is absolute.
 
 A bare argument that names a program on `$PATH` is that origin written short,
 since a word that resolves to a program is not a hostname anybody meant:
@@ -335,10 +344,14 @@ since a word that resolves to a program is not a hostname anybody meant:
 tunneld htop
 ```
 
-What it becomes is the resolved path — `file:///usr/bin/htop` — which is what
+What it becomes is the resolved path — `exec:///usr/bin/htop` — which is what
 the frame shows, what the origin map prints, and what somebody pastes back to
 reach the same program rather than whatever their own `$PATH` finds. A bare
 name says which program only on the machine that looked it up.
+
+`exec://htop` — the word with its scheme on and nothing after it — is looked up
+the same way, because an authority with nothing after it cannot be a provider
+being asked for something; it resolves to the same `exec:///usr/bin/htop`.
 
 The lookup is this machine's own — `$PATH` and the executable bit on Unix,
 `PATHEXT` on Windows — so the same argument names a program here and a host
@@ -361,10 +374,10 @@ offered this, since once its PID 1 has exited there is nothing left to attach
 to.
 
 It is an origin like any other, so it takes an index, gets a multiview tile,
-frames itself as `file:///usr/bin/htop`, and mixes freely with the rest:
+frames itself as `exec:///usr/bin/htop`, and mixes freely with the rest:
 
 ```sh
-tunneld :3000 dockerd://my-container htop
+tunneld :3000 attach://dockerd/my-container htop
 ```
 
 A machine with no pseudo-terminals refuses at startup, with the reason, rather
@@ -498,13 +511,15 @@ from `TUNNELD_ORIGINS`, or seeded in code — and argv beats the variable, which
 beats the seed, each replacing the one under it rather than adding to it.
 
 ```sh
-tunneld :3000 :4000 dockerd://my-container
+tunneld :3000 :4000 attach://dockerd/my-container
 ```
 
-A `dockerd://<container>` origin is not proxied but served: tunneld answers it
-with a browser terminal attached to the container, the way `docker attach`
-attaches, and `<container>` is a name, an id, or a Compose service name. See
-[Containers](#containers). A `file://<program>` origin is served the same way,
+A served origin is spelled by the verb, with the provider that answers it in
+the authority and the reference after: `attach://dockerd/<container>` is not
+proxied but served, and tunneld answers it with a browser terminal attached to
+the container, the way `docker attach` attaches — `<container>` is a name, an
+id, or a Compose service name. See [Containers](#containers). An
+`exec:///<path>` origin is served the same way,
 by running the program on a pseudo-terminal — and a bare argument this machine
 can run is that origin written short, so `tunneld htop` exposes htop rather
 than a hostname that resolves nowhere. See [Programs](#programs). Marking one

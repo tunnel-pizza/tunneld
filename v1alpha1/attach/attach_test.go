@@ -116,9 +116,9 @@ func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
 // container somebody has to arrange, which is what makes them testable at all.
 type fakeTarget struct {
 	name string
-	// scheme is the origin scheme this target was opened for, "" meaning
-	// dockerd — what most cases here are about.
-	scheme string
+	// origin is this target's origin spelled whole, "" meaning the container
+	// spelling built from name — what most cases here are about.
+	origin string
 	// repeat is whether this target can be started again, which is what
 	// decides whether the frame stands in front of Ctrl-C and Ctrl-D. False
 	// is the container's answer and the default here.
@@ -142,8 +142,10 @@ func newFakeTarget(name string, tty, stdin bool) *fakeTarget {
 	}
 }
 
-func (f *fakeTarget) Name() string     { return f.name }
-func (f *fakeTarget) Scheme() string   { return cmp.Or(f.scheme, v1.DockerScheme) }
+func (f *fakeTarget) Name() string { return f.name }
+func (f *fakeTarget) Origin() string {
+	return cmp.Or(f.origin, v1.AttachScheme+"://"+v1.DockerProvider+"/"+f.name)
+}
 func (f *fakeTarget) Repeatable() bool { return f.repeat }
 func (f *fakeTarget) TTY() bool        { return f.tty }
 func (f *fakeTarget) Stdin() bool      { return f.stdin }
@@ -788,7 +790,7 @@ func TestAliveSaysWhatComingBackWouldDo(t *testing.T) {
 // and the overlay covers that corner, so the name has to be said here too.
 func TestThePageNamesTheOrigin(t *testing.T) {
 	target := newFakeTarget("api", true, true)
-	target.scheme = v1.FileScheme
+	target.origin = v1.ExecScheme + "://" + "/usr/bin/api"
 	s := serveFake(t, target)
 
 	resp, err := http.Get(s.URL().String() + "/")
@@ -801,7 +803,7 @@ func TestThePageNamesTheOrigin(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 
-	if want := "file://api"; !strings.Contains(string(raw), want) {
+	if want := "exec:///usr/bin/api"; !strings.Contains(string(raw), want) {
 		t.Errorf("page does not name the origin %q", want)
 	}
 }
@@ -954,12 +956,12 @@ func TestSessionEnds(t *testing.T) {
 // this package.
 type stubTarget struct {
 	name   string
-	scheme string
+	origin string
 	closed bool
 }
 
 func (s *stubTarget) Name() string   { return s.name }
-func (s *stubTarget) Scheme() string { return s.scheme }
+func (s *stubTarget) Origin() string { return s.origin }
 func (s *stubTarget) TTY() bool      { return true }
 func (s *stubTarget) Stdin() bool    { return true }
 func (s *stubTarget) Close() error   { s.closed = true; return nil }
@@ -973,33 +975,49 @@ func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 // call fail instead — the unwinding case needs one success before one
 // failure.
 type stubTargets struct {
-	// scheme is the one this provider answers, "" meaning dockerd — the
-	// scheme most cases here are about.
-	scheme string
-	asked  []string
-	failOn int
-	opened []*stubTarget
+	// verb and provider are the pair this stub answers, "" meaning the
+	// attach://dockerd pair most cases here are about. provider is meaningful
+	// when empty, so it takes a flag rather than a zero value: exec:// answers
+	// the empty authority, which is this machine.
+	verb     string
+	provider string
+	local    bool
+	asked    []string
+	failOn   int
+	opened   []*stubTarget
 }
 
-func (s *stubTargets) Scheme() string { return cmp.Or(s.scheme, v1.DockerScheme) }
+func (s *stubTargets) Verb() string { return cmp.Or(s.verb, v1.AttachScheme) }
+
+func (s *stubTargets) Provider() string {
+	if s.local {
+		return ""
+	}
+	return cmp.Or(s.provider, v1.DockerProvider)
+}
 
 func (s *stubTargets) Open(_ context.Context, ref string, _ *slog.Logger) (Target, error) {
 	s.asked = append(s.asked, ref)
 	if s.failOn > 0 && len(s.asked) == s.failOn {
 		return nil, errors.New("no such container")
 	}
-	target := &stubTarget{name: ref, scheme: s.Scheme()}
+	target := &stubTarget{name: ref, origin: s.Verb() + "://" + s.Provider() + "/" + ref}
 	s.opened = append(s.opened, target)
 	return target, nil
 }
 
 // TestBindPicksTheProviderByScheme pins the dispatch: each provider answers
-// one scheme, the binder chooses on that alone, and an origin whose scheme
-// nobody claims never silently becomes an address the tunnel tries to dial.
+// one verb://provider pair, the binder chooses on that alone, and an origin no
+// pair claims never silently becomes an address the tunnel tries to dial.
+//
+// The two providers are also asked for their references differently, which is
+// the authority doing its work: a named provider is handed the reference
+// without the separator that belongs to the URL, and the empty authority — this
+// machine — is handed the path whole, because there it is a filesystem path.
 func TestBindPicksTheProviderByScheme(t *testing.T) {
-	containers := &stubTargets{scheme: v1.DockerScheme}
-	programs := &stubTargets{scheme: v1.FileScheme}
-	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "file://htop")
+	containers := &stubTargets{}
+	programs := &stubTargets{verb: v1.ExecScheme, local: true}
+	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "exec:///usr/bin/htop")
 
 	dialable, closer, err := New(WithTargets(containers, programs)).
 		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
@@ -1011,7 +1029,7 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 	if want := []string{"api"}; !slices.Equal(containers.asked, want) {
 		t.Errorf("the container provider was asked for %v, want %v", containers.asked, want)
 	}
-	if want := []string{"htop"}; !slices.Equal(programs.asked, want) {
+	if want := []string{"/usr/bin/htop"}; !slices.Equal(programs.asked, want) {
 		t.Errorf("the program provider was asked for %v, want %v", programs.asked, want)
 	}
 	// The http origin passes through as itself; the other two were replaced by
@@ -1027,17 +1045,17 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 }
 
 // TestBindRefusesAnUnservedScheme pins that a scheme no provider answers is an
-// error rather than an origin: dialing "file://htop" as an address would mint
+// error rather than an origin: dialing "exec:///usr/bin/htop" as an address would mint
 // a public hostname in front of nothing at all.
 func TestBindRefusesAnUnservedScheme(t *testing.T) {
-	display := mustURLs(t, "file://htop")
+	display := mustURLs(t, "exec:///usr/bin/htop")
 
-	_, _, err := New(WithTargets(&stubTargets{scheme: v1.DockerScheme})).
+	_, _, err := New(WithTargets(&stubTargets{})).
 		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("Bind with no provider for the scheme succeeded, want an error")
 	}
-	if !strings.Contains(err.Error(), "file://htop") {
+	if !strings.Contains(err.Error(), "exec://") {
 		t.Errorf("error %q does not name the origin", err)
 	}
 }
@@ -1083,7 +1101,7 @@ func (r *rerunTarget) letOneGo() { r.hold <- struct{}{} }
 func (r *rerunTarget) release() { r.letGo.Do(func() { close(r.hold) }) }
 
 func (r *rerunTarget) Name() string     { return "prog" }
-func (r *rerunTarget) Scheme() string   { return v1.FileScheme }
+func (r *rerunTarget) Origin() string   { return v1.ExecScheme + "://" + "/usr/bin/prog" }
 func (r *rerunTarget) TTY() bool        { return true }
 func (r *rerunTarget) Stdin() bool      { return true }
 func (r *rerunTarget) Close() error     { return nil }
@@ -1273,13 +1291,13 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 		display []string
 		want    bool
 	}{
-		{"one container is a console's to show", []string{"dockerd://api"}, true},
-		{"two is nobody's", []string{"dockerd://api", "dockerd://db"}, false},
-		{"a served origin beside a proxied one is still one", []string{"dockerd://api", "http://localhost:3000"}, true},
+		{"one container is a console's to show", []string{"attach://dockerd/api"}, true},
+		{"two is nobody's", []string{"attach://dockerd/api", "attach://dockerd/db"}, false},
+		{"a served origin beside a proxied one is still one", []string{"attach://dockerd/api", "http://localhost:3000"}, true},
 		{"nothing served is nothing to show", []string{"http://localhost:3000"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			targets := &stubTargets{scheme: v1.DockerScheme}
+			targets := &stubTargets{}
 			display := mustURLs(t, tc.display...)
 
 			_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
@@ -1303,8 +1321,8 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 // Quit, and the closer Bind handed back is where the command is listening —
 // which is the only reason a key inside a browser tab can end a process.
 func TestDoneReachesTheBinder(t *testing.T) {
-	targets := &stubTargets{scheme: v1.DockerScheme}
-	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "dockerd://db")
+	targets := &stubTargets{}
+	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
 
 	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1354,7 +1372,7 @@ func mustURLs(t *testing.T, raw ...string) []*url.URL {
 // the reported addresses, the reported map, the multiview tiles.
 func TestBindKeepsOrder(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")
+	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
 	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1391,7 +1409,7 @@ func TestBindKeepsOrder(t *testing.T) {
 // that reaches a different container.
 func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "dockerd://api", "http://localhost:4000", "dockerd://db")
+	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
 	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1435,7 +1453,7 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 	}
 }
 
-// TestBindWithoutContainers pins that a command with no dockerd:// URL starts
+// TestBindWithoutContainers pins that a command with no attach:// URL starts
 // nothing at all — the feature is inert until somebody asks for it.
 func TestBindWithoutContainers(t *testing.T) {
 	targets := &stubTargets{}
@@ -1463,7 +1481,7 @@ func TestBindWithoutContainers(t *testing.T) {
 // embedding program.
 func TestBindUnwindsOnFailure(t *testing.T) {
 	targets := &stubTargets{failOn: 2}
-	display := mustURLs(t, "dockerd://api", "dockerd://missing")
+	display := mustURLs(t, "attach://dockerd/api", "attach://dockerd/missing")
 
 	if _, _, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("Bind succeeded, want an error")
@@ -1476,17 +1494,17 @@ func TestBindUnwindsOnFailure(t *testing.T) {
 	}
 }
 
-// TestBindWithoutTargets pins that a dockerd:// origin met with no Targets
+// TestBindWithoutTargets pins that an attach:// origin met with no Targets
 // configured fails with a message naming the missing dependency, rather than
 // panicking on a nil interface.
 func TestBindWithoutTargets(t *testing.T) {
-	display := mustURLs(t, "dockerd://api")
+	display := mustURLs(t, "attach://dockerd/api")
 
 	_, _, err := New().Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err == nil {
 		t.Fatal("Bind succeeded, want an error")
 	}
-	if want := "attach: no Targets configured to open dockerd://api"; err.Error() != want {
+	if want := "attach: nothing answers attach://dockerd, only "; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("error = %q, want %q", err, want)
 	}
 }
