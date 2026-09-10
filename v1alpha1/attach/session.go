@@ -94,15 +94,18 @@ type session struct {
 	// output before the emulator sees them. Built by watch, reset by revive.
 	scan *scanner
 
-	// titleMu guards the title and subtitle and nothing else. Deliberately not
-	// mu — see newSession, where the callbacks that write them are installed.
+	// titleMu guards the title and subtitle and nothing else. said writes them
+	// from the stream goroutine, a frame's titles() reads them from its own,
+	// and titleMu is deliberately not mu so neither waits behind viewer or
+	// size bookkeeping it has nothing to do with.
 	titleMu  sync.Mutex
 	title    string
 	subtitle string
 
 	// cursorMu guards hidden, and is separate from titleMu for the same reason
-	// titleMu is separate from mu: the callback that writes it fires with the
-	// emulator's own lock held.
+	// titleMu is separate from mu: said writes it from the stream goroutine
+	// and a frame's cursorHidden() reads it from its own, and the two fields
+	// have nothing to do with each other.
 	//
 	// hidden is what the program asked for with DECTCEM. A full-screen program
 	// hides the cursor once, at startup, and then leaves it wherever its last
@@ -738,8 +741,9 @@ func (s *session) setName(cmd int, name string) {
 	}
 }
 
-// setCursorHidden records what the program asked for with DECTCEM. Called from
-// the emulator's own callback, which is why it takes a lock of its own.
+// setCursorHidden records what the program asked for with DECTCEM. Called
+// from said on the stream goroutine, which is why it takes a lock of its own:
+// a frame reads cursorHidden from its own goroutine, concurrently.
 func (s *session) setCursorHidden(hidden bool) {
 	s.cursorMu.Lock()
 	s.hidden = hidden

@@ -164,10 +164,14 @@ func (s *scanner) Write(p []byte) (int, error) {
 				// parameter or intermediate byte
 				s.held = append(s.held, b)
 			case b >= 0x40 && b <= 0x7e:
-				// final byte
+				// final byte. Written to the screen before it is reported, so
+				// a Mode's sink sees the CSI already in effect — reportModes
+				// reads s.held, so the clear waits until after it returns
+				// rather than going through emit, which would clear early.
 				s.held = append(s.held, b)
+				_, _ = s.screen.Write(s.held)
 				s.reportModes()
-				emit()
+				s.held = s.held[:0]
 				s.state = scanGround
 			case b == 0x1b:
 				emit()

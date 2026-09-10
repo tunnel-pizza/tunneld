@@ -667,7 +667,7 @@ func TestViewWithholdsAHiddenCursor(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	if !h.s.cursorHidden() {
-		t.Fatal("the session did not record DECTCEM; the emulator's callback is not wired")
+		t.Fatal("the session did not record DECTCEM; the scanner is not wired")
 	}
 	if got := h.f.View().Cursor; got != nil {
 		t.Errorf("cursor drawn at (%d,%d), want none — the program asked for none", got.X, got.Y)
