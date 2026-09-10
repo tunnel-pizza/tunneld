@@ -466,11 +466,11 @@ Two things there will bite if you change them without knowing why:
   full-screen program hides the cursor at startup and then leaves the position
   wherever its last write ended. `session.watch` records DECTCEM and the frame
   asks before drawing, or the cursor skates around the screen on every redraw.
-- **Everything the terminal says about itself is in the debug log.** The
-  `logged` sink writes one line per sequence — kind, command, data — because
-  the only way to learn what a given app sends is to watch one send it. Claude
-  Code, for instance, sets no title at its login screen but does once a session
-  is running.
+- **Everything the terminal says about itself is in the debug log.**
+  `session.said` logs one line per sequence at debug — kind, cmd, data, set —
+  because the only way to learn what a given app sends is to watch one send
+  it. Claude Code, for instance, sets no title at its login screen but does
+  once a session is running.
 - **A terminal has a title and a subtitle, and they are not the same thing.**
   The window title (OSC 2) is the title; the tab title (OSC 1) is the subtitle.
   A prompt framework sets the first to the running command's whole line and the
@@ -502,10 +502,11 @@ Two things there will bite if you change them without knowing why:
   bump re-checks it), forward the rest to each viewer's real terminal (OSC 52
   both ways, 7/9/133/777), and log; `attach.WithSinks` appends more. An
   unterminated OSC is bounded at 1 MiB. 8-bit C1 introducers are unsupported.
-- **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
-  catches the OSC the container already emits — a prompt framework sets it from
-  `preexec`, so it carries the running command's name — and the frame shows it
-  as it arrives. The tab title (OSC 1) rather than the window title (OSC 2):
+- **The shell's title is caught, not guessed.** The container still emits the
+  OSC — a prompt framework sets it from `preexec`, so it carries the running
+  command's name — and now the scanner catches it and the session sets the
+  subtitle from it, which the frame shows as it arrives. The tab title (OSC 1)
+  rather than the window title (OSC 2):
   the same fact said shorter, where the window title is the whole command line
   and, at rest, `user@host:~`, which in a frame that already names the host and
   the origin is mostly things said twice. There is no marker separating "a command is running" from "this
