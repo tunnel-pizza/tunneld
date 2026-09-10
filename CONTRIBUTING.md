@@ -890,28 +890,38 @@ Wrap body at ~72 cols. Explain the *why*; the diff covers the *what*.
 
 ## Releasing
 
-Patch releases are automatic. Every push to `main` runs the `Release`
-workflow, which bumps the patch component of the latest `v*` tag,
-re-runs `go vet`, `go build`, `make test`, and `make e2e` against that
-ref, then:
+Patch releases are automatic. Every push to `main` runs three jobs in
+[`ci.yml`](./.github/workflows/ci.yml) after the test matrix and the race lane:
 
-- pushes the new tag,
-- creates a GitHub Release with auto-generated notes,
-- builds and pushes `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and
-  `linux/arm64`, tagged with the release and `latest`,
-- warms `proxy.golang.org` so [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
-  surfaces the new version without manual prodding, and
-- publishes `tunneld` to npm with provenance, through npm's trusted
-  publisher binding for this repo and workflow (no token). `make binaries`
-  builds the six platform binaries into `dist/`, stamped with the tag through
-  `VERSION`, and `package.json` is rewritten to the tag for that publish only.
-  A release publishes to `latest`. For a `beta` instead, merge with
-  `[skip release]`, then run the CI workflow by hand from `main` with the
-  dist-tag input set to `beta`; that cuts the release and publishes it there.
-  Promote later without rebuilding: `npm dist-tag add tunneld@<version> latest`.
+- **`tag`** resolves the version — the patch bump of the latest `v*` tag, or
+  the tag itself when one was pushed by hand — and only resolves it. Nothing
+  is pushed yet.
+- **`binaries`** runs `make binaries VERSION=<tag>` on one Linux runner: six
+  pure-Go cross-compiles with `-trimpath` into `dist/`, handed on as an
+  artifact. It is not a pull-request check — the `ci` matrix already builds
+  every one of those `GOOS`/`GOARCH` pairs natively — and it is what stands
+  between a broken build and a tag: `release` needs it, so a failure here
+  leaves no tag pushed and no release opened.
+- **`release`** downloads those binaries, and then, in order: pushes the tag;
+  creates a GitHub Release with auto-generated notes; signs the source
+  archives, the six binaries and a `checksums.txt` with cosign, and uploads
+  binaries, checksums and every bundle; builds and pushes
+  `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and `linux/arm64`, tagged
+  with the release and `latest`; warms `proxy.golang.org` so
+  [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld) surfaces
+  the version; and publishes `tunneld` to npm with provenance, through npm's
+  trusted publisher binding for this repo and workflow (no token).
+  `--ignore-scripts` keeps `prepublishOnly` from rebuilding `dist/`, so the
+  package packs the same bytes the release signed; `package.json` is
+  rewritten to the tag for that publish only. A release publishes to
+  `latest`. For a `beta` instead, merge with `[skip release]`, then run the
+  CI workflow by hand from `main` with the dist-tag input set to `beta`; that
+  cuts the release and publishes it there. Promote later without rebuilding:
+  `npm dist-tag add tunneld@<version> latest`.
 
-Source archives and the image are both signed with cosign in keyless mode. The
-image is signed **by digest**, not by tag: a tag can be moved to point at other
+Source archives, binaries and the image are all signed with cosign in keyless
+mode; [SECURITY.md](./SECURITY.md) carries the verification recipes. The image
+is signed **by digest**, not by tag: a tag can be moved to point at other
 bytes, and a signature that followed it would vouch for whatever it moved to.
 
 The image is multi-arch without QEMU — the [`Dockerfile`](./Dockerfile) builds
