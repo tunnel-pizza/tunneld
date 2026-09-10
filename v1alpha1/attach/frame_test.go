@@ -660,9 +660,10 @@ func TestViewPlacesTheCursor(t *testing.T) {
 func TestViewWithholdsAHiddenCursor(t *testing.T) {
 	h := newFrameHarness(t)
 
-	// DECTCEM, the way a program sends it, so the emulator's own callback is
-	// what records this rather than the test reaching past it.
-	if _, err := h.s.em.WriteString("hello\x1b[?25l"); err != nil {
+	// DECTCEM the way a program sends it, through the scanner the session
+	// installs — the emulator has no cursor-visibility getter, so the Mode
+	// sink is the only path to cursorHidden.
+	if _, err := h.s.scan.Write([]byte("hello\x1b[?25l")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if !h.s.cursorHidden() {
@@ -674,7 +675,7 @@ func TestViewWithholdsAHiddenCursor(t *testing.T) {
 
 	// And it comes back, because a program that hides the cursor to redraw
 	// shows it again to ask for something.
-	if _, err := h.s.em.WriteString("\x1b[?25h"); err != nil {
+	if _, err := h.s.scan.Write([]byte("\x1b[?25h")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if h.s.cursorHidden() {

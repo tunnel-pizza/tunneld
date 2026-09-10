@@ -247,6 +247,38 @@ func TestWithSinksStoresAndServeAccepts(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 }
 
+// TestWithSinksSeesWhatAnAppSays pins that a Sink installed with WithSinks is
+// told every owned and observed sequence, in the order the target wrote them.
+func TestWithSinksSeesWhatAnAppSays(t *testing.T) {
+	rec := &recorder{}
+	target := newFakeTarget("api", true, true)
+	// A title, a mode, and a clipboard write — one of each shape.
+	target.out = "\x1b]0;hi\a\x1b[?25l\x1b]52;c;aGk=\a"
+
+	s, err := Serve(t.Context(), target, testBanner, testLogs{}, []Sink{rec}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := rec.commands(); len(got) >= 3 {
+			want := []int{0, 25, 52}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("commands = %v, want %v", got, want)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("commands = %v, want [0 25 52]", rec.commands())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestPage pins that the tunnel's own address answers with the terminal page
 // and that nothing else on the origin answers at all. The origin exists to
 // serve exactly two paths; anything else reaching it is a bug upstream, and a

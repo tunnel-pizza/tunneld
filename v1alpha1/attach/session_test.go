@@ -180,39 +180,33 @@ func TestTitleFollowsTheShell(t *testing.T) {
 	}
 }
 
-// TestATruncatedTitleIsIgnored pins that an unusable title does not replace a
-// usable one.
-//
-// The emulator's OSC parser cuts a string at a 0x9C byte — the 8-bit string
-// terminator, and also the middle byte of every three-byte UTF-8 character in
-// the U+27xx block. An app whose spinner cycles ✳ ✻ ✽ therefore delivers a
-// good title, then a stray byte, then a good title again, and taking the stray
-// one would flicker the frame's label off and on in time with the spinner.
-func TestATruncatedTitleIsIgnored(t *testing.T) {
+// TestATitleArrivesWhole pins the fix for #93/#66: a title whose bytes include
+// 0x9C — ✳ is E2 9C B3 — is delivered whole, and nothing of it lands on the
+// screen. The old parser cut it at 0x9C, so the callback saw \xe2 and the rest
+// was printed into the container's own screen.
+func TestATitleArrivesWhole(t *testing.T) {
 	target := newFakeTarget("api", true, true)
-	// A good title, then exactly what ✳ leaves behind.
-	target.out = "\x1b]2;working\a\x1b]2;\xe2\a"
+	// A drawn row, then the title an app sets over the top of it.
+	target.out = "row one\r\n\x1b]0;✳ Claude Code\a"
 	s := serveFake(t, target)
 
-	// The good one lands first.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if title, _ := s.session.titles(); title == "working" {
+		title, subtitle := s.session.titles()
+		if title == "✳ Claude Code" && subtitle == "✳ Claude Code" {
 			break
 		}
 		if time.Now().After(deadline) {
-			title, _ := s.session.titles()
-			t.Fatalf("title = %q, want %q", title, "working")
+			t.Fatalf("title = %q, subtitle = %q, want both %q", title, subtitle, "✳ Claude Code")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// And the stray byte behind it does not take it away.
-	for range 20 {
-		if title, _ := s.session.titles(); title != "working" {
-			t.Fatalf("title = %q, want the last usable one kept", title)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// #66: the second row is not " Claude Code". The screen carries the drawn
+	// row and nothing the title left behind.
+	lines := s.session.paneLines(2)
+	if len(lines) > 1 && strings.Contains(lines[1], "Claude Code") {
+		t.Errorf("row 1 = %q, want the title's residue absent from the screen", lines[1])
 	}
 }
 
