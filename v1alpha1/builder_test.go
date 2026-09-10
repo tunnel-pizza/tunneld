@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -724,6 +725,10 @@ type fakeBinder struct {
 	// binder reports a single served origin — the only shape a console can
 	// draw.
 	mirrors bool
+	// showed records that a viewer was drawn, so a case can assert on the
+	// mirror having started rather than on what it displaced. Atomic because
+	// console.Show draws on a goroutine of its own.
+	showed atomic.Bool
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
@@ -743,7 +748,8 @@ type mirrorableBinder struct{ *fakeBinder }
 
 // Mirror blocks until the run ends, like the real one, so a case can assert on
 // what happened while it was drawing.
-func (mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
+func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
+	m.showed.Store(true)
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -1537,6 +1543,50 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	}
 	if len(h.display.opened) != 0 {
 		t.Errorf("opened %q, want nothing — the console is already showing it", h.display.opened)
+	}
+}
+
+// TestOpenFalseShowsNothing covers the hammer. OPEN=false is a run told to
+// show itself nowhere: the console keeps its scrollback and no tab is
+// launched, which is what somebody watching the run's own log lines is asking
+// for — the frame is drawn over exactly the output they are trying to read.
+//
+// Set up as the case that would otherwise do both. A pty on the command's
+// streams is a console to draw on, a mirroring binder is a terminal to draw,
+// and WithOpen(true) is a caller who insisted on a tab; each of the three is
+// the thing the variable has to beat.
+//
+// The stop hint is the deterministic half of the verdict: it is printed on the
+// run's own goroutine, and only for a run with no screen, so a mirror that
+// started could not have printed it. showed is the direct check behind it, and
+// it is read after the run has ended.
+func TestOpenFalseShowsNothing(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to draw on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	t.Setenv(openEnv, "false")
+
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h.binder.mirrors = true
+	v1.Apply(h.b, WithOpen(true))
+	h.console = tty
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if h.binder.showed.Load() {
+		t.Error("the console drew the terminal, want a run that shows nothing")
+	}
+	if len(h.display.opened) != 0 {
+		t.Errorf("opened %q, want a run that shows nothing", h.display.opened)
+	}
+	if got := strings.Count(h.stderr.String(), stopHint); got != 1 {
+		t.Errorf("stop hint appears %d times on stderr, want 1:\n%s", got, h.stderr.String())
 	}
 }
 

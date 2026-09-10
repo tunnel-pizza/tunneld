@@ -674,10 +674,19 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// Reported after the addresses, so what a person came for is on the
 	// screen before a frame takes it, and left behind when that frame ends: a
 	// detach gives the console back and the tunnel goes on without it.
-	screen := b.console.For(bound, cmd)
+	// OPEN=false is the hammer, and it is spelled as the two facts Open
+	// already takes rather than as a gate around the call: there is no console
+	// to draw on, and the caller has decided against a tab. How a run is shown
+	// stays one switch in display, and the hint below still fires — from here
+	// this is a run with no screen, which is exactly what it is.
+	screen, open := b.console.For(bound, cmd), b.open
+	if os.Getenv(openEnv) == "false" {
+		shown := false
+		screen, open = nil, &shown
+	}
 	b.display.Open(ctx, log,
 		display.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
-		display.WithForced(b.open),
+		display.WithForced(open),
 		display.WithStderr(stderr),
 		display.WithInteractive(display.IsInteractive(cmd)),
 		display.WithScreen(screen),
@@ -1003,6 +1012,23 @@ func (b *BuilderImpl) Origins() []*url.URL {
 	}
 	return origins
 }
+
+// openEnv is the hammer, and the one thing about how a run is shown that is
+// typed rather than derived: OPEN=false shows this run nothing. No frame takes
+// the console and no tab is launched, so the log lines keep the stderr they
+// would otherwise have been muted for — which is the whole of why it exists,
+// since the frame is drawn over exactly the output somebody reaching for it is
+// trying to read.
+//
+// No flag, no TUNNELD_ mirror, and no row in the README. Every other variable
+// this reads is one half of a knob an operator is meant to find; this is a way
+// out of the console for the case the console is in the way, and a knob that
+// turns the product off is not a feature of it. The bare word is the cost of
+// being quick to type, and only the exact value "false" swings it: an OPEN
+// that some other program left in the environment is overwhelmingly unlikely
+// to be spelled that way, and anything this does not recognise leaves the
+// derived decision alone.
+const openEnv = "OPEN"
 
 // stopHint is what a console with nothing left to draw is told. The addresses
 // are printed, the tunnel is up, and from here the run is a block on a signal
