@@ -44,6 +44,17 @@
         integrity="sha384-8/2DNT7OeuMQVc7wBPoMHAQ+NmEoYSx27k7IdbsItiomGC5D9+LTrbo8jtY6YZv8"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
+<!-- The clipboard addon. OSC 52 is how a program on the far end asks to set
+     this machine's clipboard, or to read it back — pbcopy in the container, a
+     tmux buffer, an editor's yank. xterm has no handler for it built in, so
+     without this the sequence tunneld now forwards would arrive and be logged
+     as unknown. A read (52;c;?) raises the browser's clipboard permission
+     prompt, which is granted per hostname and so covers every origin on the
+     tunnel — see #57. -->
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-clipboard@0.2.0/lib/addon-clipboard.js"
+        integrity="sha384-w58/aoMoWyj3vL47sXkN/bnchsdCAHHUQslw59i9Ei276OIuUCZgAO5y07Db60Bg"
+        crossorigin="anonymous"
+        referrerpolicy="no-referrer"></script>
 
 <style>
   /* The terminal is the page. No chrome, no header, nothing to explain — what
@@ -192,6 +203,17 @@
     term.loadAddon(webgl);
   } catch (e) {
     console.warn('attach: falling back to the DOM renderer', e);
+  }
+
+  // The clipboard addon registers an OSC 52 handler on the terminal. The
+  // container's output reaches here, so a write sets this machine's clipboard
+  // and a read (52;c;?) answers with what is on it — the addon prompts for the
+  // read per the browser's own policy. Its default provider is
+  // navigator.clipboard, which is why this needs no configuration.
+  try {
+    term.loadAddon(new ClipboardAddon.ClipboardAddon());
+  } catch (e) {
+    console.warn('attach: clipboard addon failed to load', e);
   }
 
   fit.fit();
