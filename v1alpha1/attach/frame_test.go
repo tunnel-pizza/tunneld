@@ -352,7 +352,7 @@ func TestTheLogsSayWhenThereAreNone(t *testing.T) {
 func TestARestartableTargetIsNotGuarded(t *testing.T) {
 	h := newFrameHarness(t)
 	program := newFakeTarget("prog", true, true)
-	program.scheme = v1.FileScheme
+	program.origin = v1.ExecScheme + "://" + "/usr/bin/prog"
 	program.repeat = true
 	h.s.Target = program
 
@@ -457,7 +457,7 @@ func TestViewIsBordered(t *testing.T) {
 	// The origin as it was typed, scheme and all: the same string pasted back
 	// into a command line is a working origin, and the scheme is what says
 	// this is a container rather than a web server.
-	if want := v1.DockerScheme + "://" + h.s.Name(); !strings.Contains(top, want) {
+	if want := h.s.Origin(); !strings.Contains(top, want) {
 		t.Errorf("top border = %q, want the origin %q in it", top, want)
 	}
 	if strings.Contains(top, "viewer") {
@@ -931,21 +931,21 @@ func TestBothTitlesAreShown(t *testing.T) {
 
 // TestTheFrameNamesTheOriginItServes pins that the corner says what the origin
 // is, and that it comes from the target rather than from a guess in the frame:
-// a program frames itself as file://htop where a container frames itself as
-// dockerd://api. The same string pasted back into a command line has to work,
-// which is the whole reason it is spelled as an origin at all.
+// a program frames itself as exec:///usr/bin/htop where a container frames
+// itself as attach://dockerd/api. The same string pasted back into a command
+// line has to work, which is the whole reason it is spelled as an origin.
 func TestTheFrameNamesTheOriginItServes(t *testing.T) {
-	for _, tc := range []struct{ scheme, name, want string }{
-		{v1.DockerScheme, "api", "dockerd://api"},
+	for _, tc := range []struct{ name, origin, want string }{
+		{"api", "", "attach://dockerd/api"},
 		// A program names itself by the path that will run, which is what the
 		// origin carries: "top" says which program only on the machine that
 		// resolved it.
-		{v1.FileScheme, "/usr/bin/top", "file:///usr/bin/top"},
+		{"top", v1.ExecScheme + "://" + "/usr/bin/top", "exec:///usr/bin/top"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			h := newFrameHarness(t)
 			target := newFakeTarget(tc.name, true, true)
-			target.scheme = tc.scheme
+			target.origin = tc.origin
 			h.s.Target = target
 
 			if got := h.f.title(); got != tc.want {
@@ -965,11 +965,11 @@ func TestTheFrameNamesTheOriginItServes(t *testing.T) {
 // It rides on the frame's own window title, which the renderer emits as an OSC
 // and the page raises to document.title — the same mechanism the container
 // uses to name its terminal, one level out. What the terminal is doing leads,
-// because a browser tab loses its end: a row of them all starting dockerd://
+// because a browser tab loses its end: a row of them all starting attach://
 // would be a row that says nothing.
 func TestPageTitleNamesTheTerminal(t *testing.T) {
 	h := newFrameHarness(t)
-	title := v1.DockerScheme + "://" + h.s.Name()
+	title := h.s.Origin()
 
 	for _, tc := range []struct{ name, said, sub, want string }{
 		{"before the terminal says anything", "", "", title},

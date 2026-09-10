@@ -1112,25 +1112,24 @@ func TestParseOriginsAccepts(t *testing.T) {
 			[]string{"http://localhost:3000", "http://localhost:4000"},
 			[]string{"http://localhost:3000", "http://localhost:4000"},
 		},
-		{"a container by name", []string{"dockerd://api"}, []string{"dockerd://api"}},
-		// Explicit, so it is taken as typed rather than looked up: an origin
-		// that names a program this machine does not have is the binder's to
-		// refuse, before the mint and with the reason.
-		{"a program by name", []string{"file://htop"}, []string{"file://htop"}},
+		{"a container by name", []string{"attach://dockerd/api"}, []string{"attach://dockerd/api"}},
 		// The shape the parser produces for itself when it resolves a bare
 		// word, so it has to read it back: an absolute path cannot be a URL's
-		// authority, only its path.
-		{"a program by path", []string{"file:///usr/bin/top"}, []string{"file:///usr/bin/top"}},
-		{"a container by id", []string{"dockerd://3f2a1b9c8d7e"}, []string{"dockerd://3f2a1b9c8d7e"}},
-		{"a container name keeps case and underscores", []string{"dockerd://My_Container"}, []string{"dockerd://My_Container"}},
+		// authority, only its path, and the empty authority is this machine.
+		{"a program by path", []string{"exec:///usr/bin/top"}, []string{"exec:///usr/bin/top"}},
+		{"a container by id", []string{"attach://dockerd/3f2a1b9c8d7e"}, []string{"attach://dockerd/3f2a1b9c8d7e"}},
+		{"a container name keeps case and underscores", []string{"attach://dockerd/My_Container"}, []string{"attach://dockerd/My_Container"}},
+		// A provider is free to read a reference with a separator in it however
+		// it likes; the parser's business ends at "there is one".
+		{"a reference may carry a separator", []string{"attach://dockerd/api/sh"}, []string{"attach://dockerd/api/sh"}},
 		{"a websocket-owning origin keeps its marker", []string{"http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http+ws://localhost:5173"}},
 		{"the marker on https", []string{"http://localhost:4000", "https+wss://localhost:5173"}, []string{"http://localhost:4000", "https+wss://localhost:5173"}},
 		{"ws and wss are interchangeable", []string{"http://localhost:4000", "http+wss://localhost:5173"}, []string{"http://localhost:4000", "http+wss://localhost:5173"}},
 		{"a marked origin keeps the bare-port shorthand", []string{"http://localhost:4000", "http+ws://:5173"}, []string{"http://localhost:4000", "http+ws://localhost:5173"}},
 		{
 			"a container beside an http origin, in order",
-			[]string{"http://localhost:3000", "dockerd://api"},
-			[]string{"http://localhost:3000", "dockerd://api"},
+			[]string{"http://localhost:3000", "attach://dockerd/api"},
+			[]string{"http://localhost:3000", "attach://dockerd/api"},
 		},
 	}
 
@@ -1230,7 +1229,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	}
 	// Compared as fields rather than as strings, because a Windows shell is
 	// C:\Program Files\Git\usr\bin\sh.exe and url.URL.String escapes every
-	// separator in it — file://C:%5CProgram%20Files%5C... is correct and
+	// separator in it — exec://C:%5CProgram%20Files%5C... is correct and
 	// nothing anybody would write down. Path is the claim worth pinning
 	// anyway: the resolved program, not the word that named it.
 	for _, tc := range []struct {
@@ -1241,7 +1240,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		want     []*url.URL
 		mention  string
 	}{
-		{"a runnable shell is the origin", real, true, nil, []*url.URL{{Scheme: v1.FileScheme, Path: real}}, ""},
+		{"a runnable shell is the origin", real, true, nil, []*url.URL{{Scheme: v1.ExecScheme, Path: real}}, ""},
 		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), true, nil, nil, "not exposing a shell"},
 		{"unset is nothing to fall back to", "", true, nil, nil, ""},
 		{"an argument outranks it", real, true, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
@@ -1295,14 +1294,18 @@ func TestOriginsDropsTheUnusable(t *testing.T) {
 			[]string{"http+ws://localhost:4000", "http://localhost:5173"},
 			"already claimed",
 		},
-		{"the marker on a container", []string{"dockerd+ws://api"}, nil, "dockerd+ws"},
+		{"the marker on a container", []string{"attach+ws://dockerd/api"}, nil, "attach+ws"},
 		{"the marker on an unproxyable scheme", []string{"ftp+ws://localhost:21"}, nil, "ftp+ws"},
-		{"a container with no name", []string{"dockerd://"}, nil, "names no container"},
-		{"a program with no name", []string{"file://"}, nil, "names no program"},
-		{"a program with a path", []string{"file://htop/now"}, nil, "carries more than a program reference"},
-		{"a container with a path", []string{"dockerd://api/sh"}, nil, "dockerd://api"},
-		{"a container with a query", []string{"dockerd://api?tty=1"}, nil, "dockerd://api"},
-		{"a container with a fragment", []string{"dockerd://api#sh"}, nil, "dockerd://api"},
+		{"a container with no provider or name", []string{"attach://"}, nil, "names no container"},
+		{"a provider with no container", []string{"attach://dockerd"}, nil, "names no container"},
+		{"a program with no name", []string{"exec://"}, nil, "names no program"},
+		// The authority is looked up as a program before it is read as a
+		// provider, so a word this machine cannot run leaves nothing either
+		// reading can use.
+		{"an authority that is neither program nor provider", []string{"exec://definitely-not-a-program"}, nil, "names no program"},
+		{"a container with a query", []string{"attach://dockerd/api?tty=1"}, nil, "attach://dockerd/api"},
+		{"a container with a fragment", []string{"attach://dockerd/api#sh"}, nil, "attach://dockerd/api"},
+		{"a container with a userinfo", []string{"attach://root@dockerd/api"}, nil, "carries more than a container reference"},
 	}
 
 	for _, tc := range cases {
@@ -1339,21 +1342,21 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	b := New(WithOrigin(name, "http://localhost:3000", "dockerd://api"))
+	b := New(WithOrigin(name, "http://localhost:3000", "attach://dockerd/api"))
 	got := b.Origins()
 
 	// The origin carries the resolved path, not the word typed: "top" names a
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if len(got) != 3 || got[0].Scheme != v1.FileScheme || got[0].Path != want {
-		t.Fatalf("Origins() = %q, want the first to be %s://%s", originStrings(got), v1.FileScheme, want)
+	if len(got) != 3 || got[0].Scheme != v1.ExecScheme || got[0].Path != want {
+		t.Fatalf("Origins() = %q, want the first to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
 	// the frame makes when it puts the origin in its corner.
 	//
 	// A Unix promise only: a Windows absolute path is C:\..., which has no
-	// spelling inside a file:// URL — url.URL escapes the separators either
+	// spelling inside an exec:// URL — url.URL escapes the separators either
 	// way round. It costs nothing there, because a platform with no
 	// pseudo-terminals refuses a program origin at startup regardless, and the
 	// binder reads the path off the URL rather than off its printed form.
@@ -1366,8 +1369,21 @@ func TestOriginsRunsAProgram(t *testing.T) {
 			t.Errorf("%q parsed back to path %q, want %q", got[0], again.Path, want)
 		}
 	}
-	if rest := originStrings(got[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "dockerd://api"}) {
+	if rest := originStrings(got[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
+	}
+
+	// The same word spelled with its scheme resolves the same way. An
+	// authority with nothing after it cannot be a provider being asked for
+	// something, so it is looked up as a program first — and lands on the
+	// resolved path, exactly as the bare word does.
+	spelled := New(WithOrigin(v1.ExecScheme + "://" + name)).Origins()
+	if len(spelled) != 1 || spelled[0].Scheme != v1.ExecScheme || spelled[0].Path != want {
+		t.Fatalf("Origins(%q) = %q, want %s://%s", v1.ExecScheme+"://"+name, originStrings(spelled), v1.ExecScheme, want)
+	}
+	if got[0].String() != spelled[0].String() {
+		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
+			name, v1.ExecScheme+"://"+name, got[0], spelled[0])
 	}
 }
 
@@ -1529,7 +1545,7 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	t.Cleanup(func() { tty.Close(); ptmx.Close() })
 
 	const public = "https://foo.tunneled.pizza/"
-	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
 	h.binder.mirrors = true
 	// Asked for, so the mirror is the only thing that can be suppressing it —
 	// otherwise a runner with $CI set would pass this for the wrong reason.
@@ -1569,7 +1585,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 	t.Setenv(openEnv, "false")
 
 	const public = "https://foo.tunneled.pizza/"
-	h := newRunHarness(t, live(public), "dockerd://my-container")
+	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
 	h.binder.mirrors = true
 	v1.Apply(h.b, WithOpen(true))
 	h.console = tty

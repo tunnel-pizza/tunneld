@@ -87,7 +87,7 @@ func TestResolve(t *testing.T) {
 		{"a URL", "http://localhost:3000", false},
 		{"a host and port", "localhost:3000", false},
 		{"a bare port", ":8000", false},
-		{"a container reference", "dockerd://api", false},
+		{"a container reference", "attach://dockerd/api", false},
 		{"nothing at all", "", false},
 	}
 

@@ -17,7 +17,9 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.LogEnv, "TUNNELD_LOG"},
 		{v1.CommandName, "tunneld"},
 		{v1.DefaultProvider, "tunnel.pizza"},
-		{v1.DockerScheme, "dockerd"},
+		{v1.AttachScheme, "attach"},
+		{v1.ExecScheme, "exec"},
+		{v1.DockerProvider, "dockerd"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

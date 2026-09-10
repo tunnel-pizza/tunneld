@@ -153,19 +153,24 @@ const originsKey = "origins"
 // scheme is what resolves the reference.
 //
 // The words are for the operator: a message that says "names no container" for
-// dockerd:// and "names no program" for file:// is one somebody can act on,
+// attach:// and "names no program" for exec:// is one somebody can act on,
 // where a message about a malformed authority component is not. A scheme
 // absent from here is not served, which is what makes the parser and the
 // binder agree on the same list.
 var servedSchemes = map[string]struct {
 	noun, example string
-	// paths says the scheme's reference may be a path rather than an
-	// authority. A program is named either way and an absolute one has to be,
-	// since a URL cannot carry it as a host; a container never is.
-	paths bool
+	// resolve, when set, is how an authority with nothing after it is read
+	// before it is read as a provider: exec://htop is the program, because a
+	// provider with no reference could not be asked for anything anyway, so
+	// the reading that can succeed wins over the one that cannot.
+	//
+	// It is the same function the bare-argument shorthand uses, held here
+	// rather than called by name below so the two readings of a word cannot
+	// drift — whatever `tunneld htop` accepts, exec://htop accepts.
+	resolve func(string) (string, bool)
 }{
-	v1.DockerScheme: {noun: "container", example: "my-container"},
-	v1.FileScheme:   {noun: "program", example: "htop", paths: true},
+	v1.AttachScheme: {noun: "container", example: "attach://dockerd/my-container"},
+	v1.ExecScheme:   {noun: "program", example: "exec:///usr/bin/htop", resolve: shell.Resolve},
 }
 
 // splitList parses a list-valued variable: comma-separated, surrounding space
@@ -266,7 +271,7 @@ each later one answers on a bare ?n parameter (n is that argument's position).
 An origin can also be a running container, which is served as a terminal in
 the browser rather than proxied:
 
-  ` + name + ` dockerd://my-container
+  ` + name + ` attach://dockerd/my-container
 
 Mark one origin http+ws (or https+ws) when a service opens its own WebSocket —
 a dev server's live reload, say. A handshake carries nothing that says which
@@ -840,12 +845,12 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // origin written three ways.
 //
 // A bare word this machine can run is a program rather than a hostname, so it
-// is rewritten under v1.FileScheme before the http default claims it: `tunneld
+// is rewritten under v1.ExecScheme before the http default claims it: `tunneld
 // htop` exposes htop's terminal, not the unresolvable host "htop".
 //
 // Anything else is dropped with a warning rather than failing the run — an
-// unparsable URL, a scheme that is none of http, https, v1.DockerScheme or
-// v1.FileScheme, a served value carrying more than a reference, a URL with no
+// unparsable URL, a scheme that is none of http, https, v1.AttachScheme or
+// v1.ExecScheme, a served value carrying more than a reference, a URL with no
 // host at all. One typo used to take every other origin down with it, and the
 // ones that work are what somebody is waiting on; the warning names the value
 // that did not, which is what a person needs to fix it. A run left with no
@@ -920,9 +925,10 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			// back — "top" names a program only on the machine that looked it
 			// up. It goes in Path and not Host because that is the only shape
 			// an absolute path survives: url.URL escapes the separators of a
-			// host, so file:///usr/bin/top round-trips and file://%2Fusr%2Fbin
-			// is what the other spelling produces.
-			origins = append(origins, &url.URL{Scheme: v1.FileScheme, Path: path})
+			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
+			// is what the other spelling produces. The empty authority is this
+			// machine, which is the whole of what exec:// with no provider says.
+			origins = append(origins, &url.URL{Scheme: v1.ExecScheme, Path: path})
 			continue
 		}
 		if !strings.Contains(s, "://") {
@@ -940,23 +946,32 @@ func (b *BuilderImpl) Origins() []*url.URL {
 		// here, so the value is taken exactly as typed and anything extra is
 		// dropped rather than silently ignored.
 		if what, served := servedSchemes[u.Scheme]; served {
-			// The reference is the authority — or the path, for a scheme whose
-			// references are paths. A program is named either way (file://top,
-			// file:///usr/bin/top), and only the path shape survives a round
-			// trip through url.URL, so it is the shape this parser produces
-			// for itself and has to read back.
-			ref := u.Host
-			if ref == "" && what.paths {
-				ref = u.Path
+			// An authority with nothing after it is not a provider being asked
+			// for something — there is nothing to ask for — so where the
+			// scheme allows it, the word is looked up as a program first. It
+			// is rewritten to the resolved path for the same reason the bare
+			// argument above is: the word names a program only on the machine
+			// that looked it up.
+			if what.resolve != nil && u.Host != "" && u.Path == "" {
+				if path, ok := what.resolve(u.Host); ok {
+					origins = append(origins, &url.URL{Scheme: u.Scheme, Path: path})
+					continue
+				}
 			}
-			if ref == "" {
-				log.Warn("dropping an origin", "origin", s, "reason", "names no "+what.noun+", pass e.g. "+u.Scheme+"://"+what.example)
+			// The reference is the path. The authority beside it names the
+			// provider that resolves the reference, and an empty one is this
+			// machine — which is why the binder, not this loop, decides how
+			// much of the path is the reference: with a provider the leading
+			// separator is the URL's, and without one the path is absolute and
+			// keeps every byte. Here only its emptiness matters.
+			if strings.TrimPrefix(u.Path, "/") == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "names no "+what.noun+", pass e.g. "+what.example)
 				continue
 			}
-			// A reference and nothing else: both halves filled in means one of
-			// them is not part of the name.
-			if (u.Host != "" && u.Path != "") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+ref)
+			// A reference and nothing else: a query, a fragment or a userinfo
+			// is not part of the name of anything served.
+			if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
 				continue
 			}
 			origins = append(origins, u)
@@ -980,7 +995,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			base, marked = s, true
 		}
 		if base != "http" && base != "https" {
-			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https, "+v1.DockerScheme+" or "+v1.FileScheme, "scheme", u.Scheme)
+			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https, "+v1.AttachScheme+" or "+v1.ExecScheme, "scheme", u.Scheme)
 			continue
 		}
 		if marked {

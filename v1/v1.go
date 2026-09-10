@@ -116,8 +116,8 @@ var ErrNoOrigin = errors.New("no origin")
 // origin is fine and Docker is not, and the lever is a different one.
 //
 // A malformed origin does not earn it. An unparsable URL, a scheme that is
-// none of http, https or DockerScheme, a URL with no host, a DockerScheme
-// value carrying more than a container reference — each is dropped with a
+// none of http, https, AttachScheme or ExecScheme, a served origin naming no
+// reference, a served origin carrying more than one — each is dropped with a
 // warning and the origins that work are exposed anyway; see Builder.Origins. A
 // bare host:port is not malformed at all — it implies http.
 //
@@ -139,8 +139,8 @@ var ErrInvalidLogLevel = errors.New("invalid log level")
 // debug is the lever, since the underlying library logs the attempt.
 var ErrNotReady = errors.New("tunnel did not become ready")
 
-// ErrNoDocker reports a dockerd:// origin whose Docker daemon could not be
-// reached: the socket refused the connection, or the API answered an error
+// ErrNoDocker reports an attach://dockerd/ origin whose Docker daemon could not
+// be reached: the socket refused the connection, or the API answered an error
 // that is not about this particular container. It is separate from
 // ErrInvalidOrigin because the origin may be perfectly well-formed and the
 // daemon simply not running, which is by far the likeliest failure of a
@@ -250,38 +250,55 @@ const (
 	// engine's environment.
 	DefaultProvider = "tunnel.pizza"
 
-	// DockerScheme names a running container as an origin instead of an HTTP
-	// service: a dockerd://<container-name-or-id> origin serves a terminal
-	// attached to that container, on the same public hostname and the same
-	// ?n index as any other origin.
+	// AttachScheme names a terminal attached to something already running as
+	// an origin instead of an HTTP service: an
+	// attach://<provider>/<reference> origin serves that terminal on the same
+	// public hostname and the same ?n index as any other origin.
 	//
-	// The daemon, not the container, is what the scheme names — the same
-	// reading as dockerd's own socket — because the container reference is
-	// the authority component that follows it.
-	DockerScheme = "dockerd"
+	// A served origin is spelled by the verb, and the authority beside it says
+	// where the verb happens. attach://dockerd/api attaches to a container's
+	// PID 1; the day there is a second way into the same container it is
+	// exec://dockerd/api, differing in the word that says what is being done
+	// rather than in the word that says to what. DockerProvider is the only
+	// authority this scheme answers today.
+	AttachScheme = "attach"
 
-	// FileScheme names something on the local filesystem as an origin instead
-	// of an HTTP service: a program to run, or a path to serve.
+	// ExecScheme names something run as an origin instead of an HTTP service:
+	// an exec:///path/to/program origin runs that program and exposes its
+	// terminal, on the same public hostname and the same ?n index as any
+	// other origin.
 	//
-	// It is also what a bare argument becomes when this machine can run it. A
-	// word that names a command on $PATH is rewritten while origins are
-	// settled, so `tunneld htop` says what somebody meant rather than becoming
-	// http://htop — a hostname that resolves nowhere, minted and published
-	// before anyone finds out. The check is the host's own PATH lookup, so the
-	// same argument is a program on one machine and a hostname on another;
-	// that is the cost of the shorthand, and the reason an explicit scheme
-	// always wins.
+	// The empty authority is this machine, which is why the path is absolute
+	// and why exec:// is the only served scheme with no provider to name. An
+	// authority is a provider — exec://<provider>/<reference> is the same verb
+	// somewhere else — with one exception below.
 	//
-	// The rewrite carries the resolved path, not the word: file:///usr/bin/top
-	// rather than file://top, because a bare name says which program only on
-	// the machine that looked it up. Both spellings are accepted — a name
-	// lands in the URL's authority and a path in its path, which is the only
-	// shape an absolute one survives.
+	// ExecScheme is also what a bare argument becomes when this machine can
+	// run it. A word that names a command on $PATH is rewritten while origins
+	// are settled, so `tunneld htop` says what somebody meant rather than
+	// becoming http://htop — a hostname that resolves nowhere, minted and
+	// published before anyone finds out. The check is the host's own PATH
+	// lookup, so the same argument is a program on one machine and a hostname
+	// on another; that is the cost of the shorthand, and the reason an
+	// explicit scheme always wins.
 	//
-	// The program runs when somebody opens the page and ends when they leave,
-	// on the same public hostname and the same ?n index as any other origin —
-	// which is exactly what DockerScheme does for a container.
-	FileScheme = "file"
+	// The exception: exec://<word>, an authority with nothing after it, is
+	// looked up the same way before it is read as a provider. Nothing can be
+	// asked of a provider without a reference anyway, so the reading that can
+	// succeed is preferred to the one that cannot. Either way the rewrite
+	// carries the resolved path rather than the word — exec:///usr/bin/htop,
+	// not exec://htop — because a bare name says which program only on the
+	// machine that looked it up.
+	ExecScheme = "exec"
+
+	// DockerProvider is the authority that names the Docker daemon in a served
+	// origin: the dockerd in attach://dockerd/<container-name-or-id>.
+	//
+	// The daemon, not the container — the same reading as dockerd's own socket
+	// — because the container reference is what follows it. It is a separate
+	// word from the scheme because the two are separate axes now: the scheme
+	// says what is being done, and this says by whom.
+	DockerProvider = "dockerd"
 )
 
 // DefaultMultiview is whether the tunnel's own address answers with a panel
@@ -342,8 +359,8 @@ type Builder interface {
 	// it reports what did.
 	//
 	// An origin tunneld cannot expose — an unparsable URL, a scheme that is
-	// none of http, https or DockerScheme, a URL with no host, a DockerScheme
-	// value carrying more than a container reference — is dropped with a
+	// none of http, https, AttachScheme or ExecScheme, a served origin naming
+	// no reference, a served origin carrying more than one — is dropped with a
 	// warning on the tunnel's own log rather than failing the run, so this is
 	// what the tunnel was given and not what it was asked for. A run left
 	// with no origins at all fails with ErrNoOrigin.

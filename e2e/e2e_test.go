@@ -794,7 +794,7 @@ func TestExamples(t *testing.T) {
 			interruptAndExitCleanly(1),
 		}},
 		{"multi-origin", "exposes: http://localhost:3000, http://localhost:4000", nil, nil},
-		{"attach", "exposes: dockerd://tunneld-example", nil, nil},
+		{"attach", "exposes: attach://dockerd/tunneld-example", nil, nil},
 		{"shell", "exposes: zsh", nil, nil},
 	}
 	for _, tc := range cases {

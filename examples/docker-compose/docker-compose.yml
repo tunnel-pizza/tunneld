@@ -15,7 +15,7 @@ services:
     environment:
       - TUNNELD_LOG=debug
       - TUNNELD_CACHE_DIR=/var/run/tunneld
-      - TUNNELD_ORIGINS=http+ws://localhost:14500,dockerd://terminal
+      - TUNNELD_ORIGINS=http+ws://localhost:14500,attach://dockerd/terminal
 
   google-chrome:
     image: ghcr.io/cnuss/google-chrome:latest

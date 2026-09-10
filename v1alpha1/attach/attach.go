@@ -1,7 +1,7 @@
 // Package attach serves a browser terminal for one attachable thing as an
 // ordinary HTTP origin.
 //
-// A dockerd:// value names a container, which is not an HTTP service, so
+// An attach://dockerd/ value names a container, which is not an HTTP service, so
 // tunneld becomes one on its behalf: a Server binds a loopback listener,
 // answers "/" with the xterm page and "/attach" with the Kubernetes
 // remotecommand stream protocol, and hands back a URL that is registered as an
@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -77,11 +78,16 @@ type Target interface {
 	remotecommand.Attacher
 	// Name is the reference the operator typed, used to title the page.
 	Name() string
-	// Scheme is the origin scheme this target was opened for — the provider's
-	// own, fixed. With Name it reconstructs the origin as typed, which is what
-	// the frame puts in its corner and what somebody pastes back into a
-	// command line.
-	Scheme() string
+	// Origin is this target's origin, spelled whole: the verb, the provider it
+	// was opened by, and the reference — attach://dockerd/api,
+	// exec:///usr/bin/htop. It is what the frame puts in its corner and what
+	// somebody pastes back into a command line.
+	//
+	// The provider builds it rather than a caller assembling it from parts,
+	// because the parts join differently depending on whether there is an
+	// authority, and a caller that got that wrong would print an origin that
+	// does not parse back.
+	Origin() string
 	// TTY reports whether the target's stdout is a terminal. It decides
 	// whether resize means anything and whether stderr is a stream of its own.
 	TTY() bool
@@ -148,13 +154,25 @@ type Repeatable interface {
 // here: attach/docker and attach/shell import this package for the contract,
 // so naming either of them from here is an import cycle.
 type Targets interface {
-	// Scheme is the origin scheme this provider answers, and the whole of how
-	// the binder chooses between providers. One provider, one scheme: a
-	// dockerd:// origin is a container and a file:// origin is a program, and
-	// nothing about either is a matter of degree.
-	Scheme() string
+	// Verb is the scheme this provider answers — what tunneld does to the
+	// origin — and Provider is the authority beside it, which is where it does
+	// it. Empty is this machine, which only exec:// has.
+	//
+	// The pair is the whole of how the binder chooses, and it is a pair rather
+	// than one word because the two are separate questions: attach://dockerd
+	// and a future exec://dockerd are the same daemon asked for different
+	// things, and exec:// and exec://dockerd are the same thing asked of
+	// different places.
+	Verb() string
+	Provider() string
 	Open(ctx context.Context, ref string, log *slog.Logger) (Target, error)
 }
+
+// answers is the key a provider is registered under and an origin is looked up
+// by: the verb and the authority, spelled the way an origin spells them. The
+// one function both sides call, so a provider cannot be registered under a key
+// no origin can produce.
+func answers(verb, provider string) string { return verb + "://" + provider }
 
 // CopyOutput copies a target's output into the ends ServeAttach handed it. It
 // is the single place the wire format between a provider and this package is
@@ -203,7 +221,7 @@ type Option = v1.Option[*BinderImpl]
 // can proxy to.
 //
 // An http or https origin passes through untouched; an origin whose scheme a
-// provider claims — dockerd:// for a container, file:// for a local program —
+// provider claims — attach://dockerd for a container, exec:// for a local program —
 // is served here, by a loopback attach server that takes its place in the
 // list. The two lists share a length and an order, which is the whole point:
 // index n still means origin n for the bare ?n routing parameter, for the
@@ -232,16 +250,16 @@ func New(opts ...Option) *BinderImpl {
 // serve, one provider per scheme. The defaults are the Docker daemon and this
 // machine's own programs; a test hands in a stub.
 //
-// Each provider names its own scheme, so there are no keys to keep in step
-// with the values. Repeating the option appends, and a later provider replaces
-// an earlier one that answered the same scheme.
+// Each provider names the verb and authority it answers, so there are no keys
+// to keep in step with the values. Repeating the option appends, and a later
+// provider replaces an earlier one that answered the same pair.
 func WithTargets(targets ...Targets) Option {
 	return func(b *BinderImpl) {
 		if b.targets == nil {
 			b.targets = make(map[string]Targets, len(targets))
 		}
 		for _, t := range targets {
-			b.targets[t.Scheme()] = t
+			b.targets[answers(t.Verb(), t.Provider())] = t
 		}
 	}
 }
@@ -271,6 +289,18 @@ func WithSinks(sinks ...Sink) Option {
 	return func(b *BinderImpl) { b.sinks = append(b.sinks, sinks...) }
 }
 
+// answered is every verb://provider pair this binder has a provider for, in
+// order, for the message a caller gets when their origin names none of them.
+// Sorted, so the list reads the same twice: the registry is a map.
+func (b *BinderImpl) answered() []string {
+	keys := make([]string, 0, len(b.targets))
+	for k := range b.targets {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // Bind implements Binder.
 //
 // A failure unwinds everything already bound. The command is about to return
@@ -284,22 +314,27 @@ func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logge
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
 		// judgement.
-		provider, served := b.targets[origin.Scheme]
+		provider, served := b.targets[answers(origin.Scheme, origin.Host)]
 		if !served {
 			if origin.Scheme != "http" && origin.Scheme != "https" {
 				_ = servers.Close()
-				return nil, nil, fmt.Errorf("attach: no Targets configured to open %s://%s", origin.Scheme, origin.Host+origin.Path)
+				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
+					origin.Scheme, origin.Host, strings.Join(b.answered(), ", "))
 			}
 			dialable = append(dialable, origin)
 			continue
 		}
 
-		// The reference is the authority, or the path when the origin carries
-		// one: file:///usr/bin/top names a program the only way a URL can hold
-		// an absolute path. Exactly one of the two is ever set — the origin
-		// parser refuses a served origin with both — so joining them is the
-		// whole rule.
-		target, err := provider.Open(ctx, origin.Host+origin.Path, log)
+		// The reference is the path, and the authority decides how much of it.
+		// With a provider named the leading separator belongs to the URL and
+		// not to the reference — attach://dockerd/api is the container api —
+		// and without one the empty authority is this machine, so the path is
+		// a filesystem path and keeps every byte: exec:///usr/bin/top.
+		ref := origin.Path
+		if origin.Host != "" {
+			ref = strings.TrimPrefix(ref, "/")
+		}
+		target, err := provider.Open(ctx, ref, log)
 		if err != nil {
 			_ = servers.Close()
 			return nil, nil, err
@@ -588,7 +623,7 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks [
 		data := struct {
 			Notice string
 			Origin string
-		}{notice, s.target.Scheme() + "://" + s.target.Name()}
+		}{notice, s.target.Origin()}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)
