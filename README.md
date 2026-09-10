@@ -27,6 +27,10 @@ build per platform, and hands it the process:
 npx tunneld :3000
 ```
 
+Or neither: every [release](https://github.com/tunnel-pizza/tunneld/releases)
+carries a signed binary per platform, and [SECURITY.md](./SECURITY.md) has
+the recipe to verify one.
+
 ```sh
 tunneld http://localhost:3000   # or just: tunneld :3000
 ```

@@ -114,16 +114,20 @@ jobs:
         # the same command.
         run: make race
 
-  release:
-    needs: [ci, race]
+  # The release's version is decided once, here, and read by both the job that
+  # stamps it into the binaries and the job that publishes them. Its own job
+  # rather than a step of release so the binaries can be built — and fail —
+  # before any tag is pushed or release created. Resolves only; the push is
+  # release's, after the build has succeeded.
+  tag:
     if: >-
       (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
       || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # push tag + create release
-      packages: write   # push the container image to ghcr
-      id-token: write   # cosign keyless signing via OIDC
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      needs_push: ${{ steps.tag.outputs.needs_push }}
+      skip: ${{ steps.tag.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -136,9 +140,11 @@ jobs:
 
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             # Manual tag push (minor/major bumps): use the tag as-is.
-            echo "tag=${GITHUB_REF_NAME}"      >> "$GITHUB_OUTPUT"
-            echo "needs_push=false"            >> "$GITHUB_OUTPUT"
-            echo "skip=false"                  >> "$GITHUB_OUTPUT"
+            {
+              echo "tag=${GITHUB_REF_NAME}"
+              echo "needs_push=false"
+              echo "skip=false"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -162,38 +168,91 @@ jobs:
             IFS=. read -r major minor patch <<<"${latest#v}"
             next="v${major}.${minor}.$((patch + 1))"
           fi
-          echo "tag=${next}"      >> "$GITHUB_OUTPUT"
-          echo "needs_push=true"  >> "$GITHUB_OUTPUT"
-          echo "skip=false"       >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=${next}"
+            echo "needs_push=true"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+
+  # The six platform binaries, cross-compiled once and handed to release as an
+  # artifact. Its own job so a build that fails is a failed build under its own
+  # name, and so release — which needs it — never pushes a tag or opens a
+  # release for bytes that do not exist. Not run on pull requests: the ci
+  # matrix above already builds every one of these GOOS/GOARCH pairs natively,
+  # so a cross-compile break is caught there, on every PR.
+  #
+  # Pure Go with CGO off and -trimpath, so a cross-compile on one Linux runner
+  # gives the same bytes a native build would; six of them take about a minute.
+  binaries:
+    needs: [tag]
+    if: needs.tag.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build binaries
+        run: make binaries VERSION=${{ needs.tag.outputs.tag }}
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Skipped whenever tag says skip: binaries is skipped then, and a job that
+  # needs a skipped job is skipped with it. So every step below runs, or none.
+  release:
+    needs: [ci, race, tag, binaries]
+    if: >-
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push tag + create release
+      packages: write   # push the container image to ghcr
+      id-token: write   # cosign keyless signing via OIDC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The binaries the release ships, built and stamped by the job above.
+      # Everything below signs, uploads and publishes these exact bytes.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: dist
 
       - name: push tag
-        if: steps.tag.outputs.skip != 'true' && steps.tag.outputs.needs_push == 'true'
+        if: needs.tag.outputs.needs_push == 'true'
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag "${{ steps.tag.outputs.tag }}"
-          git push origin "${{ steps.tag.outputs.tag }}"
+          git tag "${{ needs.tag.outputs.tag }}"
+          git push origin "${{ needs.tag.outputs.tag }}"
 
       - name: create github release
-        if: steps.tag.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" \
-            --title "${{ steps.tag.outputs.tag }}" \
+          gh release create "${{ needs.tag.outputs.tag }}" \
+            --title "${{ needs.tag.outputs.tag }}" \
             --generate-notes
 
       - name: install cosign
-        if: steps.tag.outputs.skip != 'true'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: sign source archives
-        if: steps.tag.outputs.skip != 'true'
+      - name: sign the release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="${{ steps.tag.outputs.tag }}"
+          tag="${{ needs.tag.outputs.tag }}"
           repo="${GITHUB_REPOSITORY}"
           mkdir -p dist
 
@@ -209,7 +268,23 @@ jobs:
               "dist/${tag}.${ext}"
           done
 
+          # The binaries the same way — one bundle each, and a checksum file
+          # with a bundle of its own for anyone who verifies once and then
+          # trusts sha256sum. Windows executables are cosign-signed like the
+          # rest, not Authenticode-signed; SECURITY.md says so.
+          #
+          # The glob is expanded before the loop runs, so the bundles it
+          # writes are not themselves signed on the same pass.
+          (cd dist && sha256sum tunneld-* > checksums.txt)
+          for f in dist/tunneld-* dist/checksums.txt; do
+            cosign sign-blob --yes --bundle "${f}.sigstore" "${f}"
+          done
+
+          # dist/tunneld-* now matches each binary and its bundle. The source
+          # archives themselves are not uploaded: GitHub serves those.
           gh release upload "${tag}" \
+            dist/tunneld-* \
+            dist/checksums.txt dist/checksums.txt.sigstore \
             "dist/${tag}.tar.gz.sigstore" \
             "dist/${tag}.zip.sigstore"
 
@@ -217,11 +292,9 @@ jobs:
       # commit and stamped with the same tag, so `tunneld version` inside a
       # container names the release it came from.
       - name: set up buildx
-        if: steps.tag.outputs.skip != 'true'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: log in to ghcr
-        if: steps.tag.outputs.skip != 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -232,15 +305,14 @@ jobs:
       # cross-compile to TARGETARCH, so both arches are native compiles.
       - name: build and push the image
         id: image
-        if: steps.tag.outputs.skip != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          build-args: VERSION=${{ steps.tag.outputs.tag }}
+          build-args: VERSION=${{ needs.tag.outputs.tag }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.tag }}
+            ghcr.io/${{ github.repository }}:${{ needs.tag.outputs.tag }}
             ghcr.io/${{ github.repository }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -252,31 +324,22 @@ jobs:
       #     --certificate-identity-regexp '^https://github.com/tunnel-pizza/tunneld/' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
       - name: sign the image
-        if: steps.tag.outputs.skip != 'true'
         run: |
           cosign sign --yes \
             "ghcr.io/${GITHUB_REPOSITORY}@${{ steps.image.outputs.digest }}"
 
       - name: warm proxy.golang.org
-        if: steps.tag.outputs.skip != 'true'
         run: |
-          tag="${{ steps.tag.outputs.tag }}"
+          tag="${{ needs.tag.outputs.tag }}"
           mod="github.com/${GITHUB_REPOSITORY}"
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.info" >/dev/null
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.mod"  >/dev/null
           curl -fsSL "https://sum.golang.org/lookup/${mod}@${tag}"    >/dev/null
 
-      # The npm package carries the same binaries, so it needs the Go
-      # toolchain the rest of this job gets from Docker. Last in the job so a
-      # registry failure never gates the image or the signatures.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: steps.tag.outputs.skip != 'true'
-        with:
-          go-version-file: go.mod
-          cache: true
-
+      # The npm package carries the binaries already in dist/, so this job
+      # needs no Go toolchain. Last in the job so a registry failure never
+      # gates the image or the signatures.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.tag.outputs.skip != 'true'
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -288,20 +351,21 @@ jobs:
       #
       # The committed package.json says 0.0.0 the way the Go module carries no
       # version: the tag is the release. npm version rewrites it in place for
-      # this publish and nothing is committed. VERSION reaches make through
-      # prepublishOnly and beats the Makefile's git describe default, which
-      # would say -dirty once package.json has been edited.
+      # this publish and nothing is committed.
+      #
+      # --ignore-scripts, so prepublishOnly does not rebuild dist/: the package
+      # packs the bytes the binaries job built and this job signed, by
+      # construction rather than by the argument that a -trimpath rebuild with
+      # the same VERSION would be identical. prepublishOnly stays in
+      # package.json for a publish run by hand, where there is no artifact.
       #
       # A release publishes to latest. A manual run of this workflow from main
       # can choose beta instead (the dist_tag input); a push carries no input
       # and the fallback applies. Promote a beta without a rebuild:
       #   npm dist-tag add tunneld@<version> latest
       - name: publish to npm
-        if: steps.tag.outputs.skip != 'true'
-        env:
-          VERSION: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ steps.tag.outputs.tag }}"
+          tag="${{ needs.tag.outputs.tag }}"
           npm version "${tag#v}" --no-git-tag-version
-          npm publish --tag "${{ inputs.dist_tag || 'latest' }}" --provenance
+          npm publish --ignore-scripts --tag "${{ inputs.dist_tag || 'latest' }}" --provenance
