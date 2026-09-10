@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
@@ -191,4 +192,54 @@ func (c *ConsoleImpl) Show(ctx context.Context, log v1.Logger) {
 func IsTerminal(stream any) bool {
 	f, ok := stream.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// Loading spins a line on w until the thing it is waiting for arrives, then
+// erases it and returns, leaving the stream clean for whatever prints next.
+//
+// It blocks, which is what makes it safe. A spinner and its caller write to
+// the same stream, so anything that let the caller carry on would be a race
+// between a public address being printed and a frame landing on top of it.
+// Waiting here means the line is the caller's again the moment this returns,
+// and there is no handle to remember to call.
+//
+// It ends two ways: ready delivering or closing, or ctx being cancelled — a
+// tunnel that came up, one that never will, or a signal that arrived while
+// somebody was still waiting.
+//
+// ready is only ever waited on, never read for a value, which is what makes it
+// safe to share: a closed channel wakes every waiter, and one that delivers
+// does so to whoever is listening. Generic because what it carries is the
+// caller's business and none of it is this function's.
+//
+// Nothing here asks whether w is a terminal or whether anything else is
+// writing to it. Both are the caller's to know — a run knows what its streams
+// are and whether it turned its own logger on — and both matter: \r is a
+// wasted byte in a file, and a log line arriving mid-spin lands on top of this.
+func Loading[T any](w io.Writer, ready <-chan T, message string) {
+	// Braille dots, which turn in place: every frame is one cell wide in any
+	// font that has them, so the message beside it never shifts.
+	//
+	// Each frame is a full cell with one dot missing, so what the eye follows
+	// is the hole. Clockwise, which means the order runs the other way from
+	// how these are usually written: the gap goes down the right column and
+	// up the left, and reversing the list is what turns a spinner that felt
+	// wrong into one nobody notices.
+	frames := []rune{'⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'}
+
+	// Erased however this ends, including the paths that return early.
+	defer fmt.Fprint(w, "\r\x1b[K")
+
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for i := 0; ; i++ {
+		// \r and no newline, so each frame overwrites the last and the line
+		// is still the cursor's when it is time to erase it.
+		fmt.Fprintf(w, "\r%c %s", frames[i%len(frames)], message)
+		select {
+		case <-ready:
+			return
+		case <-tick.C:
+		}
+	}
 }

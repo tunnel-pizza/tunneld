@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
@@ -507,6 +508,38 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// so a bad flag or an origin that cannot be reached still fails
 	// without one.
 	fmt.Fprintln(stderr, VersionLine())
+
+	// Something turning, because the wait below is the long one: minting,
+	// dialing the edge, and then the hostname becoming resolvable, which is
+	// seconds of a program that has printed its version and gone quiet.
+	//
+	// On stderr with the banner it follows, never stdout: that stream is one
+	// public address per origin and nothing else, and a spinner in it is a
+	// carriage return where a script expected a URL.
+	//
+	// Only when somebody is watching, and only when nothing else is writing
+	// there. A log line lands on top of a spinner, so a run with its logger
+	// on gets the lines instead — they say more than a spinner does, and they
+	// are what the operator asked for.
+	//
+	// It waits on Ready, and it has to be Ready. Nothing has dialed yet — the
+	// tunnel is lazy and asking for this is what trips it — so a spinner
+	// waiting on anything the dial produces, the counter's Established
+	// included, would be waiting for a dial that its own waiting prevents.
+	//
+	// A second call, not the one the receive below holds. Ready hands out a
+	// channel per call, each delivering once and then closing, so both see
+	// the tunnel; sharing one would let the spinner take the value and leave
+	// the run reading a closed channel, which is how a tunnel that came up
+	// reports that it never did.
+	//
+	// Blocking is what keeps the line clean: an address cannot be printed
+	// over a frame that has not stopped turning yet. And it ends either way,
+	// because Ready closes when a tunnel fails as surely as it delivers when
+	// one comes up — including on the signal that cancelled the run.
+	if display.IsInteractive(cmd) && b.logLevel == "" {
+		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
+	}
 
 	// Ready delivers the tunnel once the edge connection is up
 	// and the hostname resolves publicly — reachable end to end,

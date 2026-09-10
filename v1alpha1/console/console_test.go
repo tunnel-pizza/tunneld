@@ -279,3 +279,66 @@ func equal(got, want []bool) bool {
 	}
 	return true
 }
+
+// TestLoadingSpinsAndErases pins the two things a spinner owes the line it
+// borrowed: it turns, and it gives the line back before returning.
+//
+// Erasing matters more than turning. Whatever prints next is a public address
+// or an error, and either one arriving on a line with a half-drawn spinner on
+// it is worse than no spinner at all — which is why this blocks rather than
+// handing back something to call.
+func TestLoadingSpinsAndErases(t *testing.T) {
+	var w lockedBuffer
+	ready := make(chan struct{})
+
+	// Let it turn a few times, then deliver what it was waiting for.
+	go func() {
+		waitFor(t, "a second frame", func() bool {
+			return strings.Count(w.String(), "Creating tunnel...") > 1
+		})
+		close(ready)
+	}()
+	Loading(&w, ready, "Creating tunnel...")
+
+	got := w.String()
+	if !strings.HasSuffix(got, "\r\x1b[K") {
+		t.Errorf("output ends %q, want the line erased", got[max(0, len(got)-16):])
+	}
+	// Returning is the promise that the stream is the caller's again, so
+	// nothing may be written after it.
+	before := len(got)
+	time.Sleep(200 * time.Millisecond)
+	if after := len(w.String()); after != before {
+		t.Errorf("wrote %d more bytes after returning, want none", after-before)
+	}
+
+	seen := map[rune]bool{}
+	for _, r := range got {
+		if strings.ContainsRune("⣾⣽⣻⢿⡿⣟⣯⣷", r) {
+			seen[r] = true
+		}
+	}
+	if len(seen) < 2 {
+		t.Errorf("saw %d distinct frames, want it to turn", len(seen))
+	}
+}
+
+// TestLoadingStopsOnAClosedChannel covers the other way a wait ends: the thing
+// it was waiting for never arriving, and the channel closing to say so. A
+// signal reaches this the same way, since the channel a caller passes is one
+// that answers to its context. The line is given back either way — a console
+// left with half a spinner on it is the one outcome worth ruling out.
+func TestLoadingStopsOnAClosedChannel(t *testing.T) {
+	never := make(chan struct{})
+	var w lockedBuffer
+
+	go func() {
+		waitFor(t, "the first frame", func() bool { return w.String() != "" })
+		close(never)
+	}()
+	Loading(&w, never, "Creating tunnel...")
+
+	if got := w.String(); !strings.HasSuffix(got, "\r\x1b[K") {
+		t.Errorf("output ends %q, want the line erased when it gives up", got[max(0, len(got)-16):])
+	}
+}

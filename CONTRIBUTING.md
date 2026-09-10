@@ -606,6 +606,18 @@ Two things there will bite if you change them without knowing why:
   that is where terminal knowledge lives; `display` names it the way it names
   `console.Screen`.
 
+  **`console.Loading` blocks, and that is the design.** A spinner and its
+  caller write to the same stream, so anything that let the caller carry on
+  would race a public address against a frame landing on top of it. Waiting
+  means the line is the caller's again the moment it returns, with no handle
+  to remember. It takes `ctx` and a `ready` channel and ends on either; taking
+  `tun.Ready()` steals nothing, because libtunnel hands out a channel per call
+  that delivers once and closes, so the run's own receive still gets the
+  value. It goes on **stderr** — stdout is one public address per origin, and
+  a carriage return in it is a corrupted machine interface — and only when
+  `display.IsInteractive` and the logger is silent, since a log line lands on
+  top of a spinner.
+
   **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
   `Terminal` is what the binder hands back, `Screen` is what a run was started
   on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them
