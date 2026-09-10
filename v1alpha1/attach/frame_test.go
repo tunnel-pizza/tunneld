@@ -50,6 +50,11 @@ func newFrameHarness(t *testing.T) *harness {
 		em:      em,
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
+
+		// Built by hand rather than through newSession, so the grace a real
+		// session gets by default has to be set here too — otherwise every
+		// reply is "late" against a zero-length window.
+		clipboardGrace: defaultClipboardGrace,
 	}
 
 	// The same reporting a real session installs, so what the frame reads back
@@ -757,6 +762,26 @@ func TestPasteIsBracketedWhenTheAppAsked(t *testing.T) {
 	}
 	h.paste(t, "echo pasted")
 	h.reached(t, "\x1b[200~echo pasted\x1b[201~")
+}
+
+// TestFrameCarriesAClipboardReply pins that a ClipboardMsg from a viewer's
+// terminal reaches the session, where the query guard decides its fate.
+func TestFrameCarriesAClipboardReply(t *testing.T) {
+	h := newFrameHarness(t)
+
+	// A query outstanding, so the reply is accepted and reaches stdin.
+	h.s.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	if _, cmd := h.f.Update(tea.ClipboardMsg{Selection: 'c', Content: "hi"}); cmd != nil {
+		t.Errorf("ClipboardMsg returned a command, want none")
+	}
+	select {
+	case got := <-h.typed:
+		if got != "\x1b]52;c;aGk=\a" {
+			t.Errorf("stdin = %q, want the base64 reply", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reply never reached stdin")
+	}
 }
 
 // TestFirstDrawWaitsForTheWindow pins that a frame does not draw at a size it

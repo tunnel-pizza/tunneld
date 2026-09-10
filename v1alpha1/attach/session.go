@@ -1,16 +1,19 @@
 package attach
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
@@ -22,6 +25,11 @@ const (
 	defaultCols = 80
 	defaultRows = 24
 )
+
+// defaultClipboardGrace is how long a reply to an OSC 52 read query is
+// accepted. A browser raises a permission prompt for the read, so the window is
+// human time rather than machine time.
+const defaultClipboardGrace = 30 * time.Second
 
 // session is one attach to a target, shared by every viewer of it.
 //
@@ -114,12 +122,18 @@ type session struct {
 	cursorMu sync.Mutex
 	hidden   bool
 
-	// mu guards the viewer set, the size negotiated from it, and the public
-	// address, and nothing else.
+	// mu guards the viewer set, the size negotiated from it, the public
+	// address, and the clipboard fields below.
 	mu      sync.Mutex
 	viewers map[*viewer]struct{}
 	size    remotecommand.TerminalSize
 	public  string
+
+	// clipboardAsked is when a viewer's terminal was last sent an OSC 52 read
+	// query, zero when none is outstanding. clipboardGrace is how long a reply
+	// to it is accepted — a permission prompt is human time. Both under mu.
+	clipboardAsked time.Time
+	clipboardGrace time.Duration
 }
 
 // viewer is one connected browser: the frame drawing for it, and the window
@@ -172,6 +186,8 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, si
 		em:      em,
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
+
+		clipboardGrace: defaultClipboardGrace,
 	}
 
 	s.watch()
@@ -418,9 +434,14 @@ func (s *session) said(seq Sequence) {
 			// command is not ours to judge, so it goes there too.
 			_, _ = s.em.Write(seq.Raw)
 		default:
-			// Nothing here acts on it and the emulator has no use for it, but
-			// a real terminal on the far end of the tunnel might: the
-			// clipboard, a notification, shell integration. Send it there.
+			// A read query — 52;<sel>;? — opens a window in which a reply is
+			// accepted. Stamped before the forward so an answer that races
+			// back finds it.
+			if seq.Cmd == 52 && clipboardQuery(seq.Data) {
+				s.mu.Lock()
+				s.clipboardAsked = time.Now()
+				s.mu.Unlock()
+			}
 			s.forward(seq.Raw)
 		}
 	}
@@ -770,6 +791,38 @@ func (s *session) setName(cmd int, name string) {
 	if cmd == 0 || cmd == 1 {
 		s.setSubtitle(name)
 	}
+}
+
+// clipboardQuery reports whether an OSC 52 payload is a read request rather
+// than a write: its last ';'-separated field is "?".
+func clipboardQuery(data []byte) bool {
+	parts := bytes.Split(data, []byte{';'})
+	return len(parts) > 0 && string(parts[len(parts)-1]) == "?"
+}
+
+// clipboard writes a viewer's clipboard back to the container, but only as the
+// answer to a query the container made and only the first such answer. An
+// unsolicited OSC 52 from any viewer's terminal — which forwarding the query
+// makes possible — is dropped here, which is the guard that makes forwarding it
+// safe.
+//
+// Written to stdin as bytes, on the same pipe the emulator's own replies use,
+// and base64-encoded by ansi.SetClipboard as the wire form requires.
+func (s *session) clipboard(sel byte, content string) {
+	s.mu.Lock()
+	asked := s.clipboardAsked
+	fresh := !asked.IsZero() && time.Since(asked) < s.clipboardGrace
+	if fresh {
+		s.clipboardAsked = time.Time{}
+	}
+	stdin := s.stdin
+	s.mu.Unlock()
+
+	if !fresh || stdin == nil {
+		s.log.Debug("dropping a clipboard reply nobody asked for", "container", s.Name())
+		return
+	}
+	_, _ = io.WriteString(stdin, ansi.SetClipboard(sel, content))
 }
 
 // setCursorHidden records what the program asked for with DECTCEM. Called

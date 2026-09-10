@@ -145,6 +145,55 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	}
 }
 
+// TestClipboardReplyReachesTheContainerOnlyWhenAsked pins the guard: a reply to
+// an outstanding OSC 52 query is written to the container's stdin, and an
+// unsolicited one — the danger of forwarding the query at all — is dropped.
+func TestClipboardReplyReachesTheContainer(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	sess := s.session
+
+	// No query outstanding: a reply is dropped.
+	sess.clipboard('c', "unsolicited")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q with no query outstanding, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// A query marks one outstanding; the reply is written, base64-encoded on
+	// the wire.
+	sess.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	sess.clipboard('c', "hi")
+	select {
+	case got := <-target.seenIn:
+		if got != "\x1b]52;c;aGk=\a" {
+			t.Errorf("stdin = %q, want the base64 reply", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply reached stdin after a query")
+	}
+
+	// The query is spent: a second reply is dropped.
+	sess.clipboard('c', "again")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q after the query was answered, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// A reply after the grace is dropped even with a query outstanding.
+	sess.clipboardGrace = time.Nanosecond
+	sess.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	time.Sleep(time.Millisecond)
+	sess.clipboard('c', "late")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q after the grace, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestTitleFollowsTheShell pins that the frame can say what the container is
 // doing, which the container is the only one who knows.
 //
