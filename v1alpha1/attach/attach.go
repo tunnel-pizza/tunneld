@@ -106,6 +106,22 @@ type Logs interface {
 	Lines() []string
 }
 
+// Sink is told what a program said about itself, as it said it — every OSC and
+// every private-mode CSI the scanner pulls out of the target's output.
+//
+// Delivery is synchronous, in the order the bytes arrived, on the goroutine
+// reading the stream and never under the emulator's lock. A sink may take the
+// session's lock; a sink must not block, because the container's output is
+// behind it.
+//
+// The built-in sinks — titles, cursor, the emulator's own share, the viewers,
+// the log — come first. WithSinks appends more, for a caller that wants to
+// inspect or record what an app says without being one of the terminals it is
+// said to.
+type Sink interface {
+	Said(seq Sequence)
+}
+
 // Repeatable is a Target that can be attached to more than once, because each
 // attach starts it rather than resuming it.
 //
@@ -202,6 +218,7 @@ type BinderImpl struct {
 	targets map[string]Targets
 	banner  string
 	logs    Logs
+	sinks   []Sink
 }
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
@@ -247,6 +264,13 @@ func WithBanner(banner string) Option {
 	return func(b *BinderImpl) { b.banner = banner }
 }
 
+// WithSinks adds sinks told what every terminal this binder serves says about
+// itself. They run after the built-in sinks, in the order given, and the same
+// set reaches every session the binder starts.
+func WithSinks(sinks ...Sink) Option {
+	return func(b *BinderImpl) { b.sinks = append(b.sinks, sinks...) }
+}
+
 // Bind implements Binder.
 //
 // A failure unwinds everything already bound. The command is about to return
@@ -280,7 +304,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, b.banner, b.logs, log)
+		server, err := Serve(ctx, target, b.banner, b.logs, b.sinks, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -464,7 +488,7 @@ func (s *Server) Done() <-chan struct{} { return s.quit }
 // covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, banner string, logs Logs, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -519,7 +543,7 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, log *sl
 	// The frame offers an exit, and this is what it reaches: closing quit says
 	// a viewer asked, and nothing here acts on it — ending the run is the
 	// command's to do, and it is watching.
-	s.session = newSession(sctx, target, banner, logs, func() {
+	s.session = newSession(sctx, target, banner, logs, sinks, func() {
 		log.Info("a viewer asked the run to end", "target", target.Name())
 		s.quitOnce.Do(func() { close(s.quit) })
 	}, log)

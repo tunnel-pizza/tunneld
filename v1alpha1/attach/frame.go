@@ -211,6 +211,12 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f.sess.paste(msg.Content)
 		return f, nil
 
+	case tea.ClipboardMsg:
+		// A viewer's terminal answered an OSC 52 read the container made. The
+		// session decides whether it was asked for; the frame only carries it.
+		f.sess.clipboard(msg.Selection, msg.Content)
+		return f, nil
+
 	case tea.KeyPressMsg:
 		// The log view is the frame's, so every key belongs to it: escape
 		// leaves, and anything else is somebody reading rather than typing at

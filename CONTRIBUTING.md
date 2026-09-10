@@ -466,14 +466,11 @@ Two things there will bite if you change them without knowing why:
   full-screen program hides the cursor at startup and then leaves the position
   wherever its last write ended. `session.watch` records DECTCEM and the frame
   asks before drawing, or the cursor skates around the screen on every redraw.
-- **Everything the terminal says about itself is in the debug log.** The
-  `vt.Callbacks` block in `session.watch` logs titles, working directory, bell,
-  modes, cursor and colour changes, because the only way to learn what a given
-  app sends is to watch one send it — Claude Code, for instance, sets no title
-  at its login screen but does once a session is running. `CursorPosition` is
-  deliberately absent: it fires on every cursor move and would drown the rest.
-  All of them run with the emulator's lock held, so they may only stash a value
-  or write a line.
+- **Everything the terminal says about itself is in the debug log.**
+  `session.said` logs one line per sequence at debug — kind, cmd, data, set —
+  because the only way to learn what a given app sends is to watch one send
+  it. Claude Code, for instance, sets no title at its login screen but does
+  once a session is running.
 - **A terminal has a title and a subtitle, and they are not the same thing.**
   The window title (OSC 2) is the title; the tab title (OSC 1) is the subtitle.
   A prompt framework sets the first to the running command's whole line and the
@@ -488,29 +485,34 @@ Two things there will bite if you change them without knowing why:
   clears the border and leaves a hole in the box. `frame.title` drops invalid
   UTF-8 and then reduces what is left to printable runes, before any of it is
   measured.
-- **`x/vt` ends an OSC string at a `0x9C` byte, which breaks some UTF-8.**
-  `0x9C` is the 8-bit string terminator, and it is also the middle byte of
-  every three-byte UTF-8 character in `U+27xx`. Claude Code's spinner cycles
-  `✳ ✻ ✽ ✢` — all `E2 9C xx` — so its title arrives as the single byte `E2`,
-  and the rest, ` Claude Code`, is printed onto the screen. `◐` (`E2 97 90`)
-  and `café` (`C3 A9`) are unaffected, so the title is good, then a stray byte,
-  then good again, in time with the spinner. `session.setTitle` keeps the last
-  usable one rather than taking the stray, which is what stops the label
-  flickering; the text landing in the pane is not fixable from this side.
-- **The shell's title is caught, not guessed.** `vt.Callbacks{IconName:…}`
-  catches the OSC the container already emits — a prompt framework sets it from
-  `preexec`, so it carries the running command's name — and the frame shows it
-  as it arrives. The tab title (OSC 1) rather than the window title (OSC 2):
+- **What an app says about itself is read before the emulator sees it.** A
+  container's output does not go straight to the emulator: `sink.Write` feeds
+  `attach/scan.go`, a 7-bit byte scanner that owns every OSC and reports every
+  private-mode CSI. It exists because the emulator's own parser cut the data —
+  `x/ansi` ends an OSC string at a raw `0x9C`, which is also a UTF-8
+  continuation byte, so `✳` (`E2 9C B3`), `“` (`E2 80 9C`) and `末` (`E6 9C
+  AB`) in a title were split mid-character and the tail printed to the screen
+  (#66). Filed upstream as charmbracelet/x#848, fixed by PR #946, unmerged; the
+  module is `x/ansi`, not `x/vt`. The scanner never treats a byte `>= 0x80` as
+  control, which is xterm's own rule in UTF-8 mode, so nothing is cut. The
+  `Sink` contract fans each sequence out: the session's built-ins set the
+  titles (OSC 0/1/2, which the emulator never sees), track the cursor (DECTCEM),
+  hand the emulator what paints or answers (`paints` — OSC 8 and the colour
+  pairs, which is vt's `registerDefaultOscHandlers` minus what we own, so a vt
+  bump re-checks it), forward the rest to each viewer's real terminal (OSC 52
+  both ways, 7/9/133/777), and log; `attach.WithSinks` appends more. An
+  unterminated OSC is bounded at 1 MiB. 8-bit C1 introducers are unsupported.
+- **The shell's title is caught, not guessed.** The container still emits the
+  OSC — a prompt framework sets it from `preexec`, so it carries the running
+  command's name — and now the scanner catches it and the session sets the
+  subtitle from it, which the frame shows as it arrives. The tab title (OSC 1)
+  rather than the window title (OSC 2):
   the same fact said shorter, where the window title is the whole command line
   and, at rest, `user@host:~`, which in a frame that already names the host and
   the origin is mostly things said twice. There is no marker separating "a command is running" from "this
   is the prompt", so interpreting it would mean guessing at somebody's shell
-  configuration. It is stashed under `titleMu` rather than `mu`, and that is
-  not fastidiousness: the callback fires with the *emulator's* lock held, while
-  `negotiate` takes `mu` and then reaches for that same lock — the two orders
-  that deadlock. Nothing is woken from the callback either, because a title
-  only changes as part of output and `sink` wakes everybody when that write
-  returns.
+  configuration. The two names are stashed under `titleMu`, because the stream
+  goroutine writes what a frame's goroutine reads.
 - **A paste is a message, not keystrokes.** The frame's renderer turns
   bracketed paste on in the viewer's terminal, so the browser stops sending
   pasted text as a burst of keys and sends it wrapped instead. A model that

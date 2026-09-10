@@ -50,6 +50,11 @@ func newFrameHarness(t *testing.T) *harness {
 		em:      em,
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
+
+		// Built by hand rather than through newSession, so the grace a real
+		// session gets by default has to be set here too — otherwise every
+		// reply is "late" against a zero-length window.
+		clipboardGrace: defaultClipboardGrace,
 	}
 
 	// The same reporting a real session installs, so what the frame reads back
@@ -75,7 +80,7 @@ func newFrameHarness(t *testing.T) *harness {
 		}
 	}()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	s.viewers[v] = struct{}{}
 	h.f = frame{sess: s, v: v, width: defaultCols, height: defaultRows}
 	return h
@@ -660,13 +665,14 @@ func TestViewPlacesTheCursor(t *testing.T) {
 func TestViewWithholdsAHiddenCursor(t *testing.T) {
 	h := newFrameHarness(t)
 
-	// DECTCEM, the way a program sends it, so the emulator's own callback is
-	// what records this rather than the test reaching past it.
-	if _, err := h.s.em.WriteString("hello\x1b[?25l"); err != nil {
+	// DECTCEM the way a program sends it, through the scanner the session
+	// installs — the emulator has no cursor-visibility getter, so the Mode
+	// sink is the only path to cursorHidden.
+	if _, err := h.s.scan.Write([]byte("hello\x1b[?25l")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if !h.s.cursorHidden() {
-		t.Fatal("the session did not record DECTCEM; the emulator's callback is not wired")
+		t.Fatal("the session did not record DECTCEM; the scanner is not wired")
 	}
 	if got := h.f.View().Cursor; got != nil {
 		t.Errorf("cursor drawn at (%d,%d), want none — the program asked for none", got.X, got.Y)
@@ -674,7 +680,7 @@ func TestViewWithholdsAHiddenCursor(t *testing.T) {
 
 	// And it comes back, because a program that hides the cursor to redraw
 	// shows it again to ask for something.
-	if _, err := h.s.em.WriteString("\x1b[?25h"); err != nil {
+	if _, err := h.s.scan.Write([]byte("\x1b[?25h")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	if h.s.cursorHidden() {
@@ -756,6 +762,26 @@ func TestPasteIsBracketedWhenTheAppAsked(t *testing.T) {
 	}
 	h.paste(t, "echo pasted")
 	h.reached(t, "\x1b[200~echo pasted\x1b[201~")
+}
+
+// TestFrameCarriesAClipboardReply pins that a ClipboardMsg from a viewer's
+// terminal reaches the session, where the query guard decides its fate.
+func TestFrameCarriesAClipboardReply(t *testing.T) {
+	h := newFrameHarness(t)
+
+	// A query outstanding, so the reply is accepted and reaches stdin.
+	h.s.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	if _, cmd := h.f.Update(tea.ClipboardMsg{Selection: 'c', Content: "hi"}); cmd != nil {
+		t.Errorf("ClipboardMsg returned a command, want none")
+	}
+	select {
+	case got := <-h.typed:
+		if got != "\x1b]52;c;aGk=\a" {
+			t.Errorf("stdin = %q, want the base64 reply", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reply never reached stdin")
+	}
 }
 
 // TestFirstDrawWaitsForTheWindow pins that a frame does not draw at a size it

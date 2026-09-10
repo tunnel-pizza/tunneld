@@ -195,12 +195,88 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, testLogs{}, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+// recorder is a Sink that keeps what it was told, so a test can assert on the
+// order sequences arrived in.
+type recorder struct {
+	mu   sync.Mutex
+	seqs []Sequence
+}
+
+func (r *recorder) Said(seq Sequence) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := Sequence{Kind: seq.Kind, Cmd: seq.Cmd, Set: seq.Set}
+	cp.Raw = append([]byte(nil), seq.Raw...)
+	cp.Data = append([]byte(nil), seq.Data...)
+	r.seqs = append(r.seqs, cp)
+}
+
+func (r *recorder) commands() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]int, len(r.seqs))
+	for i, s := range r.seqs {
+		out[i] = s.Cmd
+	}
+	return out
+}
+
+// TestWithSinksStoresAndServeAccepts pins the plumbing this task adds, without
+// asserting dispatch: a Sink installed with WithSinks is carried by the
+// binder, and Serve's new sinks parameter is accepted and passed through to a
+// session that starts cleanly. What a sink is actually told is Task 3's to
+// pin, once session.said exists to tell it.
+func TestWithSinksStoresAndServeAccepts(t *testing.T) {
+	b := New(WithSinks(&recorder{}, &recorder{}))
+	if got := len(b.sinks); got != 2 {
+		t.Fatalf("binder carries %d sinks, want 2", got)
+	}
+
+	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, []Sink{&recorder{}}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+}
+
+// TestWithSinksSeesWhatAnAppSays pins that a Sink installed with WithSinks is
+// told every owned and observed sequence, in the order the target wrote them.
+func TestWithSinksSeesWhatAnAppSays(t *testing.T) {
+	rec := &recorder{}
+	target := newFakeTarget("api", true, true)
+	// A title, a mode, and a clipboard write — one of each shape.
+	target.out = "\x1b]0;hi\a\x1b[?25l\x1b]52;c;aGk=\a"
+
+	s, err := Serve(t.Context(), target, testBanner, testLogs{}, []Sink{rec}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := rec.commands(); len(got) >= 3 {
+			want := []int{0, 25, 52}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("commands = %v, want %v", got, want)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("commands = %v, want [0 25 52]", rec.commands())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // TestPage pins that the tunnel's own address answers with the terminal page
@@ -444,6 +520,66 @@ func writeFrame(t *testing.T, c *websocket.Conn, channel byte, payload string) {
 	t.Helper()
 	if err := c.WriteMessage(websocket.BinaryMessage, append([]byte{channel}, payload...)); err != nil {
 		t.Fatalf("write frame: %v", err)
+	}
+}
+
+// TestForwardsReachTheViewer pins that an OSC the emulator has no use for — a
+// clipboard write — reaches a connected viewer's terminal on its stdout,
+// unchanged, and that an OSC the session owns does not arrive raw.
+func TestForwardsReachTheViewer(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	c := dial(t, s)
+
+	// Wait until the viewer is registered before the target speaks. The
+	// library writes the established frame before ServeAttach calls join, so
+	// draining that frame does not prove a viewer exists yet — and forward
+	// correctly drops a sequence with no viewer to send it to.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.session.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no viewer registered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The target speaks after a viewer is attached: an owned title, then a
+	// clipboard write to forward.
+	go func() {
+		w := &sink{s: s.session}
+		_, _ = w.Write([]byte("\x1b]0;owned\a\x1b]52;c;aGk=\a"))
+	}()
+
+	// The clipboard sequence arrives on stdout, whole.
+	stdoutUntil(t, c, "\x1b]52;c;aGk=\a")
+
+	// And the owned title never appears raw on the wire.
+	if seenRaw(t, c, "\x1b]0;owned\a") {
+		t.Error("an owned OSC reached the viewer raw, want it withheld")
+	}
+}
+
+// seenRaw drains whatever is immediately readable and reports whether want
+// appeared. It sets a short deadline: nothing more is expected, so a timeout is
+// the answer "no", not a failure.
+func seenRaw(t *testing.T, c *websocket.Conn, want string) bool {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var seen strings.Builder
+	for {
+		if err := c.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set a read deadline: %v", err)
+		}
+		kind, data, err := c.ReadMessage()
+		if err != nil {
+			return strings.Contains(seen.String(), want)
+		}
+		if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
+			seen.Write(data[1:])
+		}
+		if strings.Contains(seen.String(), want) {
+			return true
+		}
 	}
 }
 

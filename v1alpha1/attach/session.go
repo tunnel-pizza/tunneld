@@ -1,15 +1,14 @@
 package attach
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"strings"
 	"sync"
-	"unicode/utf8"
-
-	"image/color"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
@@ -26,6 +25,11 @@ const (
 	defaultCols = 80
 	defaultRows = 24
 )
+
+// defaultClipboardGrace is how long a reply to an OSC 52 read query is
+// accepted. A browser raises a permission prompt for the read, so the window is
+// human time rather than machine time.
+const defaultClipboardGrace = 30 * time.Second
 
 // session is one attach to a target, shared by every viewer of it.
 //
@@ -74,6 +78,10 @@ type session struct {
 	// Nil when nothing was configured, which a frame says rather than hides.
 	logs Logs
 
+	// sinks are told what the terminal says about itself, after the built-in
+	// routing. Empty unless a caller installed some with WithSinks.
+	sinks []Sink
+
 	// stdin is the write end of the pipe feeding the target, and done closes
 	// when the run reading it is over. Both belong to one run and are replaced
 	// by the next, so both are guarded by mu — read stdin and done through the
@@ -90,15 +98,22 @@ type session struct {
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
 
-	// titleMu guards the title and subtitle and nothing else. Deliberately not
-	// mu — see newSession, where the callbacks that write them are installed.
+	// scan pulls the sequences a program uses to talk about itself out of its
+	// output before the emulator sees them. Built by watch, reset by revive.
+	scan *scanner
+
+	// titleMu guards the title and subtitle and nothing else. said writes them
+	// from the stream goroutine, a frame's titles() reads them from its own,
+	// and titleMu is deliberately not mu so neither waits behind viewer or
+	// size bookkeeping it has nothing to do with.
 	titleMu  sync.Mutex
 	title    string
 	subtitle string
 
 	// cursorMu guards hidden, and is separate from titleMu for the same reason
-	// titleMu is separate from mu: the callback that writes it fires with the
-	// emulator's own lock held.
+	// titleMu is separate from mu: said writes it from the stream goroutine
+	// and a frame's cursorHidden() reads it from its own, and the two fields
+	// have nothing to do with each other.
 	//
 	// hidden is what the program asked for with DECTCEM. A full-screen program
 	// hides the cursor once, at startup, and then leaves it wherever its last
@@ -107,12 +122,18 @@ type session struct {
 	cursorMu sync.Mutex
 	hidden   bool
 
-	// mu guards the viewer set, the size negotiated from it, and the public
-	// address, and nothing else.
+	// mu guards the viewer set, the size negotiated from it, the public
+	// address, and the clipboard fields below.
 	mu      sync.Mutex
 	viewers map[*viewer]struct{}
 	size    remotecommand.TerminalSize
 	public  string
+
+	// clipboardAsked is when a viewer's terminal was last sent an OSC 52 read
+	// query, zero when none is outstanding. clipboardGrace is how long a reply
+	// to it is accepted — a permission prompt is human time. Both under mu.
+	clipboardAsked time.Time
+	clipboardGrace time.Duration
 }
 
 // viewer is one connected browser: the frame drawing for it, and the window
@@ -127,93 +148,30 @@ type viewer struct {
 	prog *tea.Program
 	wake chan struct{}
 	size remotecommand.TerminalSize
+	// said carries sequences the emulator has no use for to this viewer's
+	// terminal. Buffered, and a send that finds it full drops: a viewer that
+	// has stopped reading holds nobody else up, the rule wake already follows.
+	said chan []byte
 }
 
-// watch installs everything the terminal says about itself: the emulator's
-// callbacks, and the one raw OSC handler the callbacks cannot express. Split
-// out of newSession so a frame can be tested against a session whose emulator
-// reports the way a real one does.
+// watch builds the scanner that reads what a program says about itself, ahead
+// of the emulator. Split out of newSession so a frame test can drive a session
+// the way a real stream does.
+//
+// Nothing about the terminal reaches the frame through vt's callbacks any
+// more: they fire on data the emulator's own parser already cut, they cannot
+// tell one OSC 0 from an OSC 1 and an OSC 2, and they run under the emulator's
+// lock. The scanner owns every OSC and reports every private mode, and said
+// routes them.
 func (s *session) watch() {
-	// Everything the terminal says about itself, in the debug log, and the one
-	// thing the frame acts on.
-	//
-	// These are the channels an app has for talking about its state rather
-	// than painting its screen — a title, a working directory, a mode it wants
-	// turned on — and most of them tunneld has no use for. They are logged
-	// because the only way to find out what a given app actually sends is to
-	// watch one send it, and because an app that misbehaves in a frame usually
-	// does it here.
-	//
-	// What the frame shows is the tab title. Oh My Zsh and friends set both
-	// titles from preexec and reset them from precmd, so they carry the
-	// running command while one runs and the prompt's idea of where it is when
-	// none does. The tab title — OSC 1 — is the same fact said shorter: the
-	// window title is the whole command line and, at rest, user@host:~, which
-	// in a frame that already names the host and the origin is mostly things
-	// said twice. A shell that sets neither leaves the frame with nothing to
-	// show, which is most of them without a prompt framework.
-	//
-	// CursorPosition is deliberately not among them: it fires on every cursor
-	// move, which is every keystroke and every redraw, and it would drown
-	// everything else in the log.
-	//
-	// All of these run from inside the emulator's write, which is to say with
-	// the emulator's lock held. So they may only stash a value or write a line
-	// — reaching for mu here would be the two lock orders that deadlock, since
-	// negotiate takes mu and then reaches for that same emulator lock. Nothing
-	// is woken from them either: what they report only ever changes as part of
-	// output, and sink wakes everybody the moment that write returns.
-	s.em.SetCallbacks(vt.Callbacks{
-		Title: func(title string) {
-			s.log.Debug("terminal title", "container", s.Name(), "title", title)
-			s.setTitle(title)
-		},
-		IconName: func(subtitle string) {
-			s.log.Debug("terminal subtitle", "container", s.Name(), "subtitle", subtitle)
-			s.setSubtitle(subtitle)
-		},
-		WorkingDirectory: func(dir string) {
-			s.log.Debug("terminal working directory", "container", s.Name(), "dir", dir)
-		},
-		Bell:      func() { s.log.Debug("terminal bell", "container", s.Name()) },
-		AltScreen: func(on bool) { s.log.Debug("terminal alternate screen", "container", s.Name(), "on", on) },
-		CursorVisibility: func(visible bool) {
-			s.log.Debug("terminal cursor visibility", "container", s.Name(), "visible", visible)
-			s.setCursorHidden(!visible)
-		},
-		CursorStyle: func(style vt.CursorStyle, blink bool) {
-			s.log.Debug("terminal cursor style", "container", s.Name(), "style", style, "blink", blink)
-		},
-		CursorColor: func(c color.Color) {
-			s.log.Debug("terminal cursor colour", "container", s.Name(), "colour", c)
-		},
-		ForegroundColor: func(c color.Color) {
-			s.log.Debug("terminal foreground colour", "container", s.Name(), "colour", c)
-		},
-		BackgroundColor: func(c color.Color) {
-			s.log.Debug("terminal background colour", "container", s.Name(), "colour", c)
-		},
-		EnableMode:  func(m ansi.Mode) { s.log.Debug("terminal mode enabled", "container", s.Name(), "mode", m) },
-		DisableMode: func(m ansi.Mode) { s.log.Debug("terminal mode disabled", "container", s.Name(), "mode", m) },
-	})
-
-	// OSC 0 sets both names at once, which the callbacks above cannot show:
-	// they fire identically whether an app sent one OSC 0 or an OSC 1 and an
-	// OSC 2, and knowing which is how you tell an app that has one name from
-	// one that has two. Registered for the log alone, and returning false so
-	// the emulator goes on to handle it as it would have.
-	s.em.RegisterOscHandler(0, func(data []byte) bool {
-		_, title, _ := strings.Cut(string(data), ";")
-		s.log.Debug("terminal title, both at once", "container", s.Name(), "title", title)
-		return false
-	})
+	s.scan = newScanner(s.em, s.said)
 }
 
 // newSession opens the one attach and starts feeding the emulator from it. It
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs Logs, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -223,10 +181,13 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, qu
 		log:     log,
 		banner:  banner,
 		logs:    logs,
+		sinks:   sinks,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
+
+		clipboardGrace: defaultClipboardGrace,
 	}
 
 	s.watch()
@@ -391,6 +352,7 @@ func (s *session) revive() {
 
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
+	s.scan.reset()
 	s.log.Info("running it again", "target", s.Name())
 	s.stream()
 }
@@ -424,13 +386,72 @@ func (w *sink) Close() error { return nil }
 
 func (w *sink) Write(p []byte) (int, error) {
 	s := w.s
-
-	// The screen first, then the people drawing it. A frame woken before the
-	// emulator had the bytes would render the screen as it was and not be
-	// asked again.
-	_, _ = s.em.Write(p)
+	// Through the scanner, which writes the screen bytes to the emulator and
+	// hands every OSC and private mode to said. A frame woken before the
+	// emulator had the bytes would render the screen as it was, so the wake is
+	// after.
+	_, _ = s.scan.Write(p)
 	s.wakeAll()
 	return len(p), nil
+}
+
+// names is the OSC codes that name the terminal: 0 sets both, 1 the subtitle,
+// 2 the title. tunneld owns these — the emulator never sees them.
+func names(cmd int) bool { return cmd == 0 || cmd == 1 || cmd == 2 }
+
+// paints is the OSC codes the emulator acts on: hyperlinks and the colour
+// set/query pairs. It is vt's registerDefaultOscHandlers minus what we own
+// (names, and 7 the working directory). A vt bump that adds a handler is a code
+// the emulator has started painting and this list is silently withholding — so
+// re-check it against registerDefaultOscHandlers when bumping x/vt.
+func paints(cmd int) bool {
+	switch cmd {
+	case 8, 10, 11, 12, 110, 111, 112:
+		return true
+	}
+	return false
+}
+
+// said routes one thing the terminal said about itself. It runs on the stream
+// goroutine and takes no emulator lock: an OSC is delivered here instead of
+// being written to the screen, and a Mode after its write has already
+// returned.
+func (s *session) said(seq Sequence) {
+	switch seq.Kind {
+	case Mode:
+		// The CSI is already on the screen; only the cursor is the frame's
+		// business, and only DECTCEM among the modes.
+		if seq.Cmd == 25 { // DECTCEM
+			s.setCursorHidden(!seq.Set)
+		}
+	case OSC:
+		switch {
+		case names(seq.Cmd):
+			s.setName(seq.Cmd, string(seq.Data))
+		case paints(seq.Cmd) || seq.Cmd < 0:
+			// The emulator's, verbatim: a hyperlink becomes cell links it
+			// draws, a colour query one it answers. An OSC with no numeric
+			// command is not ours to judge, so it goes there too.
+			_, _ = s.em.Write(seq.Raw)
+		default:
+			// A read query — 52;<sel>;? — opens a window in which a reply is
+			// accepted. Stamped before the forward so an answer that races
+			// back finds it.
+			if seq.Cmd == 52 && clipboardQuery(seq.Data) {
+				s.mu.Lock()
+				s.clipboardAsked = time.Now()
+				s.mu.Unlock()
+			}
+			s.forward(seq.Raw)
+		}
+	}
+
+	s.log.Debug("terminal said", "container", s.Name(),
+		"kind", seq.Kind, "cmd", seq.Cmd, "data", string(seq.Data), "set", seq.Set)
+
+	for _, sk := range s.sinks {
+		sk.Said(seq)
+	}
 }
 
 // wakeAll asks every viewer's frame to render again. The sends are off the
@@ -448,6 +469,28 @@ func (s *session) wakeAll() {
 		select {
 		case w <- struct{}{}:
 		default:
+		}
+	}
+}
+
+// forward hands a sequence to every viewer's terminal. The copy is because raw
+// is the scanner's buffer, valid only for the said call; the channel outlives
+// it. A full channel is a drop, like wake: the container's output does not wait
+// on a viewer that has stopped reading.
+func (s *session) forward(raw []byte) {
+	cp := append([]byte(nil), raw...)
+	s.mu.Lock()
+	chans := make([]chan []byte, 0, len(s.viewers))
+	for v := range s.viewers {
+		chans = append(chans, v.said)
+	}
+	s.mu.Unlock()
+
+	for _, ch := range chans {
+		select {
+		case ch <- cp:
+		default:
+			s.log.Debug("dropped a forwarded sequence for a slow viewer", "container", s.Name())
 		}
 	}
 }
@@ -479,7 +522,7 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 
 	width, height := s.window()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
 		frame{sess: s, v: v, width: width, height: height},
 		tea.WithContext(ctx),
@@ -535,7 +578,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 	s.revive()
 	width, height := s.window()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
 		frame{sess: s, v: v, width: width, height: height},
 		tea.WithContext(ctx),
@@ -572,6 +615,11 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 				return
 			default:
 			}
+		case raw := <-v.said:
+			// Straight to the viewer's terminal, unmanaged by the renderer.
+			// An OSC carries no cells, so where it lands between two frames
+			// does not matter.
+			v.prog.Send(tea.RawMsg{Msg: string(raw)})
 		case <-ctx.Done():
 			return
 		}
@@ -717,37 +765,69 @@ func (s *session) window() (int, int) {
 	return int(s.size.Width), int(s.size.Height)
 }
 
-// setTitle records what the terminal calls itself: the window title, which a
-// prompt framework sets to the whole command line.
-func (s *session) setTitle(title string) { s.remember(&s.title, title) }
-
-// setSubtitle records the shorter name beside it: the tab title, which the
-// same frameworks set to the running command's name.
-func (s *session) setSubtitle(subtitle string) { s.remember(&s.subtitle, subtitle) }
-
-// remember keeps one of the two names, or keeps the one it had if what arrived
-// is not a name at all.
-//
-// Held rather than blanked, because an unusable title is not the app saying it
-// has nothing to say. The emulator's OSC parser cuts a string at a 0x9C byte —
-// the 8-bit string terminator, and also the middle byte of every three-byte
-// UTF-8 character in the U+27xx block — so an app whose spinner cycles ✳ ✻ ✽
-// delivers a good title, then a stray byte, then a good title again. Taking
-// the stray one would flicker the frame's label off and on in time with
-// somebody's spinner.
-func (s *session) remember(into *string, said string) {
-	if !utf8.ValidString(said) {
-		s.log.Debug("terminal name was not a string; keeping the last one",
-			"container", s.Name(), "name", said)
-		return
-	}
+// setTitle records the window title, which a prompt framework sets to the whole
+// command line. What arrives is whole — the scanner never cuts it — so there is
+// nothing to guard against but an app that genuinely sends garbage, which
+// frame.showable handles when it draws.
+func (s *session) setTitle(title string) {
 	s.titleMu.Lock()
-	*into = said
+	s.title = title
 	s.titleMu.Unlock()
 }
 
-// setCursorHidden records what the program asked for with DECTCEM. Called from
-// the emulator's own callback, which is why it takes a lock of its own.
+// setSubtitle records the tab title, the shorter name beside it.
+func (s *session) setSubtitle(subtitle string) {
+	s.titleMu.Lock()
+	s.subtitle = subtitle
+	s.titleMu.Unlock()
+}
+
+// setName applies an OSC that names the terminal: 0 sets both, 2 the title, 1
+// the subtitle.
+func (s *session) setName(cmd int, name string) {
+	if cmd == 0 || cmd == 2 {
+		s.setTitle(name)
+	}
+	if cmd == 0 || cmd == 1 {
+		s.setSubtitle(name)
+	}
+}
+
+// clipboardQuery reports whether an OSC 52 payload is a read request rather
+// than a write: its last ';'-separated field is "?".
+func clipboardQuery(data []byte) bool {
+	parts := bytes.Split(data, []byte{';'})
+	return len(parts) > 0 && string(parts[len(parts)-1]) == "?"
+}
+
+// clipboard writes a viewer's clipboard back to the container, but only as the
+// answer to a query the container made and only the first such answer. An
+// unsolicited OSC 52 from any viewer's terminal — which forwarding the query
+// makes possible — is dropped here, which is the guard that makes forwarding it
+// safe.
+//
+// Written to stdin as bytes, on the same pipe the emulator's own replies use,
+// and base64-encoded by ansi.SetClipboard as the wire form requires.
+func (s *session) clipboard(sel byte, content string) {
+	s.mu.Lock()
+	asked := s.clipboardAsked
+	fresh := !asked.IsZero() && time.Since(asked) < s.clipboardGrace
+	if fresh {
+		s.clipboardAsked = time.Time{}
+	}
+	stdin := s.stdin
+	s.mu.Unlock()
+
+	if !fresh || stdin == nil {
+		s.log.Debug("dropping a clipboard reply nobody asked for", "container", s.Name())
+		return
+	}
+	_, _ = io.WriteString(stdin, ansi.SetClipboard(sel, content))
+}
+
+// setCursorHidden records what the program asked for with DECTCEM. Called
+// from said on the stream goroutine, which is why it takes a lock of its own:
+// a frame reads cursorHidden from its own goroutine, concurrently.
 func (s *session) setCursorHidden(hidden bool) {
 	s.cursorMu.Lock()
 	s.hidden = hidden

@@ -145,6 +145,55 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	}
 }
 
+// TestClipboardReplyReachesTheContainerOnlyWhenAsked pins the guard: a reply to
+// an outstanding OSC 52 query is written to the container's stdin, and an
+// unsolicited one — the danger of forwarding the query at all — is dropped.
+func TestClipboardReplyReachesTheContainer(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	sess := s.session
+
+	// No query outstanding: a reply is dropped.
+	sess.clipboard('c', "unsolicited")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q with no query outstanding, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// A query marks one outstanding; the reply is written, base64-encoded on
+	// the wire.
+	sess.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	sess.clipboard('c', "hi")
+	select {
+	case got := <-target.seenIn:
+		if got != "\x1b]52;c;aGk=\a" {
+			t.Errorf("stdin = %q, want the base64 reply", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply reached stdin after a query")
+	}
+
+	// The query is spent: a second reply is dropped.
+	sess.clipboard('c', "again")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q after the query was answered, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// A reply after the grace is dropped even with a query outstanding.
+	sess.clipboardGrace = time.Nanosecond
+	sess.said(Sequence{Kind: OSC, Cmd: 52, Data: []byte("c;?"), Raw: []byte("\x1b]52;c;?\a")})
+	time.Sleep(time.Millisecond)
+	sess.clipboard('c', "late")
+	select {
+	case got := <-target.seenIn:
+		t.Fatalf("stdin got %q after the grace, want nothing", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestTitleFollowsTheShell pins that the frame can say what the container is
 // doing, which the container is the only one who knows.
 //
@@ -180,39 +229,33 @@ func TestTitleFollowsTheShell(t *testing.T) {
 	}
 }
 
-// TestATruncatedTitleIsIgnored pins that an unusable title does not replace a
-// usable one.
-//
-// The emulator's OSC parser cuts a string at a 0x9C byte — the 8-bit string
-// terminator, and also the middle byte of every three-byte UTF-8 character in
-// the U+27xx block. An app whose spinner cycles ✳ ✻ ✽ therefore delivers a
-// good title, then a stray byte, then a good title again, and taking the stray
-// one would flicker the frame's label off and on in time with the spinner.
-func TestATruncatedTitleIsIgnored(t *testing.T) {
+// TestATitleArrivesWhole pins the fix for #93/#66: a title whose bytes include
+// 0x9C — ✳ is E2 9C B3 — is delivered whole, and nothing of it lands on the
+// screen. The old parser cut it at 0x9C, so the callback saw \xe2 and the rest
+// was printed into the container's own screen.
+func TestATitleArrivesWhole(t *testing.T) {
 	target := newFakeTarget("api", true, true)
-	// A good title, then exactly what ✳ leaves behind.
-	target.out = "\x1b]2;working\a\x1b]2;\xe2\a"
+	// A drawn row, then the title an app sets over the top of it.
+	target.out = "row one\r\n\x1b]0;✳ Claude Code\a"
 	s := serveFake(t, target)
 
-	// The good one lands first.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if title, _ := s.session.titles(); title == "working" {
+		title, subtitle := s.session.titles()
+		if title == "✳ Claude Code" && subtitle == "✳ Claude Code" {
 			break
 		}
 		if time.Now().After(deadline) {
-			title, _ := s.session.titles()
-			t.Fatalf("title = %q, want %q", title, "working")
+			t.Fatalf("title = %q, subtitle = %q, want both %q", title, subtitle, "✳ Claude Code")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// And the stray byte behind it does not take it away.
-	for range 20 {
-		if title, _ := s.session.titles(); title != "working" {
-			t.Fatalf("title = %q, want the last usable one kept", title)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// #66: the second row is not " Claude Code". The screen carries the drawn
+	// row and nothing the title left behind.
+	lines := s.session.paneLines(2)
+	if len(lines) > 1 && strings.Contains(lines[1], "Claude Code") {
+		t.Errorf("row 1 = %q, want the title's residue absent from the screen", lines[1])
 	}
 }
 
