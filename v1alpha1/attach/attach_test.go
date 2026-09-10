@@ -531,9 +531,17 @@ func TestForwardsReachTheViewer(t *testing.T) {
 	s := serveFake(t, target)
 	c := dial(t, s)
 
-	// Drain the first frame (the renderer's setup) before writing, so the
-	// assertion is about the forward and not the frame's own output.
-	_, _ = readFrame(t, c)
+	// Wait until the viewer is registered before the target speaks. The
+	// library writes the established frame before ServeAttach calls join, so
+	// draining that frame does not prove a viewer exists yet — and forward
+	// correctly drops a sequence with no viewer to send it to.
+	deadline := time.Now().Add(5 * time.Second)
+	for s.session.count() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("no viewer registered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	// The target speaks after a viewer is attached: an owned title, then a
 	// clipboard write to forward.
