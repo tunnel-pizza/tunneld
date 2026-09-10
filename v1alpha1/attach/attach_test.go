@@ -523,6 +523,58 @@ func writeFrame(t *testing.T, c *websocket.Conn, channel byte, payload string) {
 	}
 }
 
+// TestForwardsReachTheViewer pins that an OSC the emulator has no use for — a
+// clipboard write — reaches a connected viewer's terminal on its stdout,
+// unchanged, and that an OSC the session owns does not arrive raw.
+func TestForwardsReachTheViewer(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	c := dial(t, s)
+
+	// Drain the first frame (the renderer's setup) before writing, so the
+	// assertion is about the forward and not the frame's own output.
+	_, _ = readFrame(t, c)
+
+	// The target speaks after a viewer is attached: an owned title, then a
+	// clipboard write to forward.
+	go func() {
+		w := &sink{s: s.session}
+		_, _ = w.Write([]byte("\x1b]0;owned\a\x1b]52;c;aGk=\a"))
+	}()
+
+	// The clipboard sequence arrives on stdout, whole.
+	stdoutUntil(t, c, "\x1b]52;c;aGk=\a")
+
+	// And the owned title never appears raw on the wire.
+	if seenRaw(t, c, "\x1b]0;owned\a") {
+		t.Error("an owned OSC reached the viewer raw, want it withheld")
+	}
+}
+
+// seenRaw drains whatever is immediately readable and reports whether want
+// appeared. It sets a short deadline: nothing more is expected, so a timeout is
+// the answer "no", not a failure.
+func seenRaw(t *testing.T, c *websocket.Conn, want string) bool {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var seen strings.Builder
+	for {
+		if err := c.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set a read deadline: %v", err)
+		}
+		kind, data, err := c.ReadMessage()
+		if err != nil {
+			return strings.Contains(seen.String(), want)
+		}
+		if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
+			seen.Write(data[1:])
+		}
+		if strings.Contains(seen.String(), want) {
+			return true
+		}
+	}
+}
+
 // TestEstablishedFrame pins the one-byte frame the server sends on connect.
 // The page keys "the terminal is live" on it — it is the only signal that the
 // attach actually began, since a healthy container may say nothing for hours.

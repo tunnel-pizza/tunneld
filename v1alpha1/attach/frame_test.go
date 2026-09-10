@@ -75,7 +75,7 @@ func newFrameHarness(t *testing.T) *harness {
 		}
 	}()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	s.viewers[v] = struct{}{}
 	h.f = frame{sess: s, v: v, width: defaultCols, height: defaultRows}
 	return h

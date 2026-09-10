@@ -134,6 +134,10 @@ type viewer struct {
 	prog *tea.Program
 	wake chan struct{}
 	size remotecommand.TerminalSize
+	// said carries sequences the emulator has no use for to this viewer's
+	// terminal. Buffered, and a send that finds it full drops: a viewer that
+	// has stopped reading holds nobody else up, the rule wake already follows.
+	said chan []byte
 }
 
 // watch builds the scanner that reads what a program says about itself, ahead
@@ -414,10 +418,10 @@ func (s *session) said(seq Sequence) {
 			// command is not ours to judge, so it goes there too.
 			_, _ = s.em.Write(seq.Raw)
 		default:
-			// Nothing here acts on it and the emulator has no use for it.
-			// Task 4 forwards it to the viewers; until then it is dropped.
-			s.log.Debug("terminal said something no one is carrying yet",
-				"container", s.Name(), "osc", seq.Cmd)
+			// Nothing here acts on it and the emulator has no use for it, but
+			// a real terminal on the far end of the tunnel might: the
+			// clipboard, a notification, shell integration. Send it there.
+			s.forward(seq.Raw)
 		}
 	}
 
@@ -444,6 +448,28 @@ func (s *session) wakeAll() {
 		select {
 		case w <- struct{}{}:
 		default:
+		}
+	}
+}
+
+// forward hands a sequence to every viewer's terminal. The copy is because raw
+// is the scanner's buffer, valid only for the said call; the channel outlives
+// it. A full channel is a drop, like wake: the container's output does not wait
+// on a viewer that has stopped reading.
+func (s *session) forward(raw []byte) {
+	cp := append([]byte(nil), raw...)
+	s.mu.Lock()
+	chans := make([]chan []byte, 0, len(s.viewers))
+	for v := range s.viewers {
+		chans = append(chans, v.said)
+	}
+	s.mu.Unlock()
+
+	for _, ch := range chans {
+		select {
+		case ch <- cp:
+		default:
+			s.log.Debug("dropped a forwarded sequence for a slow viewer", "container", s.Name())
 		}
 	}
 }
@@ -475,7 +501,7 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 
 	width, height := s.window()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
 		frame{sess: s, v: v, width: width, height: height},
 		tea.WithContext(ctx),
@@ -531,7 +557,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 	s.revive()
 	width, height := s.window()
 
-	v := &viewer{wake: make(chan struct{}, 1)}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
 		frame{sess: s, v: v, width: width, height: height},
 		tea.WithContext(ctx),
@@ -568,6 +594,11 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 				return
 			default:
 			}
+		case raw := <-v.said:
+			// Straight to the viewer's terminal, unmanaged by the renderer.
+			// An OSC carries no cells, so where it lands between two frames
+			// does not matter.
+			v.prog.Send(tea.RawMsg{Msg: string(raw)})
 		case <-ctx.Done():
 			return
 		}
