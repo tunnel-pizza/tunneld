@@ -74,6 +74,10 @@ type session struct {
 	// Nil when nothing was configured, which a frame says rather than hides.
 	logs Logs
 
+	// sinks are told what the terminal says about itself, after the built-in
+	// routing. Empty unless a caller installed some with WithSinks.
+	sinks []Sink
+
 	// stdin is the write end of the pipe feeding the target, and done closes
 	// when the run reading it is over. Both belong to one run and are replaced
 	// by the next, so both are guarded by mu — read stdin and done through the
@@ -213,7 +217,7 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs Logs, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -223,6 +227,7 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, qu
 		log:     log,
 		banner:  banner,
 		logs:    logs,
+		sinks:   sinks,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
 		viewers: map[*viewer]struct{}{},

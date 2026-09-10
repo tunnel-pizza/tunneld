@@ -195,12 +195,56 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, testLogs{}, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+// recorder is a Sink that keeps what it was told, so a test can assert on the
+// order sequences arrived in.
+type recorder struct {
+	mu   sync.Mutex
+	seqs []Sequence
+}
+
+func (r *recorder) Said(seq Sequence) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := Sequence{Kind: seq.Kind, Cmd: seq.Cmd, Set: seq.Set}
+	cp.Raw = append([]byte(nil), seq.Raw...)
+	cp.Data = append([]byte(nil), seq.Data...)
+	r.seqs = append(r.seqs, cp)
+}
+
+func (r *recorder) commands() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]int, len(r.seqs))
+	for i, s := range r.seqs {
+		out[i] = s.Cmd
+	}
+	return out
+}
+
+// TestWithSinksStoresAndServeAccepts pins the plumbing this task adds, without
+// asserting dispatch: a Sink installed with WithSinks is carried by the
+// binder, and Serve's new sinks parameter is accepted and passed through to a
+// session that starts cleanly. What a sink is actually told is Task 3's to
+// pin, once session.said exists to tell it.
+func TestWithSinksStoresAndServeAccepts(t *testing.T) {
+	b := New(WithSinks(&recorder{}, &recorder{}))
+	if got := len(b.sinks); got != 2 {
+		t.Fatalf("binder carries %d sinks, want 2", got)
+	}
+
+	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, []Sink{&recorder{}}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
 }
 
 // TestPage pins that the tunnel's own address answers with the terminal page
