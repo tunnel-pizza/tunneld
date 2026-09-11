@@ -29,14 +29,17 @@ func New(opts ...Option) *EngineImpl {
 // one, otherwise a fresh mint against provider, or the default provider when
 // that is empty.
 //
-// libtunnel.From rather than the LIBTUNNEL_SPEC variable, because From is the
-// path that asks. A replayed spec's identity rides the mint request, so a
-// tunnel reaped since it was cached still comes back on the same hostname when
-// the provider can still give that name out — which is the whole point of
-// keeping the spec. When it cannot, the mint has already happened and its
-// hostname is adopted rather than refused, so a lapsed reservation costs the
-// name and nothing else. The variable is the parent-to-child channel, where
-// the tunnel is live by construction and no question needs asking.
+// libtunnel.From rather than the LIBTUNNEL_SPEC variable, because the variable
+// outranks it: a spec in the environment is the live parent of a handoff, and a
+// cache is not entitled to displace one.
+//
+// Either way the spec is a hint rather than a replay — every resolution mints,
+// and what the process knows rides the request as headers. So a tunnel reaped
+// since it was cached still comes back on the same hostname while the provider
+// can still give that name out, which is the whole point of keeping the spec.
+// When it cannot, the mint has already happened and its hostname is taken
+// rather than refused, so a lapsed reservation costs the name and nothing
+// else.
 //
 // From builds its own backend, so the provider host travels by environment
 // rather than through WithProvider. It is the same knob either way: libtunnel
@@ -49,10 +52,9 @@ func New(opts ...Option) *EngineImpl {
 // branch here to get wrong.
 //
 // WithToken is on the Tunnel interface and not only on Backend, which is what
-// lets the replayed branch take it the same way the minted one does — and it
-// does apply there, whatever the upstream doc says: cloudflare.From keeps the
-// spec as a hint, recordHint reads its record, and that record rides the same
-// request the Authorization header does.
+// lets the cached branch take it the same way the fresh one does. It is one
+// door on both: since libtunnel v0.1.2 every resolution reaches the provider,
+// so there is no path where a token would go unsent (cnuss/libtunnel#219).
 func (*EngineImpl) Tunnel(spec, provider, token string) libtunnel.TunnelV1 {
 	if provider != "" {
 		// Best effort: a provider that cannot be set falls back to the

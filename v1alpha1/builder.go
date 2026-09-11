@@ -22,6 +22,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -46,18 +47,6 @@ func WithOrigin(origins ...string) Option {
 // the provider is v1.DefaultProvider.
 func WithProvider(host string) Option {
 	return func(b *BuilderImpl) { b.provider = host }
-}
-
-// WithCacheDir adds directories to cache tunnel specs in, in order,
-// appending across options. See package cachedir for what an entry means —
-// a path, or true and false as instructions — and how entries are resolved
-// and deduplicated.
-//
-// Like every option, it requires a builder from New: applied to a bare
-// BuilderImpl{}, cacheDirs is nil and this dereferences it immediately, at
-// option-apply time — before Command's wiring check ever runs.
-func WithCacheDir(dirs ...string) Option {
-	return func(b *BuilderImpl) { b.cacheDirs.Add(dirs...) }
 }
 
 // WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
@@ -198,7 +187,7 @@ func splitList(value string) []string {
 
 var flagEnv = map[string]string{
 	"provider":  v1.ProviderEnv,
-	"cache-dir": v1.CacheDirEnv,
+	"no-cache":  v1.NoCacheEnv,
 	"log-level": v1.LogEnv,
 	"multiview": v1.MultiviewEnv,
 
@@ -218,14 +207,11 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		// Report the first collaborator New would have seeded and did not: a
 		// BuilderImpl assembled as a bare struct rather than through New.
 		// One check, here at the first place Command needs every
-		// collaborator — Command reads cacheDirs directly a few lines down,
-		// to seed and bind --cache-dir, so a check inside RunE would always
-		// have been too late for that collaborator: it would run after
-		// Command had already dereferenced a nil one. WithCacheDir needs one
-		// sooner still, at option-apply time (see its doc) — like every
-		// option, it assumes a builder from New, so this check is the first
-		// place Command needs every collaborator, not the first place a nil
-		// one can bite.
+		// collaborator rather than inside RunE, so a bare struct is refused
+		// before any flag is bound to a field nobody seeded.
+		//
+		// The cache is not among them: nil is a legal state there, and the
+		// one --no-cache leaves a run in.
 		//
 		// A missing collaborator short-circuits with a minimal command whose
 		// RunE returns the error and nothing else — no flag binding, no env
@@ -234,9 +220,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			name    string
 			missing bool
 		}{
-			{"cacheDirs", b.cacheDirs == nil},
 			{"engine", b.engine == nil},
-			{"cache", b.cache == nil},
 			{"browser", b.display == nil},
 			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
@@ -334,19 +318,11 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 		// Each usage string names the flag's environment mirror, so --help doubles
 		// as the reference for configuring a container. The registry behind those
 		// names is flagEnv, declared above Command.
-		// Unset, specs cache into the default cache directory. Seeded here
-		// rather than in New so that an explicit WithCacheDir replaces the
-		// default instead of appending to it: a caller naming a directory
-		// means that directory, not that one and wherever the process
-		// happened to start.
-		//
-		// Nil, not empty: an empty list is one a false entry emptied, and seeding
-		// over it would re-enable what an operator turned off.
-		if b.cacheDirs.GetSlice() == nil {
-			b.cacheDirs.Add("")
-		}
-		cmd.Flags().Var(b.cacheDirs, "cache-dir",
-			"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
+		// Negative, where the option behind it is positive: a command line says
+		// what is unusual about this run, and an embedder configuring a
+		// default should not have to read a negation twice.
+		cmd.Flags().BoolVar(&b.noCache, "no-cache", b.noCache,
+			"don't cache the tunnel spec: mint a fresh hostname every run [$"+v1.NoCacheEnv+"]")
 		cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 		// StringSlice rather than StringArray: applyEnv hands a variable's
@@ -374,7 +350,15 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			Short: "Print the " + name + " build identifier and exit",
 			Args:  cobra.NoArgs,
 			Run: func(cmd *cobra.Command, _ []string) {
-				fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
+				// Against the root's flags rather than this subcommand's:
+				// applyEnv binds a variable onto the flag that mirrors it, and
+				// the flags a run is configured by live on the parent. Without
+				// this the banner would report a cache key for a run that
+				// TUNNELD_NO_CACHE has already turned off. A bad value is the
+				// run's error to report, not this one's — printing a version
+				// is not the place to refuse.
+				_ = b.applyEnv(b.command)
+				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.cached()))
 			},
 		})
 
@@ -439,7 +423,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// supplying one, because that is the choice an operator makes
 	// to fix it.
 	origins := b.Origins()
-	if len(origins) == 0 {
+	if origins.Len() == 0 {
 		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
 	}
 
@@ -469,9 +453,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
+	// The cache this run uses, or none. A local rather than the field, so a
+	// run started with --no-cache does not leave an embedder's builder without
+	// a cache for the next one.
+	spec := b.cache
+	if b.noCache {
+		spec = nil
+	}
+
 	cached := ""
-	if len(b.cacheDirs.GetSlice()) > 0 {
-		cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
+	if spec != nil {
+		cached = spec.Load(origins, log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start.
@@ -521,7 +513,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			WithLogger(log).
 			WithContext(ctx).
 			WithEventListener(listen).
-			WithLocalURL(dialable...)
+			// libtunnel takes the addresses themselves: the list's identity
+			// is this run's business, and what it proxies to is a slice.
+			WithLocalURL(dialable.URLs()...)
 		// Served in front of the origin proxy, so the panel needs no
 		// port of its own and no origin ever sees the request. The
 		// list is empty when there is no panel to serve, which is
@@ -533,7 +527,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	tun := start(cached)
 
-	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
+	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
 	// The banner goes out before the tunnel is asked for a URL, not
 	// after it answers. Minting is the slow part and the part that
@@ -542,7 +536,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// program had run. Everything above this line is configuration,
 	// so a bad flag or an origin that cannot be reached still fails
 	// without one.
-	fmt.Fprintln(stderr, VersionLine())
+	// The origins only when they name a file this run would use: a banner
+	// reporting a cache key for a run that caches nothing names something that
+	// does not exist, which is worse than naming nothing.
+	banner := origins
+	if spec == nil {
+		banner = nil
+	}
+	fmt.Fprintln(stderr, VersionLine(banner))
 
 	// Something turning, because the wait below is the long one: minting,
 	// dialing the edge, and then the hostname becoming resolvable, which is
@@ -613,7 +614,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
 			return cause
 		}
-		b.cache.Discard(b.cacheDirs.GetSlice(), log)
+		if spec != nil {
+			spec.Discard(origins, log)
+		}
 		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 		tun = start("")
@@ -629,9 +632,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// where it answers from outside. Each origin gets its own
 	// address rather than the bare one, because with several of
 	// them it is the routing parameter that reaches this one.
-	addresses := make([]string, len(origins))
-	for i := range origins {
-		addresses[i] = publicURL(public, i, len(origins))
+	addresses := make([]string, origins.Len())
+	for i := range addresses {
+		addresses[i] = publicURL(public, i, origins.Len())
 	}
 	bound.Announce(addresses)
 
@@ -686,12 +689,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// hostnames change length.
 	if view != "" {
 		fmt.Fprintf(stdout, "%s\n", view)
-		for _, origin := range origins {
+		for _, origin := range origins.URLs() {
 			fmt.Fprintf(stderr, "  -> %s\n", origin)
 		}
 	} else {
-		for i, origin := range origins {
-			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, len(origins)))
+		for i, origin := range origins.URLs() {
+			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
 			fmt.Fprintf(stderr, "  -> %s\n", origin)
 		}
 	}
@@ -720,7 +723,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		screen, open = nil, &shown
 	}
 	b.display.Open(ctx, log,
-		display.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
+		display.WithAddr(cmp.Or(view, publicURL(public, 0, origins.Len()))),
 		display.WithForced(open),
 		display.WithStderr(stderr),
 		display.WithInteractive(display.IsInteractive(cmd)),
@@ -735,8 +738,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
-	if len(b.cacheDirs.GetSlice()) > 0 {
-		b.cache.Save(b.cacheDirs.GetSlice(), log)
+	if spec != nil {
+		spec.Save(origins, log)
 	}
 
 	// A viewer asking to end the run is the third way this stops, beside a
@@ -894,7 +897,17 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // The warnings go to the same sink and level as the tunnel's own logs, so an
 // unset --log-level (or v1.LogEnv) means a dropped origin is dropped silently
 // — the same silence everything else in a default run keeps.
-func (b *BuilderImpl) Origins() []*url.URL {
+// cached is the origins when this run would cache them, and nil when it would
+// not — what the build banner names, so it never reports a key for a file
+// nothing will write.
+func (b *BuilderImpl) cached() Origins {
+	if b.noCache || b.cache == nil {
+		return nil
+	}
+	return b.Origins()
+}
+
+func (b *BuilderImpl) Origins() Origins {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
 	log, _ := b.logger()
@@ -936,7 +949,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 		}
 	}
 
-	origins := make([]*url.URL, 0, len(settled))
+	urls := make([]*url.URL, 0, len(settled))
 	// The first origin seen carrying a +ws marker, kept to strip a second.
 	wsOrigin := ""
 	for _, s := range settled {
@@ -958,7 +971,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
-			origins = append(origins, &url.URL{Scheme: v1.ExecScheme, Path: path})
+			urls = append(urls, &url.URL{Scheme: v1.ExecScheme, Path: path})
 			continue
 		}
 		if !strings.Contains(s, "://") {
@@ -984,7 +997,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			// that looked it up.
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
-					origins = append(origins, &url.URL{Scheme: u.Scheme, Path: path})
+					urls = append(urls, &url.URL{Scheme: u.Scheme, Path: path})
 					continue
 				}
 			}
@@ -1004,7 +1017,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
 				continue
 			}
-			origins = append(origins, u)
+			urls = append(urls, u)
 			continue
 		}
 		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
@@ -1053,9 +1066,9 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			}
 			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
-		origins = append(origins, u)
+		urls = append(urls, u)
 	}
-	return origins
+	return origins.New(origins.WithURL(urls...))
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

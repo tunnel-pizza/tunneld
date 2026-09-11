@@ -19,6 +19,7 @@ import (
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // discard is the logger every test hands to Interceptors: nothing under test
@@ -44,16 +45,16 @@ func (f *fakeIC) WithHandler(h http.HandlerFunc) libtunnel.InterceptCtx {
 // framed is the origin list the helpers below hand to Interceptors when the
 // test does not care which origins they are: two, because a lone origin is
 // not framed at all and Interceptors would answer with nothing to return.
-var framed = []*url.URL{
-	{Scheme: "http", Host: "localhost:3000"},
-	{Scheme: "http", Host: "localhost:4000"},
-}
+var framed = origins.New(origins.WithURL(
+	&url.URL{Scheme: "http", Host: "localhost:3000"},
+	&url.URL{Scheme: "http", Host: "localhost:4000"},
+))
 
 // pageOf returns the panel's own interceptor: the one that answers the bare
 // tunnel address with the page of frames.
-func pageOf(t *testing.T, origins []*url.URL) libtunnel.Interceptor {
+func pageOf(t *testing.T, shown v1.Origins) libtunnel.Interceptor {
 	t.Helper()
-	return New().Interceptors(true, origins, discard)[0]
+	return New().Interceptors(true, shown, discard)[0]
 }
 
 // unframeOf returns the interceptor that strips framing headers from the
@@ -250,13 +251,13 @@ func TestNoPanel(t *testing.T) {
 	cases := []struct {
 		name    string
 		enabled bool
-		origins []*url.URL
+		origins v1.Origins
 		wanted  bool
 	}{
 		{"on, two origins", true, two, true},
 		{"on, one origin", true, one, false},
 		{"off, two origins", false, two, false},
-		{"on, no origins", true, nil, false},
+		{"on, no origins", true, origins.New(), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,7 +293,7 @@ func TestURL(t *testing.T) {
 // per origin, each addressed by its routing index, and the host the visitor
 // actually used rather than one baked in at mint time.
 func TestServeShell(t *testing.T) {
-	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
+	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000", "http://localhost:5000"})
 	if err != nil {
 		t.Fatalf("origins: %v", err)
 	}
@@ -302,7 +303,7 @@ func TestServeShell(t *testing.T) {
 	r.Host = "foo.tunneled.pizza"
 
 	ic := &fakeIC{}
-	pageOf(t, origins).Handler(ic)
+	pageOf(t, shown).Handler(ic)
 	ic.installed(rec, r)
 
 	if rec.Code != http.StatusOK {
@@ -325,7 +326,7 @@ func TestServeShell(t *testing.T) {
 			t.Errorf("rendered page does not contain %q", want)
 		}
 	}
-	if got, want := strings.Count(body, "<iframe"), len(origins); got != want {
+	if got, want := strings.Count(body, "<iframe"), shown.Len(); got != want {
 		t.Errorf("page has %d frames, want one per origin (%d)", got, want)
 	}
 
@@ -347,7 +348,7 @@ func TestServeShell(t *testing.T) {
 // header they like -- and it lands in an HTML document, which is the shape of
 // bug that has already cost this repo one CodeQL alert.
 func TestServeShellEscapesTheHost(t *testing.T) {
-	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
 		t.Fatalf("origins: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 	r.Host = `evil"><script>alert(1)</script>`
 
 	ic := &fakeIC{}
-	pageOf(t, origins).Handler(ic)
+	pageOf(t, shown).Handler(ic)
 	ic.installed(rec, r)
 
 	if strings.Contains(rec.Body.String(), "<script>alert(1)</script>") {
@@ -377,13 +378,13 @@ func TestLabel(t *testing.T) {
 		{"https+wss://localhost:5173", "localhost:5173"},
 	}
 
-	origins := make([]*url.URL, len(cases))
+	urls := make([]*url.URL, len(cases))
 	for i, tc := range cases {
 		u, err := url.Parse(tc.in)
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", tc.in, err)
 		}
-		origins[i] = u
+		urls[i] = u
 	}
 
 	rec := httptest.NewRecorder()
@@ -391,7 +392,7 @@ func TestLabel(t *testing.T) {
 	r.Host = "foo.tunneled.pizza"
 
 	ic := &fakeIC{}
-	pageOf(t, origins).Handler(ic)
+	pageOf(t, origins.New(origins.WithURL(urls...))).Handler(ic)
 	ic.installed(rec, r)
 
 	body := rec.Body.String()
@@ -411,12 +412,12 @@ func TestLabel(t *testing.T) {
 // matches the panel's parameter and replaces the handler that would otherwise
 // proxy the request to an origin.
 func TestPanelInterceptorServesTheShell(t *testing.T) {
-	origins, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
 	if err != nil {
 		t.Fatalf("origins: %v", err)
 	}
 
-	interceptor := pageOf(t, origins)
+	interceptor := pageOf(t, shown)
 	if interceptor.Priority != 1 {
 		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
 	}
@@ -747,14 +748,14 @@ func TestOpen(t *testing.T) {
 // mustOrigins builds origin URLs for the tables above. The real parsing lives
 // in v1alpha1, which this package cannot import — it is the other direction —
 // and these fixtures are already-valid URLs, so a plain parse is enough.
-func mustOrigins(raw []string) ([]*url.URL, error) {
-	origins := make([]*url.URL, 0, len(raw))
+func mustOrigins(raw []string) (v1.Origins, error) {
+	urls := make([]*url.URL, 0, len(raw))
 	for _, s := range raw {
 		u, err := url.Parse(s)
 		if err != nil {
 			return nil, err
 		}
-		origins = append(origins, u)
+		urls = append(urls, u)
 	}
-	return origins, nil
+	return origins.New(origins.WithURL(urls...)), nil
 }

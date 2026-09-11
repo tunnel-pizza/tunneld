@@ -41,6 +41,7 @@ import (
 	"k8s.io/klog/v2"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // pageHTML is the terminal page. Embedded rather than fetched, so a tunnel
@@ -306,10 +307,10 @@ func (b *BinderImpl) answered() []string {
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logger) ([]*url.URL, Bound, error) {
-	dialable := make([]*url.URL, 0, len(shown))
+func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
+	dialable := make([]*url.URL, 0, shown.Len())
 	var servers bound
-	for at, origin := range shown {
+	for at, origin := range shown.URLs() {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
@@ -355,9 +356,9 @@ func (b *BinderImpl) Bind(ctx context.Context, shown []*url.URL, log *slog.Logge
 	// straight answer, rather than re-deriving from the origin list what was
 	// already decided here.
 	if len(servers) == 1 {
-		return dialable, sole{servers}, nil
+		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
 	}
-	return dialable, servers, nil
+	return origins.New(origins.WithURL(dialable...)), servers, nil
 }
 
 // sole is a bound list of exactly one, which is the only shape that can put a

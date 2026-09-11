@@ -169,8 +169,8 @@ var ErrNoDocker = errors.New("docker daemon unreachable")
 // forever either way, and stopping is a decision only the program running it
 // can make. tunneld makes it, because a process still holding a public
 // hostname that resolves nowhere is serving nobody, and a supervisor that
-// restarts it gets a working tunnel back. --cache-dir=false and a restart is
-// the whole recovery.
+// restarts it gets a working tunnel back. --no-cache and a restart is the
+// whole recovery.
 var ErrTunnelGone = errors.New("tunnel gone")
 
 // The environment variables and defaults, centralized: every code knob with an
@@ -216,24 +216,21 @@ const (
 	// DefaultProvider.
 	ProviderEnv = "TUNNELD_PROVIDER"
 
-	// CacheDirEnv names the directories tunnel specs are cached in, comma
-	// separated and in order — the mirror of --cache-dir, which beats it.
+	// NoCacheEnv turns the spec cache off — the mirror of --no-cache, which
+	// beats it. Any value strconv.ParseBool reads as true turns it off; unset
+	// or false leaves it on.
 	//
-	// An entry strconv.ParseBool reads as a boolean is an instruction rather
-	// than a path: true (and an empty entry) means the default location,
-	// false turns caching off rather than caching into a directory named
-	// "false". Everything else is a path.
+	// On, a run files its spec under the user's cache directory, named for the
+	// working directory it was started in and the origins it serves, and the
+	// next run of the same thing resumes that hostname. Off, every run mints a
+	// fresh one, which is what somebody wants when a hostname must not be
+	// reused.
 	//
-	// One false entry disables the whole list, wherever it appears in it, so
-	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats
-	// collapse, so ".,true,/tmp" is the working directory, the default, and
-	// /tmp.
-	//
-	// Unset, the cache is that default: a per-project directory under the
-	// user's cache directory, named for the working directory it belongs to.
-	// Not the working directory itself — a spec is credentials, and a
-	// repository is the one place they must not be written by default.
-	CacheDirEnv = "TUNNELD_CACHE_DIR"
+	// Where the file goes is not configurable from the environment: a spec is
+	// credentials, and the directory that holds them is the machine's own
+	// answer rather than a run's. An embedding program that needs another one
+	// passes v1alpha1.WithCacheDir.
+	NoCacheEnv = "TUNNELD_NO_CACHE"
 
 	// MultiviewEnv names whether to serve the multiview panel — the mirror of
 	// --multiview, which beats it. Any value strconv.ParseBool accepts works.
@@ -351,6 +348,28 @@ const DefaultIdentityProviders = "github"
 // --shell-fallback=false or ShellFallbackEnv.
 const DefaultShellFallback = true
 
+// Origins is the local origins a run exposes, in order: the first is the
+// default and each later one answers on a bare ?n routing parameter.
+//
+// A type rather than a []*url.URL, because the list answers a question no
+// slice can: Key is what identifies this run's tunnel, and it is the name its
+// cached spec is filed under. Everything else here is the slice's own
+// vocabulary, so a caller reads it the way it would read a slice.
+type Origins interface {
+	// Len is how many origins this run exposes.
+	Len() int
+	// At is the origin at i, which the caller has already bounded by Len.
+	At(i int) *url.URL
+	// URLs is every origin, in order, as a copy — sorting or reordering what
+	// comes back cannot reorder the run.
+	URLs() []*url.URL
+	// Key identifies the tunnel these origins are: the working directory they
+	// were settled in and the origins themselves, sorted so the order they
+	// were typed does not make a second tunnel, deduplicated so a repeat does
+	// not either. Stable across runs, and safe as a filename.
+	Key() string
+}
+
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
 // configured by that package's options, and call the terminal Command to
 // produce a *cobra.Command.
@@ -392,7 +411,10 @@ type Builder interface {
 	// warning on the tunnel's own log rather than failing the run, so this is
 	// what the tunnel was given and not what it was asked for. A run left
 	// with no origins at all fails with ErrNoOrigin.
-	Origins() []*url.URL
+	//
+	// The list is a value with an identity: Key names the tunnel these origins
+	// are, which is what the spec cache files it under.
+	Origins() Origins
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string

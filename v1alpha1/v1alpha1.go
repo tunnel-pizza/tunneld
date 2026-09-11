@@ -15,14 +15,12 @@ import (
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -37,32 +35,17 @@ import (
 // options in this file replace a collaborator Command's RunE composes.
 type Option = v1.Option[*BuilderImpl]
 
+// Origins is the local origins a run exposes — v1's type, aliased so this
+// package can name it without a prefix. Not a contract: it has no external
+// effect and nothing to replace, so it carries no With* option and takes no
+// seat in the list below.
+type Origins = v1.Origins
+
 // The contracts Command's RunE composes. Each is something with an external
 // effect — the edge, the disk, the daemon, the browser, an HTTP probe —
 // implemented once in a v1alpha1/<name> subpackage, seeded by New, and
 // replaceable with the matching With* option below. A function that maps a
 // value to a value gets no contract; see CONTRIBUTING.
-
-// CacheDirs is the --cache-dir list: the directories tunnel specs are
-// cached in, with the boolean-entry and absolute-path rules
-// cachedir.ValueImpl.Add documents, bound onto the flag as a pflag value.
-// GetSlice is nil until something is added and empty after a false entry,
-// which is how Command tells "unset" from "turned off".
-type CacheDirs interface {
-	pflag.Value
-	pflag.SliceValue
-	// Add appends directories by the list's rules: a boolean entry is an
-	// instruction, entries become absolute, repeats collapse, and a false
-	// entry empties the list and holds it empty.
-	Add(dirs ...string)
-}
-
-// WithCacheDirs replaces the list implementation. The default is
-// cachedir.New(). Not to be confused with WithCacheDir, which adds entries
-// to whichever list is there.
-func WithCacheDirs(c CacheDirs) Option {
-	return func(b *BuilderImpl) { b.cacheDirs = c }
-}
 
 // Engine mints or replays the tunnel run drives. spec is a cached envelope to
 // replay, "" to mint; provider is the quick-tunnel host, "" for the default;
@@ -77,18 +60,39 @@ func WithEngine(e Engine) Option {
 	return func(b *BuilderImpl) { b.engine = e }
 }
 
-// Cache persists a tunnel's spec between runs, in the directories
-// --cache-dir settled on.
+// Cache persists a tunnel's spec between runs, filed under the name the
+// origins give it.
 type Cache interface {
-	Load(dirs []string, log v1.Logger) string
-	Save(dirs []string, log v1.Logger)
-	Discard(dirs []string, log v1.Logger)
+	Load(origins Origins, log v1.Logger) string
+	Save(origins Origins, log v1.Logger)
+	Discard(origins Origins, log v1.Logger)
 }
 
 // WithCache replaces where a tunnel's spec is kept between runs. The default
-// is cache.New(), a TUNNEL.env in each directory.
+// is cache.New(), one file per tunnel under the user's cache directory.
+//
+// nil turns caching off, and is the state --no-cache leaves a run in: no
+// caching is no cache, rather than a switch some other field has to be read
+// against. It is what makes "off, but with an implementation configured"
+// impossible to be in.
 func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
+}
+
+// WithCacheDir caches specs in dir rather than under the user's cache
+// directory — a mounted volume in a container, a temporary directory in a
+// test.
+//
+// A wrapper over WithCache rather than a field of its own, because the
+// directory belongs to the cache and New has already built one by the time a
+// caller's options run: the way to change where a spec lands is to hand over a
+// cache that puts it there. An embedder wanting more than the directory
+// reaches the same lever with cache.New and its own options.
+//
+// There is no flag and no variable behind this. A spec is credentials, and
+// which directory holds them is the machine's answer rather than a run's.
+func WithCacheDir(dir string) Option {
+	return WithCache(cache.New(cache.WithDir(dir)))
 }
 
 // Console is the screen a run was started on, when it turns out to be one.
@@ -120,8 +124,8 @@ type Console interface {
 // "should I" for a caller to answer, and no second place where opening one is
 // decided.
 type Display interface {
-	URL(enabled bool, public *url.URL, origins []*url.URL) string
-	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
+	URL(enabled bool, public *url.URL, origins Origins) string
+	Interceptors(enabled bool, origins Origins, log v1.Logger) []libtunnel.Interceptor
 	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
 }
 
@@ -165,7 +169,7 @@ func WithCounter(c Counter) Option {
 // keeps shown's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
-	Bind(ctx context.Context, shown []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
+	Bind(ctx context.Context, shown Origins, log v1.Logger) (dialable Origins, bound attach.Bound, err error)
 }
 
 // WithConsole replaces the console a run may draw its terminal on. Seeded by
@@ -207,7 +211,6 @@ func WithBinder(binder Binder) Option {
 // build rather than the first run.
 var (
 	_ v1.Builder = (*BuilderImpl)(nil)
-	_ CacheDirs  = (*cachedir.ValueImpl)(nil)
 	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Display    = (*display.DisplayImpl)(nil)
@@ -242,7 +245,6 @@ func New(opts ...Option) *BuilderImpl {
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New()))),
-		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
 		WithDisplay(display.New()),
@@ -253,7 +255,8 @@ func New(opts ...Option) *BuilderImpl {
 		)),
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
-			attach.WithBanner(VersionLine()),
+			// Built here, before a flag has been parsed: no run to name yet.
+			attach.WithBanner(VersionLine(nil)),
 			attach.WithLogs(recent),
 		)),
 	)
@@ -270,6 +273,7 @@ type BuilderImpl struct {
 	provider  string
 	logLevel  string
 	multiview bool
+	noCache   bool
 
 	// open is what WithOpen wrote, and nil is nobody having written anything.
 	// A pointer because the three states are real: open, do not open, and
@@ -298,13 +302,14 @@ type BuilderImpl struct {
 	// The collaborators Command's RunE composes, each behind a contract
 	// declared above. Seeded by New; a test or a contributor swaps one with
 	// its With* option.
-	cacheDirs CacheDirs
-	engine    Engine
-	cache     Cache
-	display   Display
-	counter   Counter
-	binder    Binder
-	identity  Identity
+	engine   Engine
+	display  Display
+	counter  Counter
+	binder   Binder
+	identity Identity
+	// cache is the one collaborator allowed to be nil: that is what caching
+	// turned off looks like, and --no-cache is how a run asks for it.
+	cache Cache
 
 	// stdout carries the help text and version banner, stderr the tunnel's
 	// own banner, the origin map, and the tunnel's logs. They are staging

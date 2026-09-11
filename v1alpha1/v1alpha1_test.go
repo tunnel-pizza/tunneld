@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/cachedir"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
@@ -46,13 +45,14 @@ func TestCallerOptionBeatsDefault(t *testing.T) {
 	}
 }
 
-// TestNewWiresEveryCollaborator pins that New seeds all seven, and that each
-// With* option lands: a nil handed to one is what the wiring check at the top
-// of Command names. A bare BuilderImpl{} fails the same check on its first
-// collaborator, cacheDirs — the check runs before Command reads any field
-// (Command needs cacheDirs itself, to seed and bind --cache-dir, so a check
-// inside RunE would always have run too late for that one), so there is no
-// panic to route around and no case left unobservable.
+// TestNewWiresEveryCollaborator pins that New seeds every one of them, and
+// that each With* option lands: a nil handed to one is what the wiring check
+// at the top of Command names. A bare BuilderImpl{} fails the same check on
+// its first collaborator, the engine. The check runs before Command binds a
+// flag to any field, so there is no panic to route around and no case left
+// unobservable.
+//
+// The cache is the one that may be nil, because nil is what --no-cache means.
 //
 // wired no longer exists as a callable method once it is inlined into
 // Command, so every row here executes the built command instead.
@@ -69,9 +69,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		name string
 		b    *BuilderImpl
 	}{
-		{"cacheDirs", New(WithOrigin(":3000"), WithCacheDirs(nil))},
 		{"engine", New(WithOrigin(":3000"), WithEngine(nil))},
-		{"cache", New(WithOrigin(":3000"), WithCache(nil))},
 		{"browser", New(WithOrigin(":3000"), WithDisplay(nil))},
 		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
@@ -86,8 +84,20 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 
 	t.Run("bare struct", func(t *testing.T) {
 		_, _, err := execute(t, &BuilderImpl{})
-		if err == nil || !strings.Contains(err.Error(), "cacheDirs") {
-			t.Errorf("BuilderImpl{}: error = %v, want an error naming cacheDirs, the first missing collaborator", err)
+		if err == nil || !strings.Contains(err.Error(), "engine") {
+			t.Errorf("BuilderImpl{}: error = %v, want an error naming engine, the first missing collaborator", err)
+		}
+	})
+
+	// The cache is the exception, and the exception is the feature: nil is
+	// what caching turned off looks like, so a run configured that way is an
+	// ordinary run rather than a misassembled builder.
+	t.Run("a nil cache is not missing", func(t *testing.T) {
+		// Past the wiring check and stopped on the bad level, the same way the
+		// every-collaborator case above proves it got that far.
+		_, _, err := execute(t, New(WithOrigin(":3000"), WithCache(nil)), "--log-level", "loud")
+		if !errors.Is(err, v1.ErrInvalidLogLevel) {
+			t.Errorf("with WithCache(nil): error = %v, want the run past the wiring check", err)
 		}
 	})
 }
@@ -95,11 +105,18 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	d, e, c, o, n, g := cachedir.New(), &fakeEngine{}, &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
-	b := New(WithCacheDirs(d), WithEngine(e), WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
+	e, c, o, n, g := &fakeEngine{}, &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
+	b := New(WithEngine(e), WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
 
-	if b.cacheDirs != CacheDirs(d) || b.engine != Engine(e) || b.cache != Cache(c) ||
+	if b.engine != Engine(e) || b.cache != Cache(c) ||
 		b.display != Display(o) || b.counter != Counter(n) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
+	}
+
+	// And the wrapper lands on the same field, with a cache pointed where it
+	// was told rather than at the user's own cache directory.
+	dir := t.TempDir()
+	if got := New(WithCacheDir(dir)).cache; got == nil {
+		t.Error("WithCacheDir left no cache behind")
 	}
 }

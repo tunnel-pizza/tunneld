@@ -131,12 +131,11 @@ image:
 # and volumes this repo never created, and a clean target that can ruin an
 # unrelated afternoon is one nobody runs.
 #
-# The cached tunnel spec lives under the user's cache directory, in a
-# per-project entry named the way tunneld names it — the working directory's
-# base plus the first 16 hex of its SHA-256. Only this project's entry is
-# removed; another checkout's cached tunnel is not this target's business.
-# A TUNNEL.env in the tree is removed too, for anyone who pointed --cache-dir
-# at "." on purpose.
+# Every cached tunnel spec on the machine goes, not just this project's. The
+# cache is one flat directory of files named for the run that wrote them — the
+# working directory and the origins, hashed — so nothing in it says which
+# project a file came from, and a clean that removed some and left others would
+# be the harder behaviour to explain.
 #
 # The compose example keeps a cache in a named volume, which is what
 # `down --volumes` removes; the example's own teardown deliberately does not
@@ -145,9 +144,9 @@ image:
 # Each docker line is prefixed with - so a machine without docker, or a stack
 # that was already down, still finishes the rest.
 clean:
-	rm -f tunneld tunneld.exe TUNNEL.env
+	rm -f tunneld tunneld.exe
 	rm -rf dist
-	rm -rf "$$HOME/Library/Caches/tunneld" "$${XDG_CACHE_HOME:-$$HOME/.cache}/tunneld"
+	rm -rf "$$HOME/Library/Caches/.tunneld" "$${XDG_CACHE_HOME:-$$HOME/.cache}/.tunneld"
 	go clean -testcache
 	-docker compose -p tunneld-example down --volumes --remove-orphans 2>/dev/null
 	-docker rm -f tunneld-example 2>/dev/null
