@@ -64,10 +64,15 @@ Actions job, so dropping it leaves every CI run anonymous. tunneld's job is to
 find and send; what the credential is worth is the mint provider's call. The
 README says what it is rather than calling it a GitHub API token.
 
-**Finding a token is a collaborator, not a function.** Running `gh` is an
-external effect on every start, which CONTRIBUTING's checklist says belongs
-behind a contract with a fake in `TestRun`. It also has to be bounded: a `gh`
-blocked on a Keychain prompt must not hold up a tunnel.
+**Finding a token is a collaborator, not a function, and providers are a
+package rather than a switch.** Running `gh` is an external effect on every
+start, which CONTRIBUTING's checklist says belongs behind a contract with a
+fake in `TestRun`. It also has to be bounded: a `gh` blocked on a Keychain
+prompt must not hold up a tunnel. And because a second and third provider are
+the point, they get `attach`'s shape — a package owning the contract and the
+dispatch, one directory per provider — rather than a growing switch in the
+builder. Rejected: a single `Identity` implementation reading every source it
+knows about, which is the same code with no seam to add the fourth one at.
 
 **The provider is chosen by name, and an unknown name is an error.** The list
 is an operator's instruction, so a typo that silently sent nothing would be
@@ -75,72 +80,110 @@ indistinguishable from a machine that had no identity. The message names the
 unknown entry and the registered ones, the way `Bind` now names what it
 answers.
 
-## The contract
+## The shape
 
-An eighth contract in `v1alpha1/v1alpha1.go`, beside the seven:
+`attach`'s, because the problem is the same one: a list the operator wrote,
+dispatched by name to one of several providers, each knowing a different kind
+of machine. `attach` owns `Targets`/`Target` and its providers nest beneath it;
+`identity` owns `Provider` and does the same.
+
+```
+v1alpha1/identity/identity.go        the Provider contract, the registry, the resolution
+v1alpha1/identity/github/github.go   the github provider
+v1alpha1/identity/kubernetes/...     later, and nothing above changes to admit it
+```
+
+**The builder's contract**, an eighth in `v1alpha1/v1alpha1.go`:
 
 ```go
-// Identity finds the credential a mint request should carry, from wherever
-// this machine already keeps one.
+// Identity resolves an ordered list of provider names to the credential a
+// mint request should carry.
 type Identity interface {
+	// Known reports whether every name in the list has a provider behind it,
+	// and the error a typo earns. Asked early, before anything external
+	// happens, so a misspelled provider costs nothing.
+	Known(names []string) error
+	// Token walks the list in order and returns what the first provider to
+	// answer found, or "" when none did — which is not an error: a machine
+	// with no identity mints anonymously, as every machine does today.
+	Token(ctx context.Context, names []string, log v1.Logger) string
+}
+
+// WithIdentity replaces what a run resolves its mint credential through. The
+// default is identity.New(identity.WithProviders(github.New())).
+func WithIdentity(i Identity) Option
+```
+
+Two methods, because the two questions are asked at different moments — see
+Resolution below.
+
+**The provider contract**, in `v1alpha1/identity/identity.go`:
+
+```go
+// Provider finds a credential where one kind of machine keeps one.
+type Provider interface {
 	// Name is the word --identity-providers names this provider by, and the
 	// whole of how the list chooses between them.
 	Name() string
 	// Token is what this provider found, and false when it found nothing.
-	// Nothing found is not a failure: the next provider is tried, and a run
-	// that finds none anywhere mints anonymously, as every run does today.
+	// Nothing found is not a failure: the next provider is tried.
 	//
 	// The returned string is a credential. It is never logged, never
 	// formatted into an error, and never returned anywhere but here.
 	Token(ctx context.Context, log v1.Logger) (string, bool)
 }
-
-// WithIdentities replaces what a run looks for a mint credential with. The
-// default is github.New(); a test hands in a stub.
-func WithIdentities(identities ...Identity) Option
 ```
 
-`BuilderImpl` keeps them in a `map[string]Identity` keyed by `Name()`, built by
-`WithIdentities` the way `attach.WithTargets` builds its own registry — each
+`identity.IdentityImpl` implements the builder's contract and holds the
+providers in a `map[string]Provider` keyed by `Name()`, built by
+`identity.WithProviders` the way `attach.WithTargets` builds its own — each
 provider names itself, so there are no keys to keep in step with values.
+
+What the package buys over a map in the builder: the ordering, the
+unknown-name message and the `LIBTUNNEL_TOKEN` rule live in one place that owns
+them rather than as another hundred lines in `builder.go`; and a second
+provider is a directory and a registry row, touching neither the builder nor
+either contract.
 
 ## Resolution
 
-Two moments, deliberately apart.
+Two moments, deliberately apart, which is why the contract has two methods.
 
-**Validation is early** — at the top of `Run`, before `Bind` opens a daemon
-connection or stands a listener up. Every name in the list is looked up in the
-registry, and an absent one returns `v1.ErrUnknownIdentity` wrapping the name
-and listing the registered ones. A typo should cost nothing, and failing after
-containers have been opened is not "an error at startup".
+**`Known` is early** — at the top of `Run`, before `Bind` opens a daemon
+connection or stands a listener up. Every name is looked up in the registry,
+and an absent one is `v1.ErrUnknownIdentity` wrapping the name and listing the
+registered ones, the way `Bind` names what it answers. A typo should cost
+nothing, and failing after containers have been opened is not "an error at
+startup". An empty list passes trivially.
 
-**The lookup is late** — immediately before `engine.Tunnel`, because that is
-where the value is used and because running `gh` is worth deferring until the
-run is otherwise going to happen:
+**`Token` is late** — immediately before `engine.Tunnel`, because that is where
+the value is used and because running `gh` is worth deferring until the run is
+otherwise going to happen:
 
 1. If `os.Getenv(ltv1.TokenEnv)` is non-empty, log at debug that the lookup was
-   skipped because the operator set it, and use `""` — libtunnel reads the
-   variable itself, and tunneld passing the same value back would be the
-   variable beating a copy of itself.
-2. Otherwise walk the validated list in order and call `Token`. The first
-   provider that answers true wins; log at debug which one, never what.
-3. No provider answering means no token, which is what every run does today.
+   skipped because the operator set it, and return `""` — libtunnel reads the
+   variable itself, and handing the same value back would be the variable
+   beating a copy of itself. It lives here rather than in the builder because
+   it answers the same question the rest of the method does: what credential
+   should this run send.
+2. Otherwise walk the list in order and call each `Provider.Token`. The first
+   that answers true wins; log at debug which one, never what.
+3. Nobody answering returns `""`, which is what every run does today.
 
-An empty list is off: it validates trivially and resolves to `""` without
-consulting the registry.
+`Token` returns no error. A provider that finds nothing has not failed, and one
+that fails at looking has still found nothing — either way the run mints
+anonymously, and there is no decision left for a caller to make.
 
 ## The github provider
 
-`v1alpha1/github/`, flat beside `engine`, `cache` and `counter` — it implements
-a `v1alpha1` contract, where `attach`'s providers nest because they implement
-`attach`'s.
+`v1alpha1/identity/github/github.go`, implementing `identity.Provider`.
 
 ```go
-type IdentityImpl struct{ timeout time.Duration }
-func New(opts ...Option) *IdentityImpl
+type ProviderImpl struct{ timeout time.Duration }
+func New(opts ...Option) *ProviderImpl
 func WithTimeout(d time.Duration) Option   // default defaultTimeout
-func (*IdentityImpl) Name() string         // "github"
-func (i *IdentityImpl) Token(ctx context.Context, log v1.Logger) (string, bool)
+func (*ProviderImpl) Name() string         // "github"
+func (p *ProviderImpl) Token(ctx context.Context, log v1.Logger) (string, bool)
 ```
 
 `timeout` is the only field. `exec.LookPath` and `exec.CommandContext` are
@@ -189,8 +232,8 @@ where every mint input is applied.
 It goes here rather than into `Run`'s chain because the token is the same kind
 of thing as `spec` and `provider` — what the mint is made with — where the rest
 of that chain is what the run is made with: a logger, a context, a listener,
-the local URLs. `Run` resolves the token and hands it over; it does not apply
-it.
+the local URLs. `Run` asks `Identity` for the token and hands it over; it does not
+apply it, and it never learns where it came from.
 
 ## The flag
 
@@ -227,10 +270,12 @@ slice type implements that. The default lives in `v1` as
 | --- | --- |
 | `go.mod` | libtunnel `v0.0.72` → `v0.1.1` |
 | `v1/v1.go` | `IdentityProvidersEnv`, `ErrUnknownIdentity`, `DefaultIdentityProviders` |
-| `v1alpha1/v1alpha1.go` | `Identity` contract, `WithIdentities`, `New` wires `github.New()` |
-| `v1alpha1/builder.go` | flag, `flagEnv` row, field, `WithIdentityProviders`, resolution + validation in `Run` |
-| `v1alpha1/github/github.go` | new: `IdentityImpl` |
-| `v1alpha1/github/github_test.go` | new |
+| `v1alpha1/v1alpha1.go` | `Identity` contract, `WithIdentity`, `New` wires `identity.New(identity.WithProviders(github.New()))` |
+| `v1alpha1/builder.go` | flag, `flagEnv` row, field, `WithIdentityProviders`, `Known` early and `Token` late in `Run` |
+| `v1alpha1/identity/identity.go` | new: `Provider` contract, `IdentityImpl`, `WithProviders` |
+| `v1alpha1/identity/identity_test.go` | new |
+| `v1alpha1/identity/github/github.go` | new: `ProviderImpl` |
+| `v1alpha1/identity/github/github_test.go` | new |
 | `v1alpha1/engine/engine.go` | `Tunnel` takes and applies the token |
 | `v1alpha1/engine/engine_test.go` | the token reaches both branches |
 | `v1alpha1/builder_test.go` | `fakeEngine` records tokens; new cases |
@@ -240,7 +285,7 @@ slice type implements that. The default lives in `v1` as
 
 ## Tests
 
-**`v1alpha1/github`**, a table with a `gh` fixture on `PATH` — the shape
+**`v1alpha1/identity/github`**, a table with a `gh` fixture on `PATH` — the shape
 `TestOriginsRunsAProgram` already uses, a script in a `t.TempDir()` with `PATH`
 set to it:
 
@@ -256,19 +301,25 @@ set to it:
 - Nothing anywhere → `("", false)`.
 - The log written during a successful lookup does not contain the token.
 
-**`v1alpha1`**:
+**`v1alpha1/identity`**, against stub providers — no subprocess, and no
+environment beyond `LIBTUNNEL_TOKEN`:
 
-- The default list resolves through the github provider and the token reaches
-  `fakeEngine`.
-- Order is respected: two stubs, the first empty, the second answering — the
-  second's token is used; both answering — the first's.
-- An unknown name is `v1.ErrUnknownIdentity`, names the unknown entry and the
-  registered ones, and the run fails before `fakeEngine.Tunnel` is called.
-- An empty list means no lookup and no error, even with an unknown name absent
-  from the registry.
-- `LIBTUNNEL_TOKEN` set means no provider is consulted at all — a stub that
-  records being asked is not asked — and `fakeEngine` receives `""`.
-- `TUNNELD_IDENTITY_PROVIDERS` sets the list, and the flag beats it.
+- Order is respected: two stubs, the first finding nothing, the second
+  answering — the second's token; both answering — the first's, and the second
+  is never asked.
+- A name absent from the registry is `v1.ErrUnknownIdentity` from `Known`,
+  naming the unknown entry and the registered ones.
+- `Known(nil)` and `Known([]string{})` pass.
+- `LIBTUNNEL_TOKEN` set means `Token` returns `""` and no stub is asked.
+- Nobody answering returns `""`.
+- The log written during a successful resolution does not contain the token.
+
+**`v1alpha1`**, against a stub `Identity`:
+
+- The token the stub returns reaches `fakeEngine`.
+- `Known`'s error fails the run before `fakeEngine.Tunnel` is called.
+- `TUNNELD_IDENTITY_PROVIDERS` sets the list, the flag beats it, and what the
+  builder passes to `Known` and `Token` is the list that settled.
 - The token appears in neither the captured stderr nor the saved spec.
 
 **`v1alpha1/engine`**: both branches — a spec to replay and a fresh mint — call
