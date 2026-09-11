@@ -169,8 +169,8 @@ var ErrNoDocker = errors.New("docker daemon unreachable")
 // forever either way, and stopping is a decision only the program running it
 // can make. tunneld makes it, because a process still holding a public
 // hostname that resolves nowhere is serving nobody, and a supervisor that
-// restarts it gets a working tunnel back. --cache-dir=false and a restart is
-// the whole recovery.
+// restarts it gets a working tunnel back. --no-cache and a restart is the
+// whole recovery.
 var ErrTunnelGone = errors.New("tunnel gone")
 
 // The environment variables and defaults, centralized: every code knob with an
@@ -216,24 +216,21 @@ const (
 	// DefaultProvider.
 	ProviderEnv = "TUNNELD_PROVIDER"
 
-	// CacheDirEnv names the directories tunnel specs are cached in, comma
-	// separated and in order — the mirror of --cache-dir, which beats it.
+	// NoCacheEnv turns the spec cache off — the mirror of --no-cache, which
+	// beats it. Any value strconv.ParseBool reads as true turns it off; unset
+	// or false leaves it on.
 	//
-	// An entry strconv.ParseBool reads as a boolean is an instruction rather
-	// than a path: true (and an empty entry) means the default location,
-	// false turns caching off rather than caching into a directory named
-	// "false". Everything else is a path.
+	// On, a run files its spec under the user's cache directory, named for the
+	// working directory it was started in and the origins it serves, and the
+	// next run of the same thing resumes that hostname. Off, every run mints a
+	// fresh one, which is what somebody wants when a hostname must not be
+	// reused.
 	//
-	// One false entry disables the whole list, wherever it appears in it, so
-	// ".,false,/tmp" caches nowhere. Entries become absolute and repeats
-	// collapse, so ".,true,/tmp" is the working directory, the default, and
-	// /tmp.
-	//
-	// Unset, the cache is that default: a per-project directory under the
-	// user's cache directory, named for the working directory it belongs to.
-	// Not the working directory itself — a spec is credentials, and a
-	// repository is the one place they must not be written by default.
-	CacheDirEnv = "TUNNELD_CACHE_DIR"
+	// Where the file goes is not configurable from the environment: a spec is
+	// credentials, and the directory that holds them is the machine's own
+	// answer rather than a run's. An embedding program that needs another one
+	// passes v1alpha1.WithCacheDir.
+	NoCacheEnv = "TUNNELD_NO_CACHE"
 
 	// MultiviewEnv names whether to serve the multiview panel — the mirror of
 	// --multiview, which beats it. Any value strconv.ParseBool accepts works.

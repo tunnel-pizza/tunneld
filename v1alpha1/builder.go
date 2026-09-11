@@ -49,18 +49,6 @@ func WithProvider(host string) Option {
 	return func(b *BuilderImpl) { b.provider = host }
 }
 
-// WithCacheDir adds directories to cache tunnel specs in, in order,
-// appending across options. See package cachedir for what an entry means —
-// a path, or true and false as instructions — and how entries are resolved
-// and deduplicated.
-//
-// Like every option, it requires a builder from New: applied to a bare
-// BuilderImpl{}, cacheDirs is nil and this dereferences it immediately, at
-// option-apply time — before Command's wiring check ever runs.
-func WithCacheDir(dirs ...string) Option {
-	return func(b *BuilderImpl) { b.cacheDirs.Add(dirs...) }
-}
-
 // WithLogLevel sets the tunnel's log level (debug|info|warn|error) on
 // stderr. Unset, the level comes from v1.LogEnv, and silence if that is
 // unset too.
@@ -199,7 +187,7 @@ func splitList(value string) []string {
 
 var flagEnv = map[string]string{
 	"provider":  v1.ProviderEnv,
-	"cache-dir": v1.CacheDirEnv,
+	"no-cache":  v1.NoCacheEnv,
 	"log-level": v1.LogEnv,
 	"multiview": v1.MultiviewEnv,
 
@@ -219,14 +207,11 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		// Report the first collaborator New would have seeded and did not: a
 		// BuilderImpl assembled as a bare struct rather than through New.
 		// One check, here at the first place Command needs every
-		// collaborator — Command reads cacheDirs directly a few lines down,
-		// to seed and bind --cache-dir, so a check inside RunE would always
-		// have been too late for that collaborator: it would run after
-		// Command had already dereferenced a nil one. WithCacheDir needs one
-		// sooner still, at option-apply time (see its doc) — like every
-		// option, it assumes a builder from New, so this check is the first
-		// place Command needs every collaborator, not the first place a nil
-		// one can bite.
+		// collaborator rather than inside RunE, so a bare struct is refused
+		// before any flag is bound to a field nobody seeded.
+		//
+		// The cache is not among them: nil is a legal state there, and the
+		// one --no-cache leaves a run in.
 		//
 		// A missing collaborator short-circuits with a minimal command whose
 		// RunE returns the error and nothing else — no flag binding, no env
@@ -235,9 +220,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			name    string
 			missing bool
 		}{
-			{"cacheDirs", b.cacheDirs == nil},
 			{"engine", b.engine == nil},
-			{"cache", b.cache == nil},
 			{"browser", b.display == nil},
 			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
@@ -335,19 +318,11 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 		// Each usage string names the flag's environment mirror, so --help doubles
 		// as the reference for configuring a container. The registry behind those
 		// names is flagEnv, declared above Command.
-		// Unset, specs cache into the default cache directory. Seeded here
-		// rather than in New so that an explicit WithCacheDir replaces the
-		// default instead of appending to it: a caller naming a directory
-		// means that directory, not that one and wherever the process
-		// happened to start.
-		//
-		// Nil, not empty: an empty list is one a false entry emptied, and seeding
-		// over it would re-enable what an operator turned off.
-		if b.cacheDirs.GetSlice() == nil {
-			b.cacheDirs.Add("")
-		}
-		cmd.Flags().Var(b.cacheDirs, "cache-dir",
-			"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
+		// Negative, where the option behind it is positive: a command line says
+		// what is unusual about this run, and an embedder configuring a
+		// default should not have to read a negation twice.
+		cmd.Flags().BoolVar(&b.noCache, "no-cache", b.noCache,
+			"don't cache the tunnel spec: mint a fresh hostname every run [$"+v1.NoCacheEnv+"]")
 		cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
 		// StringSlice rather than StringArray: applyEnv hands a variable's
@@ -470,9 +445,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
+	// The cache this run uses, or none. A local rather than the field, so a
+	// run started with --no-cache does not leave an embedder's builder without
+	// a cache for the next one.
+	spec := b.cache
+	if b.noCache {
+		spec = nil
+	}
+
 	cached := ""
-	if len(b.cacheDirs.GetSlice()) > 0 {
-		cached = b.cache.Load(origins, log)
+	if spec != nil {
+		cached = spec.Load(origins, log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start.
@@ -616,7 +599,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
 			return cause
 		}
-		b.cache.Discard(origins, log)
+		if spec != nil {
+			spec.Discard(origins, log)
+		}
 		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 		tun = start("")
@@ -738,8 +723,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
-	if len(b.cacheDirs.GetSlice()) > 0 {
-		b.cache.Save(origins, log)
+	if spec != nil {
+		spec.Save(origins, log)
 	}
 
 	// A viewer asking to end the run is the third way this stops, beside a

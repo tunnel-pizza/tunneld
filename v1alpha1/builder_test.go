@@ -278,188 +278,6 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 // for inline.
 func ptr(b bool) *bool { return &b }
 
-// TestCacheDir pins how a cache directory list is read: which spellings mean
-// the working directory, that entries become absolute before repeats collapse,
-// and the flag > variable > seed precedence every other knob follows.
-//
-// A temporary working directory stands in for the image's /var/run/tunneld —
-// a test cannot rely on that path existing, and every rule here is about the
-// working directory rather than that particular one.
-//
-// Paths are written as "$WD" (that working directory), "$OTHER" (a second
-// one) and "$DEFAULT" (wherever an unconfigured run caches), in the inputs as
-// well as the wants. $DEFAULT is read off a builder that was asked for
-// nothing rather than recomputed here, so the table says "the same place the
-// default goes" without restating how that place is chosen —
-// TestDefaultCacheDir pins the choosing. Spelling them "/tmp" would be a
-// POSIX assumption: filepath.Abs turns a rooted path into C:\tmp on Windows,
-// so a literal want would be right on one platform and wrong on the other.
-func TestCacheDir(t *testing.T) {
-	cases := []struct {
-		name string
-		seed []string
-		env  string
-		args []string
-		want []string
-	}{
-		{name: "the default location when nothing asks", want: []string{"$DEFAULT"}},
-		{
-			// "." is the working directory and "true" is the default, which
-			// are different places now that the default moved out of the
-			// checkout — so this collapses nothing and names three.
-			name: "a dot and a true are two different directories",
-			env:  ".,true,$OTHER",
-			want: []string{"$WD", "$DEFAULT", "$OTHER"},
-		},
-		{
-			name: "every spelling of true is the default location",
-			env:  "1,t,T,TRUE,True,true",
-			want: []string{"$DEFAULT"},
-		},
-		{name: "an empty entry is the default too", args: []string{"--cache-dir", ""}, want: []string{"$DEFAULT"}},
-		{name: "a relative path becomes absolute", env: "sub", want: []string{"$WD/sub"}},
-		{
-			// Both halves are instructions. Without the false half, turning
-			// the knob off would silently cache into a directory named
-			// "false" in whatever directory the process started from.
-			name: "false turns it off rather than naming a directory",
-			env:  "false",
-		},
-		{
-			name: "every spelling of false turns it off",
-			env:  "0,f,F,FALSE,False,false",
-		},
-		{
-			// One false entry is a master switch: it drops what came before
-			// it and stops what would come after, so where in the list it
-			// appears cannot change what off means.
-			name: "a false entry disables the whole list",
-			env:  ".,false,$OTHER",
-		},
-		{name: "false first disables the rest", env: "false,$OTHER"},
-		{name: "false last disables what came before", args: []string{"--cache-dir", "$OTHER", "--cache-dir", "false"}},
-		{
-			// Sticky within one source: a directory named after the switch
-			// cannot quietly turn it back on.
-			name: "a later directory cannot re-enable it",
-			args: []string{"--cache-dir", "false", "--cache-dir", "$OTHER"},
-		},
-		{
-			// Command fills an unset list with the working directory, and has
-			// to tell "unset" from "emptied on purpose" to leave this one
-			// alone. Nothing else in this table separates the two.
-			name: "a seed that disabled it is not re-filled by the default",
-			seed: []string{"false"},
-		},
-		{
-			// A later source still overrides, the same as any other value.
-			name: "the flag overrides a variable that disabled it",
-			env:  "false", args: []string{"--cache-dir", "$OTHER"},
-			want: []string{"$OTHER"},
-		},
-		{
-			name: "the variable overrides a seed that disabled it",
-			seed: []string{"false"}, env: "$OTHER",
-			want: []string{"$OTHER"},
-		},
-		{
-			// ParseBool has never accepted these, and this knob does not
-			// invent them: they are paths.
-			name: "yes and no are paths",
-			env:  "yes,no",
-			want: []string{"$WD/yes", "$WD/no"},
-		},
-		{
-			// Splitting a comma-separated environment value drops empty
-			// entries, so a stray or trailing comma is not a cache directory.
-			name: "stray commas are not entries",
-			env:  ",,$OTHER,",
-			want: []string{"$OTHER"},
-		},
-		{
-			name: "repeated flags append",
-			args: []string{"--cache-dir", "$OTHER/a", "--cache-dir", "$OTHER/b", "--cache-dir", "$OTHER/a"},
-			want: []string{"$OTHER/a", "$OTHER/b"},
-		},
-		{
-			name: "the flag beats the variable",
-			env:  "$OTHER/env", args: []string{"--cache-dir", "$OTHER/flag"},
-			want: []string{"$OTHER/flag"},
-		},
-		{name: "a seed stands when nothing overrides it", seed: []string{"$OTHER/seeded"}, want: []string{"$OTHER/seeded"}},
-		{
-			// Both overrides replace the seed rather than extending it, which
-			// is the rule origins follow: a command line never merges into a
-			// seeded set, and neither does the environment.
-			name: "the variable replaces a seed",
-			seed: []string{"$OTHER/seeded"}, env: "$OTHER",
-			want: []string{"$OTHER"},
-		},
-		{
-			name: "the flag replaces a seed",
-			seed: []string{"$OTHER/seeded"}, args: []string{"--cache-dir", "$OTHER/a", "--cache-dir", "$OTHER/b"},
-			want: []string{"$OTHER/a", "$OTHER/b"},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Chdir(t.TempDir())
-			workdir, err := os.Getwd()
-			if err != nil {
-				t.Fatalf("Getwd: %v", err)
-			}
-			other := t.TempDir()
-
-			// What an unconfigured run resolves to, from this working
-			// directory. Command seeds the default; nothing is executed, so
-			// the environment is not applied to it.
-			probe := New(WithOrigin("http://localhost:3000"))
-			dflt := probe.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
-
-			// The same substitution on inputs and wants, so a path is written
-			// once and means the same thing on either platform.
-			resolve := func(s string) string {
-				r := strings.NewReplacer("$WD", workdir, "$OTHER", other, "$DEFAULT", dflt)
-				return filepath.FromSlash(r.Replace(s))
-			}
-			resolveAll := func(in []string) []string {
-				out := make([]string, 0, len(in))
-				for _, s := range in {
-					out = append(out, resolve(s))
-				}
-				return out
-			}
-
-			t.Setenv(v1.CacheDirEnv, resolve(tc.env))
-
-			opts := []Option{WithOrigin("http://localhost:3000")}
-			if len(tc.seed) > 0 {
-				opts = append(opts, WithCacheDir(resolveAll(tc.seed)...))
-			}
-			b := New(opts...)
-			// A deliberately bad level stops the run once the flags have
-			// settled, before anything dials.
-			args := append(resolveAll(tc.args), "--log-level", "loud")
-			if _, _, err := execute(t, b, args...); !errors.Is(err, v1.ErrInvalidLogLevel) {
-				t.Fatalf("error = %v, want ErrInvalidLogLevel", err)
-			}
-
-			// GetSlice rather than GetStringArray: the latter round-trips
-			// through a comma-separated String(), which splits any path that
-			// contains a comma — and t.TempDir builds one out of the subtest
-			// name.
-			got := b.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()
-			if want := resolveAll(tc.want); !slices.Equal(got, want) {
-				t.Errorf("--cache-dir = %v, want %v", got, want)
-			}
-		})
-	}
-}
-
-// TestMultiviewDefaultsOn pins the panel's default and both levers that turn
-// it off. The default is the point of the flag: someone exposing three
-// services wants to see three services.
 func TestMultiviewDefaultsOn(t *testing.T) {
 	cases := []struct {
 		name string
@@ -502,56 +320,6 @@ func TestWithMultiviewSeedsTheDefault(t *testing.T) {
 	if got := b.Command().Flags().Lookup("multiview").DefValue; got != "false" {
 		t.Errorf("--multiview default = %q, want %q", got, "false")
 	}
-}
-
-// TestDefaultCacheDir pins where an unconfigured run caches, which is the one
-// thing the table above takes as given.
-//
-// The rule that matters is the first: a spec is credentials, and the working
-// directory is usually a repository. No filename is reliably ignored there —
-// against GitHub's 239 gitignore templates the best candidate managed 13%, and
-// against 752 real ones, 26% — so the only safe answer is not to write into a
-// checkout at all.
-func TestDefaultCacheDir(t *testing.T) {
-	dflt := func(t *testing.T) string {
-		t.Helper()
-		b := New(WithOrigin("http://localhost:3000"))
-		return b.Command().Flags().Lookup("cache-dir").Value.(pflag.SliceValue).GetSlice()[0]
-	}
-
-	t.Run("is not inside the working directory", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		workdir, err := os.Getwd()
-		if err != nil {
-			t.Fatalf("Getwd: %v", err)
-		}
-		got := dflt(t)
-		if rel, err := filepath.Rel(workdir, got); err == nil && !strings.HasPrefix(rel, "..") {
-			t.Errorf("default %q is inside the working directory %q", got, workdir)
-		}
-	})
-
-	t.Run("is under the user cache directory", func(t *testing.T) {
-		t.Chdir(t.TempDir())
-		cache, err := os.UserCacheDir()
-		if err != nil {
-			t.Skipf("no user cache directory: %v", err)
-		}
-		if got := dflt(t); !strings.HasPrefix(got, cache) {
-			t.Errorf("default %q is not under %q", got, cache)
-		}
-	})
-
-	// Two projects on one machine are two tunnels, so the working directory
-	// has to reach the name — which is the whole reason it is fingerprinted
-	// rather than fixed.
-	t.Run("a different working directory is a different cache", func(t *testing.T) {
-		first := func() string { t.Chdir(t.TempDir()); return dflt(t) }
-		a, b := first(), first()
-		if a == b {
-			t.Errorf("two working directories share a cache: %q", a)
-		}
-	})
 }
 
 // fakeTunnel is the tunnel the run drives in these tests. It embeds the
@@ -723,6 +491,10 @@ type fakeBinder struct {
 	asked chan struct{}
 	// announced is what Announce was handed.
 	announced []string
+	// onAnnounce fires when it arrives, which is after the URL is live and
+	// before the cache is written — the one signal a case can end a run on
+	// whether or not this run caches anything.
+	onAnnounce func()
 	// mirrors makes what Bind returns carry Show, which is how the real
 	// binder reports a single served origin — the only shape a console can
 	// draw.
@@ -763,7 +535,12 @@ func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 // Announce is what a bound closer is told the public addresses through. Every
 // one of them can be, which is why it is on the type Bind returns rather than
 // an interface a caller has to go looking for.
-func (f *fakeBinder) Announce(public []string) { f.announced = public }
+func (f *fakeBinder) Announce(public []string) {
+	f.announced = public
+	if f.onAnnounce != nil {
+		f.onAnnounce()
+	}
+}
 
 // fakeIdentity stands in for the identity package: it answers what it was
 // built with and records what the builder asked it, which is how a case pins
@@ -807,7 +584,8 @@ type runHarness struct {
 
 func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Helper()
-	t.Setenv(v1.LogEnv, "") // a developer's shell must not turn the log on
+	t.Setenv(v1.LogEnv, "")     // a developer's shell must not turn the log on
+	t.Setenv(v1.NoCacheEnv, "") // nor turn the cache off under a case that is about it
 	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
@@ -817,7 +595,6 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithEstablishDeadline(50*time.Millisecond),
 		WithOrigin(urls...),
 		WithProvider("example.test"),
-		WithCacheDir(t.TempDir()), // run consults the cache only with a directory
 		WithEngine(h.engine),
 		WithCache(h.cache),
 		WithDisplay(h.display),
@@ -835,7 +612,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.CacheDirEnv, v1.LogEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.LogEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
@@ -1089,20 +866,19 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("a bare struct is refused before it touches anything", func(t *testing.T) {
-		// The wiring check runs at the top of Command, ahead of the
-		// cacheDirs read a few lines down that needs the field — a bare
-		// BuilderImpl never reaches that read, so Command hands back a
-		// minimal command whose only job is to report the error, rather
-		// than binding flags against a nil collaborator. cacheDirs is
-		// checked first, so a bare struct's error names it.
+		// The wiring check runs at the top of Command, before a flag is
+		// bound to any field — a bare BuilderImpl never reaches that
+		// binding, so Command hands back a minimal command whose only job
+		// is to report the error. The engine is checked first, so a bare
+		// struct's error names it.
 		b := &BuilderImpl{origins: []string{":3000"}}
 		cmd := b.Command()
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(nil)
 		err := cmd.ExecuteContext(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "cacheDirs") || !strings.Contains(err.Error(), "construct it with New") {
-			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error naming cacheDirs", err)
+		if err == nil || !strings.Contains(err.Error(), "engine") || !strings.Contains(err.Error(), "construct it with New") {
+			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error naming engine", err)
 		}
 	})
 }
@@ -1214,7 +990,7 @@ func urlStrings(urls []*url.URL) []string {
 func TestRunIsTheOtherDoor(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), ":3000")
-	for _, name := range []string{v1.OriginsEnv, v1.CacheDirEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.NoCacheEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(v1.ProviderEnv, "from-the-environment.test")
@@ -2092,5 +1868,47 @@ func TestTheDefaultProvidersAreRegistered(t *testing.T) {
 	b := New()
 	if err := b.identity.Known(splitList(v1.DefaultIdentityProviders)); err != nil {
 		t.Errorf("the default list is not registered by New: %v", err)
+	}
+}
+
+// TestCachingIsOnUnlessItIsTurnedOff pins the switch and everything that can
+// throw it, and pins that throwing it leaves the builder alone: an embedder
+// that runs a command twice gets its cache back on the second run.
+func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		env   string
+		off   func(b *BuilderImpl)
+		saved bool
+	}{
+		{name: "by default", saved: true},
+		{name: "--no-cache", args: []string{"--no-cache"}},
+		{name: "the variable", env: "true"},
+		{name: "WithCache(nil)", off: func(b *BuilderImpl) { v1.Apply(b, WithCache(nil)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRunHarness(t, live(public), ":3000")
+			if tc.off != nil {
+				tc.off(h.b)
+			}
+			if tc.env != "" {
+				t.Setenv(v1.NoCacheEnv, tc.env)
+			}
+
+			// Announce is the signal, not the save: a run with no cache never
+			// saves, and a case waiting on that would wait out its deadline.
+			ctx, cancel := context.WithCancel(t.Context())
+			h.binder.onAnnounce = cancel
+
+			if err := h.run(t, ctx, tc.args...); err != nil {
+				t.Fatalf("run() = %v, want nil after a signal", err)
+			}
+			if h.cache.saved != tc.saved {
+				t.Errorf("cache saved = %v, want %v", h.cache.saved, tc.saved)
+			}
+		})
 	}
 }

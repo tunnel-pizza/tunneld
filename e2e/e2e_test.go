@@ -506,7 +506,7 @@ func (r *runner) start(t *testing.T, args ...string) {
 	// must not write to it either, which would leave this test's tunnel behind
 	// in it. A directory of its own used to do that; the cache no longer takes
 	// one, and a run that caches nothing has nothing to leak either way.
-	r.cmd.Env = append(strippedEnv(), "TUNNELD_CACHE_DIR=false")
+	r.cmd.Env = append(strippedEnv(), "TUNNELD_NO_CACHE=true")
 
 	if err := r.cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", r.name, err)
