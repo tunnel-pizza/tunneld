@@ -124,6 +124,17 @@ var ErrNoOrigin = errors.New("no origin")
 // The wrapped message names the offending value; the lever is to correct it.
 var ErrInvalidOrigin = errors.New("invalid origin")
 
+// ErrUnknownIdentity reports an --identity-providers entry, or an
+// IdentityProvidersEnv entry bound onto it, that names no provider tunneld
+// has.
+//
+// An error rather than a skip, and reported before the tunnel is minted: a
+// misspelled provider that quietly looked for nothing would be
+// indistinguishable from a machine with no identity to find, and the run would
+// mint anonymously without anybody learning why. The wrapped message names the
+// offending entry and the providers that do exist.
+var ErrUnknownIdentity = errors.New("unknown identity provider")
+
 // ErrInvalidLogLevel reports a --log-level value, or a LogEnv value bound onto
 // it, that is not debug, info, warn or error. It is an error rather than a
 // silent fallback because somebody typed it: quietly reading an unknown level
@@ -240,6 +251,11 @@ const (
 	// it is running on.
 	ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
 
+	// IdentityProvidersEnv names the identity providers to look for a mint
+	// credential with, comma-separated and in order — the mirror of
+	// --identity-providers, which beats it. Empty turns the lookup off.
+	IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"
@@ -307,6 +323,18 @@ const (
 // several origins the bare address has no better meaning, every origin having
 // an index of its own.
 const DefaultMultiview = true
+
+// DefaultIdentityProviders is the list a run looks for a mint credential with
+// when nothing says otherwise: the providers, comma-separated and in order,
+// the first one to find a credential winning.
+//
+// A string rather than a slice so it can be a constant, and comma-separated
+// because that is the shape IdentityProvidersEnv carries — one spelling for
+// the default and for the override.
+//
+// The names here are the providers' own, and v1 cannot import them to check:
+// a test in v1alpha1 asserts that what this names is what New registers.
+const DefaultIdentityProviders = "github"
 
 // DefaultShellFallback is whether a run with no origin from any source — no
 // argument, no ShellFallbackEnv sibling, no WithOrigin seed — exposes $SHELL

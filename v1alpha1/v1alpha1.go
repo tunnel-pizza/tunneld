@@ -27,6 +27,8 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 )
 
@@ -63,9 +65,10 @@ func WithCacheDirs(c CacheDirs) Option {
 }
 
 // Engine mints or replays the tunnel run drives. spec is a cached envelope to
-// replay, "" to mint; provider is the quick-tunnel host, "" for the default.
+// replay, "" to mint; provider is the quick-tunnel host, "" for the default;
+// token is the mint credential, "" for an anonymous mint.
 type Engine interface {
-	Tunnel(spec, provider string) libtunnel.TunnelV1
+	Tunnel(spec, provider, token string) libtunnel.TunnelV1
 }
 
 // WithEngine replaces what mints or replays the tunnel. The default is
@@ -172,6 +175,26 @@ func WithConsole(c Console) Option {
 	return func(b *BuilderImpl) { b.console = c }
 }
 
+// Identity resolves an ordered list of provider names to the credential a mint
+// request should carry. Nothing a run does depends on finding one: a machine
+// with no identity mints anonymously, which is what every machine did before
+// this existed.
+type Identity interface {
+	// Known reports whether every name in the list has a provider behind it,
+	// and the error a typo earns. Asked before anything external happens.
+	Known(names []string) error
+	// Token is what the first provider to answer found, or "" when none did.
+	// It is a credential: it is never logged and never put in an error.
+	Token(ctx context.Context, names []string, log v1.Logger) string
+}
+
+// WithIdentity replaces what a run resolves its mint credential through. The
+// default is identity.New(identity.WithProviders(github.New())): the providers
+// a list may name, each of which knows one kind of machine.
+func WithIdentity(i Identity) Option {
+	return func(b *BuilderImpl) { b.identity = i }
+}
+
 // WithBinder replaces what stands a loopback origin in for a container or a
 // program. The default is
 // attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):
@@ -217,6 +240,8 @@ func New(opts ...Option) *BuilderImpl {
 		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
+		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
+		WithIdentity(identity.New(identity.WithProviders(github.New()))),
 		WithCacheDirs(cachedir.New()),
 		WithEngine(engine.New()),
 		WithCache(cache.New()),
@@ -252,6 +277,11 @@ type BuilderImpl struct {
 	// a bool cannot hold beside the other two.
 	open *bool
 
+	// identityProviders is the ordered list a run looks for a mint credential
+	// with. Flag-backed like the knobs above; empty is the lookup turned off,
+	// and a run that finds nothing mints anonymously.
+	identityProviders []string
+
 	// shellFallback is whether Origins answers "nothing settled anywhere"
 	// with $SHELL. Flag-backed like the two above, so an embedding program
 	// seeds it, an operator overrides it, and neither has to reach into the
@@ -274,6 +304,7 @@ type BuilderImpl struct {
 	display   Display
 	counter   Counter
 	binder    Binder
+	identity  Identity
 
 	// stdout carries the help text and version banner, stderr the tunnel's
 	// own banner, the origin map, and the tunnel's logs. They are staging
