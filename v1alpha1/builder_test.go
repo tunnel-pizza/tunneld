@@ -647,11 +647,13 @@ type fakeEngine struct {
 	tunnels   []*fakeTunnel
 	specs     []string
 	providers []string
+	tokens    []string
 }
 
-func (f *fakeEngine) Tunnel(spec, provider string) libtunnel.TunnelV1 {
+func (f *fakeEngine) Tunnel(spec, provider, token string) libtunnel.TunnelV1 {
 	f.specs = append(f.specs, spec)
 	f.providers = append(f.providers, provider)
+	f.tokens = append(f.tokens, token)
 	tun := f.tunnels[0]
 	if len(f.tunnels) > 1 {
 		f.tunnels = f.tunnels[1:]
@@ -762,6 +764,26 @@ func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 // one of them can be, which is why it is on the type Bind returns rather than
 // an interface a caller has to go looking for.
 func (f *fakeBinder) Announce(public []string) { f.announced = public }
+
+// fakeIdentity stands in for the identity package: it answers what it was
+// built with and records what the builder asked it, which is how a case pins
+// the list that settled.
+type fakeIdentity struct {
+	token string
+	err   error
+	known [][]string
+	asked [][]string
+}
+
+func (f *fakeIdentity) Known(names []string) error {
+	f.known = append(f.known, slices.Clone(names))
+	return f.err
+}
+
+func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) string {
+	f.asked = append(f.asked, slices.Clone(names))
+	return f.token
+}
 
 // runHarness is run with every collaborator faked except the two that are
 // pure: the shown's panel half, because its URL and interceptor order are
@@ -1962,5 +1984,107 @@ func TestEnvLogLevelIsStrict(t *testing.T) {
 
 	if err := cmd.ExecuteContext(t.Context()); !errors.Is(err, v1.ErrInvalidLogLevel) {
 		t.Errorf("error = %v, want ErrInvalidLogLevel", err)
+	}
+}
+
+// TestRunCarriesTheIdentityToken pins the whole path: the list the flag
+// settled reaches Identity, and what Identity found reaches the engine — and
+// the credential reaches neither stream on the way.
+func TestRunCarriesTheIdentityToken(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	ident := &fakeIdentity{token: "a-credential"}
+	v1.Apply(h.b, WithIdentity(ident), WithIdentityProviders("github"))
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+
+	want := [][]string{{"github"}}
+	if !slices.EqualFunc(ident.asked, want, slices.Equal) {
+		t.Errorf("Identity was asked for %v, want %v", ident.asked, want)
+	}
+	if !slices.EqualFunc(ident.known, want, slices.Equal) {
+		t.Errorf("Known was asked %v, want %v", ident.known, want)
+	}
+	if got := h.engine.tokens; len(got) != 1 || got[0] != "a-credential" {
+		t.Errorf("the engine got tokens %q, want one %q", got, "a-credential")
+	}
+
+	// The discipline the whole feature lives under, pinned where the
+	// credential passes through the most code: it reaches the engine, and
+	// neither stream.
+	if strings.Contains(h.stderr.String(), "a-credential") {
+		t.Errorf("the credential reached stderr: %q", h.stderr.String())
+	}
+	if strings.Contains(h.stdout.String(), "a-credential") {
+		t.Errorf("the credential reached stdout: %q", h.stdout.String())
+	}
+}
+
+// TestRunRefusesAnUnknownIdentityProvider pins that a typo stops the run
+// before anything external happens — no tunnel asked for, and the message is
+// the one Identity gave.
+func TestRunRefusesAnUnknownIdentityProvider(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000")
+	refused := fmt.Errorf("%w: %q, only %s", v1.ErrUnknownIdentity, "gitlab", "github")
+	v1.Apply(h.b, WithIdentity(&fakeIdentity{err: refused}), WithIdentityProviders("gitlab"))
+
+	err := h.run(t, t.Context())
+	if !errors.Is(err, v1.ErrUnknownIdentity) {
+		t.Fatalf("run() = %v, want it to wrap ErrUnknownIdentity", err)
+	}
+	if len(h.engine.specs) != 0 {
+		t.Errorf("the engine was asked for %d tunnels, want 0 — the run should stop first", len(h.engine.specs))
+	}
+}
+
+// TestIdentityProvidersSettle pins the precedence the other knobs have: the
+// flag beats the variable, which beats the seed, and what reaches Identity is
+// whichever won.
+func TestIdentityProvidersSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		args []string
+		want []string
+	}{
+		{"the default", "", nil, []string{"github"}},
+		{"the variable", "kubernetes,github", nil, []string{"kubernetes", "github"}},
+		{"the flag beats it", "kubernetes", []string{"--identity-providers=github"}, []string{"github"}},
+		{"empty turns it off", "", []string{"--identity-providers="}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.IdentityProvidersEnv, tc.env)
+			const public = "https://foo.tunneled.pizza/"
+			h := newRunHarness(t, live(public), ":3000")
+			ident := &fakeIdentity{}
+			v1.Apply(h.b, WithIdentity(ident))
+			if err := h.b.Command().ParseFlags(tc.args); err != nil {
+				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if len(ident.asked) != 1 || !slices.Equal(ident.asked[0], tc.want) {
+				t.Errorf("Identity was asked for %v, want %v", ident.asked, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheDefaultProvidersAreRegistered pins the one literal this design
+// duplicates: v1.DefaultIdentityProviders names providers that v1 cannot
+// import, so nothing but a test keeps the two in step.
+func TestTheDefaultProvidersAreRegistered(t *testing.T) {
+	b := New()
+	if err := b.identity.Known(splitList(v1.DefaultIdentityProviders)); err != nil {
+		t.Errorf("the default list is not registered by New: %v", err)
 	}
 }

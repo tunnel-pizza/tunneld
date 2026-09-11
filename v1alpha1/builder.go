@@ -67,6 +67,15 @@ func WithLogLevel(level string) Option {
 	return func(b *BuilderImpl) { b.logLevel = level }
 }
 
+// WithIdentityProviders seeds the providers a run looks for a mint credential
+// with, in order. The flag and v1.IdentityProvidersEnv both beat it.
+//
+// An empty list turns the lookup off, and a run that finds no credential mints
+// anonymously — which is what every run did before there was anything to find.
+func WithIdentityProviders(names ...string) Option {
+	return func(b *BuilderImpl) { b.identityProviders = names }
+}
+
 // WithOpen settles whether a public URL is opened in a browser once the tunnel
 // is live — the multiview panel when there is one, otherwise the default
 // origin. Exactly one page is opened either way, since a fan of tabs is rarely
@@ -194,6 +203,8 @@ var flagEnv = map[string]string{
 	"multiview": v1.MultiviewEnv,
 
 	"shell-fallback": v1.ShellFallbackEnv,
+
+	"identity-providers": v1.IdentityProvidersEnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -338,6 +349,11 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			"directory to cache tunnel specs in (repeat for more; empty or true means the default, false disables it) [$"+v1.CacheDirEnv+", comma-separated]")
 		cmd.Flags().StringVar(&b.provider, "provider", cmp.Or(b.provider, v1.DefaultProvider),
 			"quick-tunnel provider host to mint against [$"+v1.ProviderEnv+"]")
+		// StringSlice rather than StringArray: applyEnv hands a variable's
+		// value to pflag.SliceValue.Replace, and only the slice type splits
+		// the comma-separated list the mirror carries.
+		cmd.Flags().StringSliceVar(&b.identityProviders, "identity-providers", b.identityProviders,
+			"identity providers to find a mint credential with, in order; empty sends none [$"+v1.IdentityProvidersEnv+", comma-separated]")
 		cmd.Flags().StringVar(&b.logLevel, "log-level", b.logLevel,
 			"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
 		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
@@ -427,6 +443,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
 	}
 
+	// A misspelled provider is an error, and it is worth finding out now:
+	// everything below this opens something — a daemon connection, a
+	// listener, a tunnel — and a typo should cost none of it.
+	if err := b.identity.Known(b.identityProviders); err != nil {
+		return err
+	}
+
 	// The handle the event listener ends the run through. A signal
 	// cancels the parent with no cause; a reap cancels this one with
 	// ErrTunnelGone, and the cause is what tells the two apart at
@@ -487,7 +510,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			}
 		}
 
-		tun := b.engine.Tunnel(spec, b.provider).
+		// The credential the mint request carries, looked for here rather than
+		// with the rest of the settling because looking costs a subprocess and
+		// a run that failed earlier should not have paid for it. Nothing found
+		// is the ordinary case: the mint is anonymous, as every mint was
+		// before this existed.
+		token := b.identity.Token(ctx, b.identityProviders, log)
+
+		tun := b.engine.Tunnel(spec, b.provider, token).
 			WithLogger(log).
 			WithContext(ctx).
 			WithEventListener(listen).
