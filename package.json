@@ -26,7 +26,8 @@
   },
   "files": [
     "v1/v1.cjs",
-    "dist/*"
+    "dist/tunneld-*",
+    "!dist/*.sigstore"
   ],
   "scripts": {
     "prepublishOnly": "make binaries"

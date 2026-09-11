@@ -938,10 +938,12 @@ Patch releases are automatic. Every push to `main` runs three jobs in
   every one of those `GOOS`/`GOARCH` pairs natively — and it is what stands
   between a broken build and a tag: `release` needs it, so a failure here
   leaves no tag pushed and no release opened.
-- **`release`** downloads those binaries, and then, in order: pushes the tag;
-  creates a GitHub Release with auto-generated notes; signs the source
-  archives, the six binaries and a `checksums.txt` with cosign, and uploads
-  binaries, checksums and every bundle; builds and pushes
+- **`release`** downloads those binaries and restores their executable bit —
+  `upload-artifact` zips its input and that zip carries no mode bits, so they
+  arrive `0644`, and npm packs a file with the mode it finds — and then, in
+  order: pushes the tag; creates a GitHub Release with auto-generated notes;
+  signs the source archives, the six binaries and a `checksums.txt` with
+  cosign, and uploads binaries, checksums and every bundle; builds and pushes
   `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and `linux/arm64`, tagged
   with the release and `latest`; warms `proxy.golang.org` so
   [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld) surfaces
@@ -949,11 +951,14 @@ Patch releases are automatic. Every push to `main` runs three jobs in
   trusted publisher binding for this repo and workflow (no token).
   `--ignore-scripts` keeps `prepublishOnly` from rebuilding `dist/`, so the
   package packs the same bytes the release signed; `package.json` is
-  rewritten to the tag for that publish only. A release publishes to
-  `latest`. For a `beta` instead, merge with `[skip release]`, then run the
-  CI workflow by hand from `main` with the dist-tag input set to `beta`; that
-  cuts the release and publishes it there. Promote later without rebuilding:
-  `npm dist-tag add tunneld@<version> latest`.
+  rewritten to the tag for that publish only. By then `dist/` also holds the
+  cosign bundles, `checksums.txt` and the source archives the signing step
+  downloaded, so `files` names the binaries and excludes the bundles rather
+  than globbing the directory — npm ships the six binaries and the launcher,
+  nothing else. A release publishes to `latest`. For a `beta` instead, merge
+  with `[skip release]`, then run the CI workflow by hand from `main` with the
+  dist-tag input set to `beta`; that cuts the release and publishes it there.
+  Promote later without rebuilding: `npm dist-tag add tunneld@<version> latest`.
 
 Source archives, binaries and the image are all signed with cosign in keyless
 mode; [SECURITY.md](./SECURITY.md) carries the verification recipes. The image
