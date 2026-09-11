@@ -1,10 +1,9 @@
 // Package cache carries a tunnel's identity between runs.
 //
-// libtunnel mints a fresh hostname on every start unless it is handed the spec
-// of a tunnel it already has, and that handoff channel is an environment
-// variable. So persisting one is all a cache has to be: a file of variables,
-// written when a tunnel comes up and read back into the environment before the
-// next one is built.
+// libtunnel mints a fresh hostname on every start unless it is told which
+// tunnel this is, and what it takes is the spec of one it already had. So
+// persisting one is all a cache has to be: a file of variables, written when a
+// tunnel comes up and read back on the next start.
 //
 // The library used to keep this file itself and no longer does
 // (cnuss/libtunnel#167). Where it lands is the user's cache directory, and
@@ -95,12 +94,11 @@ func (c *CacheImpl) path(origins v1.Origins) string {
 // runs in the same directory have.
 //
 // It returns the envelope rather than setting LIBTUNNEL_SPEC, which is what
-// this used to do. That variable is the parent-to-child handoff channel, where
-// the parent's tunnel is live by construction, so libtunnel adopts it pinned
-// and asks the provider nothing. A cached spec is the opposite case — the
-// tunnel it names may have been reaped hours ago — and it has to go through
-// libtunnel.From, where the spec's identity rides the mint request and the
-// provider says whether it still exists.
+// this used to do. Both reach libtunnel's one credential chain, where a spec is
+// a hint that rides the mint request, but the variable outranks a spec handed
+// to From — so writing it here would put a cached tunnel above the live parent
+// of a handoff, which is the one case where the caller knows better than the
+// cache does.
 //
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
