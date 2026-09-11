@@ -672,9 +672,9 @@ type fakeCache struct {
 	order     *[]string
 }
 
-func (f *fakeCache) Load([]string, v1.Logger) string { return f.cached }
-func (f *fakeCache) Discard([]string, v1.Logger)     { f.discarded = true }
-func (f *fakeCache) Save([]string, v1.Logger) {
+func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
+func (f *fakeCache) Discard(Origins, v1.Logger)     { f.discarded = true }
+func (f *fakeCache) Save(Origins, v1.Logger) {
 	f.saved = true
 	if f.order != nil {
 		*f.order = append(*f.order, "save")

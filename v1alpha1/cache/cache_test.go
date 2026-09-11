@@ -5,6 +5,7 @@ package cache_test
 
 import (
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,7 +13,9 @@ import (
 	"testing"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // envelope is the shape a real spec has: a tagged JSON envelope, so it carries
@@ -20,12 +23,47 @@ import (
 // those is a way a naively written file could fail to survive the round trip.
 const envelope = `{"backend":"cloudflare","spec":{"AccountTag":"a/b+c","TunnelSecret":"c2VjcmV0Cg==","TunnelID":"1c9c","hostname":"brave-otter.tunneled.pizza"}}`
 
+// ext is what the package names its files, spelled out here rather than
+// imported: it is part of the contract with whoever opens the directory, so a
+// test that read it from the package could not notice it changing.
+const ext = ".env"
+
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-// write puts a TUNNEL.env in dir with the given body.
-func write(t *testing.T, dir, body string) {
+// mustParse parses a URL a test wrote, where a failure is the test's own bug.
+func mustParse(t *testing.T, raw string) *url.URL {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, cache.File), []byte(body), 0o600); err != nil {
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", raw, err)
+	}
+	return u
+}
+
+// run is the origins of a run, with a directory fixed so its key does not
+// depend on where the test process happens to be.
+func run(t *testing.T, raw ...string) v1.Origins {
+	t.Helper()
+	opts := []origins.Option{origins.WithDir("/work/project")}
+	for _, r := range raw {
+		opts = append(opts, origins.WithURL(mustParse(t, r)))
+	}
+	return origins.New(opts...)
+}
+
+// fixed is a cache in a directory only this case can see, a run to file under
+// it, and the path the two of them imply.
+func fixed(t *testing.T, raw ...string) (*cache.CacheImpl, v1.Origins, string) {
+	t.Helper()
+	dir := t.TempDir()
+	o := run(t, raw...)
+	return cache.New(cache.WithDir(dir)), o, filepath.Join(dir, o.Key()+ext)
+}
+
+// write puts a cache file where the given run's would go.
+func write(t *testing.T, dir string, o v1.Origins, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, o.Key()+ext), []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 }
@@ -35,72 +73,114 @@ func write(t *testing.T, dir, body string) {
 // what pins the quoting — a value mangled here is a tunnel that cannot be
 // resumed, and it would fail on the second run rather than the first.
 func TestRoundTrip(t *testing.T) {
-	dir := t.TempDir()
 	t.Setenv(ltv1.SpecEnv, envelope)
 	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 
-	cache.New().Save([]string{dir}, discard())
+	c, o, _ := fixed(t, "http://localhost:3000")
+	c.Save(o, discard())
 
-	if got := cache.New().Load([]string{dir}, discard()); got != envelope {
+	if got := c.Load(o, discard()); got != envelope {
 		t.Errorf("Load() = %q, want %q", got, envelope)
 	}
 }
 
-// TestSave pins where the file lands, what it holds, and that a spec is
-// written as a credential rather than as ordinary data.
+// TestTheFileIsNamedForTheRun pins #115: a run reads back its own spec and
+// never another run's. Before this, one directory held one TUNNEL.env, so a
+// second run in a project replayed the first one's hostname while serving
+// something else entirely.
+func TestTheFileIsNamedForTheRun(t *testing.T) {
+	t.Setenv(ltv1.SpecEnv, envelope)
+	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
+
+	c, three, path := fixed(t, "http://localhost:3000")
+	c.Save(three, discard())
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("after Save, %s: %v", path, err)
+	}
+
+	// The same project serving something else is a different tunnel, so there
+	// is nothing here for it to resume.
+	if got := c.Load(run(t, "http://localhost:4000"), discard()); got != "" {
+		t.Errorf("Load(other origins) = %q, want nothing — that is another run's tunnel", got)
+	}
+
+	// The order they were typed is not what makes a tunnel, so the same two
+	// origins either way round find the same file.
+	c2, both, _ := fixed(t, "http://localhost:3000", "attach://dockerd/api")
+	c2.Save(both, discard())
+	reversed := run(t, "attach://dockerd/api", "http://localhost:3000")
+	if got := c2.Load(reversed, discard()); got != envelope {
+		t.Errorf("Load(the same origins reversed) = %q, want the spec it saved", got)
+	}
+
+	// And the run that saved it finds its own.
+	if got := c.Load(three, discard()); got != envelope {
+		t.Errorf("Load(same origins) = %q, want the spec it saved", got)
+	}
+}
+
+// TestTheDefaultDirectoryIsUnderTheUsersCache pins where a spec lands when
+// nothing says otherwise: never the working directory, which is usually a
+// checkout, and a spec is credentials.
+func TestTheDefaultDirectoryIsUnderTheUsersCache(t *testing.T) {
+	base := t.TempDir()
+	// The three variables os.UserCacheDir reads, one per platform: XDG on
+	// Linux, HOME on macOS (<HOME>/Library/Caches), LocalAppData on Windows.
+	t.Setenv("XDG_CACHE_HOME", base)
+	t.Setenv("HOME", base)
+	t.Setenv("LocalAppData", base)
+	t.Setenv(ltv1.SpecEnv, envelope)
+
+	want, err := os.UserCacheDir()
+	if err != nil {
+		t.Skipf("no user cache directory: %v", err)
+	}
+
+	o := run(t, "http://localhost:3000")
+	cache.New().Save(o, discard())
+
+	path := filepath.Join(want, ".tunneld", o.Key()+ext)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("want the spec at %s: %v", path, err)
+	}
+}
+
+// TestSave pins what the file holds, and that a spec is written as a
+// credential rather than as ordinary data.
 func TestSave(t *testing.T) {
-	// Every writable one, where Load takes the first it finds: which
-	// directories exist depends on where the process is running, so writing to
-	// all of them is what makes the next run resume from whichever it has.
-	t.Run("every writable directory gets one", func(t *testing.T) {
-		first, second := t.TempDir(), t.TempDir()
-		t.Setenv(ltv1.SpecEnv, envelope)
-
-		cache.New().Save([]string{first, second}, discard())
-
-		for _, dir := range []string{first, second} {
-			if _, err := os.Stat(filepath.Join(dir, cache.File)); err != nil {
-				t.Errorf("nothing written to %s: %v", dir, err)
-			}
-		}
-	})
-
-	// The default cache directory does not exist until the first save, so a
-	// Save that cannot create one caches nothing — silently, since it never
-	// fails a tunnel. Every other case here hands it a directory that already
-	// exists, which is why this needs saying separately.
+	// The cache directory does not exist until the first save, so creating it
+	// is part of saving rather than something the caller was asked to arrange.
 	t.Run("a directory that does not exist yet is created", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "nested", "cache")
 		t.Setenv(ltv1.SpecEnv, envelope)
+		c, o := cache.New(cache.WithDir(dir)), run(t, "http://localhost:3000")
 
-		cache.New().Save([]string{dir}, discard())
+		c.Save(o, discard())
 
-		if got := cache.New().Load([]string{dir}, discard()); got != envelope {
+		if got := c.Load(o, discard()); got != envelope {
 			t.Errorf("Load() = %q, want the spec written into a new directory", got)
 		}
 	})
 
-	t.Run("an unwritable directory is skipped, not fatal", func(t *testing.T) {
+	t.Run("an unwritable directory is not fatal", func(t *testing.T) {
 		// Windows has no mode bit that stops a directory being written to —
 		// os.Chmod there only toggles a file's read-only flag — so the
 		// condition this pins cannot be staged.
 		if runtime.GOOS == "windows" {
 			t.Skip("directory permissions are not enforceable on Windows")
 		}
-		unwritable, dir := t.TempDir(), t.TempDir()
+		unwritable := t.TempDir()
 		if err := os.Chmod(unwritable, 0o500); err != nil {
 			t.Fatalf("chmod: %v", err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
 		t.Setenv(ltv1.SpecEnv, envelope)
+		c, o := cache.New(cache.WithDir(unwritable)), run(t, "http://localhost:3000")
 
-		cache.New().Save([]string{unwritable, dir}, discard())
+		c.Save(o, discard())
 
-		if _, err := os.Stat(filepath.Join(unwritable, cache.File)); err == nil {
+		if _, err := os.Stat(filepath.Join(unwritable, o.Key()+ext)); err == nil {
 			t.Error("wrote into a directory it could not write to")
-		}
-		if _, err := os.Stat(filepath.Join(dir, cache.File)); err != nil {
-			t.Errorf("the writable directory beside it got nothing: %v", err)
 		}
 	})
 
@@ -110,12 +190,12 @@ func TestSave(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("file modes are not meaningful on Windows")
 		}
-		dir := t.TempDir()
 		t.Setenv(ltv1.SpecEnv, envelope)
+		c, o, path := fixed(t, "http://localhost:3000")
 
-		cache.New().Save([]string{dir}, discard())
+		c.Save(o, discard())
 
-		info, err := os.Stat(filepath.Join(dir, cache.File))
+		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatalf("stat: %v", err)
 		}
@@ -127,13 +207,13 @@ func TestSave(t *testing.T) {
 	// Nothing to resume is not a file worth leaving behind — an empty one
 	// would read as a cache on the next run and explain nothing.
 	t.Run("no spec writes no file", func(t *testing.T) {
-		dir := t.TempDir()
 		os.Unsetenv(ltv1.SpecEnv)
 		os.Unsetenv(ltv1.HostnameEnv)
+		c, o, path := fixed(t, "http://localhost:3000")
 
-		cache.New().Save([]string{dir}, discard())
+		c.Save(o, discard())
 
-		if _, err := os.Stat(filepath.Join(dir, cache.File)); err == nil {
+		if _, err := os.Stat(path); err == nil {
 			t.Error("wrote a file with nothing to put in it")
 		}
 	})
@@ -141,13 +221,13 @@ func TestSave(t *testing.T) {
 	// An operator's own configuration is not a cache. Capturing it would pin a
 	// choice made once into every run afterwards.
 	t.Run("only the spec and its hostname are saved", func(t *testing.T) {
-		dir := t.TempDir()
 		t.Setenv(ltv1.SpecEnv, envelope)
 		t.Setenv(ltv1.LogEnv, "debug")
+		c, o, path := fixed(t, "http://localhost:3000")
 
-		cache.New().Save([]string{dir}, discard())
+		c.Save(o, discard())
 
-		body, err := os.ReadFile(filepath.Join(dir, cache.File))
+		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -157,24 +237,15 @@ func TestSave(t *testing.T) {
 	})
 }
 
-// TestLoad pins which file is chosen and what a broken one costs.
+// TestLoad pins what a broken or absent file costs.
 func TestLoad(t *testing.T) {
-	t.Run("the first directory holding one wins", func(t *testing.T) {
-		empty, first, second := t.TempDir(), t.TempDir(), t.TempDir()
-		write(t, first, ltv1.SpecEnv+"='"+envelope+"'\n")
-		write(t, second, ltv1.SpecEnv+"='wrong'\n")
-
-		if got := cache.New().Load([]string{empty, first, second}, discard()); got != envelope {
-			t.Errorf("Load() = %q, want the first file's value", got)
-		}
-	})
-
 	// A cache that cannot be read costs continuity, never the tunnel.
 	t.Run("a malformed file is survivable", func(t *testing.T) {
 		dir := t.TempDir()
-		write(t, dir, "this is not\x00 an env file at all")
+		o := run(t, "http://localhost:3000")
+		write(t, dir, o, "this is not\x00 an env file at all")
 
-		if got := cache.New().Load([]string{dir}, discard()); got != "" {
+		if got := cache.New(cache.WithDir(dir)).Load(o, discard()); got != "" {
 			t.Errorf("Load() = %q, want nothing from a broken file", got)
 		}
 	})
@@ -182,39 +253,43 @@ func TestLoad(t *testing.T) {
 	// A file naming no spec is not a cache, whatever else is in it.
 	t.Run("a file with no spec is nothing", func(t *testing.T) {
 		dir := t.TempDir()
-		write(t, dir, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
+		o := run(t, "http://localhost:3000")
+		write(t, dir, o, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
 
-		if got := cache.New().Load([]string{dir}, discard()); got != "" {
+		if got := cache.New(cache.WithDir(dir)).Load(o, discard()); got != "" {
 			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
 
-	t.Run("no directories and no files are both fine", func(t *testing.T) {
-		if got := cache.New().Load(nil, discard()); got != "" {
-			t.Errorf("Load(nil) = %q, want nothing", got)
+	t.Run("no directory and no file are both fine", func(t *testing.T) {
+		o := run(t, "http://localhost:3000")
+		if got := cache.New(cache.WithDir("")).Load(o, discard()); got != "" {
+			t.Errorf("Load() with no directory = %q, want nothing", got)
 		}
-		if got := cache.New().Load([]string{t.TempDir()}, discard()); got != "" {
+		if got := cache.New(cache.WithDir(t.TempDir())).Load(o, discard()); got != "" {
 			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
 }
 
-// TestDiscard pins that a dead cache is removed everywhere it was written,
-// since Save writes to every directory it can and one survivor would resume
-// the same dead tunnel on the next run.
+// TestDiscard pins that a dead cache is removed, since one left behind would
+// resume the same dead tunnel on the next run.
 func TestDiscard(t *testing.T) {
-	first, second, empty := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv(ltv1.SpecEnv, envelope)
-	cache.New().Save([]string{first, second}, discard())
+	c, o, path := fixed(t, "http://localhost:3000")
+	c.Save(o, discard())
 
-	cache.New().Discard([]string{first, second, empty}, discard())
+	c.Discard(o, discard())
 
-	for _, dir := range []string{first, second} {
-		if _, err := os.Stat(filepath.Join(dir, cache.File)); !os.IsNotExist(err) {
-			t.Errorf("%s still holds a cache: %v", dir, err)
-		}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("%s still holds a cache: %v", path, err)
 	}
-	if got := cache.New().Load([]string{first, second}, discard()); got != "" {
+	if got := c.Load(o, discard()); got != "" {
 		t.Errorf("Load() = %q after Discard, want nothing", got)
 	}
+
+	// Discarding what was never there is not an error: the run that calls it
+	// has just been told its spec is dead, and whether a file existed is not
+	// something it can do anything about.
+	c.Discard(run(t, "http://localhost:4000"), discard())
 }

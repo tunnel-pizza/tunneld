@@ -472,7 +472,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	cached := ""
 	if len(b.cacheDirs.GetSlice()) > 0 {
-		cached = b.cache.Load(b.cacheDirs.GetSlice(), log)
+		cached = b.cache.Load(origins, log)
 	}
 
 	// Pure-lazy: nothing dials until URL below trips the start.
@@ -616,7 +616,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
 			return cause
 		}
-		b.cache.Discard(b.cacheDirs.GetSlice(), log)
+		b.cache.Discard(origins, log)
 		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
 
 		tun = start("")
@@ -739,7 +739,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	if len(b.cacheDirs.GetSlice()) > 0 {
-		b.cache.Save(b.cacheDirs.GetSlice(), log)
+		b.cache.Save(origins, log)
 	}
 
 	// A viewer asking to end the run is the third way this stops, beside a

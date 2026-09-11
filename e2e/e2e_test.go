@@ -496,17 +496,17 @@ func TestReplayBuffer(t *testing.T) {
 
 // start runs the example as a live process and returns as soon as it has been
 // started — not once it is ready, which is what the assertions are for.
-//
-// The child gets a cache directory of its own. A live run must not read the
-// developer's real tunnel cache, which would replay a spec belonging to some
-// other checkout, and must not write to it either, which would leave this
-// test's tunnel behind in it.
 func (r *runner) start(t *testing.T, args ...string) {
 	t.Helper()
 	r.stdout, r.stderr = newReplayBuffer(), newReplayBuffer()
 	r.cmd = exec.Command(r.bin, args...)
 	r.cmd.Stdout, r.cmd.Stderr = r.stdout, r.stderr
-	r.cmd.Env = append(strippedEnv(), "TUNNELD_CACHE_DIR="+t.TempDir())
+	// Cache nothing. A live run must not read the developer's real tunnel
+	// cache, which would replay a spec belonging to some other checkout, and
+	// must not write to it either, which would leave this test's tunnel behind
+	// in it. A directory of its own used to do that; the cache no longer takes
+	// one, and a run that caches nothing has nothing to leak either way.
+	r.cmd.Env = append(strippedEnv(), "TUNNELD_CACHE_DIR=false")
 
 	if err := r.cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", r.name, err)
@@ -633,8 +633,11 @@ func awaitPublicAddress() func(t *testing.T, r *runner) {
 func awaitBanner() func(t *testing.T, r *runner) {
 	return func(t *testing.T, r *runner) {
 		t.Helper()
+		// The cache clause is part of the banner whenever the run has origins
+		// to key one by, which every example here does — it is what says which
+		// spec this run would replay.
 		r.await(t, r.stderr, "waiting for the build banner on stderr",
-			regexp.MustCompile(`^tunneld \S+ \(libtunnel \S+, built \S+\)$`))
+			regexp.MustCompile(`^tunneld \S+ \(libtunnel \S+, built \S+(, cache [0-9a-f]{16})?\)$`))
 		r.await(t, r.stderr, "waiting for the opening log entry on stderr",
 			regexp.MustCompile(`level=INFO msg="tunneld starting"`))
 	}

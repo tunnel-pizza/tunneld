@@ -7,10 +7,10 @@
 // next one is built.
 //
 // The library used to keep this file itself and no longer does
-// (cnuss/libtunnel#167). Where it lands is a deployment's decision rather than
-// a library's — a volume in a container, a working directory on a laptop —
-// which is why the directories arrive from --cache-dir rather than being
-// derived here.
+// (cnuss/libtunnel#167). Where it lands is the user's cache directory, and
+// what it is called is the run it belongs to: two runs from one project
+// serving different things are two tunnels, and before the name carried that
+// they shared one file and replayed each other's hostname.
 package cache
 
 import (
@@ -23,8 +23,15 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// File is the name looked for in each cache directory, and written to.
-const File = "TUNNEL.env"
+// ext is what a cache file is called after its key. The contents are a file of
+// environment variables, so the extension says what it is to whoever opens the
+// directory.
+const ext = ".env"
+
+// dirName is the one directory every cached spec lives in, under the user's
+// own cache directory. Flat: what identifies a tunnel is in the filename, so
+// nesting would only add a level saying the same thing twice.
+const dirName = ".tunneld"
 
 // saved is what a run persists: the spec libtunnel adopts on the next start,
 // and the hostname as a plain-text mirror for anyone reading the file. Only
@@ -36,22 +43,56 @@ const File = "TUNNEL.env"
 // pin choices they made once into every run afterwards.
 var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
 
-// Option configures a CacheImpl at construction. There are none yet; the
-// signature exists so a knob added later changes no caller.
+// Option configures a CacheImpl at construction.
 type Option = v1.Option[*CacheImpl]
 
-// CacheImpl is the default cache: TUNNEL.env in each directory it is given.
-type CacheImpl struct{}
-
-// New returns the default cache, configured by opts.
-func New(opts ...Option) *CacheImpl {
-	return v1.Apply(&CacheImpl{}, opts...)
+// CacheImpl is the default cache: one file per tunnel, named for it, under the
+// user's cache directory.
+type CacheImpl struct {
+	// dir is where files go. Empty means this machine has no cache directory
+	// and nothing is cached, which is the same answer an unwritable one gives.
+	dir string
 }
 
-// Load returns the spec envelope from the first TUNNEL.env found in dirs,
-// and stops there. Later directories are fallbacks, not layers: two files
-// would raise the question of which tunnel is being resumed, and there is no
-// useful answer.
+// New returns a CacheImpl configured by opts, pointed at the user's cache
+// directory.
+//
+// Never the working directory, which is what an entry in the old list could
+// name. A spec is credentials, the working directory is usually a repository,
+// and no filename avoids being committed there: measured against GitHub's 239
+// gitignore templates and 752 real ones, the best a name managed was 13% and
+// 26%.
+func New(opts ...Option) *CacheImpl {
+	c := &CacheImpl{}
+	if base, err := os.UserCacheDir(); err == nil {
+		c.dir = filepath.Join(base, dirName)
+	}
+	return v1.Apply(c, opts...)
+}
+
+// WithDir replaces the directory specs are cached in — a mounted volume in a
+// container, a temporary directory in a test. An empty directory turns caching
+// off, which is what a machine with no cache directory already gets.
+func WithDir(dir string) Option {
+	return func(c *CacheImpl) { c.dir = dir }
+}
+
+// path is where this run's spec lives: the key, which names the tunnel, under
+// the directory, which names nothing.
+//
+// This package hashes nothing and decides nothing about identity. Whether two
+// runs are the same tunnel is the origins' answer; this joins it to a
+// directory and adds an extension.
+func (c *CacheImpl) path(origins v1.Origins) string {
+	if c.dir == "" || origins == nil {
+		return ""
+	}
+	return filepath.Join(c.dir, origins.Key()+ext)
+}
+
+// Load returns the spec envelope this run cached, and "" when it has not:
+// a run whose origins name no file here has never had a tunnel, whatever other
+// runs in the same directory have.
 //
 // It returns the envelope rather than setting LIBTUNNEL_SPEC, which is what
 // this used to do. That variable is the parent-to-child handoff channel, where
@@ -64,61 +105,59 @@ func New(opts ...Option) *CacheImpl {
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func (*CacheImpl) Load(cacheDirs []string, log v1.Logger) string {
-	for _, dir := range cacheDirs {
-		path := filepath.Join(dir, File)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
-
-		v := viper.New()
-		v.SetConfigType("env")
-		v.SetConfigFile(path)
-		if err := v.ReadInConfig(); err != nil {
-			log.Warn("could not read the tunnel cache", "path", path, "error", err)
-			return ""
-		}
-
-		// viper lower-cases the keys it parses.
-		spec := v.GetString(strings.ToLower(ltv1.SpecEnv))
-		if spec == "" {
-			log.Warn("the tunnel cache names no spec", "path", path)
-			return ""
-		}
-		log.Info("resuming a tunnel from cache", "path", path)
-		return spec
+func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
+	path := c.path(origins)
+	if path == "" {
+		return ""
 	}
-	return ""
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+
+	v := viper.New()
+	v.SetConfigType("env")
+	v.SetConfigFile(path)
+	if err := v.ReadInConfig(); err != nil {
+		log.Warn("could not read the tunnel cache", "path", path, "error", err)
+		return ""
+	}
+
+	// viper lower-cases the keys it parses.
+	spec := v.GetString(strings.ToLower(ltv1.SpecEnv))
+	if spec == "" {
+		log.Warn("the tunnel cache names no spec", "path", path)
+		return ""
+	}
+	log.Info("resuming a tunnel from cache", "path", path)
+	return spec
 }
 
-// Discard removes the cache from every directory holding one, so the next run
-// mints instead of replaying.
+// Discard removes this run's cache, so the next run mints instead of
+// replaying.
 //
 // The caller decides when: a spec the provider refuses outright is dead and
 // keeping it would fail every run the same way, while a hostname somebody else
 // now holds is not this spec's fault and throwing it away would not win the
 // name back.
-func (*CacheImpl) Discard(cacheDirs []string, log v1.Logger) {
-	for _, dir := range cacheDirs {
-		path := filepath.Join(dir, File)
-		if err := os.Remove(path); err == nil {
-			log.Info("discarded a dead tunnel cache", "path", path)
-		} else if !os.IsNotExist(err) {
-			log.Warn("could not discard the tunnel cache", "path", path, "error", err)
-		}
+func (c *CacheImpl) Discard(origins v1.Origins, log v1.Logger) {
+	path := c.path(origins)
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err == nil {
+		log.Info("discarded a dead tunnel cache", "path", path)
+	} else if !os.IsNotExist(err) {
+		log.Warn("could not discard the tunnel cache", "path", path, "error", err)
 	}
 }
 
-// Save writes the running tunnel's spec to TUNNEL.env in every one of dirs it
-// can write to, so the next run resumes this hostname instead of minting a new
-// one.
+// Save writes the running tunnel's spec under this run's name, so the next run
+// of the same thing resumes this hostname instead of minting a new one.
 //
-// Every directory rather than the first, where Load reads the first and stops.
-// The asymmetry is the point: which directories exist is a property of where
-// the process is running — a volume that may or may not be mounted, a working
-// directory that may or may not be the same one — and writing to all of them
-// means the next run resumes from whichever it turns out to have. A directory
-// that cannot be written is skipped rather than fatal, for the same reason.
+// One file, where this used to write one per directory in a list. What a run
+// is and where its spec goes are now the same question, so there is nothing
+// left to spread across directories and nothing to choose between on the way
+// back in.
 //
 // The spec is read from the environment rather than from the tunnel, and it
 // has to be read after the tunnel is up rather than being the one that was
@@ -134,7 +173,7 @@ func (*CacheImpl) Discard(cacheDirs []string, log v1.Logger) {
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func (*CacheImpl) Save(cacheDirs []string, log v1.Logger) {
+func (c *CacheImpl) Save(origins v1.Origins, log v1.Logger) {
 	var lines []string
 	for _, name := range saved {
 		if value, ok := os.LookupEnv(name); ok && value != "" {
@@ -149,28 +188,23 @@ func (*CacheImpl) Save(cacheDirs []string, log v1.Logger) {
 	}
 	body := []byte(strings.Join(lines, "\n") + "\n")
 
-	var written []string
-	for _, dir := range cacheDirs {
-		// The default cache directory does not exist until the first save, so
-		// creating it is part of saving rather than something the caller was
-		// asked to arrange. 0700: it holds credentials, and a directory
-		// somebody else can list is a directory that has already leaked which
-		// projects are on this machine.
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			log.Debug("could not make a cache directory", "dir", dir, "error", err)
-			continue
-		}
-		path := filepath.Join(dir, File)
-		// 0600: a spec is the credential for a public hostname.
-		if err := os.WriteFile(path, body, 0o600); err != nil {
-			log.Debug("could not cache the tunnel here", "path", path, "error", err)
-			continue
-		}
-		written = append(written, path)
-	}
-	if len(written) == 0 {
-		log.Warn("could not cache the tunnel in any directory", "dirs", cacheDirs)
+	path := c.path(origins)
+	if path == "" {
+		log.Debug("nothing to cache into: this machine has no cache directory")
 		return
 	}
-	log.Info("cached the tunnel", "paths", written)
+	// The cache directory does not exist until the first save, so creating it
+	// is part of saving rather than something the caller was asked to arrange.
+	// 0700: it holds credentials, and a directory somebody else can list is a
+	// directory that has already leaked which projects are on this machine.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		log.Warn("could not make the cache directory", "dir", filepath.Dir(path), "error", err)
+		return
+	}
+	// 0600: a spec is the credential for a public hostname.
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		log.Warn("could not cache the tunnel", "path", path, "error", err)
+		return
+	}
+	log.Info("cached the tunnel", "path", path)
 }

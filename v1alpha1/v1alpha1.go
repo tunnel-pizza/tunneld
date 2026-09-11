@@ -83,12 +83,12 @@ func WithEngine(e Engine) Option {
 	return func(b *BuilderImpl) { b.engine = e }
 }
 
-// Cache persists a tunnel's spec between runs, in the directories
-// --cache-dir settled on.
+// Cache persists a tunnel's spec between runs, filed under the name the
+// origins give it.
 type Cache interface {
-	Load(dirs []string, log v1.Logger) string
-	Save(dirs []string, log v1.Logger)
-	Discard(dirs []string, log v1.Logger)
+	Load(origins Origins, log v1.Logger) string
+	Save(origins Origins, log v1.Logger)
+	Discard(origins Origins, log v1.Logger)
 }
 
 // WithCache replaces where a tunnel's spec is kept between runs. The default
