@@ -414,7 +414,10 @@ type Builder interface {
 	// warning on the tunnel's own log rather than failing the run, so this is
 	// what the tunnel was given and not what it was asked for. A run left
 	// with no origins at all fails with ErrNoOrigin.
-	Origins() []*url.URL
+	//
+	// The list is a value with an identity: Key names the tunnel these origins
+	// are, which is what the spec cache files it under.
+	Origins() Origins
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string

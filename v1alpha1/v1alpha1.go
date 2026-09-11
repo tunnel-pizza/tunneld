@@ -37,6 +37,12 @@ import (
 // options in this file replace a collaborator Command's RunE composes.
 type Option = v1.Option[*BuilderImpl]
 
+// Origins is the local origins a run exposes — v1's type, aliased so this
+// package can name it without a prefix. Not a contract: it has no external
+// effect and nothing to replace, so it carries no With* option and takes no
+// seat in the list below.
+type Origins = v1.Origins
+
 // The contracts Command's RunE composes. Each is something with an external
 // effect — the edge, the disk, the daemon, the browser, an HTTP probe —
 // implemented once in a v1alpha1/<name> subpackage, seeded by New, and

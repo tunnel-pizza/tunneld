@@ -22,6 +22,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -439,7 +440,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// supplying one, because that is the choice an operator makes
 	// to fix it.
 	origins := b.Origins()
-	if len(origins) == 0 {
+	if origins.Len() == 0 {
 		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
 	}
 
@@ -463,7 +464,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// its behalf and hands the tunnel the loopback address instead.
 	// origins stays what the operator typed — it is what the
 	// reported map and the panel show.
-	dialable, bound, err := b.binder.Bind(ctx, origins, log)
+	dialable, bound, err := b.binder.Bind(ctx, origins.URLs(), log)
 	if err != nil {
 		return err
 	}
@@ -526,14 +527,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// port of its own and no origin ever sees the request. The
 		// list is empty when there is no panel to serve, which is
 		// the only place that decision is made.
-		for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
+		for _, ic := range b.display.Interceptors(b.multiview, origins.URLs(), log) {
 			tun.WithInterceptor(ic)
 		}
 		return tun
 	}
 	tun := start(cached)
 
-	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", len(origins))
+	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
 	// The banner goes out before the tunnel is asked for a URL, not
 	// after it answers. Minting is the slow part and the part that
@@ -629,16 +630,16 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// where it answers from outside. Each origin gets its own
 	// address rather than the bare one, because with several of
 	// them it is the routing parameter that reaches this one.
-	addresses := make([]string, len(origins))
-	for i := range origins {
-		addresses[i] = publicURL(public, i, len(origins))
+	addresses := make([]string, origins.Len())
+	for i := range addresses {
+		addresses[i] = publicURL(public, i, origins.Len())
 	}
 	bound.Announce(addresses)
 
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
 	// reads the answer.
-	view := b.display.URL(b.multiview, public, origins)
+	view := b.display.URL(b.multiview, public, origins.URLs())
 
 	// The report: write the human-readable map to stderr, a line
 	// per public address with the origins it reaches indented
@@ -686,12 +687,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// hostnames change length.
 	if view != "" {
 		fmt.Fprintf(stdout, "%s\n", view)
-		for _, origin := range origins {
+		for _, origin := range origins.URLs() {
 			fmt.Fprintf(stderr, "  -> %s\n", origin)
 		}
 	} else {
-		for i, origin := range origins {
-			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, len(origins)))
+		for i, origin := range origins.URLs() {
+			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
 			fmt.Fprintf(stderr, "  -> %s\n", origin)
 		}
 	}
@@ -720,7 +721,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		screen, open = nil, &shown
 	}
 	b.display.Open(ctx, log,
-		display.WithAddr(cmp.Or(view, publicURL(public, 0, len(origins)))),
+		display.WithAddr(cmp.Or(view, publicURL(public, 0, origins.Len()))),
 		display.WithForced(open),
 		display.WithStderr(stderr),
 		display.WithInteractive(display.IsInteractive(cmd)),
@@ -894,7 +895,7 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // The warnings go to the same sink and level as the tunnel's own logs, so an
 // unset --log-level (or v1.LogEnv) means a dropped origin is dropped silently
 // — the same silence everything else in a default run keeps.
-func (b *BuilderImpl) Origins() []*url.URL {
+func (b *BuilderImpl) Origins() Origins {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
 	log, _ := b.logger()
@@ -936,7 +937,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 		}
 	}
 
-	origins := make([]*url.URL, 0, len(settled))
+	urls := make([]*url.URL, 0, len(settled))
 	// The first origin seen carrying a +ws marker, kept to strip a second.
 	wsOrigin := ""
 	for _, s := range settled {
@@ -958,7 +959,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
-			origins = append(origins, &url.URL{Scheme: v1.ExecScheme, Path: path})
+			urls = append(urls, &url.URL{Scheme: v1.ExecScheme, Path: path})
 			continue
 		}
 		if !strings.Contains(s, "://") {
@@ -984,7 +985,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			// that looked it up.
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
-					origins = append(origins, &url.URL{Scheme: u.Scheme, Path: path})
+					urls = append(urls, &url.URL{Scheme: u.Scheme, Path: path})
 					continue
 				}
 			}
@@ -1004,7 +1005,7 @@ func (b *BuilderImpl) Origins() []*url.URL {
 				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
 				continue
 			}
-			origins = append(origins, u)
+			urls = append(urls, u)
 			continue
 		}
 		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
@@ -1053,9 +1054,9 @@ func (b *BuilderImpl) Origins() []*url.URL {
 			}
 			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
-		origins = append(origins, u)
+		urls = append(urls, u)
 	}
-	return origins
+	return origins.New(origins.WithURL(urls...))
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

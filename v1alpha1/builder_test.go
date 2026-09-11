@@ -1179,9 +1179,15 @@ func TestParseOriginsAccepts(t *testing.T) {
 
 // originStrings renders parsed origins for comparison, so a table can be
 // written the way somebody types origins rather than as *url.URL literals.
-func originStrings(origins []*url.URL) []string {
-	got := make([]string, len(origins))
-	for i, u := range origins {
+func originStrings(origins Origins) []string {
+	return urlStrings(origins.URLs())
+}
+
+// urlStrings is the same for a plain slice, which is what a case that slices
+// the list to compare its tail has in hand.
+func urlStrings(urls []*url.URL) []string {
+	got := make([]string, len(urls))
+	for i, u := range urls {
 		got[i] = u.String()
 	}
 	return got
@@ -1280,7 +1286,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
 
-			got := b.Origins()
+			got := b.Origins().URLs()
 			if !slices.EqualFunc(got, tc.want, func(a, b *url.URL) bool { return *a == *b }) {
 				t.Errorf("Origins() = %+v, want %+v", got, tc.want)
 			}
@@ -1371,7 +1377,7 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if len(got) != 3 || got[0].Scheme != v1.ExecScheme || got[0].Path != want {
+	if got.Len() != 3 || got.At(0).Scheme != v1.ExecScheme || got.At(0).Path != want {
 		t.Fatalf("Origins() = %q, want the first to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
@@ -1383,15 +1389,15 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// pseudo-terminals refuses a program origin at startup regardless, and the
 	// binder reads the path off the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
-		again, err := url.Parse(got[0].String())
+		again, err := url.Parse(got.At(0).String())
 		if err != nil {
-			t.Fatalf("%q did not parse back: %v", got[0], err)
+			t.Fatalf("%q did not parse back: %v", got.At(0), err)
 		}
 		if again.Path != want {
-			t.Errorf("%q parsed back to path %q, want %q", got[0], again.Path, want)
+			t.Errorf("%q parsed back to path %q, want %q", got.At(0), again.Path, want)
 		}
 	}
-	if rest := originStrings(got[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
+	if rest := urlStrings(got.URLs()[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 
@@ -1400,12 +1406,12 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// something, so it is looked up as a program first — and lands on the
 	// resolved path, exactly as the bare word does.
 	spelled := New(WithOrigin(v1.ExecScheme + "://" + name)).Origins()
-	if len(spelled) != 1 || spelled[0].Scheme != v1.ExecScheme || spelled[0].Path != want {
+	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || spelled.At(0).Path != want {
 		t.Fatalf("Origins(%q) = %q, want %s://%s", v1.ExecScheme+"://"+name, originStrings(spelled), v1.ExecScheme, want)
 	}
-	if got[0].String() != spelled[0].String() {
+	if got.At(0).String() != spelled.At(0).String() {
 		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
-			name, v1.ExecScheme+"://"+name, got[0], spelled[0])
+			name, v1.ExecScheme+"://"+name, got.At(0), spelled.At(0))
 	}
 }
 
