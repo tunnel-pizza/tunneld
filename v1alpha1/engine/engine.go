@@ -41,18 +41,30 @@ func New(opts ...Option) *EngineImpl {
 // From builds its own backend, so the provider host travels by environment
 // rather than through WithProvider. It is the same knob either way: libtunnel
 // reads that variable over a code-set host.
-func (*EngineImpl) Tunnel(spec, provider string) libtunnel.TunnelV1 {
+//
+// The token is applied here rather than by the caller because it is a mint
+// input, like spec and provider — what the mint is made of, where the rest of
+// what a run chains on is what the run is made of. Unconditionally, on both
+// branches: libtunnel documents an empty token as ignored, so there is no
+// branch here to get wrong.
+//
+// WithToken is on the Tunnel interface and not only on Backend, which is what
+// lets the replayed branch take it the same way the minted one does — and it
+// does apply there, whatever the upstream doc says: cloudflare.From keeps the
+// spec as a hint, recordHint reads its record, and that record rides the same
+// request the Authorization header does.
+func (*EngineImpl) Tunnel(spec, provider, token string) libtunnel.TunnelV1 {
 	if provider != "" {
 		// Best effort: a provider that cannot be set falls back to the
 		// default, which is where an unset one would have gone anyway.
 		_ = os.Setenv(ltv1.CloudflareProviderEnv, provider)
 	}
 	if spec != "" {
-		return libtunnel.From(spec)
+		return libtunnel.From(spec).WithToken(token)
 	}
 	backend := libtunnel.Cloudflare()
 	if provider != "" {
 		backend = backend.WithProvider(provider)
 	}
-	return libtunnel.New(backend)
+	return libtunnel.New(backend).WithToken(token)
 }
