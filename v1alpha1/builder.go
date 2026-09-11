@@ -375,7 +375,7 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			Short: "Print the " + name + " build identifier and exit",
 			Args:  cobra.NoArgs,
 			Run: func(cmd *cobra.Command, _ []string) {
-				fmt.Fprintln(cmd.OutOrStdout(), VersionLine())
+				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.Origins()))
 			},
 		})
 
@@ -545,7 +545,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// program had run. Everything above this line is configuration,
 	// so a bad flag or an origin that cannot be reached still fails
 	// without one.
-	fmt.Fprintln(stderr, VersionLine())
+	fmt.Fprintln(stderr, VersionLine(origins))
 
 	// Something turning, because the wait below is the long one: minting,
 	// dialing the edge, and then the hostname becoming resolvable, which is

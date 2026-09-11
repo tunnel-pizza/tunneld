@@ -73,6 +73,16 @@ func Version() string {
 // VersionLine is the human-facing build banner printed by `tunneld version`
 // and logged at startup. It names libtunnel too, since that is what actually
 // speaks to the edge — a bug report needs both numbers.
-func VersionLine() string {
-	return fmt.Sprintf("tunneld %s (libtunnel %s, built %s)", Version(), libtunnel.Version(), runtime.Version())
+//
+// And the cache key, when there is a run to name: it says which spec this run
+// replays, which is the question behind a hostname that changed when it should
+// not have — or did not when it should have. Origins with nothing in them, or
+// none at all, drop the clause: that is the frame's banner, built in New
+// before a flag has been parsed, where there is no run to identify yet.
+func VersionLine(origins Origins) string {
+	line := fmt.Sprintf("tunneld %s (libtunnel %s, built %s", Version(), libtunnel.Version(), runtime.Version())
+	if origins != nil && origins.Len() > 0 {
+		line += ", cache " + origins.Key()
+	}
+	return line + ")"
 }
