@@ -20,6 +20,8 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.AttachScheme, "attach"},
 		{v1.ExecScheme, "exec"},
 		{v1.DockerProvider, "dockerd"},
+		{v1.IdentityProvidersEnv, "TUNNELD_IDENTITY_PROVIDERS"},
+		{v1.DefaultIdentityProviders, "github"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
