@@ -126,8 +126,8 @@ type Console interface {
 // "should I" for a caller to answer, and no second place where opening one is
 // decided.
 type Display interface {
-	URL(enabled bool, public *url.URL, origins []*url.URL) string
-	Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor
+	URL(enabled bool, public *url.URL, origins Origins) string
+	Interceptors(enabled bool, origins Origins, log v1.Logger) []libtunnel.Interceptor
 	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
 }
 
@@ -171,7 +171,7 @@ func WithCounter(c Counter) Option {
 // keeps shown's length and order — index n means origin n everywhere
 // downstream — and the closer shuts every server the binding started.
 type Binder interface {
-	Bind(ctx context.Context, shown []*url.URL, log v1.Logger) (dialable []*url.URL, bound attach.Bound, err error)
+	Bind(ctx context.Context, shown Origins, log v1.Logger) (dialable Origins, bound attach.Bound, err error)
 }
 
 // WithConsole replaces the console a run may draw its terminal on. Seeded by

@@ -175,8 +175,8 @@ type tile struct {
 // flag and something to compare: one origin framed alone is a worse view of
 // it than the origin itself, so a lone origin keeps the bare address for
 // itself. URL answers "" over exactly the same condition.
-func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger) []libtunnel.Interceptor {
-	if !enabled || len(origins) < 2 {
+func (*DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logger) []libtunnel.Interceptor {
+	if !enabled || origins.Len() < 2 {
 		return nil
 	}
 	return []libtunnel.Interceptor{
@@ -245,9 +245,9 @@ func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 					// body is the one outcome worth avoiding.
 					data := pageData{
 						Host:    r.Host,
-						Origins: make([]tile, 0, len(origins)),
+						Origins: make([]tile, 0, origins.Len()),
 					}
-					for i, origin := range origins {
+					for i, origin := range origins.URLs() {
 						// How a tile names the origin behind it: an http origin is named
 						// by its host, because the scheme is the assumption and the host
 						// is the thing the operator typed. Anything else keeps its
@@ -335,8 +335,8 @@ func (*DisplayImpl) Interceptors(enabled bool, origins []*url.URL, log v1.Logger
 // appended. Reported and opened as-is, and "" when there is no panel to
 // answer — the same condition Interceptors registers nothing over, so the
 // caller has one answer to read rather than a question to ask twice.
-func (*DisplayImpl) URL(enabled bool, public *url.URL, origins []*url.URL) string {
-	if !enabled || len(origins) < 2 {
+func (*DisplayImpl) URL(enabled bool, public *url.URL, origins v1.Origins) string {
+	if !enabled || origins.Len() < 2 {
 		return ""
 	}
 	shown := *public

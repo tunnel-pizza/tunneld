@@ -733,7 +733,7 @@ type fakeBinder struct {
 	showed atomic.Bool
 }
 
-func (f *fakeBinder) Bind(_ context.Context, shown []*url.URL, _ v1.Logger) ([]*url.URL, attach.Bound, error) {
+func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
 	// Carrying Mirror is how the real binder says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
 	// binder itself: a fake that always carried it would mirror every case

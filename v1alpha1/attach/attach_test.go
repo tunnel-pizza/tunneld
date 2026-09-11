@@ -24,6 +24,7 @@ import (
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // framed renders one multiplexed chunk the way a provider without a terminal
@@ -1017,7 +1018,7 @@ func (s *stubTargets) Open(_ context.Context, ref string, _ *slog.Logger) (Targe
 func TestBindPicksTheProviderByScheme(t *testing.T) {
 	containers := &stubTargets{}
 	programs := &stubTargets{verb: v1.ExecScheme, local: true}
-	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "exec:///usr/bin/htop")
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "exec:///usr/bin/htop")
 
 	dialable, closer, err := New(WithTargets(containers, programs)).
 		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
@@ -1034,12 +1035,12 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 	}
 	// The http origin passes through as itself; the other two were replaced by
 	// the loopback servers standing in for them, at their own indexes.
-	if got := dialable[0].String(); got != "http://localhost:3000" {
+	if got := dialable.At(0).String(); got != "http://localhost:3000" {
 		t.Errorf("origin 0 = %q, want the address untouched", got)
 	}
 	for _, at := range []int{1, 2} {
-		if got := dialable[at].Hostname(); got != "127.0.0.1" {
-			t.Errorf("origin %d = %q, want a loopback server", at, dialable[at])
+		if got := dialable.At(at).Hostname(); got != "127.0.0.1" {
+			t.Errorf("origin %d = %q, want a loopback server", at, dialable.At(at))
 		}
 	}
 }
@@ -1048,7 +1049,7 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 // error rather than an origin: dialing "exec:///usr/bin/htop" as an address would mint
 // a public hostname in front of nothing at all.
 func TestBindRefusesAnUnservedScheme(t *testing.T) {
-	display := mustURLs(t, "exec:///usr/bin/htop")
+	display := shown(t, "exec:///usr/bin/htop")
 
 	_, _, err := New(WithTargets(&stubTargets{})).
 		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
@@ -1298,7 +1299,7 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			targets := &stubTargets{}
-			display := mustURLs(t, tc.display...)
+			display := shown(t, tc.display...)
 
 			_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 			if err != nil {
@@ -1322,7 +1323,7 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 // which is the only reason a key inside a browser tab can end a process.
 func TestDoneReachesTheBinder(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
 
 	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1352,6 +1353,13 @@ func TestDoneReachesTheBinder(t *testing.T) {
 	}
 }
 
+// shown is what an operator asked for, in the type Bind takes: the origins as
+// they were typed, before any of them is stood up behind a loopback address.
+func shown(t *testing.T, raw ...string) v1.Origins {
+	t.Helper()
+	return origins.New(origins.WithURL(mustURLs(t, raw...)...))
+}
+
 // mustURLs parses raw as URLs, failing the test on the first one that is not.
 func mustURLs(t *testing.T, raw ...string) []*url.URL {
 	t.Helper()
@@ -1372,7 +1380,7 @@ func mustURLs(t *testing.T, raw ...string) []*url.URL {
 // the reported addresses, the reported map, the multiview tiles.
 func TestBindKeepsOrder(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
 	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1380,18 +1388,18 @@ func TestBindKeepsOrder(t *testing.T) {
 	}
 	defer closer.Close()
 
-	if len(dialable) != len(display) {
-		t.Fatalf("dialable has %d entries, want %d", len(dialable), len(display))
+	if dialable.Len() != display.Len() {
+		t.Fatalf("dialable has %d entries, want %d", dialable.Len(), display.Len())
 	}
-	if got := dialable[0].String(); got != "http://localhost:3000" {
-		t.Errorf("dialable[0] = %q, want the http origin unchanged", got)
+	if got := dialable.At(0).String(); got != "http://localhost:3000" {
+		t.Errorf("dialable.At(0) = %q, want the http origin unchanged", got)
 	}
-	if got := dialable[2].String(); got != "http://localhost:4000" {
-		t.Errorf("dialable[2] = %q, want the http origin unchanged", got)
+	if got := dialable.At(2).String(); got != "http://localhost:4000" {
+		t.Errorf("dialable.At(2) = %q, want the http origin unchanged", got)
 	}
 	for _, i := range []int{1, 3} {
-		if !strings.HasPrefix(dialable[i].Host, "127.0.0.1:") {
-			t.Errorf("dialable[%d] = %q, want a loopback origin", i, dialable[i])
+		if !strings.HasPrefix(dialable.At(i).Host, "127.0.0.1:") {
+			t.Errorf("dialable[%d] = %q, want a loopback origin", i, dialable.At(i))
 		}
 	}
 	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
@@ -1409,7 +1417,7 @@ func TestBindKeepsOrder(t *testing.T) {
 // that reaches a different container.
 func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
 	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1457,7 +1465,7 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 // nothing at all — the feature is inert until somebody asks for it.
 func TestBindWithoutContainers(t *testing.T) {
 	targets := &stubTargets{}
-	display := mustURLs(t, "http://localhost:3000", "http://localhost:4000")
+	display := shown(t, "http://localhost:3000", "http://localhost:4000")
 
 	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -1468,8 +1476,8 @@ func TestBindWithoutContainers(t *testing.T) {
 	if len(targets.asked) != 0 {
 		t.Errorf("opened %q, want nothing", targets.asked)
 	}
-	for i, u := range dialable {
-		if u != display[i] {
+	for i, u := range dialable.URLs() {
+		if u != display.At(i) {
 			t.Errorf("dialable[%d] = %q, want the original origin", i, u)
 		}
 	}
@@ -1481,7 +1489,7 @@ func TestBindWithoutContainers(t *testing.T) {
 // embedding program.
 func TestBindUnwindsOnFailure(t *testing.T) {
 	targets := &stubTargets{failOn: 2}
-	display := mustURLs(t, "attach://dockerd/api", "attach://dockerd/missing")
+	display := shown(t, "attach://dockerd/api", "attach://dockerd/missing")
 
 	if _, _, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
 		t.Fatal("Bind succeeded, want an error")
@@ -1504,7 +1512,7 @@ func TestBindUnwindsOnFailure(t *testing.T) {
 // parser to the pairs that exist today, this fails.
 func TestBindHasRoomForASecondVerb(t *testing.T) {
 	execInto := &stubTargets{verb: v1.ExecScheme, provider: v1.DockerProvider}
-	display := mustURLs(t, "exec://dockerd/api")
+	display := shown(t, "exec://dockerd/api")
 
 	dialable, closer, err := New(WithTargets(execInto)).
 		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
@@ -1516,7 +1524,7 @@ func TestBindHasRoomForASecondVerb(t *testing.T) {
 	if want := []string{"api"}; !slices.Equal(execInto.asked, want) {
 		t.Errorf("the provider was asked for %v, want %v", execInto.asked, want)
 	}
-	if len(dialable) != 1 || dialable[0].Scheme != "http" {
+	if dialable.Len() != 1 || dialable.At(0).Scheme != "http" {
 		t.Errorf("dialable = %v, want the loopback server standing in for the origin", dialable)
 	}
 	if got := execInto.opened[0].Origin(); got != "exec://dockerd/api" {
@@ -1528,7 +1536,7 @@ func TestBindHasRoomForASecondVerb(t *testing.T) {
 // configured fails with a message naming the missing dependency, rather than
 // panicking on a nil interface.
 func TestBindWithoutTargets(t *testing.T) {
-	display := mustURLs(t, "attach://dockerd/api")
+	display := shown(t, "attach://dockerd/api")
 
 	_, _, err := New().Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err == nil {

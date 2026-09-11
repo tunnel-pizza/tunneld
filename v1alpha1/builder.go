@@ -464,7 +464,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// its behalf and hands the tunnel the loopback address instead.
 	// origins stays what the operator typed — it is what the
 	// reported map and the panel show.
-	dialable, bound, err := b.binder.Bind(ctx, origins.URLs(), log)
+	dialable, bound, err := b.binder.Bind(ctx, origins, log)
 	if err != nil {
 		return err
 	}
@@ -522,12 +522,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			WithLogger(log).
 			WithContext(ctx).
 			WithEventListener(listen).
-			WithLocalURL(dialable...)
+			// libtunnel takes the addresses themselves: the list's identity
+			// is this run's business, and what it proxies to is a slice.
+			WithLocalURL(dialable.URLs()...)
 		// Served in front of the origin proxy, so the panel needs no
 		// port of its own and no origin ever sees the request. The
 		// list is empty when there is no panel to serve, which is
 		// the only place that decision is made.
-		for _, ic := range b.display.Interceptors(b.multiview, origins.URLs(), log) {
+		for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
 			tun.WithInterceptor(ic)
 		}
 		return tun
@@ -639,7 +641,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
 	// reads the answer.
-	view := b.display.URL(b.multiview, public, origins.URLs())
+	view := b.display.URL(b.multiview, public, origins)
 
 	// The report: write the human-readable map to stderr, a line
 	// per public address with the origins it reaches indented
