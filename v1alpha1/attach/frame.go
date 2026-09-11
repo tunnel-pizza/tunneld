@@ -390,7 +390,10 @@ func (f frame) View() tea.View {
 	// the bottom what to press and what the session is doing. Each pair gives
 	// the right-hand label up rather than overlapping the left one when a
 	// narrow window cannot hold both.
-	f.row(buf, 0, f.titleLabel(), f.subtitleLabel(), f.where())
+	// The address is worked out first: it has the top row's other corner, and
+	// what is left after it is what the origin has to fit in.
+	where := f.where()
+	f.topRow(buf, 0, f.titleLabel(where), f.subtitleLabel(), where)
 
 	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
 
@@ -437,11 +440,11 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // row draws a border row's labels: left from the indent, right against the far
 // corner, and centre in the frame if what is left of the row can hold it.
 //
-// They give way in that order. What is on the left is the thing that has to be
-// legible — what to press, and what you are attached to — and half a label
-// pushed into another reads as neither. The centre goes first because it is
-// the least urgent of the three, and it is centred on the frame rather than in
-// the gap so that it stays put as the counts beside it change width.
+// The left label keeps its columns and the right one gives way, which is the
+// bottom border's rule: what to press has to be legible, and half a label
+// pushed into another reads as neither. The centre goes first of the three
+// because it is the least urgent, and it is centred on the frame rather than
+// in the gap so that it stays put as the counts beside it change width.
 func (f frame) row(buf uv.ScreenBuffer, y int, left, centre, right string) {
 	const indent = 2
 	edge := f.width - 1
@@ -455,6 +458,47 @@ func (f frame) row(buf uv.ScreenBuffer, y int, left, centre, right string) {
 			before = x
 		}
 	}
+	f.between(buf, y, centre, after, before)
+}
+
+// topRow is row with the two ends' priority reversed: the right label is
+// placed first and the left takes what is left over.
+//
+// The top border's two corners are the origin and the address, and they are
+// not worth the same. The origin is a string somebody typed, and the frame
+// says it again as the page's own title; the address is the tunnel's, minted
+// for this run, and appears nowhere else on the screen. So when the row cannot
+// hold both, the one that can be recovered is the one that goes.
+//
+// The address still gives way below the width where it fits the row at all —
+// there is nothing to trade against, and an address clipped to a corner is not
+// an address. The origin has the row to itself again there.
+func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
+	const indent = 2
+	edge := f.width - 1
+
+	before := edge
+	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
+		if x := edge - width; x > indent {
+			writeAt(buf, x, y, right, edge-x)
+			before = x
+		}
+	}
+
+	// The whole row when the address was not drawn, and a column short of it
+	// when it was — the same gap row leaves between the two.
+	room := edge - indent
+	if before < edge {
+		room = before - indent - 1
+	}
+	after := writeAt(buf, indent, y, left, room)
+
+	f.between(buf, y, centre, after, before)
+}
+
+// between centres centre on the frame, if the columns left between the two end
+// labels can hold it.
+func (f frame) between(buf uv.ScreenBuffer, y int, centre string, after, before int) {
 	if width := uv.NewStyledString(centre).UnicodeWidth(); width > 0 {
 		if x := (f.width - width) / 2; x > after && x+width < before {
 			writeAt(buf, x, y, centre, before-x)
@@ -495,8 +539,89 @@ func writeAt(buf uv.ScreenBuffer, x, y int, s string, width int) int {
 // The origin comes whole from the Target rather than being assembled here: a
 // provider knows its own verb and authority, so a program frames itself as
 // exec:///usr/bin/htop where a container frames itself as attach://dockerd/api.
-func (f frame) titleLabel() string {
-	return nameStyle.Styled(" " + f.title() + " ")
+func (f frame) titleLabel(beside string) string {
+	origin := f.title()
+
+	// The row to itself where the address is not being drawn at all, which is
+	// the one case the origin is not competing with anything.
+	if !f.drawn(beside) {
+		return nameStyle.Styled(" " + shorten(origin, f.titleRoom("")) + " ")
+	}
+
+	room := f.titleRoom(beside)
+	short := shorten(origin, room)
+	if ansi.StringWidth(short) > room {
+		// Narrower than the shortest thing the origin can honestly be reduced
+		// to. It goes rather than being clipped: topRow says why the address
+		// is the one kept, and a stub reading exec:///Us tells nobody
+		// anything the frame does not say better in the page's title.
+		return ""
+	}
+	return nameStyle.Styled(" " + short + " ")
+}
+
+// drawn reports whether the row will place beside against its corner. Below
+// this it does not fit the row on its own, and topRow drops it.
+func (f frame) drawn(beside string) bool {
+	width := uv.NewStyledString(beside).UnicodeWidth()
+	return width > 0 && width < f.width-3
+}
+
+// titleRoom is how many columns the origin can have without costing the label
+// against the other corner.
+//
+// Read off topRow: the left label starts at column 2, the right one ends at
+// f.width-1, and a column is left between them. The label's own spaces are the
+// last two.
+func (f frame) titleRoom(beside string) int {
+	if width := uv.NewStyledString(beside).UnicodeWidth(); width > 0 {
+		return f.width - 1 - width - 1 - 2 - 2
+	}
+	return f.width - 1 - 2 - 2
+}
+
+// ellipsis stands for the leading path segments an origin has given up.
+const ellipsis = "..."
+
+// shorten is origin with as few leading path segments as the width demands
+// replaced by an ellipsis, and origin itself when that cannot help.
+//
+// Which end goes is the whole of this: an origin truncated the way a label is,
+// from the tail, loses exactly the part that says which program is running and
+// keeps the part that says whose home directory it is under. So the head is
+// spent instead, one segment at a time and no more than the width asks for.
+//
+// The scheme and the authority always stay — they are what makes the string an
+// origin rather than a path — and so does the last segment, which is the name.
+// An origin with nothing between the two comes back untouched: a container's
+// single path segment is its name, and dropping it would leave attach://dockerd
+// standing for a container. The caller's writeAt then clips it as it always
+// has, so a window too narrow for any of this still draws a frame.
+func shorten(origin string, width int) string {
+	if width <= 0 || ansi.StringWidth(origin) <= width {
+		return origin
+	}
+
+	scheme := strings.Index(origin, "://")
+	if scheme < 0 {
+		return origin
+	}
+	// The first separator after the authority, which the prefix keeps: the
+	// path is what comes after it, and on a program origin the authority is
+	// empty, so that separator is the root.
+	root := strings.Index(origin[scheme+len("://"):], "/")
+	if root < 0 {
+		return origin
+	}
+
+	at := scheme + len("://") + root + 1
+	prefix, segments := origin[:at], strings.Split(origin[at:], "/")
+	for i := 1; i < len(segments); i++ {
+		if short := prefix + ellipsis + "/" + strings.Join(segments[i:], "/"); ansi.StringWidth(short) <= width {
+			return short
+		}
+	}
+	return origin
 }
 
 // title is the origin, unstyled, for the places that cannot carry styling.

@@ -1,6 +1,7 @@
 package attach
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -956,6 +957,142 @@ func TestTheFrameNamesTheOriginItServes(t *testing.T) {
 				t.Errorf("top border = %q, want %q in it", top, tc.want)
 			}
 		})
+	}
+}
+
+// TestALongOriginGivesUpItsLeadingSegments pins which end of a program origin
+// goes when the top border cannot hold it whole.
+//
+// The tail names the program and the head is what it costs, so the head is
+// what is spent — one segment at a time, and only as many as the width
+// demands. A container origin has nothing to spend: its one path segment is
+// the container's name.
+func TestALongOriginGivesUpItsLeadingSegments(t *testing.T) {
+	const origin = "exec:///Users/christian/.local/bin/claude" // 41 columns
+
+	for _, tc := range []struct {
+		width int
+		want  string
+	}{
+		{41, origin},
+		{80, origin},
+		// One short, so the first segment goes and no more.
+		{40, "exec:///.../christian/.local/bin/claude"},
+		{39, "exec:///.../christian/.local/bin/claude"},
+		{38, "exec:///.../.local/bin/claude"},
+		{29, "exec:///.../.local/bin/claude"},
+		{28, "exec:///.../bin/claude"},
+		{22, "exec:///.../bin/claude"},
+		{21, "exec:///.../claude"},
+		{18, "exec:///.../claude"},
+		// Narrower than the program's own name: nothing left to give up, so
+		// the origin comes back whole for the border to clip as it always has.
+		{17, origin},
+		{1, origin},
+		{0, origin},
+		{-1, origin},
+	} {
+		t.Run(fmt.Sprintf("%d columns", tc.width), func(t *testing.T) {
+			if got := shorten(origin, tc.width); got != tc.want {
+				t.Errorf("shorten(%d) = %q, want %q", tc.width, got, tc.want)
+			}
+		})
+	}
+
+	// Everything that is not a path with room in it is handed back untouched:
+	// a container's name is the only segment it has, and the authority says
+	// which daemon it is on.
+	for _, whole := range []string{
+		"attach://dockerd/api",
+		"attach://dockerd/a-very-long-container-name-indeed",
+		"exec:///claude",
+		"exec://",
+		"claude",
+		"",
+	} {
+		if got := shorten(whole, 8); got != whole {
+			t.Errorf("shorten(%q) = %q, want it untouched", whole, got)
+		}
+	}
+}
+
+// TestTheAddressSurvivesALongOrigin pins the two corners of the top border
+// against each other, at four widths and in the order they give way.
+//
+// A program origin is an absolute path, so it is long by construction, and the
+// address used to be what the row dropped to make space for it. It is now the
+// other way round: the origin gives up its head, then gives up the row, and
+// only takes it back below the width where the address fits at all.
+func TestTheAddressSurvivesALongOrigin(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.height = 8
+
+	target := newFakeTarget("claude", true, true)
+	target.origin = "exec:///Users/christian/.local/bin/claude"
+	h.s.Target = target
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+
+	// Wide enough for both, and the origin is whole.
+	h.f.width = 120
+	top := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+	if !strings.Contains(top, target.origin) {
+		t.Errorf("top border = %q, want the whole origin %q in it", top, target.origin)
+	}
+
+	// The window from the report: the origin no longer fits beside the
+	// address, so it gives up its head and both are shown.
+	h.f.width = 84
+	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+
+	if want := h.s.announced() + " \u256e"; !strings.HasSuffix(top, want) {
+		t.Errorf("top border = %q, want it ending %q", top, want)
+	}
+	if !strings.Contains(top, ellipsis+"/.local/bin/claude") {
+		t.Errorf("top border = %q, want the origin's tail kept behind an ellipsis", top)
+	}
+	if strings.Contains(top, "/Users/") {
+		t.Errorf("top border = %q, want the origin's head given up", top)
+	}
+	if len([]rune(top)) != h.f.width {
+		t.Errorf("top border is %d columns, want the window's %d", len([]rune(top)), h.f.width)
+	}
+
+	// Narrower again, and the two no longer both fit at any length the origin
+	// can be reduced to. The address keeps the row: it is minted for this run
+	// and said nowhere else, where the origin is a string somebody typed and
+	// the page's own title still carries it whole.
+	h.f.width = 56
+	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+	if want := h.s.announced() + " \u256e"; !strings.HasSuffix(top, want) {
+		t.Errorf("top border = %q, want it ending %q", top, want)
+	}
+	if strings.Contains(top, "claude") || strings.Contains(top, ellipsis) {
+		t.Errorf("top border = %q, want the origin given up rather than clipped", top)
+	}
+	if len([]rune(top)) != h.f.width {
+		t.Errorf("top border is %d columns, want the window's %d", len([]rune(top)), h.f.width)
+	}
+
+	// Narrower still, and the address cannot be kept at any length the origin
+	// could take. It is given up as it always was — but the origin is then
+	// fitted to the whole row rather than clipped against the corner, because
+	// a clipped one ends mid-path and says nothing about which program this is.
+	h.f.width = 40
+	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
+	if strings.Contains(top, h.s.announced()) {
+		t.Errorf("top border = %q, want the address given up at this width", top)
+	}
+	if !strings.HasSuffix(strings.TrimRight(top, "\u2500\u256e "), "/claude") {
+		t.Errorf("top border = %q, want it still naming the program", top)
+	}
+	if len([]rune(top)) != h.f.width {
+		t.Errorf("top border is %d columns, want the window's %d", len([]rune(top)), h.f.width)
+	}
+
+	// What the frame calls the page is the origin as it was typed either way:
+	// a browser tab is not short of columns.
+	if got := h.f.View().WindowTitle; !strings.Contains(got, target.origin) {
+		t.Errorf("page title = %q, want the whole origin in it", got)
 	}
 }
 
