@@ -241,6 +241,20 @@ jobs:
           name: dist
           path: dist
 
+      # upload-artifact zips what it is handed and that zip carries no mode
+      # bits, so the binaries the build wrote 0755 arrive here 0644. npm packs
+      # a file with the mode it has and the launcher spawns the binary rather
+      # than reading it, so a lost bit installs cleanly and then fails on the
+      # first run with EACCES. Nothing downstream restores it: npm chmods the
+      # package's bin entry, which is the launcher, not what dist/ holds.
+      #
+      # Before the signing step, because mode is not part of what cosign signs
+      # or what sha256sum hashes — the bytes are the same either side of this.
+      # The glob is unquoted so a dist/ without binaries in it fails here
+      # rather than publishing six unrunnable files.
+      - name: restore the executable bit
+        run: chmod +x dist/tunneld-*
+
       - name: push tag
         if: needs.tag.outputs.needs_push == 'true'
         run: |
