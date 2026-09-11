@@ -50,6 +50,14 @@ func build(t *testing.T) string {
 // itself under test and a case proving it works has to start from a run that
 // would otherwise fall back. Cases set SHELL back through runEnv when they
 // want one.
+//
+// The identity variables the github provider reads — GITHUB_TOKEN, GH_TOKEN,
+// GITHUB_PERSONAL_ACCESS_TOKEN, ACTIONS_RUNTIME_TOKEN — are deliberately left
+// in. A run under CI should mint the way a run on a laptop with gh logged in
+// does, which means carrying whatever credential the machine has; stripping
+// them would make every e2e mint anonymous and hide a provider that had
+// stopped working. They are not TUNNELD_ variables, so the prefix rule below
+// does not reach them, and nothing should be added that does.
 func strippedEnv() []string {
 	env := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
