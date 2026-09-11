@@ -13,7 +13,7 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/vt v0.0.0-20260906004030-3986e9119cf9
-	github.com/cnuss/libtunnel v0.0.72
+	github.com/cnuss/libtunnel v0.1.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/go-logr/logr v1.4.4
