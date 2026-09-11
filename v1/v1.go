@@ -351,6 +351,28 @@ const DefaultIdentityProviders = "github"
 // --shell-fallback=false or ShellFallbackEnv.
 const DefaultShellFallback = true
 
+// Origins is the local origins a run exposes, in order: the first is the
+// default and each later one answers on a bare ?n routing parameter.
+//
+// A type rather than a []*url.URL, because the list answers a question no
+// slice can: Key is what identifies this run's tunnel, and it is the name its
+// cached spec is filed under. Everything else here is the slice's own
+// vocabulary, so a caller reads it the way it would read a slice.
+type Origins interface {
+	// Len is how many origins this run exposes.
+	Len() int
+	// At is the origin at i, which the caller has already bounded by Len.
+	At(i int) *url.URL
+	// URLs is every origin, in order, as a copy — sorting or reordering what
+	// comes back cannot reorder the run.
+	URLs() []*url.URL
+	// Key identifies the tunnel these origins are: the working directory they
+	// were settled in and the origins themselves, sorted so the order they
+	// were typed does not make a second tunnel, deduplicated so a repeat does
+	// not either. Stable across runs, and safe as a filename.
+	Key() string
+}
+
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
 // configured by that package's options, and call the terminal Command to
 // produce a *cobra.Command.
