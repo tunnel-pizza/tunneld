@@ -1,9 +1,12 @@
 package v1alpha1
 
 import (
+	"bytes"
 	"net/url"
 	"strings"
 	"testing"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
@@ -71,5 +74,40 @@ func TestVersionLineNamesTheCache(t *testing.T) {
 		if got := VersionLine(empty); strings.Contains(got, "cache ") {
 			t.Errorf("VersionLine(%v) = %q, want no cache clause", empty, got)
 		}
+	}
+}
+
+// TestVersionSubcommandReadsTheEnvironment pins that `tunneld version` reports
+// the cache a run here would actually use.
+//
+// applyEnv binds a variable onto the flag that mirrors it, and cobra hands the
+// hook the command being executed — which for a subcommand is the subcommand,
+// whose flag set does not hold --no-cache. Without the version command
+// applying the environment to its parent, the banner names a key for a cache
+// the environment has already turned off.
+func TestVersionSubcommandReadsTheEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		cached    bool
+	}{
+		{name: "unset", cached: true},
+		{name: "false", env: "false", cached: true},
+		{name: "true", env: "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.NoCacheEnv, tc.env)
+			var out bytes.Buffer
+
+			cmd := New(WithOrigin(":3000"), WithStdout(&out)).Command()
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{"version"})
+			if err := cmd.ExecuteContext(t.Context()); err != nil {
+				t.Fatalf("version: %v", err)
+			}
+
+			if named := strings.Contains(out.String(), "cache "); named != tc.cached {
+				t.Errorf("%s=%q: banner names a cache = %v, want %v: %q", v1.NoCacheEnv, tc.env, named, tc.cached, out.String())
+			}
+		})
 	}
 }

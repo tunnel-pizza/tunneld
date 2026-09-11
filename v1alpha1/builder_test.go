@@ -1909,6 +1909,11 @@ func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
 			if h.cache.saved != tc.saved {
 				t.Errorf("cache saved = %v, want %v", h.cache.saved, tc.saved)
 			}
+			// And the banner says which it was: naming a key for a run that
+			// caches nothing names a file that will never exist.
+			if named := strings.Contains(h.stderr.String(), "cache "); named != tc.saved {
+				t.Errorf("banner names a cache = %v, want %v:\n%s", named, tc.saved, h.stderr.String())
+			}
 		})
 	}
 }

@@ -350,7 +350,15 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			Short: "Print the " + name + " build identifier and exit",
 			Args:  cobra.NoArgs,
 			Run: func(cmd *cobra.Command, _ []string) {
-				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.Origins()))
+				// Against the root's flags rather than this subcommand's:
+				// applyEnv binds a variable onto the flag that mirrors it, and
+				// the flags a run is configured by live on the parent. Without
+				// this the banner would report a cache key for a run that
+				// TUNNELD_NO_CACHE has already turned off. A bad value is the
+				// run's error to report, not this one's — printing a version
+				// is not the place to refuse.
+				_ = b.applyEnv(b.command)
+				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.cached()))
 			},
 		})
 
@@ -528,7 +536,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// program had run. Everything above this line is configuration,
 	// so a bad flag or an origin that cannot be reached still fails
 	// without one.
-	fmt.Fprintln(stderr, VersionLine(origins))
+	// The origins only when they name a file this run would use: a banner
+	// reporting a cache key for a run that caches nothing names something that
+	// does not exist, which is worse than naming nothing.
+	banner := origins
+	if spec == nil {
+		banner = nil
+	}
+	fmt.Fprintln(stderr, VersionLine(banner))
 
 	// Something turning, because the wait below is the long one: minting,
 	// dialing the edge, and then the hostname becoming resolvable, which is
@@ -882,6 +897,16 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // The warnings go to the same sink and level as the tunnel's own logs, so an
 // unset --log-level (or v1.LogEnv) means a dropped origin is dropped silently
 // — the same silence everything else in a default run keeps.
+// cached is the origins when this run would cache them, and nil when it would
+// not — what the build banner names, so it never reports a key for a file
+// nothing will write.
+func (b *BuilderImpl) cached() Origins {
+	if b.noCache || b.cache == nil {
+		return nil
+	}
+	return b.Origins()
+}
+
 func (b *BuilderImpl) Origins() Origins {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
