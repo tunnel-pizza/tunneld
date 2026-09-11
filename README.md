@@ -269,6 +269,36 @@ tunneld under its own verb: it inherits the default along with everything else,
 and somebody who typed that verb meaning to name an origin should be told they
 forgot one rather than handed a public terminal onto the machine.
 
+### Identity
+
+The mint request can carry a credential, so a provider that gates minting can
+tell who is asking. tunneld does not create one — it looks where this machine
+already keeps one, and sends what it finds:
+
+```sh
+tunneld :3000                               # the default, github
+tunneld --identity-providers= :3000         # send nothing
+```
+
+`github` asks `gh auth token` first, since a logged-in `gh` is the identity the
+machine is actually using, and falls back to `GITHUB_TOKEN`, `GH_TOKEN`,
+`GITHUB_PERSONAL_ACCESS_TOKEN` and `ACTIONS_RUNTIME_TOKEN`, in that order. The
+last of those is the Actions runner's own token, scoped to the runner's
+services rather than the GitHub API; it is sent because it is the only
+credential a default Actions job has, and what it is worth is the mint
+provider's call.
+
+Finding nothing is ordinary: the tunnel mints anonymously, as every tunnel did
+before this. A name the list carries that tunneld has no provider for is an
+error before anything is minted, so a typo does not quietly send nothing.
+
+`LIBTUNNEL_TOKEN` is the operator's own override and outranks all of it — set
+it and no provider is consulted at all.
+
+The credential never appears in a log line, an error, the origin map or the
+cached spec. `--log-level=debug` says which provider answered, never what it
+answered with.
+
 ### The console you started it from
 
 With exactly one `attach://` or `exec://` origin, the terminal is drawn on
@@ -536,6 +566,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
+| `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, in order — the first to find one wins. **Default `github`**, which asks `gh auth token` and then the GitHub environment variables. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:
 
@@ -750,6 +781,7 @@ after construction still lands.
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

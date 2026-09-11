@@ -337,6 +337,24 @@ Easy to get wrong from the diff alone:
   ("imposter commit"). Pin to the commit underneath (see existing entries in
   [`scorecard.yml`](./.github/workflows/scorecard.yml)).
 
+- **A mint credential is found, never made.** `v1alpha1/identity` has
+  `attach`'s shape for `attach`'s reason: a list the operator wrote, dispatched
+  by name to providers that each know a different kind of machine. The package
+  owns the `Provider` contract, the name-keyed registry, the ordered walk and
+  the `LIBTUNNEL_TOKEN` rule; a provider is a directory under it
+  (`identity/github`), and adding one touches neither the builder nor either
+  contract. The builder's `Identity` contract has two methods because the two
+  questions are asked at two moments — `Known` before `Bind` opens anything, so
+  a typo costs nothing, and `Token` just before the mint, so a run that fails
+  earlier never pays for a `gh` subprocess. `Token` returns no error: a
+  provider that finds nothing has not failed, and the run mints anonymously
+  either way. The credential itself is never logged, never put in an error, and
+  never written to the spec cache — debug says which provider answered, never
+  what. The `gh` subprocess needs `Cmd.WaitDelay` and not just a context:
+  cancelling kills `gh`, but its children inherit the pipe `Output` reads, and
+  `Output` blocks until every writer closes it, so a grandchild outliving its
+  parent holds the call open for as long as it runs.
+
 ### Container origins
 
 `v1alpha1/attach/` serves an `attach://dockerd/` origin as a browser terminal, and
