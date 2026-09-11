@@ -561,7 +561,7 @@ default.**
 
 | Flag | Variable | Effect |
 | ---- | -------- | ------ |
-| `--cache-dir` | `TUNNELD_CACHE_DIR` | Directory to cache the tunnel spec in — `TUNNEL.env`, the credentials that let the next run replay the same hostname instead of minting a new one. Repeat the flag for more; comma-separated in the variable. Empty or `true` means the default: a per-project directory under the user's cache directory, named for the working directory. Never the working directory itself — a spec is credentials, and a checkout is the one place they must not land by default. `false` anywhere in the list turns caching off. |
+| `--no-cache` | `TUNNELD_NO_CACHE` | Don't cache the tunnel spec: mint a fresh hostname every run. Cached, it goes to `<user cache dir>/.tunneld/<key>.env` — one file per working directory and set of origins, where the key names that pairing and the banner prints it. Never the working directory: a spec is credentials, and a checkout is the one place they must not land. Where it goes is not configurable from a flag; an embedding program passes `v1alpha1.WithCacheDir`. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
@@ -625,7 +625,7 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             version resolution. May change
                                             between alpha revisions.
 github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each:
-                                            cachedir, engine, cache, panel,
+                                            origins, engine, cache, panel,
                                             browser, counter and attach sit
                                             behind the contracts in v1alpha1;
                                             attach declares its own Target and
@@ -654,7 +654,7 @@ func VersionLine() string             // the human-facing build banner
 func WithName(name string) Option                 // command name; default "tunneld"
 func WithOrigin(origins ...string) Option         // origins, in order; appends across options
 func WithProvider(host string) Option             // quick-tunnel host; default tunnel.pizza
-func WithCacheDir(dirs ...string) Option          // spec cache directories; true/false are instructions
+func WithCacheDir(dir string) Option              // cache specs here instead of the user's cache directory
 func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
 func WithOpen(open bool) Option                   // force the browser decision; unset means derived
 func WithMultiview(mv bool) Option                // frame the origins together; default true
@@ -668,9 +668,10 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
 changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithCacheDirs`, `WithEngine`, `WithCache`,
-`WithDisplay`, `WithCounter` and `WithBinder`, which swap the
-collaborators the tunnel run composes. They are a contributor's and a test's
+`BuilderImpl` also takes `WithEngine`, `WithCache`, `WithDisplay`,
+`WithCounter` and `WithBinder`, which swap the collaborators the tunnel run
+composes — `WithCache(nil)` being how an embedder turns caching off, and what
+`--no-cache` leaves a run in. They are a contributor's and a test's
 concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
 
@@ -702,7 +703,7 @@ var ErrNotReady        = errors.New("tunnel did not become ready")
 const LogEnv          = "TUNNELD_LOG"
 const OriginsEnv      = "TUNNELD_ORIGINS"
 const ProviderEnv     = "TUNNELD_PROVIDER"
-const CacheDirEnv     = "TUNNELD_CACHE_DIR"
+const NoCacheEnv      = "TUNNELD_NO_CACHE"
 const MultiviewEnv    = "TUNNELD_MULTIVIEW"
 const ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
 const CommandName     = "tunneld"
@@ -776,7 +777,7 @@ after construction still lands.
 | Variable | Mirrors | Effect |
 | -------- | ------- | ------ |
 | `TUNNELD_ORIGINS` | the arguments | Local origins, comma-separated in the order argv would take them. An origin URL containing a literal comma has to arrive as an argument, which is parsed for no separator. |
-| `TUNNELD_CACHE_DIR` | `--cache-dir` | Spec cache directories, comma-separated and in order. `true` or an empty entry is the default location, `false` anywhere in the list turns caching off, anything else is a path. |
+| `TUNNELD_NO_CACHE` | `--no-cache` | Whether to skip the spec cache, so every run mints a fresh hostname. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |

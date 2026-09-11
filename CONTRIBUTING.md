@@ -16,10 +16,10 @@ Deep-link by filename; line numbers will drift.
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| `CacheDirs` contract's implementation: the --cache-dir list and its pflag value | [`v1alpha1/cachedir/`](./v1alpha1/cachedir) |
+| Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
-| Spec cache, `TUNNEL.env` (`Cache`)             | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
+| Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
@@ -76,9 +76,11 @@ Conventions, not machinery — nothing here enforces them.
 builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
-[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `CacheDirs`, `Engine`,
-`Cache`, `Display`, `Counter`, `Binder`, implemented respectively by
-`cachedir`, `engine`, `cache`, `display`, `counter`, `attach`. Each
+[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Engine`, `Cache`,
+`Display`, `Counter`, `Binder`, implemented respectively by `engine`, `cache`,
+`display`, `counter`, `attach`. `Origins` is not among them: it maps a value to
+a value, so it is a type in [`v1/v1.go`](./v1/v1.go) with one implementation in
+`v1alpha1/origins` and no option to swap it. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
 subpackage, seeded by `New` and replaceable with the matching `With*` option.
 A function that maps a value to a value (`publicURL`, `Version`) gets no
@@ -117,8 +119,8 @@ is applied by hand in `RunE`: argv replaces the variable, which replaces the
 seed.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
-unconditionally — `cachedir`, `engine`, `cache`, `browser`, `counter`,
-`attach` — and the `v1alpha1` root stays implementation-agnostic:
+unconditionally — `engine`, `cache`, `browser`, `counter`, `attach` — and the
+`v1alpha1` root stays implementation-agnostic:
 `New`, the contracts, the options and `Command`. A second implementation of a
 contract gets a subpackage of its own beside the first. The same applies to
 anything with a world of its own: [`v1alpha1/panel`](./v1alpha1/panel) is a
@@ -275,7 +277,7 @@ Easy to get wrong from the diff alone:
 - **Flag variables are applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
   that hook *before* `ValidateRequiredFlags`, which is the only reason a
   variable alone can satisfy a required flag. Marking `f.Changed` there is the
-  other half. `--cache-dir` is the one that needs it.
+  other half.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
   origin 1; `?1=x` is application data the proxy forwards untouched. See
   `publicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
@@ -821,7 +823,7 @@ everywhere, including the lanes that mint no tunnel.
 ## Adding a flag
 
 The flag surface is deliberately small: `--provider`, `--log-level`,
-`--cache-dir`. Origins are not among them — they are the arguments.
+`--no-cache`. Origins are not among them — they are the arguments.
 Everything else the tunnel engine can do is reachable through `libtunnel`'s own
 `LIBTUNNEL_*` environment variables, which pass straight through — reach for
 those before adding a flag.
@@ -891,14 +893,13 @@ Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
 `*.local`, etc. Keep the `*.local` line broad rather than narrowing it to
 names.
 
-`TUNNEL.env` needs its own entry, because it is not a `*.local`. It is the
-cached tunnel spec — credentials. The default cache directory is a per-project
-one under the user's cache directory, never the checkout, so a plain run
-writes nothing here; but `--cache-dir .` or `TUNNELD_CACHE_DIR` can point at
-the checkout, and the entry is what keeps that spec out of a commit. A rename
-of that file has to update `.gitignore` in the same change, or the next
-`git add -A` commits a credential. `make clean` removes it, along with the
-compose example's volume and the local image.
+The cached tunnel spec needs no entry, and used to. It is credentials, and it
+lands under the user's own cache directory — `<user cache dir>/.tunneld/` —
+which no flag and no variable can point at a checkout: `--cache-dir` is gone,
+and the only lever left is `v1alpha1.WithCacheDir`, which an embedding program
+passes in code. A spec cannot arrive in the tree for `git add -A` to commit, so
+there is nothing here to ignore. `make clean` removes the whole cache
+directory, along with the compose example's volume and the local image.
 
 ## Pull requests
 

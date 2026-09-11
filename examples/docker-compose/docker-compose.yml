@@ -1,7 +1,6 @@
-
 x-volumes: &volumes
   - /var/run/docker.sock:/var/run/docker.sock:ro
-  - tunneld:/var/run/tunneld
+  - tunneld:/var/run/.tunneld
   - home:/home/user
 
 services:
@@ -14,7 +13,11 @@ services:
     volumes: *volumes
     environment:
       - TUNNELD_LOG=debug
-      - TUNNELD_CACHE_DIR=/var/run/tunneld
+      # Where the spec cache lands. tunneld files it under the user's cache
+      # directory, which on Linux is $XDG_CACHE_HOME — this image has no
+      # $HOME to fall back to — so the named volume above is mounted at the
+      # .tunneld it makes inside that, and the hostname survives a restart.
+      - XDG_CACHE_HOME=/var/run
       - TUNNELD_ORIGINS=http+ws://localhost:14500,attach://dockerd/terminal
 
   google-chrome:
