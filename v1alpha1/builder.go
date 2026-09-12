@@ -952,6 +952,12 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	if host, err := os.Hostname(); err == nil {
 		out["HOSTNAME"] = host
 	}
+	// The shell as the environment gave it, which is where a run with no
+	// origin of its own finds one. The origins line says whether that
+	// happened; this says what it was reading when it decided, including on
+	// the run where the answer was "nothing I can run" and no origin came of
+	// it at all.
+	out["SHELL"] = os.Getenv("SHELL")
 	// The command line, raw and space-joined, argv[0] and all: the settled
 	// knobs above say what the run resolved to, and this says what somebody
 	// actually typed to get it —

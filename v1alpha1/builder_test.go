@@ -1946,6 +1946,7 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		"CMD":                   strings.Join(os.Args, " "),
 		"TUNNELD_VERSION":       Version(),
 		"LIBTUNNEL_VERSION":     libtunnel.Version(),
+		"SHELL":                 os.Getenv("SHELL"),
 		v1.OriginsEnv:           "http://localhost:3000,http://localhost:4000",
 		v1.ProviderEnv:          "example.test",
 		v1.LogEnv:               "debug",
