@@ -932,6 +932,12 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
 		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
 	}
+	// Facts about the run rather than knobs, so they carry no v1 constant and
+	// nothing reads them back: which build wrote the file, and where it was
+	// standing. A spec that stops replaying after an upgrade is a question
+	// about the build that minted it, and the file is the only place left
+	// holding the answer.
+	out["TUNNELD_VERSION"] = Version()
 	if wd, err := os.Getwd(); err == nil {
 		out["PWD"] = wd
 	}

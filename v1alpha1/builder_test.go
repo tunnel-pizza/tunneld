@@ -1941,6 +1941,7 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"PWD":                   wd,
+		"TUNNELD_VERSION":       Version(),
 		v1.OriginsEnv:           "http://localhost:3000,http://localhost:4000",
 		v1.ProviderEnv:          "example.test",
 		v1.LogEnv:               "debug",
