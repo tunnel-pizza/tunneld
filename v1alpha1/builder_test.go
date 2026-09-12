@@ -9,9 +9,11 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1943,6 +1945,8 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		"PWD":                   wd,
 		"CMD":                   strings.Join(os.Args, " "),
 		"TUNNELD_VERSION":       Version(),
+		"LIBTUNNEL_VERSION":     libtunnel.Version(),
+		"SHELL":                 os.Getenv("SHELL"),
 		v1.OriginsEnv:           "http://localhost:3000,http://localhost:4000",
 		v1.ProviderEnv:          "example.test",
 		v1.LogEnv:               "debug",
@@ -1960,5 +1964,38 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 	// is the settled value and not the seed.
 	if got := h.cache.tracking[v1.LogEnv]; got != "debug" {
 		t.Errorf("tracking[%s] = %q, want the flag's value", v1.LogEnv, got)
+	}
+
+	// Who and when, which is what a file whose name is a hash cannot say and
+	// mtime only half answers: a rerun overwrites in place, so the file's own
+	// clock is the only record of the run that wrote what is there now.
+	if got, want := h.cache.tracking["PID"], strconv.Itoa(os.Getpid()); got != want {
+		t.Errorf("tracking[PID] = %q, want %q", got, want)
+	}
+	if got, want := h.cache.tracking["PPID"], strconv.Itoa(os.Getppid()); got != want {
+		t.Errorf("tracking[PPID] = %q, want %q", got, want)
+	}
+	if host, err := os.Hostname(); err == nil {
+		if got := h.cache.tracking["HOSTNAME"]; got != host {
+			t.Errorf("tracking[HOSTNAME] = %q, want %q", got, host)
+		}
+	}
+
+	me, err := user.Current()
+	if err != nil {
+		t.Fatalf("user.Current: %v", err)
+	}
+	for name, want := range map[string]string{"USERNAME": me.Username, "UID": me.Uid} {
+		if got := h.cache.tracking[name]; got != want {
+			t.Errorf("tracking[%s] = %q, want %q", name, got, want)
+		}
+	}
+
+	ts, err := time.Parse(time.RFC3339, h.cache.tracking["TS"])
+	if err != nil {
+		t.Fatalf("tracking[TS] = %q, want an RFC 3339 time: %v", h.cache.tracking["TS"], err)
+	}
+	if since := time.Since(ts); since < 0 || since > time.Minute {
+		t.Errorf("tracking[TS] = %s, %s ago — want the moment the run cached", ts, since)
 	}
 }
