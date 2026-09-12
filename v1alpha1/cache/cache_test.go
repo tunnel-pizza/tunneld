@@ -384,3 +384,23 @@ func TestSaveNeverRecordsACredential(t *testing.T) {
 		t.Errorf("cache file names %s:\n%s", ltv1.TokenEnv, body)
 	}
 }
+
+// TestSaveSurvivesAQuoteInAValue pins that a tracking line cannot cost the
+// spec. Every line is NAME='value', CMD carries whatever somebody typed, and
+// an argument may hold a single quote — which, unescaped, ends the value early
+// and leaves the rest of the line as garbage. viper fails the whole file on
+// that, so a malformed tracking line would take the one line that matters with
+// it and the next run would mint instead of resuming.
+func TestSaveSurvivesAQuoteInAValue(t *testing.T) {
+	t.Setenv(ltv1.SpecEnv, envelope)
+	c, o, path := fixed(t, "http://localhost:3000")
+
+	c.Save(o, map[string]string{
+		"CMD": `tunneld http://localhost:3000/?q='x' --log-level debug`,
+	}, discard())
+
+	if got := c.Load(o, discard()); got != envelope {
+		body, _ := os.ReadFile(path)
+		t.Errorf("Load() = %q, want the spec — a quoted tracking value broke the file:\n%s", got, body)
+	}
+}

@@ -938,6 +938,19 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	// about the build that minted it, and the file is the only place left
 	// holding the answer.
 	out["TUNNELD_VERSION"] = Version()
+	// The command line, raw and space-joined, argv[0] and all: the settled
+	// knobs above say what the run resolved to, and this says what somebody
+	// actually typed to get it —
+	// which is the difference between "multiview was on" and "they passed
+	// --multiview", and the only line that survives an embedding program
+	// mounting tunneld under its own verb.
+	//
+	// Not quoted or escaped per argument, because a shell already ate one
+	// layer of quoting and reconstructing it would be a guess. An argument
+	// carrying a single quote of its own leaves a line no parser can read
+	// back, which is why nothing reads these back and why a cache test pins
+	// that such a line cannot cost the spec above it.
+	out["CMD"] = strings.Join(os.Args, " ")
 	if wd, err := os.Getwd(); err == nil {
 		out["PWD"] = wd
 	}
