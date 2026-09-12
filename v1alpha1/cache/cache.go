@@ -15,6 +15,7 @@ package cache
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
@@ -30,7 +31,10 @@ const ext = ".env"
 // dirName is the one directory every cached spec lives in, under the user's
 // own cache directory. Flat: what identifies a tunnel is in the filename, so
 // nesting would only add a level saying the same thing twice.
-const dirName = ".tunneld"
+//
+// Undotted, like every neighbour it sits among: a cache directory is not a
+// place anybody browses by accident, so hiding one inside it hides nothing.
+const dirName = "tunneld"
 
 // saved is what a run persists: the spec libtunnel adopts on the next start,
 // and the hostname as a plain-text mirror for anyone reading the file. Only
@@ -44,6 +48,12 @@ var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
 
 // Option configures a CacheImpl at construction.
 type Option = v1.Option[*CacheImpl]
+
+// assign is one line of the file: NAME='value'.
+//
+// Single quotes: the spec is a JSON envelope, so it carries double quotes of
+// its own and no shell-style expansion should touch it.
+func assign(name, value string) string { return name + "='" + value + "'" }
 
 // CacheImpl is the default cache: one file per tunnel, named for it, under the
 // user's cache directory.
@@ -171,19 +181,34 @@ func (c *CacheImpl) Discard(origins v1.Origins, log v1.Logger) {
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func (c *CacheImpl) Save(origins v1.Origins, log v1.Logger) {
+func (c *CacheImpl) Save(origins v1.Origins, tracking map[string]string, log v1.Logger) {
 	var lines []string
 	for _, name := range saved {
 		if value, ok := os.LookupEnv(name); ok && value != "" {
-			// Single quotes: the spec is a JSON envelope, so it carries double
-			// quotes of its own and no shell-style expansion should touch it.
-			lines = append(lines, name+"='"+value+"'")
+			lines = append(lines, assign(name, value))
 		}
 	}
 	if len(lines) == 0 {
 		log.Debug("nothing to cache: no tunnel spec in the environment")
 		return
 	}
+
+	// Everything the run settled on, after the two lines that do something.
+	// Sorted, so the same run twice writes the same file and a diff between
+	// two of them is about the runs rather than about map iteration.
+	names := make([]string, 0, len(tracking))
+	for name, value := range tracking {
+		// A knob nobody set says nothing about the run, and a file of empty
+		// variables is one nobody reads twice.
+		if value != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		lines = append(lines, assign(name, tracking[name]))
+	}
+
 	body := []byte(strings.Join(lines, "\n") + "\n")
 
 	path := c.path(origins)

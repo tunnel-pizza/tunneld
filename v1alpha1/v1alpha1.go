@@ -62,9 +62,15 @@ func WithEngine(e Engine) Option {
 
 // Cache persists a tunnel's spec between runs, filed under the name the
 // origins give it.
+//
+// Save takes what the run settled on as well, keyed by the variable that names
+// each knob. It is written beside the spec and never read back: a file whose
+// name is a hash otherwise says nothing about the run that wrote it, and a
+// cache that fed configuration back into the next run would pin a choice made
+// once into every run afterwards.
 type Cache interface {
 	Load(origins Origins, log v1.Logger) string
-	Save(origins Origins, log v1.Logger)
+	Save(origins Origins, tracking map[string]string, log v1.Logger)
 	Discard(origins Origins, log v1.Logger)
 }
 

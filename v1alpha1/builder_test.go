@@ -433,8 +433,11 @@ func (f *fakeEngine) Tunnel(spec, provider, token string) libtunnel.TunnelV1 {
 // how a case ends the run: cancelling the context, failing the tunnel, or
 // delivering verdicts, all after the URL is live.
 type fakeCache struct {
-	cached    string
-	saved     bool
+	cached string
+	saved  bool
+	// tracking is what the run said it settled on, which the cache writes
+	// beside the spec and nothing reads back.
+	tracking  map[string]string
 	discarded bool
 	onSave    func()
 	order     *[]string
@@ -442,8 +445,8 @@ type fakeCache struct {
 
 func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
 func (f *fakeCache) Discard(Origins, v1.Logger)     { f.discarded = true }
-func (f *fakeCache) Save(Origins, v1.Logger) {
-	f.saved = true
+func (f *fakeCache) Save(_ Origins, tracking map[string]string, _ v1.Logger) {
+	f.saved, f.tracking = true, tracking
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}
@@ -1915,5 +1918,45 @@ func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
 				t.Errorf("banner names a cache = %v, want %v:\n%s", named, tc.saved, h.stderr.String())
 			}
 		})
+	}
+}
+
+// TestTheCacheIsToldWhatTheRunSettledOn pins the tracking half of a cache
+// file: a name that is a hash says nothing about the run that wrote it, so
+// every knob goes in beside the spec — settled, not read back out of the
+// environment, since a run configured by flags sets none of these variables.
+func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000", "http://localhost:4000")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx, "--log-level", "debug", "--multiview=false"); err != nil {
+		t.Fatalf("run() = %v, want nil after a signal", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	for name, want := range map[string]string{
+		"PWD":                   wd,
+		v1.OriginsEnv:           "http://localhost:3000,http://localhost:4000",
+		v1.ProviderEnv:          "example.test",
+		v1.LogEnv:               "debug",
+		v1.MultiviewEnv:         "false",
+		v1.ShellFallbackEnv:     "true",
+		v1.NoCacheEnv:           "false",
+		v1.IdentityProvidersEnv: strings.Join(splitList(v1.DefaultIdentityProviders), ","),
+	} {
+		if got := h.cache.tracking[name]; got != want {
+			t.Errorf("tracking[%s] = %q, want %q", name, got, want)
+		}
+	}
+
+	// The flags beat what the harness seeded, which is the whole reason this
+	// is the settled value and not the seed.
+	if got := h.cache.tracking[v1.LogEnv]; got != "debug" {
+		t.Errorf("tracking[%s] = %q, want the flag's value", v1.LogEnv, got)
 	}
 }

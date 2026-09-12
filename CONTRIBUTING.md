@@ -894,7 +894,7 @@ Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`,
 names.
 
 The cached tunnel spec needs no entry, and used to. It is credentials, and it
-lands under the user's own cache directory — `<user cache dir>/.tunneld/` —
+lands under the user's own cache directory — `<user cache dir>/tunneld/` —
 which no flag and no variable can point at a checkout: `--cache-dir` is gone,
 and the only lever left is `v1alpha1.WithCacheDir`, which an embedding program
 passes in code. A spec cannot arrive in the tree for `git add -A` to commit, so

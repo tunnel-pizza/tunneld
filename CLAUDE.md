@@ -42,7 +42,7 @@ agent-specific framing.
   [CONTRIBUTING.md → Branch / PR flow](./CONTRIBUTING.md#branch--pr-flow).
 - Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`
   and `*.local`. The cached tunnel spec is credentials and needs no entry: it
-  lands under the user's cache directory, in `.tunneld/<key>.env`, and no flag
+  lands under the user's cache directory, in `tunneld/<key>.env`, and no flag
   or variable can point it at a checkout — `v1alpha1.WithCacheDir` is the only
   lever and an embedding program passes it in code. `make clean` removes the
   whole cache directory, every project's.

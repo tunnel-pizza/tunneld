@@ -739,7 +739,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	if spec != nil {
-		spec.Save(origins, log)
+		spec.Save(origins, b.tracking(origins), log)
 	}
 
 	// A viewer asking to end the run is the third way this stops, beside a
@@ -897,6 +897,47 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // The warnings go to the same sink and level as the tunnel's own logs, so an
 // unset --log-level (or v1.LogEnv) means a dropped origin is dropped silently
 // — the same silence everything else in a default run keeps.
+// tracking is what this run settled on, keyed by the variable that names each
+// knob, for the cache to write beside the spec.
+//
+// Settled rather than read back out of the environment, because most of these
+// never arrive that way: `tunneld :3000 --log-level debug` sets neither
+// TUNNELD_ORIGINS nor TUNNELD_LOG, and a file recording only what the
+// environment happened to hold would be empty for the common run.
+//
+// It is written and never read — Load takes the spec and nothing else. A cache
+// that fed these back into the next run would pin a choice made once into
+// every run afterwards, which is the rule the saved allowlist already keeps.
+//
+// PWD is here rather than on the origins because the cache has no business
+// asking what directory a key was computed from, and in any run that is this
+// process's own: both come from os.Getwd. An embedder that overrode the
+// origins' directory is the one case where the two differ, and this line is
+// then what the process was doing rather than what the key was made of.
+//
+// No credential belongs in this map. The mint token is the account's where a
+// spec is one tunnel's, and nothing that names one is a knob a run settled.
+func (b *BuilderImpl) tracking(origins Origins) map[string]string {
+	shown := make([]string, 0, origins.Len())
+	for _, u := range origins.URLs() {
+		shown = append(shown, u.String())
+	}
+
+	out := map[string]string{
+		v1.OriginsEnv:           strings.Join(shown, ","),
+		v1.ProviderEnv:          b.provider,
+		v1.LogEnv:               b.logLevel,
+		v1.MultiviewEnv:         strconv.FormatBool(b.multiview),
+		v1.ShellFallbackEnv:     strconv.FormatBool(b.shellFallback),
+		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
+		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
+	}
+	if wd, err := os.Getwd(); err == nil {
+		out["PWD"] = wd
+	}
+	return out
+}
+
 // cached is the origins when this run would cache them, and nil when it would
 // not — what the build banner names, so it never reports a key for a file
 // nothing will write.
