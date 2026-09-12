@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestRoundTrip(t *testing.T) {
 	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 
 	c, o, _ := fixed(t, "http://localhost:3000")
-	c.Save(o, discard())
+	c.Save(o, nil, discard())
 
 	if got := c.Load(o, discard()); got != envelope {
 		t.Errorf("Load() = %q, want %q", got, envelope)
@@ -93,7 +94,7 @@ func TestTheFileIsNamedForTheRun(t *testing.T) {
 	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 
 	c, three, path := fixed(t, "http://localhost:3000")
-	c.Save(three, discard())
+	c.Save(three, nil, discard())
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("after Save, %s: %v", path, err)
 	}
@@ -107,7 +108,7 @@ func TestTheFileIsNamedForTheRun(t *testing.T) {
 	// The order they were typed is not what makes a tunnel, so the same two
 	// origins either way round find the same file.
 	c2, both, _ := fixed(t, "http://localhost:3000", "attach://dockerd/api")
-	c2.Save(both, discard())
+	c2.Save(both, nil, discard())
 	reversed := run(t, "attach://dockerd/api", "http://localhost:3000")
 	if got := c2.Load(reversed, discard()); got != envelope {
 		t.Errorf("Load(the same origins reversed) = %q, want the spec it saved", got)
@@ -137,9 +138,9 @@ func TestTheDefaultDirectoryIsUnderTheUsersCache(t *testing.T) {
 	}
 
 	o := run(t, "http://localhost:3000")
-	cache.New().Save(o, discard())
+	cache.New().Save(o, nil, discard())
 
-	path := filepath.Join(want, ".tunneld", o.Key()+ext)
+	path := filepath.Join(want, "tunneld", o.Key()+ext)
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("want the spec at %s: %v", path, err)
 	}
@@ -155,7 +156,7 @@ func TestSave(t *testing.T) {
 		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o := cache.New(cache.WithDir(dir)), run(t, "http://localhost:3000")
 
-		c.Save(o, discard())
+		c.Save(o, nil, discard())
 
 		if got := c.Load(o, discard()); got != envelope {
 			t.Errorf("Load() = %q, want the spec written into a new directory", got)
@@ -177,7 +178,7 @@ func TestSave(t *testing.T) {
 		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o := cache.New(cache.WithDir(unwritable)), run(t, "http://localhost:3000")
 
-		c.Save(o, discard())
+		c.Save(o, nil, discard())
 
 		if _, err := os.Stat(filepath.Join(unwritable, o.Key()+ext)); err == nil {
 			t.Error("wrote into a directory it could not write to")
@@ -193,7 +194,7 @@ func TestSave(t *testing.T) {
 		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, discard())
+		c.Save(o, nil, discard())
 
 		info, err := os.Stat(path)
 		if err != nil {
@@ -211,7 +212,7 @@ func TestSave(t *testing.T) {
 		os.Unsetenv(ltv1.HostnameEnv)
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, discard())
+		c.Save(o, nil, discard())
 
 		if _, err := os.Stat(path); err == nil {
 			t.Error("wrote a file with nothing to put in it")
@@ -225,7 +226,7 @@ func TestSave(t *testing.T) {
 		t.Setenv(ltv1.LogEnv, "debug")
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, discard())
+		c.Save(o, nil, discard())
 
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -277,7 +278,7 @@ func TestLoad(t *testing.T) {
 func TestDiscard(t *testing.T) {
 	t.Setenv(ltv1.SpecEnv, envelope)
 	c, o, path := fixed(t, "http://localhost:3000")
-	c.Save(o, discard())
+	c.Save(o, nil, discard())
 
 	c.Discard(o, discard())
 
@@ -292,4 +293,114 @@ func TestDiscard(t *testing.T) {
 	// has just been told its spec is dead, and whether a file existed is not
 	// something it can do anything about.
 	c.Discard(run(t, "http://localhost:4000"), discard())
+}
+
+// TestSaveRecordsWhatTheRunWas pins the tracking half of the file: everything
+// the caller hands over is written beside the spec, so somebody opening a file
+// whose name is a hash can tell which run wrote it.
+//
+// Written, never read — TestLoad's cases prove Load takes the spec and nothing
+// else, and this is what makes that safe to say: a cache that fed an
+// operator's configuration back into the next run would pin a choice made once
+// into every run afterwards.
+func TestSaveRecordsWhatTheRunWas(t *testing.T) {
+	t.Setenv(ltv1.SpecEnv, envelope)
+	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
+	c, o, path := fixed(t, "http://localhost:3000")
+
+	c.Save(o, map[string]string{
+		"PWD":                        "/work/project",
+		"TUNNELD_ORIGINS":            "http://localhost:3000",
+		"TUNNELD_LOG":                "debug",
+		"TUNNELD_PROVIDER":           "tunnel.pizza",
+		"TUNNELD_MULTIVIEW":          "true",
+		"TUNNELD_IDENTITY_PROVIDERS": "github",
+		"TUNNELD_EMPTY":              "",
+	}, discard())
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	got := string(body)
+
+	for _, want := range []string{
+		ltv1.SpecEnv + "='" + envelope + "'",
+		ltv1.HostnameEnv + "='brave-otter.tunneled.pizza'",
+		"PWD='/work/project'",
+		"TUNNELD_ORIGINS='http://localhost:3000'",
+		"TUNNELD_LOG='debug'",
+		"TUNNELD_PROVIDER='tunnel.pizza'",
+		"TUNNELD_MULTIVIEW='true'",
+		"TUNNELD_IDENTITY_PROVIDERS='github'",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("cache file does not carry %q:\n%s", want, got)
+		}
+	}
+	// A knob nobody set says nothing about the run, and a file of empty
+	// variables is a file nobody reads twice.
+	if strings.Contains(got, "TUNNELD_EMPTY") {
+		t.Errorf("cache file carries an unset knob:\n%s", got)
+	}
+
+	// The spec leads, because it is the only line that does anything. The rest
+	// is sorted, so two files of the same run diff as the same file.
+	if !strings.HasPrefix(got, ltv1.SpecEnv+"=") {
+		t.Errorf("cache file does not open with the spec:\n%s", got)
+	}
+	tracking := strings.Split(strings.TrimSpace(got), "\n")[2:]
+	if !slices.IsSorted(tracking) {
+		t.Errorf("the tracking lines are not sorted:\n%s", strings.Join(tracking, "\n"))
+	}
+
+	// And none of it is load-bearing: the next run takes the spec and leaves
+	// everything else on the disk.
+	if got := c.Load(o, discard()); got != envelope {
+		t.Errorf("Load() = %q, want the spec and nothing else read back", got)
+	}
+}
+
+// TestSaveNeverRecordsACredential pins the one thing that must not reach this
+// file beyond the spec it exists for. The mint token is the account's, where a
+// spec is one tunnel's, and a caller assembling a map of "everything the run
+// settled on" is one careless entry away from putting it here.
+func TestSaveNeverRecordsACredential(t *testing.T) {
+	const token = "ghp_averysecretvalue"
+	t.Setenv(ltv1.SpecEnv, envelope)
+	t.Setenv(ltv1.TokenEnv, token)
+	c, o, path := fixed(t, "http://localhost:3000")
+
+	c.Save(o, map[string]string{"PWD": "/work/project"}, discard())
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(body), token) {
+		t.Errorf("cache file carries the mint token:\n%s", body)
+	}
+	if strings.Contains(string(body), ltv1.TokenEnv) {
+		t.Errorf("cache file names %s:\n%s", ltv1.TokenEnv, body)
+	}
+}
+
+// TestSaveSurvivesAQuoteInAValue pins that a tracking line cannot cost the
+// spec. Every line is NAME='value', CMD carries whatever somebody typed, and
+// an argument may hold a single quote — which, unescaped, ends the value early
+// and leaves the rest of the line as garbage. viper fails the whole file on
+// that, so a malformed tracking line would take the one line that matters with
+// it and the next run would mint instead of resuming.
+func TestSaveSurvivesAQuoteInAValue(t *testing.T) {
+	t.Setenv(ltv1.SpecEnv, envelope)
+	c, o, path := fixed(t, "http://localhost:3000")
+
+	c.Save(o, map[string]string{
+		"CMD": `tunneld http://localhost:3000/?q='x' --log-level debug`,
+	}, discard())
+
+	if got := c.Load(o, discard()); got != envelope {
+		body, _ := os.ReadFile(path)
+		t.Errorf("Load() = %q, want the spec — a quoted tracking value broke the file:\n%s", got, body)
+	}
 }

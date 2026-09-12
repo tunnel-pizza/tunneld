@@ -146,7 +146,7 @@ image:
 clean:
 	rm -f tunneld tunneld.exe
 	rm -rf dist
-	rm -rf "$$HOME/Library/Caches/.tunneld" "$${XDG_CACHE_HOME:-$$HOME/.cache}/.tunneld"
+	rm -rf "$$HOME/Library/Caches/tunneld" "$${XDG_CACHE_HOME:-$$HOME/.cache}/tunneld"
 	go clean -testcache
 	-docker compose -p tunneld-example down --volumes --remove-orphans 2>/dev/null
 	-docker rm -f tunneld-example 2>/dev/null
