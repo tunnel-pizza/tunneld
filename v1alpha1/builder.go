@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/user"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
@@ -938,6 +940,18 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	// about the build that minted it, and the file is the only place left
 	// holding the answer.
 	out["TUNNELD_VERSION"] = Version()
+	// libtunnel's number as well as tunneld's, for the reason the banner
+	// carries both: it is what actually speaks to the edge, and a spec that
+	// stops replaying is as likely to be its credential chain changing under
+	// the file as anything in this repo.
+	out["LIBTUNNEL_VERSION"] = libtunnel.Version()
+	// Which machine wrote it. The key is the working directory and the
+	// origins, so the same project path on two machines is the same filename:
+	// on a synced directory, an NFS home or a volume mounted from more than
+	// one host, they overwrite each other and nothing else in the file says so.
+	if host, err := os.Hostname(); err == nil {
+		out["HOSTNAME"] = host
+	}
 	// The command line, raw and space-joined, argv[0] and all: the settled
 	// knobs above say what the run resolved to, and this says what somebody
 	// actually typed to get it —
@@ -951,6 +965,24 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	// back, which is why nothing reads these back and why a cache test pins
 	// that such a line cannot cost the spec above it.
 	out["CMD"] = strings.Join(os.Args, " ")
+	// When, and which process. The file carries no clock otherwise — mtime is
+	// it, and a rerun of the same tunnel overwrites in place, so what survives
+	// is the last run rather than the first. A timestamp inside also survives
+	// a copy or a restore, which mtime does not.
+	//
+	// The parent as well as this process, because tunneld is a thing other
+	// programs run: a pid alone says a process wrote this and is now gone,
+	// where a pid and its parent say what was driving it.
+	out["TS"] = time.Now().Format(time.RFC3339)
+	out["PID"] = strconv.Itoa(os.Getpid())
+	out["PPID"] = strconv.Itoa(os.Getppid())
+	if u, err := user.Current(); err == nil {
+		// Both, rather than a name falling back to a number: a container user
+		// often has only the uid, and where it has both they answer different
+		// questions — which account, and which account the filesystem saw.
+		out["USERNAME"] = u.Username
+		out["UID"] = u.Uid
+	}
 	if wd, err := os.Getwd(); err == nil {
 		out["PWD"] = wd
 	}
