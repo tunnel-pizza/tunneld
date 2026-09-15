@@ -3,7 +3,6 @@ package v1alpha1
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cnuss/libtunnel"
+	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -222,7 +222,6 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			name    string
 			missing bool
 		}{
-			{"engine", b.engine == nil},
 			{"browser", b.display == nil},
 			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
@@ -436,14 +435,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return err
 	}
 
-	// The handle the event listener ends the run through. A signal
-	// cancels the parent with no cause; a reap cancels this one with
-	// ErrTunnelGone, and the cause is what tells the two apart at
-	// the bottom of this function. Wrapped here so everything below
-	// — the tunnel, the attach servers, the browser probe — comes
-	// down with it.
-	ctx, gone := context.WithCancelCause(ctx)
-	defer gone(nil)
+	// Everything below opens something — the attach servers, the tunnel,
+	// the browser probe — and all of it comes down with this when Run
+	// returns, whichever way it returns.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// A container is not an HTTP service, so tunneld serves one on
 	// its behalf and hands the tunnel the loopback address instead.
@@ -455,100 +451,93 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
-	// The cache this run uses, or none. A local rather than the field, so a
-	// run started with --no-cache does not leave an embedder's builder without
-	// a cache for the next one.
+	// The cache this run reads and writes through. Off is a cache that finds
+	// nothing and keeps nothing rather than a nil to test for, so the load
+	// and the save below are one line each. A local rather than the field,
+	// so a run started with --no-cache does not leave an embedder's builder
+	// without a cache for the next one.
 	spec := b.cache
-	if b.noCache {
-		spec = nil
+	if b.noCache || spec == nil {
+		spec = noCache{}
 	}
-
-	cached := ""
-	if spec != nil {
-		cached = spec.Load(origins, log)
-	}
-
-	// Pure-lazy: nothing dials until URL below trips the start.
-	// WithContext upgrades URL from "the hostname resolves" to
-	// "reachable end to end" and makes it return nil on cancel, so a
-	// signal during startup exits cleanly.
-	start := func(spec string) libtunnel.TunnelV1 {
-		// Events: the tunnel's lifecycle listener. It logs what
-		// happened and ends the run once the edge has disowned the
-		// tunnel for long enough to be sure.
-		//
-		// The engine keeps retrying a reaped tunnel indefinitely —
-		// that is cloudflared's behaviour and libtunnel leaves it
-		// alone — so without this the process sits there holding a
-		// hostname that resolves nowhere, reporting nothing.
-		// Cancelling with a cause is what turns that into an exit
-		// code a supervisor can act on.
-		//
-		// The logger is closed over rather than resolved again,
-		// since it was already resolved above and a bad --log-level
-		// refused; asking a second time here would have to discard
-		// that error to satisfy the listener's signature.
-		var once sync.Once
-		listen := func(e libtunnel.Event) {
-			log.Debug("received event", "e", e)
-			b.counter.Count(e)
-			if b.counter.IsGone() {
-				// The counter stays tripped once it has been, and
-				// verdicts keep arriving while the tunnel comes
-				// down. Without the latch every one of them repeats
-				// the error and cancels again.
-				once.Do(func() {
-					log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
-					gone(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
-				})
-			}
-		}
-
-		// The credential the mint request carries, looked for here rather than
-		// with the rest of the settling because looking costs a subprocess and
-		// a run that failed earlier should not have paid for it. Nothing found
-		// is the ordinary case: the mint is anonymous, as every mint was
-		// before this existed.
-		token := b.identity.Token(ctx, b.identityProviders, log)
-
-		tun := b.engine.Tunnel(spec, b.provider, token).
-			WithLogger(log).
-			WithContext(ctx).
-			WithEventListener(listen).
-			// libtunnel takes the addresses themselves: the list's identity
-			// is this run's business, and what it proxies to is a slice.
-			WithLocalURL(dialable.URLs()...)
-		// Served in front of the origin proxy, so the panel needs no
-		// port of its own and no origin ever sees the request. The
-		// list is empty when there is no panel to serve, which is
-		// the only place that decision is made.
-		for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
-			tun.WithInterceptor(ic)
-		}
-		return tun
-	}
-	tun := start(cached)
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
-	// The banner goes out before the tunnel is asked for a URL, not
-	// after it answers. Minting is the slow part and the part that
-	// fails, and tying the banner to success meant a start that
-	// failed printed nothing at all — no version, no sign the
-	// program had run. Everything above this line is configuration,
-	// so a bad flag or an origin that cannot be reached still fails
-	// without one.
-	// The origins only when they name a file this run would use: a banner
-	// reporting a cache key for a run that caches nothing names something that
-	// does not exist, which is worse than naming nothing.
-	banner := origins
-	if spec == nil {
-		banner = nil
+	// The banner goes out before the tunnel is asked for a URL, not after it
+	// answers. Minting is the slow part and the part that fails, and tying
+	// the banner to success meant a start that failed printed nothing at all
+	// — no version, no sign the program had run. Everything above this line
+	// is configuration, so a bad flag or an origin that cannot be reached
+	// still fails without one.
+	fmt.Fprintln(stderr, VersionLine(b.cached()))
+
+	// The provider travels by environment. From builds its own backend, so
+	// there is no handle to set it on, and it is the same knob either way:
+	// libtunnel reads the variable over a code-set host. Best effort — a
+	// provider that cannot be set falls back to the default, which is where
+	// an unset one would have gone anyway.
+	if b.provider != "" {
+		_ = os.Setenv(ltv1.CloudflareProviderEnv, b.provider)
 	}
-	fmt.Fprintln(stderr, VersionLine(banner))
+
+	// The credential the mint request carries. Looking costs a subprocess,
+	// which is why it is looked for here, once everything that could have
+	// refused the run has had its chance. Nothing found is the ordinary case:
+	// the mint is anonymous, as every mint was before this existed.
+	token := b.identity.Token(ctx, b.identityProviders, log)
+
+	// Events: the tunnel's lifecycle listener. It logs what happened and ends
+	// the tunnel once the edge has disowned it for long enough to be sure.
+	//
+	// libtunnel's prober asks the edge and emits EventGone when it says no,
+	// but emitting is all it does — cloudflared keeps retrying a reaped
+	// tunnel indefinitely and libtunnel leaves it alone — so without this the
+	// process sits there holding a hostname that resolves nowhere, reporting
+	// nothing. Cancel with a cause is what turns that into an exit code a
+	// supervisor can act on: Done fires, Err reports the cause, and the
+	// bottom of this function returns it.
+	//
+	// The counter stays tripped once it has been, and verdicts keep arriving
+	// while the tunnel comes down; without the latch every one of them would
+	// repeat the error and cancel again. Cancelled off the listener's own
+	// goroutine, because listeners run on the one that produced the event and
+	// a teardown waiting on that goroutine would be waiting on itself.
+	var tun libtunnel.TunnelV1
+	var once sync.Once
+	listen := func(e libtunnel.Event) {
+		log.Debug("received event", "e", e)
+		b.counter.Count(e)
+		if b.counter.IsGone() {
+			once.Do(func() {
+				log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
+				go tun.Cancel(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
+			})
+		}
+	}
+
+	// What the cache has is what the mint is hinted with, and nothing when it
+	// has nothing: From("") mints fresh, so there is one call and no branch.
+	// No second attempt on failure either — From asks the edge about a hint
+	// before minting, so a dead cached spec is already a fresh mint by the
+	// time it could fail, and the one failure left is a provider that could
+	// not be reached, which a remint could not reach either.
+	tun = b.newTunnel(spec.Load(origins, log)).
+		WithToken(token).
+		WithLogger(log).
+		WithContext(ctx).
+		WithEventListener(listen).
+		// libtunnel takes the addresses themselves: the list's identity is
+		// this run's business, and what it proxies to is a slice.
+		WithLocalURL(dialable.URLs()...)
+	// Served in front of the origin proxy, so the panel needs no port of its
+	// own and no origin ever sees the request. The list is empty when there
+	// is no panel to serve, which is the only place that decision is made.
+	for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
+		tun.WithInterceptor(ic)
+	}
 
 	// Something turning, because the wait below is the long one: minting,
-	// dialing the edge, and then the hostname becoming resolvable, which is
+	// dialing the edge, and the public URL answering from here, which is
 	// seconds of a program that has printed its version and gone quiet.
 	//
 	// On stderr with the banner it follows, never stdout: that stream is one
@@ -560,73 +549,23 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// on gets the lines instead — they say more than a spinner does, and they
 	// are what the operator asked for.
 	//
-	// It waits on Ready, and it has to be Ready. Nothing has dialed yet — the
-	// tunnel is lazy and asking for this is what trips it — so a spinner
-	// waiting on anything the dial produces, the counter's Established
-	// included, would be waiting for a dial that its own waiting prevents.
-	//
-	// A second call, not the one the receive below holds. Ready hands out a
-	// channel per call, each delivering once and then closing, so both see
-	// the tunnel; sharing one would let the spinner take the value and leave
-	// the run reading a closed channel, which is how a tunnel that came up
-	// reports that it never did.
-	//
-	// Blocking is what keeps the line clean: an address cannot be printed
-	// over a frame that has not stopped turning yet. And it ends either way,
-	// because Ready closes when a tunnel fails as surely as it delivers when
-	// one comes up — including on the signal that cancelled the run.
+	// On Ready rather than URL, because URL is the value and a spinner wants
+	// the channel: Ready hands out one per call, delivering once and closing,
+	// so this waiter and the URL below both see the tunnel come up — or both
+	// see it fail, since Ready closes when a tunnel ends as surely as it
+	// delivers when one comes up.
 	if display.IsInteractive(cmd) && b.logLevel == "" {
 		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
 	}
 
-	// Ready delivers the tunnel once the edge connection is up
-	// and the hostname resolves publicly — reachable end to end,
-	// which is the moment an address is worth handing to anybody.
-	// The channel closing without delivering is the tunnel saying
-	// it never came up at all, and Err is why.
-	//
-	// This is the wait that used to be URL()'s alone. URL blocks
-	// on the same readiness and answers nil for the same failure,
-	// so the two are interchangeable as a signal; asking Ready
-	// says which of the two questions is being asked.
-	up, ok := <-tun.Ready()
-	if !ok {
-		cause := cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
-
-		// The edge refused the credential this spec carries. That is
-		// the whole of the class now: a reservation that lapsed is
-		// adopted on whatever hostname the provider minted in its
-		// place, silently and without an error, so the only way a
-		// replay still fails here is the one where the provider was
-		// never reached — the spec is served as given, and the edge
-		// is where a dead one is finally found out.
-		//
-		// Which makes the file the thing at fault, and leaving it in
-		// place the real cost: every later run replays it, is served
-		// it again, and dies at the same edge. Drop it, then mint
-		// once, which is a tunnel rather than an explanation if the
-		// provider is reachable by now and the same error either way
-		// if it is not.
-		//
-		// Only this class. ErrRejected is a mint the provider
-		// refused outright or a request that could not be built at
-		// all — configuration, and nothing the stored spec had a
-		// part in. Discarding on it would throw away a good
-		// credential over an unroutable provider or a bad header.
-		if cached == "" || !errors.Is(cause, libtunnel.ErrCredentialRejected) {
-			return cause
-		}
-		if spec != nil {
-			spec.Discard(origins, log)
-		}
-		log.Warn("the cached tunnel is gone; minting a new one", "error", cause)
-
-		tun = start("")
-		if up, ok = <-tun.Ready(); !ok {
-			return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
-		}
+	// URL blocks until the public URL is verified to work from here — the
+	// edge's route registered and answering, which is the moment an address
+	// is worth handing to anybody — and is nil if the tunnel, or the context
+	// this run gave it, ends first. Err is why.
+	public := tun.URL()
+	if public == nil {
+		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
-	public := up.URL()
 
 	// A bound container is served before the tunnel exists —
 	// the binding is what the tunnel is handed to proxy to — so
@@ -661,29 +600,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// printed above, before minting, so it survives a mint that
 	// fails.
 	//
-	// Wait for the public URL to answer before any of it is
-	// printed.
-	//
-	// Ready, which the tunnel above was waited on for, means the
-	// connection is up and the hostname resolves. It does not
-	// mean the edge has registered the route: for a
-	// moment after that it answers 530. An address printed inside
-	// that moment is one a script can read and cannot yet use, and
-	// a browser opened into it shows an error page for a tunnel
-	// that is about to work. Both readers are served by the same
-	// wait, so it sits above the report rather than beside the
-	// display.
-	//
-	// The counter answers whether the edge is up; how long that
-	// is worth waiting for is this caller's policy, so the bound
-	// is a context rather than something the counter carries.
-	// Everything below is behind this wait, the cache save
-	// included, so it cannot be unbounded.
-	if !b.counter.IsEstablished() {
-		log.Info("waiting for the public address to answer")
-		<-b.counter.Established(context.WithTimeout(ctx, b.establishDeadline))
-	}
-
+	// Nothing waits here for the address to answer. Ready delivered
+	// on the public URL verified from this machine, so every line
+	// below names an address a script can read and use in the same
+	// breath.
 	// Every public address gets a line, with what it reaches
 	// indented beneath. A panel is the case where one address
 	// reaches them all; otherwise each origin has an address of its
@@ -740,9 +660,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
-	if spec != nil {
-		spec.Save(origins, b.tracking(origins), log)
-	}
+	// The hostname beside the rest of what the run settled on: never read
+	// back, but the one line somebody opening the file wants first.
+	tracking := b.tracking(origins)
+	tracking[ltv1.HostnameEnv] = public.Hostname()
+	spec.Save(origins, tun.Serialize(), tracking, log)
 
 	// A viewer asking to end the run is the third way this stops, beside a
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it
@@ -756,16 +678,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return nil
 	}
 
-	// Cancelling ctx ends the tunnel too, so a reap makes both arms
-	// above ready at once and the race would otherwise decide which
-	// error an operator is shown. The cause is the verdict either
-	// way: it outranks whatever the teardown it triggered has to
-	// say for itself.
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-		return cause
-	}
+	// A signal cancels ctx, and cancelling ctx ends the tunnel too, so both
+	// arms above are ready at once and the race would otherwise decide what
+	// an operator is shown. The signal is checked first: a tunnel that came
+	// up and was then told to stop is a clean exit, whatever the teardown
+	// has to say for itself. Anything else is the tunnel's own verdict —
+	// the edge disowning it arrives here as Cancel's cause.
 	if ctx.Err() != nil {
-		return nil // signaled after the tunnel came up: clean shutdown
+		return nil
 	}
 	return tun.Err()
 }

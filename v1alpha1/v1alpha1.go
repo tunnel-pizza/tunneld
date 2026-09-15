@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/cnuss/libtunnel"
 	"github.com/spf13/cobra"
@@ -24,7 +23,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/engine"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -47,17 +45,15 @@ type Origins = v1.Origins
 // replaceable with the matching With* option below. A function that maps a
 // value to a value gets no contract; see CONTRIBUTING.
 
-// Engine mints or replays the tunnel run drives. spec is a cached envelope to
-// replay, "" to mint; provider is the quick-tunnel host, "" for the default;
-// token is the mint credential, "" for an anonymous mint.
-type Engine interface {
-	Tunnel(spec, provider, token string) libtunnel.TunnelV1
-}
-
-// WithEngine replaces what mints or replays the tunnel. The default is
-// engine.New(), libtunnel's Cloudflare backend; a test hands in a fake.
-func WithEngine(e Engine) Option {
-	return func(b *BuilderImpl) { b.engine = e }
+// WithTunnelFactory replaces how a spec becomes a tunnel. The default is
+// libtunnel.From: From("") mints fresh and From(spec) hints with what a run
+// cached, so there is one call and nothing to choose between — which is why
+// this is a function and not a contract with an implementation behind it.
+// What it is for is a run that must not reach the edge: a test drives a fake
+// tunnel through here, and an embedder with a tunnel of its own can do the
+// same.
+func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
+	return func(b *BuilderImpl) { b.newTunnel = from }
 }
 
 // Cache persists a tunnel's spec between runs, filed under the name the
@@ -70,8 +66,7 @@ func WithEngine(e Engine) Option {
 // once into every run afterwards.
 type Cache interface {
 	Load(origins Origins, log v1.Logger) string
-	Save(origins Origins, tracking map[string]string, log v1.Logger)
-	Discard(origins Origins, log v1.Logger)
+	Save(origins Origins, spec string, tracking map[string]string, log v1.Logger)
 }
 
 // WithCache replaces where a tunnel's spec is kept between runs. The default
@@ -84,6 +79,15 @@ type Cache interface {
 func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
+
+// noCache is the cache a run with caching off reads and writes through: a
+// Load that finds nothing and a Save that keeps nothing. WithCache(nil) and
+// --no-cache both land here inside Run, so the load and the save are one line
+// each rather than a branch around a nil.
+type noCache struct{}
+
+func (noCache) Load(Origins, v1.Logger) string                     { return "" }
+func (noCache) Save(Origins, string, map[string]string, v1.Logger) {}
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a
@@ -143,24 +147,14 @@ func WithDisplay(display Display) Option {
 }
 
 // Counter folds tunnel events into a verdict: has the edge disowned it.
+//
+// Only that. It used to answer whether the public URL was up as well, because
+// libtunnel's Ready once fired a moment before the edge had registered the
+// route; Ready fires on exactly that now, and a question with one owner is
+// asked of that owner.
 type Counter interface {
 	Count(e libtunnel.Event)
 	IsGone() bool
-	IsEstablished() bool
-	Established(ctx context.Context, cancel context.CancelFunc) <-chan struct{}
-}
-
-// DefaultEstablishDeadline is how long New arms a builder to wait for the
-// public URL to answer before reporting addresses anyway. Ten seconds is far
-// longer than the gap has been observed to be — under a second — and it only
-// ever costs that much when something is wrong, in which case the run carries
-// on rather than never reporting at all.
-const DefaultEstablishDeadline = 10 * time.Second
-
-// WithEstablishDeadline bounds the wait for the public URL to answer. Zero
-// reports the addresses without waiting at all.
-func WithEstablishDeadline(d time.Duration) Option {
-	return func(b *BuilderImpl) { b.establishDeadline = d }
 }
 
 // WithCounter replaces the counter that decides when the edge has disowned
@@ -217,7 +211,6 @@ func WithBinder(binder Binder) Option {
 // build rather than the first run.
 var (
 	_ v1.Builder = (*BuilderImpl)(nil)
-	_ Engine     = (*engine.EngineImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Display    = (*display.DisplayImpl)(nil)
 	_ Counter    = (*counter.CounterImpl)(nil)
@@ -246,12 +239,11 @@ func New(opts ...Option) *BuilderImpl {
 	recent := logs.New()
 
 	b := v1.Apply(&BuilderImpl{recent: recent},
-		WithEstablishDeadline(DefaultEstablishDeadline),
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New()))),
-		WithEngine(engine.New()),
+		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
 		WithDisplay(display.New()),
 		WithCounter(counter.New()),
@@ -298,17 +290,13 @@ type BuilderImpl struct {
 	// process environment to find out what a run will do.
 	shellFallback bool
 
-	// establishDeadline bounds the wait for the public URL to answer before
-	// the addresses are reported. The counter that answers that wait
-	// takes no deadline of its own — a caller that will not wait forever
-	// brings a context that will not either — so the bound lives here, where
-	// the policy is. New always seeds it.
-	establishDeadline time.Duration
+	// newTunnel is how a spec becomes a tunnel: libtunnel.From, or what a
+	// test put there so a run never reaches the edge. See WithTunnelFactory.
+	newTunnel func(spec string) libtunnel.TunnelV1
 
 	// The collaborators Command's RunE composes, each behind a contract
 	// declared above. Seeded by New; a test or a contributor swaps one with
 	// its With* option.
-	engine   Engine
 	display  Display
 	counter  Counter
 	binder   Binder
