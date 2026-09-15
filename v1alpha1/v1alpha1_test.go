@@ -48,7 +48,7 @@ func TestCallerOptionBeatsDefault(t *testing.T) {
 // TestNewWiresEveryCollaborator pins that New seeds every one of them, and
 // that each With* option lands: a nil handed to one is what the wiring check
 // at the top of Command names. A bare BuilderImpl{} fails the same check on
-// its first collaborator, the engine. The check runs before Command binds a
+// its first collaborator, the display. The check runs before Command binds a
 // flag to any field, so there is no panic to route around and no case left
 // unobservable.
 //
@@ -69,7 +69,6 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		name string
 		b    *BuilderImpl
 	}{
-		{"engine", New(WithOrigin(":3000"), WithEngine(nil))},
 		{"browser", New(WithOrigin(":3000"), WithDisplay(nil))},
 		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
@@ -84,8 +83,8 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 
 	t.Run("bare struct", func(t *testing.T) {
 		_, _, err := execute(t, &BuilderImpl{})
-		if err == nil || !strings.Contains(err.Error(), "engine") {
-			t.Errorf("BuilderImpl{}: error = %v, want an error naming engine, the first missing collaborator", err)
+		if err == nil || !strings.Contains(err.Error(), "browser") {
+			t.Errorf("BuilderImpl{}: error = %v, want an error naming browser, the first missing collaborator", err)
 		}
 	})
 
@@ -105,10 +104,10 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	e, c, o, n, g := &fakeEngine{}, &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
-	b := New(WithEngine(e), WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
+	c, o, n, g := &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
+	b := New(WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
 
-	if b.engine != Engine(e) || b.cache != Cache(c) ||
+	if b.cache != Cache(c) ||
 		b.display != Display(o) || b.counter != Counter(n) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}

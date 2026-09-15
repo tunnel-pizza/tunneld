@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cnuss/libtunnel"
+	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/creack/pty"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -336,10 +337,8 @@ type fakeTunnel struct {
 	ics    []libtunnel.Interceptor
 	listen func(libtunnel.Event)
 	order  *[]string
-
-	// silent is a tunnel that comes up without ever announcing a connection,
-	// which is what the wait before the browser has to survive.
-	silent bool
+	// token is what WithToken was handed; the run applies it on every path.
+	token string
 }
 
 // live is a tunnel that comes up on public and stays up until the test says
@@ -374,9 +373,9 @@ func (f *fakeTunnel) URL() *url.URL {
 		*f.order = append(*f.order, "url")
 	}
 	// A tunnel that has a URL has been accepted by the edge, so it announces
-	// the connection the run waits for before it opens a display. A silent
-	// tunnel is the case where that announcement never comes.
-	if f.url != nil && f.listen != nil && !f.silent {
+	// the connection — which is what clears the counter's run of gone
+	// verdicts, the way a real reconnect does.
+	if f.url != nil && f.listen != nil {
 		f.listen(libtunnel.Event{Kind: libtunnel.EventConnected, Hostname: f.url.Host})
 	}
 	return f.url
@@ -392,6 +391,29 @@ func (f *fakeTunnel) Ready() <-chan libtunnel.TunnelV1 {
 	}
 	close(ready)
 	return ready
+}
+
+// Serialize is what the run caches: a spec the next run could hand back to
+// From. A fake's is anything stable and recognisable.
+func (f *fakeTunnel) Serialize() string {
+	if f.url == nil {
+		return ""
+	}
+	return "spec:" + f.url.Host
+}
+
+func (f *fakeTunnel) WithToken(token string) libtunnel.TunnelV1 {
+	f.token = token
+	return f
+}
+
+// Cancel ends the tunnel the way the lifecycle's does: with a cause it is a
+// failure and Err reports it, which is how the gone verdict reaches Run now.
+func (f *fakeTunnel) Cancel(cause ...error) {
+	if len(cause) > 0 {
+		f.err = cause[0]
+	}
+	f.end()
 }
 
 func (f *fakeTunnel) Err() error                                     { return f.err }
@@ -411,44 +433,23 @@ func (f *fakeTunnel) WithInterceptor(ic libtunnel.Interceptor) libtunnel.TunnelV
 	return f
 }
 
-// fakeEngine hands out its tunnels in order — a remint after a refused
-// replay gets the second — and records what it was asked for.
-type fakeEngine struct {
-	tunnels   []*fakeTunnel
-	specs     []string
-	providers []string
-	tokens    []string
-}
-
-func (f *fakeEngine) Tunnel(spec, provider, token string) libtunnel.TunnelV1 {
-	f.specs = append(f.specs, spec)
-	f.providers = append(f.providers, provider)
-	f.tokens = append(f.tokens, token)
-	tun := f.tunnels[0]
-	if len(f.tunnels) > 1 {
-		f.tunnels = f.tunnels[1:]
-	}
-	return tun
-}
-
 // fakeCache answers Load with a fixed spec and records the rest. onSave is
 // how a case ends the run: cancelling the context, failing the tunnel, or
 // delivering verdicts, all after the URL is live.
 type fakeCache struct {
 	cached string
 	saved  bool
-	// tracking is what the run said it settled on, which the cache writes
-	// beside the spec and nothing reads back.
-	tracking  map[string]string
-	discarded bool
-	onSave    func()
-	order     *[]string
+	// spec is what the run asked the tunnel to serialize, and tracking what
+	// the run said it settled on — written beside it, and nothing reads back.
+	spec     string
+	tracking map[string]string
+	onSave   func()
+	order    *[]string
 }
 
 func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
-func (f *fakeCache) Discard(Origins, v1.Logger)     { f.discarded = true }
-func (f *fakeCache) Save(_ Origins, tracking map[string]string, _ v1.Logger) {
-	f.saved, f.tracking = true, tracking
+func (f *fakeCache) Save(_ Origins, spec string, tracking map[string]string, _ v1.Logger) {
+	f.saved, f.spec, f.tracking = true, spec, tracking
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}
@@ -573,7 +574,11 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 // verdict logic is what the gone case is about. order records the effects
 // that matter in the sequence they landed.
 type runHarness struct {
-	engine  *fakeEngine
+	// tunnels are handed out in order through the run's one seam — a remint
+	// after a refused replay gets the second — and specs records what each
+	// was asked to hint with.
+	tunnels []*fakeTunnel
+	specs   []string
 	cache   *fakeCache
 	display *fakeDisplay
 	binder  *fakeBinder
@@ -591,16 +596,25 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Helper()
 	t.Setenv(v1.LogEnv, "")     // a developer's shell must not turn the log on
 	t.Setenv(v1.NoCacheEnv, "") // nor turn the cache off under a case that is about it
-	h := &runHarness{engine: &fakeEngine{tunnels: []*fakeTunnel{tun}}}
+	// The provider travels by environment and the run sets it; blanked so a
+	// case can read back exactly what this run set.
+	t.Setenv(ltv1.CloudflareProviderEnv, "")
+	h := &runHarness{tunnels: []*fakeTunnel{tun}}
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
 	tun.order = &h.order
 	h.b = New(
-		WithEstablishDeadline(50*time.Millisecond),
 		WithOrigin(urls...),
 		WithProvider("example.test"),
-		WithEngine(h.engine),
+		WithTunnelFactory(func(spec string) libtunnel.TunnelV1 {
+			h.specs = append(h.specs, spec)
+			tun := h.tunnels[0]
+			if len(h.tunnels) > 1 {
+				h.tunnels = h.tunnels[1:]
+			}
+			return tun
+		}),
 		WithCache(h.cache),
 		WithDisplay(h.display),
 		WithBinder(h.binder),
@@ -690,11 +704,15 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v, want nil after a signal", err)
 		}
-		if want := []string{""}; !slices.Equal(h.engine.specs, want) {
-			t.Errorf("engine asked for specs %q, want a single mint", h.engine.specs)
+		if want := []string{""}; !slices.Equal(h.specs, want) {
+			t.Errorf("engine asked for specs %q, want a single mint", h.specs)
 		}
-		if want := []string{"example.test"}; !slices.Equal(h.engine.providers, want) {
-			t.Errorf("engine was handed providers %q, want %q — --provider did not reach the mint", h.engine.providers, want)
+		if got := os.Getenv(ltv1.CloudflareProviderEnv); got != "example.test" {
+			t.Errorf("%s = %q, want %q — --provider did not reach the mint", ltv1.CloudflareProviderEnv, got, "example.test")
+		}
+		// And what the tunnel serialized once it was up is what was cached.
+		if want := h.tunnels[0].Serialize(); h.cache.spec != want {
+			t.Errorf("cached spec = %q, want the tunnel's own %q", h.cache.spec, want)
 		}
 		if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
 			t.Errorf("effects in order %v, want %v — the cache must not be written before the URL is live", h.order, want)
@@ -714,7 +732,7 @@ func TestRun(t *testing.T) {
 				t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 			}
 		}
-		tun := h.engine.tunnels[0]
+		tun := h.tunnels[0]
 		if len(tun.ics) != 2 || tun.ics[0].Priority >= tun.ics[1].Priority {
 			t.Errorf("registered %d interceptors, want the page then the unframer", len(tun.ics))
 		}
@@ -734,8 +752,8 @@ func TestRun(t *testing.T) {
 		if !errors.Is(err, h.binder.err) {
 			t.Errorf("run() = %v, want the binder's own error", err)
 		}
-		if len(h.engine.specs) != 0 {
-			t.Errorf("engine was asked for %d specs, want none", len(h.engine.specs))
+		if len(h.specs) != 0 {
+			t.Errorf("engine was asked for %d specs, want none", len(h.specs))
 		}
 	})
 
@@ -748,34 +766,17 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if want := []string{"cached-spec"}; !slices.Equal(h.engine.specs, want) {
-			t.Errorf("engine asked for %q, want the cached spec", h.engine.specs)
+		if want := []string{"cached-spec"}; !slices.Equal(h.specs, want) {
+			t.Errorf("engine asked for %q, want the cached spec", h.specs)
 		}
 	})
 
-	t.Run("a replay the edge refuses is discarded and minted again", func(t *testing.T) {
-		refused := dead(fmt.Errorf("edge: %w", libtunnel.ErrCredentialRejected))
-		h := newRunHarness(t, refused, ":3000")
-		h.engine.tunnels = append(h.engine.tunnels, live(public))
-		h.cache.cached = "stale"
-		ctx, cancel := context.WithCancel(t.Context())
-		h.cache.onSave = cancel
-
-		if err := h.run(t, ctx); err != nil {
-			t.Fatalf("run() = %v, want the remint to succeed", err)
-		}
-		if want := []string{"stale", ""}; !slices.Equal(h.engine.specs, want) {
-			t.Errorf("engine asked for %q, want the replay then a mint", h.engine.specs)
-		}
-		if !h.cache.discarded {
-			t.Error("the refused spec was not discarded; every later run would replay it")
-		}
-		if !h.cache.saved {
-			t.Error("the remint was not cached")
-		}
-	})
-
-	t.Run("any other replay failure is returned and the cache kept", func(t *testing.T) {
+	// A failed replay is returned as it is: no second attempt and no discard.
+	// From asks the edge about a hint before minting, so a dead spec is
+	// already a fresh mint by the time it reaches here — the one failure left
+	// is a provider that could not be reached, which a remint could not reach
+	// either, and which a stale file cannot make worse next time.
+	t.Run("a replay failure is returned and the cache kept", func(t *testing.T) {
 		boom := errors.New("provider unreachable")
 		h := newRunHarness(t, dead(boom), ":3000")
 		h.cache.cached = "good"
@@ -784,14 +785,11 @@ func TestRun(t *testing.T) {
 		if !errors.Is(err, boom) {
 			t.Fatalf("run() = %v, want the tunnel's own error", err)
 		}
-		if h.cache.discarded {
-			t.Error("a good spec was discarded over a failure that was not its fault")
-		}
 		if h.cache.saved {
 			t.Error("a tunnel that never came up was cached")
 		}
-		if want := []string{"good"}; !slices.Equal(h.engine.specs, want) {
-			t.Errorf("engine asked for %q, want one replay and no remint", h.engine.specs)
+		if want := []string{"good"}; !slices.Equal(h.specs, want) {
+			t.Errorf("asked for %q, want one replay and no remint", h.specs)
 		}
 	})
 
@@ -815,7 +813,7 @@ func TestRun(t *testing.T) {
 		if want := []string{public}; !slices.Equal(h.display.opened, want) {
 			t.Errorf("opened %q, want the plain URL %q", h.display.opened, want)
 		}
-		if n := len(h.engine.tunnels[0].ics); n != 0 {
+		if n := len(h.tunnels[0].ics); n != 0 {
 			t.Errorf("registered %d interceptors for one origin, want none", n)
 		}
 		if want := public + "\n"; h.stdout.String() != want {
@@ -874,7 +872,7 @@ func TestRun(t *testing.T) {
 		// The wiring check runs at the top of Command, before a flag is
 		// bound to any field — a bare BuilderImpl never reaches that
 		// binding, so Command hands back a minimal command whose only job
-		// is to report the error. The engine is checked first, so a bare
+		// is to report the error. The display is checked first, so a bare
 		// struct's error names it.
 		b := &BuilderImpl{origins: []string{":3000"}}
 		cmd := b.Command()
@@ -882,8 +880,8 @@ func TestRun(t *testing.T) {
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(nil)
 		err := cmd.ExecuteContext(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "engine") || !strings.Contains(err.Error(), "construct it with New") {
-			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error naming engine", err)
+		if err == nil || !strings.Contains(err.Error(), "browser") || !strings.Contains(err.Error(), "construct it with New") {
+			t.Errorf("run() on a bare BuilderImpl = %v, want the wiring error naming browser", err)
 		}
 	})
 }
@@ -945,7 +943,7 @@ func TestParseOriginsAccepts(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run(%q) = %v, want ok", tc.in, err)
 			}
-			got := h.engine.tunnels[0].locals
+			got := h.tunnels[0].locals
 			if len(got) != len(tc.want) {
 				t.Fatalf("run(%q) gave the tunnel %d origins, want %d", tc.in, len(got), len(tc.want))
 			}
@@ -1014,8 +1012,8 @@ func TestRunIsTheOtherDoor(t *testing.T) {
 	if want := "  -> http://localhost:3000\n"; !strings.Contains(stderr.String(), want) {
 		t.Errorf("stderr %q does not contain %q", stderr.String(), want)
 	}
-	if !slices.Contains(h.engine.providers, "from-the-environment.test") {
-		t.Errorf("engine saw providers %v, want the one the environment set", h.engine.providers)
+	if got := os.Getenv(ltv1.CloudflareProviderEnv); got != "from-the-environment.test" {
+		t.Errorf("%s = %q, want the one the environment set", ltv1.CloudflareProviderEnv, got)
 	}
 }
 
@@ -1257,37 +1255,6 @@ func TestAViewerCanEndTheRun(t *testing.T) {
 	}
 	if !h.binder.closed {
 		t.Error("the origins were left up after the run ended")
-	}
-}
-
-// TestRunOutlastsATunnelThatNeverConnects pins that the wait before the
-// browser cannot strand what comes after it.
-//
-// A run holds for the edge to accept a connection before opening a page,
-// because a tunnel is ready a moment before the edge has registered its route
-// and a browser opened into that moment shows an error for a tunnel that
-// works. Everything after that wait is behind it — the cache save, and the
-// select that keeps the process alive — so a tunnel that comes up without ever
-// announcing a connection must still reach all of it. The counter's deadline
-// is what guarantees that, and this is the run that would hang without one.
-func TestRunOutlastsATunnelThatNeverConnects(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
-	tun := live(public)
-	tun.silent = true
-
-	h := newRunHarness(t, tun, ":3000")
-	v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
-	ctx, cancel := context.WithCancel(t.Context())
-	h.cache.onSave = cancel
-
-	if err := h.run(t, ctx); err != nil {
-		t.Fatalf("run() = %v", err)
-	}
-	if want := []string{"url", "open", "save"}; !slices.Equal(h.order, want) {
-		t.Errorf("effects in order %v, want %v — the wait swallowed what follows it", h.order, want)
-	}
-	if want := []string{public}; !slices.Equal(h.display.opened, want) {
-		t.Errorf("opened %q, want the address anyway %q", h.display.opened, want)
 	}
 }
 
@@ -1796,7 +1763,7 @@ func TestRunCarriesTheIdentityToken(t *testing.T) {
 	if !slices.EqualFunc(ident.known, want, slices.Equal) {
 		t.Errorf("Known was asked %v, want %v", ident.known, want)
 	}
-	if got := h.engine.tokens; len(got) != 1 || got[0] != "a-credential" {
+	if got := h.tunnels[0].token; got != "a-credential" {
 		t.Errorf("the engine got tokens %q, want one %q", got, "a-credential")
 	}
 
@@ -1824,8 +1791,8 @@ func TestRunRefusesAnUnknownIdentityProvider(t *testing.T) {
 	if !errors.Is(err, v1.ErrUnknownIdentity) {
 		t.Fatalf("run() = %v, want it to wrap ErrUnknownIdentity", err)
 	}
-	if len(h.engine.specs) != 0 {
-		t.Errorf("the engine was asked for %d tunnels, want 0 — the run should stop first", len(h.engine.specs))
+	if len(h.specs) != 0 {
+		t.Errorf("the engine was asked for %d tunnels, want 0 — the run should stop first", len(h.specs))
 	}
 }
 
@@ -1979,6 +1946,15 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		if got := h.cache.tracking["HOSTNAME"]; got != host {
 			t.Errorf("tracking[HOSTNAME] = %q, want %q", got, host)
 		}
+	}
+	if got := h.cache.tracking[ltv1.HostnameEnv]; got != "foo.tunneled.pizza" {
+		t.Errorf("tracking[%s] = %q, want the tunnel's hostname", ltv1.HostnameEnv, got)
+	}
+	// The one value that must never be here: the mint token is the account's
+	// where a spec is one tunnel's, and a map of "everything the run settled
+	// on" is one careless entry away from carrying it.
+	if _, ok := h.cache.tracking[ltv1.TokenEnv]; ok {
+		t.Errorf("tracking carries %s", ltv1.TokenEnv)
 	}
 
 	me, err := user.Current()

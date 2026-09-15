@@ -17,7 +17,6 @@ Deep-link by filename; line numbers will drift.
 | Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
-| Tunnel engine (`Engine` ← libtunnel)           | [`v1alpha1/engine/`](./v1alpha1/engine)                          |
 | Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
@@ -76,9 +75,12 @@ Conventions, not machinery — nothing here enforces them.
 builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
-[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Engine`, `Cache`,
-`Display`, `Counter`, `Binder`, implemented respectively by `engine`, `cache`,
-`display`, `counter`, `attach`. `Origins` is not among them: it maps a value to
+[`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
+`Counter`, `Binder`, implemented respectively by `cache`, `display`, `counter`,
+`attach`. The tunnel itself is `libtunnel.From`, called directly: with
+`From("")` minting fresh there is one call and nothing to choose between, so
+no contract stands in front of it — only `WithTunnelFactory`, the seam a test
+drives a fake through. `Origins` is not among them: it maps a value to
 a value, so it is a type in [`v1/v1.go`](./v1/v1.go) with one implementation in
 `v1alpha1/origins` and no option to swap it. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
@@ -119,8 +121,8 @@ is applied by hand in `RunE`: argv replaces the variable, which replaces the
 seed.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
-unconditionally — `engine`, `cache`, `browser`, `counter`, `attach` — and the
-`v1alpha1` root stays implementation-agnostic:
+unconditionally — `cache`, `browser`, `counter`, `attach` — and the `v1alpha1`
+root stays implementation-agnostic:
 `New`, the contracts, the options and `Command`. A second implementation of a
 contract gets a subpackage of its own beside the first. The same applies to
 anything with a world of its own: [`v1alpha1/panel`](./v1alpha1/panel) is a

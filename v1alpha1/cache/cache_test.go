@@ -1,5 +1,5 @@
 // The tests for cache.go. `package cache_test` is the outside-the-package
-// view: Load, Save and Discard are the whole surface, and the file they
+// view: Load and Save are the whole surface, and the file they
 // exchange is the contract worth pinning rather than anything unexported.
 package cache_test
 
@@ -74,11 +74,9 @@ func write(t *testing.T, dir string, o v1.Origins, body string) {
 // what pins the quoting — a value mangled here is a tunnel that cannot be
 // resumed, and it would fail on the second run rather than the first.
 func TestRoundTrip(t *testing.T) {
-	t.Setenv(ltv1.SpecEnv, envelope)
-	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 
 	c, o, _ := fixed(t, "http://localhost:3000")
-	c.Save(o, nil, discard())
+	c.Save(o, envelope, nil, discard())
 
 	if got := c.Load(o, discard()); got != envelope {
 		t.Errorf("Load() = %q, want %q", got, envelope)
@@ -90,11 +88,9 @@ func TestRoundTrip(t *testing.T) {
 // second run in a project replayed the first one's hostname while serving
 // something else entirely.
 func TestTheFileIsNamedForTheRun(t *testing.T) {
-	t.Setenv(ltv1.SpecEnv, envelope)
-	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 
 	c, three, path := fixed(t, "http://localhost:3000")
-	c.Save(three, nil, discard())
+	c.Save(three, envelope, nil, discard())
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("after Save, %s: %v", path, err)
 	}
@@ -108,7 +104,7 @@ func TestTheFileIsNamedForTheRun(t *testing.T) {
 	// The order they were typed is not what makes a tunnel, so the same two
 	// origins either way round find the same file.
 	c2, both, _ := fixed(t, "http://localhost:3000", "attach://dockerd/api")
-	c2.Save(both, nil, discard())
+	c2.Save(both, envelope, nil, discard())
 	reversed := run(t, "attach://dockerd/api", "http://localhost:3000")
 	if got := c2.Load(reversed, discard()); got != envelope {
 		t.Errorf("Load(the same origins reversed) = %q, want the spec it saved", got)
@@ -130,7 +126,6 @@ func TestTheDefaultDirectoryIsUnderTheUsersCache(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", base)
 	t.Setenv("HOME", base)
 	t.Setenv("LocalAppData", base)
-	t.Setenv(ltv1.SpecEnv, envelope)
 
 	want, err := os.UserCacheDir()
 	if err != nil {
@@ -138,7 +133,7 @@ func TestTheDefaultDirectoryIsUnderTheUsersCache(t *testing.T) {
 	}
 
 	o := run(t, "http://localhost:3000")
-	cache.New().Save(o, nil, discard())
+	cache.New().Save(o, envelope, nil, discard())
 
 	path := filepath.Join(want, "tunneld", o.Key()+ext)
 	if _, err := os.Stat(path); err != nil {
@@ -153,10 +148,9 @@ func TestSave(t *testing.T) {
 	// is part of saving rather than something the caller was asked to arrange.
 	t.Run("a directory that does not exist yet is created", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "nested", "cache")
-		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o := cache.New(cache.WithDir(dir)), run(t, "http://localhost:3000")
 
-		c.Save(o, nil, discard())
+		c.Save(o, envelope, nil, discard())
 
 		if got := c.Load(o, discard()); got != envelope {
 			t.Errorf("Load() = %q, want the spec written into a new directory", got)
@@ -175,10 +169,9 @@ func TestSave(t *testing.T) {
 			t.Fatalf("chmod: %v", err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
-		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o := cache.New(cache.WithDir(unwritable)), run(t, "http://localhost:3000")
 
-		c.Save(o, nil, discard())
+		c.Save(o, envelope, nil, discard())
 
 		if _, err := os.Stat(filepath.Join(unwritable, o.Key()+ext)); err == nil {
 			t.Error("wrote into a directory it could not write to")
@@ -191,10 +184,9 @@ func TestSave(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("file modes are not meaningful on Windows")
 		}
-		t.Setenv(ltv1.SpecEnv, envelope)
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, nil, discard())
+		c.Save(o, envelope, nil, discard())
 
 		info, err := os.Stat(path)
 		if err != nil {
@@ -208,11 +200,9 @@ func TestSave(t *testing.T) {
 	// Nothing to resume is not a file worth leaving behind — an empty one
 	// would read as a cache on the next run and explain nothing.
 	t.Run("no spec writes no file", func(t *testing.T) {
-		os.Unsetenv(ltv1.SpecEnv)
-		os.Unsetenv(ltv1.HostnameEnv)
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, nil, discard())
+		c.Save(o, "", nil, discard())
 
 		if _, err := os.Stat(path); err == nil {
 			t.Error("wrote a file with nothing to put in it")
@@ -222,11 +212,10 @@ func TestSave(t *testing.T) {
 	// An operator's own configuration is not a cache. Capturing it would pin a
 	// choice made once into every run afterwards.
 	t.Run("only the spec and its hostname are saved", func(t *testing.T) {
-		t.Setenv(ltv1.SpecEnv, envelope)
 		t.Setenv(ltv1.LogEnv, "debug")
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, nil, discard())
+		c.Save(o, envelope, nil, discard())
 
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -273,28 +262,6 @@ func TestLoad(t *testing.T) {
 	})
 }
 
-// TestDiscard pins that a dead cache is removed, since one left behind would
-// resume the same dead tunnel on the next run.
-func TestDiscard(t *testing.T) {
-	t.Setenv(ltv1.SpecEnv, envelope)
-	c, o, path := fixed(t, "http://localhost:3000")
-	c.Save(o, nil, discard())
-
-	c.Discard(o, discard())
-
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("%s still holds a cache: %v", path, err)
-	}
-	if got := c.Load(o, discard()); got != "" {
-		t.Errorf("Load() = %q after Discard, want nothing", got)
-	}
-
-	// Discarding what was never there is not an error: the run that calls it
-	// has just been told its spec is dead, and whether a file existed is not
-	// something it can do anything about.
-	c.Discard(run(t, "http://localhost:4000"), discard())
-}
-
 // TestSaveRecordsWhatTheRunWas pins the tracking half of the file: everything
 // the caller hands over is written beside the spec, so somebody opening a file
 // whose name is a hash can tell which run wrote it.
@@ -304,11 +271,13 @@ func TestDiscard(t *testing.T) {
 // operator's configuration back into the next run would pin a choice made once
 // into every run afterwards.
 func TestSaveRecordsWhatTheRunWas(t *testing.T) {
-	t.Setenv(ltv1.SpecEnv, envelope)
-	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
 	c, o, path := fixed(t, "http://localhost:3000")
 
-	c.Save(o, map[string]string{
+	// The hostname arrives the way every other tracking line does now — the
+	// run reads it off the tunnel and hands it in — so it sorts among them
+	// rather than leading with the spec.
+	c.Save(o, envelope, map[string]string{
+		ltv1.HostnameEnv:             "brave-otter.tunneled.pizza",
 		"PWD":                        "/work/project",
 		"TUNNELD_ORIGINS":            "http://localhost:3000",
 		"TUNNELD_LOG":                "debug",
@@ -349,7 +318,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 	if !strings.HasPrefix(got, ltv1.SpecEnv+"=") {
 		t.Errorf("cache file does not open with the spec:\n%s", got)
 	}
-	tracking := strings.Split(strings.TrimSpace(got), "\n")[2:]
+	tracking := strings.Split(strings.TrimSpace(got), "\n")[1:]
 	if !slices.IsSorted(tracking) {
 		t.Errorf("the tracking lines are not sorted:\n%s", strings.Join(tracking, "\n"))
 	}
@@ -361,30 +330,6 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 	}
 }
 
-// TestSaveNeverRecordsACredential pins the one thing that must not reach this
-// file beyond the spec it exists for. The mint token is the account's, where a
-// spec is one tunnel's, and a caller assembling a map of "everything the run
-// settled on" is one careless entry away from putting it here.
-func TestSaveNeverRecordsACredential(t *testing.T) {
-	const token = "ghp_averysecretvalue"
-	t.Setenv(ltv1.SpecEnv, envelope)
-	t.Setenv(ltv1.TokenEnv, token)
-	c, o, path := fixed(t, "http://localhost:3000")
-
-	c.Save(o, map[string]string{"PWD": "/work/project"}, discard())
-
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if strings.Contains(string(body), token) {
-		t.Errorf("cache file carries the mint token:\n%s", body)
-	}
-	if strings.Contains(string(body), ltv1.TokenEnv) {
-		t.Errorf("cache file names %s:\n%s", ltv1.TokenEnv, body)
-	}
-}
-
 // TestSaveSurvivesAQuoteInAValue pins that a tracking line cannot cost the
 // spec. Every line is NAME='value', CMD carries whatever somebody typed, and
 // an argument may hold a single quote — which, unescaped, ends the value early
@@ -392,10 +337,9 @@ func TestSaveNeverRecordsACredential(t *testing.T) {
 // that, so a malformed tracking line would take the one line that matters with
 // it and the next run would mint instead of resuming.
 func TestSaveSurvivesAQuoteInAValue(t *testing.T) {
-	t.Setenv(ltv1.SpecEnv, envelope)
 	c, o, path := fixed(t, "http://localhost:3000")
 
-	c.Save(o, map[string]string{
+	c.Save(o, envelope, map[string]string{
 		"CMD": `tunneld http://localhost:3000/?q='x' --log-level debug`,
 	}, discard())
 

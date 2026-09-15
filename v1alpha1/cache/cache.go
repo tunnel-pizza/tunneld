@@ -36,16 +36,6 @@ const ext = ".env"
 // place anybody browses by accident, so hiding one inside it hides nothing.
 const dirName = "tunneld"
 
-// saved is what a run persists: the spec libtunnel adopts on the next start,
-// and the hostname as a plain-text mirror for anyone reading the file. Only
-// the spec is load-bearing — libtunnel never adopts the hostname — but a cache
-// file nobody can read is a cache file nobody trusts.
-//
-// An allowlist rather than every LIBTUNNEL_ variable in the environment: the
-// rest are an operator's configuration, and a cache that captured them would
-// pin choices they made once into every run afterwards.
-var saved = []string{ltv1.SpecEnv, ltv1.HostnameEnv}
-
 // Option configures a CacheImpl at construction.
 type Option = v1.Option[*CacheImpl]
 
@@ -140,25 +130,6 @@ func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
 	return spec
 }
 
-// Discard removes this run's cache, so the next run mints instead of
-// replaying.
-//
-// The caller decides when: a spec the provider refuses outright is dead and
-// keeping it would fail every run the same way, while a hostname somebody else
-// now holds is not this spec's fault and throwing it away would not win the
-// name back.
-func (c *CacheImpl) Discard(origins v1.Origins, log v1.Logger) {
-	path := c.path(origins)
-	if path == "" {
-		return
-	}
-	if err := os.Remove(path); err == nil {
-		log.Info("discarded a dead tunnel cache", "path", path)
-	} else if !os.IsNotExist(err) {
-		log.Warn("could not discard the tunnel cache", "path", path, "error", err)
-	}
-}
-
 // Save writes the running tunnel's spec under this run's name, so the next run
 // of the same thing resumes this hostname instead of minting a new one.
 //
@@ -167,33 +138,29 @@ func (c *CacheImpl) Discard(origins v1.Origins, log v1.Logger) {
 // left to spread across directories and nothing to choose between on the way
 // back in.
 //
-// The spec is read from the environment rather than from the tunnel, and it
-// has to be read after the tunnel is up rather than being the one that was
-// replayed. Nothing has to fail for the two to differ: a reclaim can hold the
-// hostname and replace the tunnel behind it, and a reservation that lapsed
-// entirely is adopted on whatever hostname was minted in its place — a new
-// name, no error, and a stored spec that now points at nothing. libtunnel
-// exports whatever the chain resolved, so the environment is the current one.
+// spec is what the tunnel serializes once it is up, and it has to be asked
+// for then rather than being the one that was replayed. Nothing has to fail
+// for the two to differ: a reclaim can hold the hostname and replace the
+// tunnel behind it, and a reservation that lapsed entirely is adopted on
+// whatever hostname was minted in its place — a new name, no error, and a
+// stored spec that now points at nothing.
 //
-// Asking the backend's provider for it instead would mint a second tunnel,
-// because a spec this process exported reads as absent to the adopter that
-// would otherwise replay it.
+// It is the one line that is read back. The file's key for it is the name
+// libtunnel gives the same value in an environment, so a file is a thing an
+// operator can source as well as a thing Load parses — but this package no
+// longer reads that environment itself: what a run has is the tunnel, and the
+// tunnel is asked.
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func (c *CacheImpl) Save(origins v1.Origins, tracking map[string]string, log v1.Logger) {
-	var lines []string
-	for _, name := range saved {
-		if value, ok := os.LookupEnv(name); ok && value != "" {
-			lines = append(lines, assign(name, value))
-		}
-	}
-	if len(lines) == 0 {
-		log.Debug("nothing to cache: no tunnel spec in the environment")
+func (c *CacheImpl) Save(origins v1.Origins, spec string, tracking map[string]string, log v1.Logger) {
+	if spec == "" {
+		log.Debug("nothing to cache: the tunnel has no spec to give")
 		return
 	}
+	lines := []string{assign(ltv1.SpecEnv, spec)}
 
-	// Everything the run settled on, after the two lines that do something.
+	// Everything the run settled on, after the one line that does something.
 	// Sorted, so the same run twice writes the same file and a diff between
 	// two of them is about the runs rather than about map iteration.
 	names := make([]string, 0, len(tracking))

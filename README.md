@@ -625,7 +625,7 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             version resolution. May change
                                             between alpha revisions.
 github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each:
-                                            origins, engine, cache, panel,
+                                            origins, cache, panel,
                                             browser, counter and attach sit
                                             behind the contracts in v1alpha1;
                                             attach declares its own Target and
@@ -659,7 +659,6 @@ func WithLogLevel(level string) Option            // debug|info|warn|error on st
 func WithOpen(open bool) Option                   // force the browser decision; unset means derived
 func WithMultiview(mv bool) Option                // frame the origins together; default true
 func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
-func WithEstablishDeadline(d time.Duration) Option // wait for the URL to answer; default 10s
 func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
 func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
 ```
@@ -668,9 +667,10 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
 changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithEngine`, `WithCache`, `WithDisplay`,
-`WithCounter` and `WithBinder`, which swap the collaborators the tunnel run
-composes — `WithCache(nil)` being how an embedder turns caching off, and what
+`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithCounter` and
+`WithBinder`, which swap the collaborators the tunnel run composes, and
+`WithTunnelFactory`, which replaces `libtunnel.From` as how a spec becomes a
+tunnel — `WithCache(nil)` being how an embedder turns caching off, and what
 `--no-cache` leaves a run in. They are a contributor's and a test's
 concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
