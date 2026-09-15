@@ -87,8 +87,16 @@ func run(t *testing.T, bin string, args ...string) (stdout, stderr string, code 
 // asserts, and then takes env on top.
 func runEnv(t *testing.T, bin string, env map[string]string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
+	// Bounded, because every case here is one that exits on its own — a
+	// refusal, a banner, a help page — and a case that instead minted a tunnel
+	// would sit on it forever. That happened once: a trailing word that used to
+	// be a flag parsed as the origin http://warn, and the suite hung on a live
+	// tunnel to nowhere until the runner gave up. Thirty seconds turns that
+	// into a failure that names the case.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	var out, errOut bytes.Buffer
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 
 	cmd.Env = strippedEnv()
@@ -176,7 +184,7 @@ func TestRefusedInvocations(t *testing.T) {
 		// A second argument is a second origin: the warning names the second
 		// one, which proves every argument is parsed and not just the first.
 		// Both are unusable, so the run is still refused.
-		{"a later origin is still parsed", []string{"ftp://localhost:21", "ftp://nope", "--log-level", "warn"}, "ftp://nope"},
+		{"a later origin is still parsed", []string{"--log-level", "warn", "ftp://localhost:21", "ftp://nope"}, "ftp://nope"},
 		{"unknown flag", []string{"--nope", "http://localhost:3000"}, "nope"},
 		{"unparsable boolean flag", []string{"--multiview=nonsense", "http://localhost:3000"}, "multiview"},
 	}
