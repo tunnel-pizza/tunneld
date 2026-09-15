@@ -166,7 +166,11 @@ type Targets interface {
 	// different places.
 	Verb() string
 	Provider() string
-	Open(ctx context.Context, ref string, log *slog.Logger) (Target, error)
+	//
+	// args are the program's arguments, for a provider that runs one; a
+	// provider that attaches to something already running ignores them. They
+	// arrive off the origin's query, under v1.ArgKey, in the order written.
+	Open(ctx context.Context, ref string, args []string, log *slog.Logger) (Target, error)
 }
 
 // answers is the key a provider is registered under and an origin is looked up
@@ -335,7 +339,10 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		if origin.Host != "" {
 			ref = strings.TrimPrefix(ref, "/")
 		}
-		target, err := provider.Open(ctx, ref, log)
+		// The words after a program on the command line, carried here as the
+		// origin's query so they arrive the same way from argv, the
+		// environment and a seed.
+		target, err := provider.Open(ctx, ref, origin.Query()[v1.ArgKey], log)
 		if err != nil {
 			_ = servers.Close()
 			return nil, nil, err

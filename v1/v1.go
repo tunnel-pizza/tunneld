@@ -304,6 +304,13 @@ const (
 	// machine that looked it up.
 	ExecScheme = "exec"
 
+	// ArgKey is the query key a program's arguments ride under in an exec://
+	// origin: exec:///usr/bin/claude?arg=--resume&arg=--model runs claude
+	// with two arguments, in that order. It is how the words after a program
+	// on the command line reach it, and how an origin that arrives through
+	// OriginsEnv or WithOrigin says the same thing.
+	ArgKey = "arg"
+
 	// DockerProvider is the authority that names the Docker daemon in a served
 	// origin: the dockerd in attach://dockerd/<container-name-or-id>.
 	//

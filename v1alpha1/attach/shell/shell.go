@@ -118,7 +118,7 @@ func (*TargetsImpl) Provider() string { return "" }
 // The pty probe is a real one: it opens a pair and closes it again, because
 // there is nothing to ask short of trying. On Windows it is what turns
 // "every visit fails" into "this run refuses to start".
-func (*TargetsImpl) Open(_ context.Context, ref string, log v1.Logger) (attach.Target, error) {
+func (*TargetsImpl) Open(_ context.Context, ref string, args []string, log v1.Logger) (attach.Target, error) {
 	path, err := exec.LookPath(ref)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q names no program this machine can run: %w", v1.ErrInvalidOrigin, ref, err)
@@ -131,8 +131,8 @@ func (*TargetsImpl) Open(_ context.Context, ref string, log v1.Logger) (attach.T
 	_ = slave.Close()
 	_ = master.Close()
 
-	log.Debug("resolved a program as an origin", "program", ref, "path", path)
-	return &TargetImpl{ref: ref, path: path, log: log}, nil
+	log.Debug("resolved a program as an origin", "program", ref, "path", path, "args", args)
+	return &TargetImpl{ref: ref, path: path, args: args, log: log}, nil
 }
 
 // TargetImpl is one program, resolved but not yet running. The process and its
@@ -141,6 +141,9 @@ func (*TargetsImpl) Open(_ context.Context, ref string, log v1.Logger) (attach.T
 type TargetImpl struct {
 	ref  string
 	path string
+	// args is what the program is run with, in the order the origin carried
+	// them — the words after it on the command line.
+	args []string
 	log  *slog.Logger
 
 	// mu guards the running process and its terminal, which exist only
@@ -160,6 +163,10 @@ func (a *TargetImpl) Name() string { return a.ref }
 // Origin is this program's origin: the verb, no authority because the program
 // runs here, and the resolved path — which is what the parser rewrote a bare
 // word into, so the origin reads the same however it was typed.
+//
+// Not its arguments. They reached this target as a query on the origin, but a
+// query is how they travel and not what a person is shown: the frame's corner
+// names the program, and how it was started this time is in the cache file.
 func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 
 // TTY is always true. A program run here is given a pseudo-terminal whether or
@@ -232,7 +239,7 @@ func (a *TargetImpl) stop() error {
 // stdout and stderr are the same file — so there is nothing to demultiplex and
 // nothing to put on a channel of its own.
 func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	cmd := exec.CommandContext(ctx, a.path)
+	cmd := exec.CommandContext(ctx, a.path, a.args...)
 	// TERM is what makes a full-screen program willing to draw. The value is
 	// the one the page's terminal emulator implements, and the same one the
 	// frame announces to a container.

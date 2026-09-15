@@ -170,13 +170,15 @@ func TestRefusedInvocations(t *testing.T) {
 		// failure as passing nothing at all, and the same lever.
 		{"unproxyable scheme", []string{"ftp://localhost:21"}, "no origin"},
 		{"origin with no host", []string{"http://"}, "no origin"},
-		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, "log-level"},
+		// Flags before origins, docker's rule: after an origin a word is
+		// positional, so a refusal has to come from a flag that precedes one.
+		{"unknown log level", []string{"--log-level", "loud", "http://localhost:3000"}, "log-level"},
 		// A second argument is a second origin: the warning names the second
 		// one, which proves every argument is parsed and not just the first.
 		// Both are unusable, so the run is still refused.
 		{"a later origin is still parsed", []string{"ftp://localhost:21", "ftp://nope", "--log-level", "warn"}, "ftp://nope"},
-		{"unknown flag", []string{"http://localhost:3000", "--nope"}, "nope"},
-		{"unparsable boolean flag", []string{"http://localhost:3000", "--multiview=nonsense"}, "multiview"},
+		{"unknown flag", []string{"--nope", "http://localhost:3000"}, "nope"},
+		{"unparsable boolean flag", []string{"--multiview=nonsense", "http://localhost:3000"}, "multiview"},
 	}
 
 	for _, tc := range cases {
@@ -257,7 +259,9 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 		{
 			name: "the flag beats the variable",
 			env:  map[string]string{"TUNNELD_LOG": "info"},
-			args: []string{"http://localhost:3000", "--log-level", "loud"},
+			// Flags before origins, docker's rule: a flag after an origin is
+			// positional, and after a program it is the program's.
+			args: []string{"--log-level", "loud", "http://localhost:3000"},
 			want: "invalid log level",
 		},
 		{

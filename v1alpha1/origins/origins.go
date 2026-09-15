@@ -87,6 +87,14 @@ func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
 func (o *OriginsImpl) Key() string {
 	parts := make([]string, 0, len(o.urls))
 	for _, u := range o.urls {
+		// A program's arguments are how it was started this time, not which
+		// program it is: claude and claude --resume are one tunnel.
+		if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
+			bare := *u
+			bare.RawQuery = ""
+			parts = append(parts, bare.String())
+			continue
+		}
 		parts = append(parts, u.String())
 	}
 	slices.Sort(parts)
