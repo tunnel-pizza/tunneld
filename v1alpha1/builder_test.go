@@ -1214,6 +1214,17 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 	t.Setenv("PATH", dir)
 	path := filepath.Join(dir, name)
 
+	// Spelled through url.URL rather than by concatenation, on both sides of
+	// every comparison: a Windows path has backslashes, which String()
+	// percent-encodes, so a raw `exec://C:\...` neither parses nor matches.
+	program := func(args ...string) string {
+		u := &url.URL{Scheme: v1.ExecScheme, Path: path}
+		if len(args) > 0 {
+			u.RawQuery = url.Values{v1.ArgKey: args}.Encode()
+		}
+		return u.String()
+	}
+
 	for _, tc := range []struct {
 		name    string
 		origins []string
@@ -1223,32 +1234,32 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 		{
 			name:    "the words after a program are its arguments",
 			origins: []string{name, "--resume", "--model", "opus"},
-			want:    []string{v1.ExecScheme + "://" + path + "?arg=--resume&arg=--model&arg=opus"},
+			want:    []string{program("--resume", "--model", "opus")},
 		},
 		{
 			name:    "origins before the program stay origins",
 			origins: []string{"http://localhost:3000", "attach://dockerd/api", name, "--resume"},
-			want:    []string{"http://localhost:3000", "attach://dockerd/api", v1.ExecScheme + "://" + path + "?arg=--resume"},
+			want:    []string{"http://localhost:3000", "attach://dockerd/api", program("--resume")},
 		},
 		{
 			name:    "a URL after the program is the program's argument",
 			origins: []string{name, "http://localhost:3000"},
-			want:    []string{v1.ExecScheme + "://" + path + "?arg=http%3A%2F%2Flocalhost%3A3000"},
+			want:    []string{program("http://localhost:3000")},
 		},
 		{
 			name:    "a program spelled as a URL takes the rest too",
 			origins: []string{v1.ExecScheme + "://" + name, "-d", "5"},
-			want:    []string{v1.ExecScheme + "://" + path + "?arg=-d&arg=5"},
+			want:    []string{program("-d", "5")},
 		},
 		{
 			name:    "arguments an origin already carries come first",
-			origins: []string{v1.ExecScheme + "://" + path + "?arg=--resume", "--model", "opus"},
-			want:    []string{v1.ExecScheme + "://" + path + "?arg=--resume&arg=--model&arg=opus"},
+			origins: []string{program("--resume"), "--model", "opus"},
+			want:    []string{program("--resume", "--model", "opus")},
 		},
 		{
 			name:    "a program with no words after it has none",
 			origins: []string{"http://localhost:3000", name},
-			want:    []string{"http://localhost:3000", v1.ExecScheme + "://" + path},
+			want:    []string{"http://localhost:3000", program()},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
