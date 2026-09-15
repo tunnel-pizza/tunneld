@@ -337,6 +337,15 @@ The public URLs go to stdout, the origin map and every log line to stderr.` + se
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
 			"with no origin given anywhere, expose $SHELL rather than refusing to start [$"+v1.ShellFallbackEnv+"]")
+
+		// Docker's rule: options before the image. Flag parsing stops at the
+		// first origin, and every word after it is positional — so the words
+		// after a program are the program's, `tunneld claude --resume` runs
+		// claude with --resume, and nothing has to guess whose flag a word
+		// is. The cost is the one docker charges: tunneld's own flags go
+		// first, and `tunneld :3000 --log-level debug` is `tunneld --log-level
+		// debug :3000`. The environment is not argv and works anywhere.
+		cmd.Flags().SetInterspersed(false)
 		// The version subcommand prints the build banner and exits — the
 		// build id of the binary plus the tunnel library it links against,
 		// since that library is what actually speaks to the edge and a bug
@@ -612,12 +621,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	if view != "" {
 		fmt.Fprintf(stdout, "%s\n", view)
 		for _, origin := range origins.URLs() {
-			fmt.Fprintf(stderr, "  -> %s\n", origin)
+			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 		}
 	} else {
 		for i, origin := range origins.URLs() {
 			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
-			fmt.Fprintf(stderr, "  -> %s\n", origin)
+			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 		}
 	}
 
@@ -915,6 +924,60 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	return out
 }
 
+// program is a program origin with args as its arguments: the words after it
+// on the command line, carried as the origin's query under v1.ArgKey so they
+// arrive the same way from argv, the environment and a seed, and so the frame
+// shows a string that pastes back into a command line as the same run.
+//
+// Appended to any the origin already carries, in order — a seed can name a
+// program's first arguments and the command line its last.
+//
+// This is where the command line stops being a list of origins: the words
+// after a program are the program's, so it is the last origin on the line,
+// the way docker's image is followed only by its own command. A second
+// program, or a URL after the first, is that program's argument.
+func program(u *url.URL, args []string) *url.URL {
+	if len(args) == 0 {
+		return u
+	}
+	q := u.Query()
+	for _, arg := range args {
+		q.Add(v1.ArgKey, arg)
+	}
+	u.RawQuery = q.Encode()
+	return u
+}
+
+// label is an origin as a person reads it: a program without its arguments.
+//
+// The arguments ride the origin as a query because that is how they travel —
+// argv, the environment and a seed all spell them the same way — but a query
+// is a carrier, not a label. What the map says a tunnel reaches is the
+// program; how it was started this time is in the cache file beside the spec.
+// An http origin's query is part of its address and stays.
+func label(u *url.URL) string {
+	if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
+		bare := *u
+		bare.RawQuery = ""
+		return bare.String()
+	}
+	return u.String()
+}
+
+// arguments reports whether a served origin's query is a program's arguments
+// and nothing else — the one query a served origin is allowed to carry.
+func arguments(u *url.URL) bool {
+	if u.Scheme != v1.ExecScheme {
+		return false
+	}
+	for key := range u.Query() {
+		if key != v1.ArgKey {
+			return false
+		}
+	}
+	return true
+}
+
 // cached is the origins when this run would cache them, and nil when it would
 // not — what the build banner names, so it never reports a key for a file
 // nothing will write.
@@ -970,7 +1033,7 @@ func (b *BuilderImpl) Origins() Origins {
 	urls := make([]*url.URL, 0, len(settled))
 	// The first origin seen carrying a +ws marker, kept to strip a second.
 	wsOrigin := ""
-	for _, s := range settled {
+	for i, s := range settled {
 		s = strings.TrimSpace(s)
 		if s == "" {
 			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
@@ -989,8 +1052,8 @@ func (b *BuilderImpl) Origins() Origins {
 			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
-			urls = append(urls, &url.URL{Scheme: v1.ExecScheme, Path: path})
-			continue
+			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, settled[i+1:]))
+			break
 		}
 		if !strings.Contains(s, "://") {
 			s = "http://" + s
@@ -1015,8 +1078,8 @@ func (b *BuilderImpl) Origins() Origins {
 			// that looked it up.
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
-					urls = append(urls, &url.URL{Scheme: u.Scheme, Path: path})
-					continue
+					urls = append(urls, program(&url.URL{Scheme: u.Scheme, Path: path}, settled[i+1:]))
+					break
 				}
 			}
 			// The reference is the path. The authority beside it names the
@@ -1029,11 +1092,17 @@ func (b *BuilderImpl) Origins() Origins {
 				log.Warn("dropping an origin", "origin", s, "reason", "names no "+what.noun+", pass e.g. "+what.example)
 				continue
 			}
-			// A reference and nothing else: a query, a fragment or a userinfo
-			// is not part of the name of anything served.
-			if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			// A reference and nothing else: a fragment or a userinfo is not
+			// part of the name of anything served, and neither is a query —
+			// except a program's arguments, which are the one thing a program
+			// origin carries besides the program.
+			if u.Fragment != "" || u.User != nil || (u.RawQuery != "" && !arguments(u)) {
 				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
 				continue
+			}
+			if u.Scheme == v1.ExecScheme {
+				urls = append(urls, program(u, settled[i+1:]))
+				break
 			}
 			urls = append(urls, u)
 			continue

@@ -96,3 +96,22 @@ func TestURLsCannotBeUsedToReorderTheRun(t *testing.T) {
 		t.Errorf("Len() = %d, want 2", o.Len())
 	}
 }
+
+// TestKeyIgnoresAProgramsArguments pins that claude and claude --resume are one
+// tunnel: the program is which tunnel this is, and its arguments are how it
+// was started this time. A URL origin's query is part of the origin, and so of
+// the key — only a program's arguments are set aside.
+func TestKeyIgnoresAProgramsArguments(t *testing.T) {
+	const dir = "/work/project"
+	bare := New(WithDir(dir), WithURL(must(t, "exec:///usr/bin/claude"))).Key()
+	withArgs := New(WithDir(dir), WithURL(must(t, "exec:///usr/bin/claude?arg=--resume"))).Key()
+	if bare != withArgs {
+		t.Errorf("Key() = %q with arguments and %q without, want one tunnel", withArgs, bare)
+	}
+
+	plain := New(WithDir(dir), WithURL(must(t, "http://localhost:3000"))).Key()
+	queried := New(WithDir(dir), WithURL(must(t, "http://localhost:3000?arg=x"))).Key()
+	if plain == queried {
+		t.Errorf("Key() = %q for an http origin with and without a query, want two", plain)
+	}
+}

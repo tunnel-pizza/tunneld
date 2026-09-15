@@ -63,7 +63,7 @@ func (*TargetsImpl) Provider() string { return v1.DockerProvider }
 // The three failures are told apart because their levers differ: a daemon that
 // cannot be reached is ErrNoDocker (start Docker), and both a missing container
 // and a stopped one are ErrInvalidOrigin (fix the origin, or start it).
-func (*TargetsImpl) Open(ctx context.Context, ref string, log v1.Logger) (attach.Target, error) {
+func (*TargetsImpl) Open(ctx context.Context, ref string, _ []string, log v1.Logger) (attach.Target, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", v1.ErrNoDocker, err)

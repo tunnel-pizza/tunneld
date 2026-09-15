@@ -976,6 +976,8 @@ func (s *stubTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 // call fail instead — the unwinding case needs one success before one
 // failure.
 type stubTargets struct {
+	// args is what each Open was handed to run its program with.
+	args [][]string
 	// verb and provider are the pair this stub answers, "" meaning the
 	// attach://dockerd pair most cases here are about. provider is meaningful
 	// when empty, so it takes a flag rather than a zero value: exec:// answers
@@ -997,8 +999,9 @@ func (s *stubTargets) Provider() string {
 	return cmp.Or(s.provider, v1.DockerProvider)
 }
 
-func (s *stubTargets) Open(_ context.Context, ref string, _ *slog.Logger) (Target, error) {
+func (s *stubTargets) Open(_ context.Context, ref string, args []string, _ *slog.Logger) (Target, error) {
 	s.asked = append(s.asked, ref)
+	s.args = append(s.args, args)
 	if s.failOn > 0 && len(s.asked) == s.failOn {
 		return nil, errors.New("no such container")
 	}
@@ -1544,5 +1547,24 @@ func TestBindWithoutTargets(t *testing.T) {
 	}
 	if want := "attach: nothing answers attach://dockerd, only "; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("error = %q, want %q", err, want)
+	}
+}
+
+// TestBindHandsAProgramItsArguments pins the seam the words after a program on
+// the command line cross: they ride the origin's query, and the binder hands
+// them to the provider in the order written. A container provider is handed
+// none, because nothing after a container's name is its.
+func TestBindHandsAProgramItsArguments(t *testing.T) {
+	programs := &stubTargets{verb: v1.ExecScheme, local: true}
+	display := shown(t, "exec:///usr/bin/claude?arg=--resume&arg=--model&arg=opus")
+
+	_, closer, err := New(WithTargets(programs)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+
+	if want := []string{"--resume", "--model", "opus"}; len(programs.args) != 1 || !slices.Equal(programs.args[0], want) {
+		t.Errorf("the program was opened with %q, want %q", programs.args, want)
 	}
 }

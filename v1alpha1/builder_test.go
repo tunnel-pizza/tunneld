@@ -169,7 +169,7 @@ func TestRejectsUnusableFlags(t *testing.T) {
 		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrNoOrigin},
 		{"no host", []string{"http://"}, v1.ErrNoOrigin},
 		{"empty origin", []string{"  "}, v1.ErrNoOrigin},
-		{"unknown log level", []string{"http://localhost:3000", "--log-level", "loud"}, v1.ErrInvalidLogLevel},
+		{"unknown log level", []string{"--log-level", "loud", "http://localhost:3000"}, v1.ErrInvalidLogLevel},
 	}
 
 	for _, tc := range cases {
@@ -1149,15 +1149,17 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 
-	b := New(WithOrigin(name, "http://localhost:3000", "attach://dockerd/api"))
+	// The program last: the words after one are its arguments, so a URL
+	// after it would be handed to it rather than served.
+	b := New(WithOrigin("http://localhost:3000", "attach://dockerd/api", name))
 	got := b.Origins()
 
 	// The origin carries the resolved path, not the word typed: "top" names a
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if got.Len() != 3 || got.At(0).Scheme != v1.ExecScheme || got.At(0).Path != want {
-		t.Fatalf("Origins() = %q, want the first to be %s://%s", originStrings(got), v1.ExecScheme, want)
+	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || got.At(2).Path != want {
+		t.Fatalf("Origins() = %q, want the last to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
 	// the frame makes when it puts the origin in its corner.
@@ -1168,15 +1170,15 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// pseudo-terminals refuses a program origin at startup regardless, and the
 	// binder reads the path off the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
-		again, err := url.Parse(got.At(0).String())
+		again, err := url.Parse(got.At(2).String())
 		if err != nil {
-			t.Fatalf("%q did not parse back: %v", got.At(0), err)
+			t.Fatalf("%q did not parse back: %v", got.At(2), err)
 		}
 		if again.Path != want {
-			t.Errorf("%q parsed back to path %q, want %q", got.At(0), again.Path, want)
+			t.Errorf("%q parsed back to path %q, want %q", got.At(2), again.Path, want)
 		}
 	}
-	if rest := urlStrings(got.URLs()[1:]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
+	if rest := urlStrings(got.URLs()[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 
@@ -1188,9 +1190,136 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || spelled.At(0).Path != want {
 		t.Fatalf("Origins(%q) = %q, want %s://%s", v1.ExecScheme+"://"+name, originStrings(spelled), v1.ExecScheme, want)
 	}
-	if got.At(0).String() != spelled.At(0).String() {
+	if got.At(2).String() != spelled.At(0).String() {
 		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
-			name, v1.ExecScheme+"://"+name, got.At(0), spelled.At(0))
+			name, v1.ExecScheme+"://"+name, got.At(2), spelled.At(0))
+	}
+}
+
+// TestOriginsGiveAProgramTheWordsAfterIt pins docker's rule for the command
+// line: origins are read left to right, and the first word that names a
+// program takes every word after it as its arguments. `tunneld claude
+// --resume` runs claude with --resume; `tunneld :3000 claude --resume` serves
+// :3000 and then claude with --resume; and the program is the last origin on
+// the line, the way docker's image is followed only by its own command.
+func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
+	name := "tunneld-origin-fixture"
+	if runtime.GOOS == "windows" {
+		name += ".bat"
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	t.Setenv("PATH", dir)
+	path := filepath.Join(dir, name)
+
+	// Spelled through url.URL rather than by concatenation, on both sides of
+	// every comparison: a Windows path has backslashes, which String()
+	// percent-encodes, so a raw `exec://C:\...` neither parses nor matches.
+	program := func(args ...string) string {
+		u := &url.URL{Scheme: v1.ExecScheme, Path: path}
+		if len(args) > 0 {
+			u.RawQuery = url.Values{v1.ArgKey: args}.Encode()
+		}
+		return u.String()
+	}
+
+	for _, tc := range []struct {
+		name    string
+		origins []string
+		// want is each origin's String(); the program's carries its query.
+		want []string
+	}{
+		{
+			name:    "the words after a program are its arguments",
+			origins: []string{name, "--resume", "--model", "opus"},
+			want:    []string{program("--resume", "--model", "opus")},
+		},
+		{
+			name:    "origins before the program stay origins",
+			origins: []string{"http://localhost:3000", "attach://dockerd/api", name, "--resume"},
+			want:    []string{"http://localhost:3000", "attach://dockerd/api", program("--resume")},
+		},
+		{
+			name:    "a URL after the program is the program's argument",
+			origins: []string{name, "http://localhost:3000"},
+			want:    []string{program("http://localhost:3000")},
+		},
+		{
+			name:    "a program spelled as a URL takes the rest too",
+			origins: []string{v1.ExecScheme + "://" + name, "-d", "5"},
+			want:    []string{program("-d", "5")},
+		},
+		{
+			name:    "arguments an origin already carries come first",
+			origins: []string{program("--resume"), "--model", "opus"},
+			want:    []string{program("--resume", "--model", "opus")},
+		},
+		{
+			name:    "a program with no words after it has none",
+			origins: []string{"http://localhost:3000", name},
+			want:    []string{"http://localhost:3000", program()},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A seeded exec:// URL is the one input here that spells the path
+			// inside the URL rather than resolving a word to it, and a
+			// Windows path has no such spelling: with every backslash
+			// percent-encoded there is no separator after the authority, so
+			// the whole path parses as a host and the origin is dropped —
+			// the limitation TestOriginsRunsAProgram already notes. The
+			// program is still found by its bare word there, which the other
+			// cases cover.
+			if runtime.GOOS == "windows" && strings.HasPrefix(tc.origins[0], v1.ExecScheme+"://"+path[:1]) {
+				t.Skip("an absolute Windows path cannot be spelled inside an exec:// URL")
+			}
+			got := originStrings(New(WithOrigin(tc.origins...)).Origins())
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("Origins(%q) = %q, want %q", tc.origins, got, tc.want)
+			}
+		})
+	}
+
+	// A container is not a program, so the words after it are origins in
+	// their own right — and one that names nothing is dropped as it always
+	// was, rather than handed to the container.
+	got := originStrings(New(WithOrigin("attach://dockerd/api", "http://localhost:3000")).Origins())
+	if want := []string{"attach://dockerd/api", "http://localhost:3000"}; !slices.Equal(got, want) {
+		t.Errorf("Origins() = %q, want %q — a container takes no arguments", got, want)
+	}
+}
+
+// TestFlagsStopAtTheFirstOrigin pins the other half of docker's rule: tunneld's
+// own flags parse up to the first origin and not past it, so a flag after a
+// program is the program's even when tunneld has a flag of the same name.
+func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
+	name := "tunneld-origin-fixture"
+	if runtime.GOOS == "windows" {
+		name += ".bat"
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	b := New()
+	cmd := b.Command()
+	// --log-level twice: the first is tunneld's, the second is the program's,
+	// and "loud" is a level tunneld would refuse if it were reading it.
+	if err := cmd.ParseFlags([]string{"--log-level", "debug", name, "--log-level", "loud"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if got := b.logLevel; got != "debug" {
+		t.Errorf("tunneld's --log-level = %q, want %q — the program's flag was read as tunneld's", got, "debug")
+	}
+	if got, want := cmd.Flags().Args(), []string{name, "--log-level", "loud"}; !slices.Equal(got, want) {
+		t.Fatalf("positional args = %q, want %q", got, want)
+	}
+	got := b.Origins()
+	if got.Len() != 1 || !slices.Equal(got.At(0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
+		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
 }
 
@@ -1255,6 +1384,31 @@ func TestAViewerCanEndTheRun(t *testing.T) {
 	}
 	if !h.binder.closed {
 		t.Error("the origins were left up after the run ended")
+	}
+}
+
+// TestReportNamesAProgramWithoutItsArguments pins what the origin map shows
+// for a program started with arguments: the program. The arguments ride the
+// origin as a query because that is how they travel; the map is for a person.
+func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), "exec:///usr/bin/htop?arg=-d&arg=5")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v, want nil after a signal", err)
+	}
+	if want := "  -> exec:///usr/bin/htop\n"; !strings.Contains(h.stderr.String(), want) {
+		t.Errorf("stderr %q does not map the program as %q", h.stderr.String(), want)
+	}
+	if strings.Contains(h.stderr.String(), "?arg=") {
+		t.Errorf("stderr shows the arguments' carrier:\n%s", h.stderr.String())
+	}
+	// The tunnel itself was still handed the origin whole; the arguments are
+	// the binder's to read off it.
+	if got := h.tunnels[0].locals; len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
+		t.Errorf("tunnel was given %v, want the origin with its arguments", got)
 	}
 }
 

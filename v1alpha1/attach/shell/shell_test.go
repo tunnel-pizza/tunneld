@@ -129,7 +129,7 @@ func TestOpenResolves(t *testing.T) {
 
 	t.Run("a name that is not there", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		_, err := New().Open(t.Context(), "tunneld-absent-fixture", log)
+		_, err := New().Open(t.Context(), "tunneld-absent-fixture", nil, log)
 		if !errors.Is(err, v1.ErrInvalidOrigin) {
 			t.Fatalf("Open() = %v, want ErrInvalidOrigin", err)
 		}
@@ -144,7 +144,7 @@ func TestOpenResolves(t *testing.T) {
 		write(t, dir, runnable("tunneld-fixture"), 0o755)
 		t.Setenv("PATH", dir)
 
-		target, err := New().Open(t.Context(), runnable("tunneld-fixture"), log)
+		target, err := New().Open(t.Context(), runnable("tunneld-fixture"), nil, log)
 		if err != nil {
 			t.Fatalf("Open() = %v", err)
 		}
@@ -171,7 +171,7 @@ func TestAttachRunsTheProgram(t *testing.T) {
 	dir := t.TempDir()
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
-	target, err := New().Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -203,7 +203,7 @@ func TestResizeStopsWithTheAttach(t *testing.T) {
 	dir := t.TempDir()
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
-	target, err := New().Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -232,7 +232,7 @@ func TestCloseToleratesASecondCall(t *testing.T) {
 	dir := t.TempDir()
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
-	target, err := New().Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestAttachAfterCloseStartsNothing(t *testing.T) {
 	dir := t.TempDir()
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
-	target, err := New().Open(t.Context(), path, slog.New(slog.DiscardHandler))
+	target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
 	}
@@ -268,5 +268,41 @@ func TestAttachAfterCloseStartsNothing(t *testing.T) {
 	}
 	if got := out.String(); got != "" {
 		t.Errorf("attach after Close wrote %q, want nothing", got)
+	}
+}
+
+// TestAttachPassesTheArguments pins that what Open was handed reaches the
+// program's argv, in order and whole — a space inside one argument stays inside
+// it, which is the promise a shell makes and the query encoding has to keep.
+func TestAttachPassesTheArguments(t *testing.T) {
+	needsPTY(t)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tunneld-args-fixture")
+	script := "#!/bin/sh\nprintf 'ARGS:%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+
+	target, err := New().Open(t.Context(), path, []string{"--resume", "two words", "-d"}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	defer func() { _ = target.Close() }()
+
+	out := &sink{}
+	resize := make(chan remotecommand.TerminalSize)
+	close(resize)
+	if err := target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), out, &sink{}, true, resize); err != nil {
+		t.Fatalf("AttachContainer() = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "ARGS:--resume|two words|-d") {
+		t.Errorf("attach wrote %q, want the arguments in order", got)
+	}
+
+	// The origin the frame shows names the program and not how it was
+	// started: the query is the carrier, and a person is shown the path.
+	if got, want := target.Origin(), v1.ExecScheme+"://"+path; got != want {
+		t.Errorf("Origin() = %q, want %q", got, want)
 	}
 }

@@ -379,6 +379,28 @@ the frame shows, what the origin map prints, and what somebody pastes back to
 reach the same program rather than whatever their own `$PATH` finds. A bare
 name says which program only on the machine that looked it up.
 
+The words after a program are the program's, the way the words after
+`docker run`'s image are the container's:
+
+```sh
+tunneld claude --resume
+tunneld :3000 htop -d 5
+```
+
+Origins are read left to right, and the first word that names a program takes
+every word after it as its arguments — so the program is the last origin on
+the line, and `tunneld htop :3000` runs htop with `:3000` as an argument. The
+arguments ride the origin as a query, in order, which is how the frame shows
+them and how the same run is spelled from the environment or an embedding
+program:
+
+```sh
+TUNNELD_ORIGINS='exec:///usr/bin/claude?arg=--resume&arg=--model&arg=opus'
+```
+
+`claude` and `claude --resume` are one tunnel: the program is which tunnel this
+is, and its arguments are how it was started this time.
+
 `exec://htop` — the word with its scheme on and nothing after it — is looked up
 the same way, because an authority with nothing after it cannot be a provider
 being asked for something; it resolves to the same `exec:///usr/bin/htop`.
@@ -532,6 +554,11 @@ The surface is deliberately small. Everything else the engine can do — origin
 TLS, spec replay, edge pinning, the cache directory — is reachable through
 `libtunnel`'s own `LIBTUNNEL_*` variables, which pass straight through; see
 [its README](https://github.com/cnuss/libtunnel#environment-variables).
+
+Flags go before the origins, docker's rule: parsing stops at the first origin,
+and every word after it is positional — an origin, or a program's argument. So
+`tunneld --log-level debug :3000`, not `tunneld :3000 --log-level debug`; the
+environment variables are not argv and work regardless.
 
 The origins are the arguments. One per local service, in order: the first is the
 default and each later one answers on `?n`. A missing scheme implies `http` and
