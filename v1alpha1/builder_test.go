@@ -1263,6 +1263,17 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A seeded exec:// URL is the one input here that spells the path
+			// inside the URL rather than resolving a word to it, and a
+			// Windows path has no such spelling: with every backslash
+			// percent-encoded there is no separator after the authority, so
+			// the whole path parses as a host and the origin is dropped —
+			// the limitation TestOriginsRunsAProgram already notes. The
+			// program is still found by its bare word there, which the other
+			// cases cover.
+			if runtime.GOOS == "windows" && strings.HasPrefix(tc.origins[0], v1.ExecScheme+"://"+path[:1]) {
+				t.Skip("an absolute Windows path cannot be spelled inside an exec:// URL")
+			}
 			got := originStrings(New(WithOrigin(tc.origins...)).Origins())
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("Origins(%q) = %q, want %q", tc.origins, got, tc.want)
