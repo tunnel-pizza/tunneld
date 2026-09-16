@@ -110,10 +110,10 @@ type frame struct {
 	sess *session
 	v    *viewer
 
-	// The viewer's window, as it last reported it. The pane inside is this
-	// less the chrome, and smaller again when another viewer has a smaller
-	// window — the session settles the emulator on the smallest of them, and
-	// a larger window renders it with unused margin.
+	// The viewer's window, as it last reported it. The box the frame draws
+	// is this or smaller: the session settles the emulator on the smallest
+	// viewer's window, and a larger window draws the box at that size with
+	// nothing around it. See box.
 	width, height int
 
 	// command is the frame's key having been pressed: the next keystroke
@@ -347,8 +347,8 @@ func (f frame) wheeled(m tea.MouseWheelMsg) frame {
 	switch {
 	case f.sess.mouseWanted():
 		// In the program's coordinates: the frame's border is not its
-		// screen, and a pane larger than the negotiated size has margin the
-		// program cannot see either.
+		// screen, and a window shrunk under the box has less of the screen
+		// than the program can see.
 		pane := f.pane()
 		w, h := f.sess.paneSize()
 		f.sess.sendWheel(uv.Mouse{
@@ -419,9 +419,28 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 	return f, nil
 }
 
+// box is the frame's outline in this viewer's window: the shared screen with
+// the chrome around it, or the window itself when that is smaller.
+//
+// Around the screen rather than around the window, because the screen is the
+// smallest viewer's and this window may be larger. A border at the window's
+// edges puts the margin inside it, where it reads as the program stopping
+// short; a border at the screen's edges puts the margin outside, where it
+// reads as what it is — a box the size of somebody else's terminal. The corner
+// chip that says whose then sits at the corner of the screen it describes.
+//
+// Anchored top-left rather than centred, so that a renegotiation moves one
+// edge of the box rather than all four, and the text a reader was following
+// stays where it was.
+func (f frame) box() uv.Rectangle {
+	w, h := f.sess.paneSize()
+	return uv.Rect(0, 0, min(f.width, w+chromeWidth), min(f.height, h+chromeHeight))
+}
+
 // pane is the area inside the border, in this viewer's window.
 func (f frame) pane() uv.Rectangle {
-	return uv.Rect(1, 1, f.width-chromeWidth, f.height-chromeHeight)
+	box := f.box()
+	return uv.Rect(1, 1, box.Dx()-chromeWidth, box.Dy()-chromeHeight)
 }
 
 // View draws the container's screen inside a border, with what the session is
@@ -461,9 +480,11 @@ func (f frame) View() tea.View {
 	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
 	// width method, which is what makes a wide character occupy two columns
 	// here the way it does on the terminal this is drawn for.
+	// The buffer is the window, so that what is outside the box is drawn as
+	// nothing rather than left as whatever was there; the border is the box.
 	buf := uv.NewScreenBuffer(f.width, f.height)
 	border := uv.RoundedBorder().Style(borderStyle)
-	border.Draw(buf, buf.Bounds())
+	border.Draw(buf, f.box())
 
 	// Filled at its own size and copied in, never drawn straight into the
 	// frame's buffer. Neither the emulator nor a styled line clips to the area
@@ -501,7 +522,7 @@ func (f frame) View() tea.View {
 	// The counts give way whole on a narrow window, but not the one part of
 	// them that says this screen is not live: a scrolled viewer with no
 	// indicator is a viewer who thinks the program has stopped.
-	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta(), f.back())
+	f.row(buf, f.box().Dy()-1, f.hint(), f.banner(), f.meta(), f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -557,7 +578,7 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // fall back to the part of itself that is not, rather than vanishing whole.
 func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...string) {
 	const indent = 2
-	edge := f.width - 1
+	edge := f.box().Dx() - 1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
 
@@ -590,7 +611,7 @@ func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...str
 // an address. The origin has the row to itself again there.
 func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
 	const indent = 2
-	edge := f.width - 1
+	edge := f.box().Dx() - 1
 
 	before := edge
 	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
@@ -615,7 +636,7 @@ func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
 // labels can hold it.
 func (f frame) between(buf uv.ScreenBuffer, y int, centre string, after, before int) {
 	if width := uv.NewStyledString(centre).UnicodeWidth(); width > 0 {
-		if x := (f.width - width) / 2; x > after && x+width < before {
+		if x := (f.box().Dx() - width) / 2; x > after && x+width < before {
 			writeAt(buf, x, y, centre, before-x)
 		}
 	}
@@ -679,20 +700,20 @@ func (f frame) titleLabel(beside string) string {
 // this it does not fit the row on its own, and topRow drops it.
 func (f frame) drawn(beside string) bool {
 	width := uv.NewStyledString(beside).UnicodeWidth()
-	return width > 0 && width < f.width-3
+	return width > 0 && width < f.box().Dx()-3
 }
 
 // titleRoom is how many columns the origin can have without costing the label
 // against the other corner.
 //
 // Read off topRow: the left label starts at column 2, the right one ends at
-// f.width-1, and a column is left between them. The label's own spaces are the
+// the box's last column, and a column is left between them. The label's own spaces are the
 // last two.
 func (f frame) titleRoom(beside string) int {
 	if width := uv.NewStyledString(beside).UnicodeWidth(); width > 0 {
-		return f.width - 1 - width - 1 - 2 - 2
+		return f.box().Dx() - 1 - width - 1 - 2 - 2
 	}
-	return f.width - 1 - 2 - 2
+	return f.box().Dx() - 1 - 2 - 2
 }
 
 // ellipsis stands for the leading path segments an origin has given up.

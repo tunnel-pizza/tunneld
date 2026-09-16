@@ -422,7 +422,7 @@ func TestDetachLeavesTheSessionAlone(t *testing.T) {
 // and on a small window there is not much of it to lose.
 func TestViewFitsTheWindow(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 20, 6
+	h.window(20, 6)
 
 	lines := strings.Split(h.f.View().Content, "\n")
 	if len(lines) != h.f.height {
@@ -440,11 +440,11 @@ func TestViewFitsTheWindow(t *testing.T) {
 // its own.
 func TestViewIsBordered(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.height = 8
+	h.window(h.f.width, 8)
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 
 	wide, tight := roomFor(h.f)
-	h.f.width = wide
+	h.window(wide, h.f.height)
 
 	lines := strings.Split(h.f.View().Content, "\n")
 	top, bottom := stripSGR(lines[0]), stripSGR(lines[len(lines)-1])
@@ -536,7 +536,7 @@ func TestViewIsBordered(t *testing.T) {
 
 	// Narrower, and the three give way in order. First the build, which is the
 	// least urgent.
-	h.f.width = tight
+	h.window(tight, h.f.height)
 	if got := stripSGR(bottomOf(h)); strings.Contains(got, testBanner) {
 		t.Errorf("bottom border = %q, want the build dropped before the counts", got)
 	} else if !strings.Contains(got, "1 viewer") {
@@ -544,8 +544,8 @@ func TestViewIsBordered(t *testing.T) {
 	}
 
 	// Then the counts: what to press matters more than how many are watching.
-	h.f.width = 24
-	defer func() { h.f.width = wide }()
+	h.window(24, h.f.height)
+	defer func() { h.window(wide, h.f.height) }()
 	if got := stripSGR(bottomOf(h)); strings.Contains(got, "viewer") {
 		t.Errorf("bottom border = %q, want the counts dropped rather than overlapping the keys", got)
 	} else if strings.Contains(got, testBanner) {
@@ -553,7 +553,7 @@ func TestViewIsBordered(t *testing.T) {
 	} else if !strings.Contains(got, "^K") {
 		t.Errorf("bottom border = %q, want the keys kept", got)
 	}
-	h.f.width = wide
+	h.window(wide, h.f.height)
 
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, commandKey)
@@ -582,6 +582,14 @@ func roomFor(f frame) (all, withoutBuild int) {
 	return build + 2*max(keys, counts) + 10, keys + counts + 10
 }
 
+// window is the viewer's window being reported at a new size, the way a lone
+// viewer's is: the session settles the emulator on it, so the shared screen
+// follows the window. A test that wants the two to differ sets the fields.
+func (h *harness) window(width, height int) {
+	h.f.width, h.f.height = width, height
+	h.s.em.Resize(max(1, width-chromeWidth), max(1, height-chromeHeight))
+}
+
 // bottomOf is the frame's bottom border row as it renders now.
 func bottomOf(h *harness) string {
 	lines := strings.Split(h.f.View().Content, "\n")
@@ -598,7 +606,7 @@ func bottomOf(h *harness) string {
 // pane and the old emulator, every time.
 func TestBorderSurvivesAnOversizedScreen(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 20, 6
+	h.window(20, 6)
 
 	// The emulator is left at the harness default, which is far larger than
 	// the window just set — exactly the disagreement a shrink creates.
@@ -868,7 +876,7 @@ func TestThePagesSizeSurvivesTheGuess(t *testing.T) {
 // the title sits.
 func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 60, 6
+	h.window(60, 6)
 
 	whole := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 
@@ -909,7 +917,7 @@ func TestABlankTitleLeavesTheBorderWhole(t *testing.T) {
 // differ and once when they do not.
 func TestBothTitlesAreShown(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.width, h.f.height = 80, 6
+	h.window(80, 6)
 
 	for _, tc := range []struct{ name, title, subtitle, want string }{
 		{"a shell reporting both", "sleep 2", "sleep", "sleep 2 · sleep"},
@@ -1025,7 +1033,7 @@ func TestALongOriginGivesUpItsLeadingSegments(t *testing.T) {
 // only takes it back below the width where the address fits at all.
 func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.height = 8
+	h.window(h.f.width, 8)
 
 	target := newFakeTarget("claude", true, true)
 	target.origin = "exec:///Users/christian/.local/bin/claude"
@@ -1033,7 +1041,7 @@ func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 
 	// Wide enough for both, and the origin is whole.
-	h.f.width = 120
+	h.window(120, h.f.height)
 	top := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 	if !strings.Contains(top, target.origin) {
 		t.Errorf("top border = %q, want the whole origin %q in it", top, target.origin)
@@ -1041,7 +1049,7 @@ func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 
 	// The window from the report: the origin no longer fits beside the
 	// address, so it gives up its head and both are shown.
-	h.f.width = 84
+	h.window(84, h.f.height)
 	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 
 	if want := h.s.announced() + " \u256e"; !strings.HasSuffix(top, want) {
@@ -1061,7 +1069,7 @@ func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 	// can be reduced to. The address keeps the row: it is minted for this run
 	// and said nowhere else, where the origin is a string somebody typed and
 	// the page's own title still carries it whole.
-	h.f.width = 56
+	h.window(56, h.f.height)
 	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 	if want := h.s.announced() + " \u256e"; !strings.HasSuffix(top, want) {
 		t.Errorf("top border = %q, want it ending %q", top, want)
@@ -1077,7 +1085,7 @@ func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 	// could take. It is given up as it always was — but the origin is then
 	// fitted to the whole row rather than clipped against the corner, because
 	// a clipped one ends mid-path and says nothing about which program this is.
-	h.f.width = 40
+	h.window(40, h.f.height)
 	top = stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 	if strings.Contains(top, h.s.announced()) {
 		t.Errorf("top border = %q, want the address given up at this width", top)
@@ -1139,10 +1147,10 @@ func TestTheLayoutSurvivesALongHostname(t *testing.T) {
 	t.Cleanup(func() { host = restore })
 
 	h := newFrameHarness(t)
-	h.f.height = 8
+	h.window(h.f.width, 8)
 	wide, tight := roomFor(h.f)
 
-	h.f.width = wide
+	h.window(wide, h.f.height)
 	bottom := stripSGR(bottomOf(h))
 	for _, want := range []string{"^K", testBanner, "1 viewer", host()} {
 		if !strings.Contains(bottom, want) {
@@ -1154,7 +1162,7 @@ func TestTheLayoutSurvivesALongHostname(t *testing.T) {
 	}
 
 	// And the order it gives way in does not change with the name either.
-	h.f.width = tight
+	h.window(tight, h.f.height)
 	if got := stripSGR(bottomOf(h)); strings.Contains(got, testBanner) {
 		t.Errorf("bottom border = %q, want the build dropped before the counts", got)
 	} else if !strings.Contains(got, "1 viewer") {
@@ -1232,6 +1240,8 @@ func TestTheWheelLooksBackThroughWhatScrolledOff(t *testing.T) {
 	// The counts give way on a narrow window — and on a CI runner whose
 	// hostname is sixty characters — but the chip is the one part of them
 	// that says this screen is not live, and it stays.
+	// The window alone, not the screen: this is the frame being narrower
+	// than what it shows, and the emulator's content has to survive it.
 	wide := h.f.width
 	h.f.width = 24
 	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "viewer") || !strings.Contains(bottom, "↑1") {
@@ -1392,5 +1402,58 @@ func TestTheConsoleAsksItsTerminalForTheWheel(t *testing.T) {
 	h.f.console = true
 	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
 		t.Errorf("console frame MouseMode = %v, want cell motion — a terminal reports no wheel unasked", got)
+	}
+}
+
+// TestTheBoxIsThePane pins where the border goes on a window larger than the
+// shared screen: around the screen, not around the window. The emulator has
+// settled on the smallest viewer, and a border drawn at this viewer's own edges
+// puts blank margin inside it — which reads as the program stopping short,
+// when it is another viewer's window being smaller. Outside the box is nothing,
+// and the corner chip sits at the corner of the screen it describes.
+func TestTheBoxIsThePane(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("shared screen"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.f.width, h.f.height = defaultCols+40, defaultRows+16
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if len(lines) != defaultRows+16 {
+		t.Fatalf("view has %d rows, want the whole window's %d", len(lines), defaultRows+16)
+	}
+	w, hgt := h.s.paneSize()
+	boxW, boxH := w+chromeWidth, hgt+chromeHeight
+
+	top := stripSGR(lines[0])
+	if got := uv.NewStyledString(strings.TrimRight(top, " ")).UnicodeWidth(); got != boxW {
+		t.Errorf("top border is %d columns wide, want the pane's %d", got, boxW)
+	}
+	bottom := stripSGR(lines[boxH-1])
+	if !strings.HasSuffix(strings.TrimRight(bottom, " "), "╯") {
+		t.Errorf("row %d = %q, want the bottom border there — the box ends where the screen does", boxH-1, bottom)
+	}
+	if !strings.Contains(bottom, "1 viewer") {
+		t.Errorf("bottom border = %q, want the counts in the box's own bottom row", bottom)
+	}
+	for y := boxH; y < len(lines); y++ {
+		if strings.TrimSpace(stripSGR(lines[y])) != "" {
+			t.Errorf("row %d = %q, want nothing below the box", y, stripSGR(lines[y]))
+			break
+		}
+	}
+	if !strings.Contains(stripSGR(lines[1]), "shared screen") {
+		t.Errorf("row 1 = %q, want the screen inside the box", stripSGR(lines[1]))
+	}
+
+	// A window smaller than the screen is still the window: the box cannot
+	// be bigger than what it is drawn on.
+	h.f.width, h.f.height = defaultCols-10, defaultRows-4
+	lines = strings.Split(h.f.View().Content, "\n")
+	if len(lines) != defaultRows-4 {
+		t.Fatalf("view has %d rows on a small window, want %d", len(lines), defaultRows-4)
+	}
+	if last := stripSGR(lines[len(lines)-1]); !strings.HasSuffix(strings.TrimRight(last, " "), "╯") {
+		t.Errorf("last row = %q, want the bottom border at the window's edge", last)
 	}
 }
