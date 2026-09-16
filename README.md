@@ -241,6 +241,7 @@ Every key reaches the container except one:
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
+| then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 
 ### No arguments at all

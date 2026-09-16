@@ -1475,3 +1475,69 @@ func TestTheBoxIsThePane(t *testing.T) {
 		t.Errorf("last row = %q, want the bottom border at the window's edge", last)
 	}
 }
+
+// TestTheAddressIsAQRCodeAway pins the view: ^K q draws the public address as
+// a code with the address under it, keys are spent on reading rather than
+// reaching the program, the cursor is withheld, and esc is the way back.
+func TestTheAddressIsAQRCodeAway(t *testing.T) {
+	h := newFrameHarness(t)
+	h.window(100, 40) // room for a code: 21 modules plus the quiet zone is 29 columns, 15 rows
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+
+	h.press(t, commandKey)
+	h.press(t, typing('q'))
+
+	pane := stripSGR(h.f.View().Content)
+	if !strings.ContainsAny(pane, "█▀▄") {
+		t.Errorf("pane = %q, want a code drawn in half blocks", pane)
+	}
+	if !strings.Contains(pane, "striped-worm.tunneled.pizza/?0") {
+		t.Errorf("pane = %q, want the address under the code for whoever would rather type", pane)
+	}
+	if h.f.View().Cursor != nil {
+		t.Error("a cursor is drawn over the code, where the live position means nothing")
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "back to the terminal") {
+		t.Errorf("bottom border = %q, want it saying how to get back", bottom)
+	}
+
+	// Holding a phone up is not typing.
+	h.press(t, typing('x'))
+	h.silent(t)
+
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if pane := stripSGR(h.f.View().Content); strings.ContainsAny(pane, "█▀▄") {
+		t.Errorf("pane = %q, still shows the code after esc", pane)
+	}
+	if h.f.View().Cursor == nil {
+		t.Error("no cursor once back on the terminal")
+	}
+}
+
+// TestAPaneTooSmallForACodeSaysSo pins the two ways the view has nothing to
+// draw: a pane the code will not fit, which gets the address as text and the
+// size a code needs, and a run with no address yet. Neither draws part of a
+// code, because part of a code is not a smaller code.
+func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
+	h := newFrameHarness(t)
+	h.window(60, 10) // 58×8: a code is 29×15 with its quiet zone
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+	h.press(t, commandKey)
+	h.press(t, typing('q'))
+
+	pane := stripSGR(h.f.View().Content)
+	if strings.ContainsAny(pane, "█▀▄") {
+		t.Errorf("pane = %q, want no code on a pane that cannot hold one whole", pane)
+	}
+	if !strings.Contains(pane, "too small") || !strings.Contains(pane, "striped-worm.tunneled.pizza/?0") {
+		t.Errorf("pane = %q, want it saying the pane is too small and giving the address as text", pane)
+	}
+
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	h.s.announce("")
+	h.press(t, commandKey)
+	h.press(t, typing('q'))
+	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "no address yet") {
+		t.Errorf("pane = %q, want it saying there is no address yet", pane)
+	}
+}
