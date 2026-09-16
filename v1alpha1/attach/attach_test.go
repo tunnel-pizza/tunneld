@@ -767,6 +767,7 @@ func TestAliveSaysWhatComingBackWouldDo(t *testing.T) {
 		t.Cleanup(target.release)
 		s := serveFake(t, target)
 		target.awaitOver(t, 1)
+		awaitEnded(t, s)
 
 		code, offer := ask(t, s)
 		if code != http.StatusOK || offer != "restart" {
@@ -779,6 +780,7 @@ func TestAliveSaysWhatComingBackWouldDo(t *testing.T) {
 		t.Cleanup(target.release)
 		s := serveFake(t, target)
 		target.awaitOver(t, 1)
+		awaitEnded(t, s)
 
 		if code, offer := ask(t, s); code != http.StatusGone {
 			t.Errorf("GET /alive = %d %q, want %d — there is nothing to come back to", code, offer, http.StatusGone)
@@ -1151,6 +1153,22 @@ func (r *rerunTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.
 // fires while the run is still going: a viewer arriving before the previous
 // run has actually ended finds a session that is still running and asks for
 // nothing, which is a race a test must not depend on losing.
+// awaitEnded waits for the session to have noticed that its run is over,
+// which is a different moment from the target having returned. The target
+// says "over" from a defer as Attach returns; the session closes done from a
+// defer of its own, in the goroutine that called Attach, after that. A test
+// that asks the session anything about the run's end has to wait for the
+// second, or it asks in the goroutine switch between them — a window a fast
+// machine never shows and a race-detector build on a shared runner does.
+func awaitEnded(t *testing.T, s *Server) {
+	t.Helper()
+	select {
+	case <-s.session.ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never noticed the run ending")
+	}
+}
+
 func (r *rerunTarget) awaitOver(t *testing.T, want int) {
 	t.Helper()
 	for {
@@ -1213,6 +1231,7 @@ func TestAViewerStartsARepeatableTargetAgain(t *testing.T) {
 	t.Cleanup(target.release)
 	s := serveFake(t, target)
 	target.awaitOver(t, 1)
+	awaitEnded(t, s)
 
 	dial(t, s)
 	target.awaitRun(t, 2)
@@ -1233,6 +1252,7 @@ func TestAViewerDoesNotStartAnUnrepeatableTargetAgain(t *testing.T) {
 	s := serveFake(t, target)
 	target.awaitRun(t, 1)
 	target.awaitOver(t, 1)
+	awaitEnded(t, s)
 
 	dial(t, s)
 
@@ -1259,6 +1279,7 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	s := serveFake(t, target)
 	target.awaitRun(t, 1)
 	target.awaitOver(t, 1)
+	awaitEnded(t, s)
 
 	// A viewer, whose window settles the session on a size of its own.
 	settled := remotecommand.TerminalSize{Width: 100 - chromeWidth, Height: 40 - chromeHeight}
@@ -1271,6 +1292,7 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	// That run ends, which drops the viewer with it.
 	target.letOneGo()
 	target.awaitOver(t, 2)
+	awaitEnded(t, s)
 
 	// The next viewer never reports a size at all — and even if it did, it
 	// would be the one the session is already on, which the window has nothing
