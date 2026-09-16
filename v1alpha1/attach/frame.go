@@ -429,18 +429,19 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // reads as what it is — a box the size of somebody else's terminal. The corner
 // chip that says whose then sits at the corner of the screen it describes.
 //
-// Anchored top-left rather than centred, so that a renegotiation moves one
-// edge of the box rather than all four, and the text a reader was following
-// stays where it was.
+// Centred in the window. The price is that a renegotiation moves all four
+// edges — half the difference each way — where a top-left box would move one;
+// the return is a screen that sits where a reader's eye already is.
 func (f frame) box() uv.Rectangle {
 	w, h := f.sess.paneSize()
-	return uv.Rect(0, 0, min(f.width, w+chromeWidth), min(f.height, h+chromeHeight))
+	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight)
+	return uv.Rect((f.width-w)/2, (f.height-h)/2, w, h)
 }
 
 // pane is the area inside the border, in this viewer's window.
 func (f frame) pane() uv.Rectangle {
 	box := f.box()
-	return uv.Rect(1, 1, box.Dx()-chromeWidth, box.Dy()-chromeHeight)
+	return uv.Rect(box.Min.X+1, box.Min.Y+1, box.Dx()-chromeWidth, box.Dy()-chromeHeight)
 }
 
 // View draws the container's screen inside a border, with what the session is
@@ -517,12 +518,12 @@ func (f frame) View() tea.View {
 	// The address is worked out first: it has the top row's other corner, and
 	// what is left after it is what the origin has to fit in.
 	where := f.where()
-	f.topRow(buf, 0, f.titleLabel(where), f.subtitleLabel(), where)
+	f.topRow(buf, f.box().Min.Y, f.titleLabel(where), f.subtitleLabel(), where)
 
 	// The counts give way whole on a narrow window, but not the one part of
 	// them that says this screen is not live: a scrolled viewer with no
 	// indicator is a viewer who thinks the program has stopped.
-	f.row(buf, f.box().Dy()-1, f.hint(), f.banner(), f.meta(), f.back())
+	f.row(buf, f.box().Max.Y-1, f.hint(), f.banner(), f.meta(), f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -577,8 +578,8 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // that fits is the one drawn — so a label that is mostly optional detail can
 // fall back to the part of itself that is not, rather than vanishing whole.
 func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...string) {
-	const indent = 2
-	edge := f.box().Dx() - 1
+	box := f.box()
+	indent, edge := box.Min.X+2, box.Max.X-1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
 
@@ -610,8 +611,8 @@ func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...str
 // there is nothing to trade against, and an address clipped to a corner is not
 // an address. The origin has the row to itself again there.
 func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
-	const indent = 2
-	edge := f.box().Dx() - 1
+	box := f.box()
+	indent, edge := box.Min.X+2, box.Max.X-1
 
 	before := edge
 	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
@@ -636,7 +637,8 @@ func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
 // labels can hold it.
 func (f frame) between(buf uv.ScreenBuffer, y int, centre string, after, before int) {
 	if width := uv.NewStyledString(centre).UnicodeWidth(); width > 0 {
-		if x := (f.box().Dx() - width) / 2; x > after && x+width < before {
+		box := f.box()
+		if x := box.Min.X + (box.Dx()-width)/2; x > after && x+width < before {
 			writeAt(buf, x, y, centre, before-x)
 		}
 	}
@@ -706,8 +708,8 @@ func (f frame) drawn(beside string) bool {
 // titleRoom is how many columns the origin can have without costing the label
 // against the other corner.
 //
-// Read off topRow: the left label starts at column 2, the right one ends at
-// the box's last column, and a column is left between them. The label's own spaces are the
+// Read off topRow: the left label starts two columns into the box, the right
+// one ends at the box's last column, and a column is left between them. The label's own spaces are the
 // last two.
 func (f frame) titleRoom(beside string) int {
 	if width := uv.NewStyledString(beside).UnicodeWidth(); width > 0 {

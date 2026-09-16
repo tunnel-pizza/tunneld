@@ -1406,11 +1406,12 @@ func TestTheConsoleAsksItsTerminalForTheWheel(t *testing.T) {
 }
 
 // TestTheBoxIsThePane pins where the border goes on a window larger than the
-// shared screen: around the screen, not around the window. The emulator has
-// settled on the smallest viewer, and a border drawn at this viewer's own edges
-// puts blank margin inside it — which reads as the program stopping short,
-// when it is another viewer's window being smaller. Outside the box is nothing,
-// and the corner chip sits at the corner of the screen it describes.
+// shared screen: around the screen, centred, not around the window. The
+// emulator has settled on the smallest viewer, and a border drawn at this
+// viewer's own edges puts blank margin inside it — which reads as the program
+// stopping short, when it is another viewer's window being smaller. Outside
+// the box is nothing, and the corner chip sits at the corner of the screen it
+// describes.
 func TestTheBoxIsThePane(t *testing.T) {
 	h := newFrameHarness(t)
 	if _, err := h.s.em.WriteString("shared screen"); err != nil {
@@ -1424,26 +1425,40 @@ func TestTheBoxIsThePane(t *testing.T) {
 	}
 	w, hgt := h.s.paneSize()
 	boxW, boxH := w+chromeWidth, hgt+chromeHeight
+	left, top := (h.f.width-boxW)/2, (h.f.height-boxH)/2
 
-	top := stripSGR(lines[0])
-	if got := uv.NewStyledString(strings.TrimRight(top, " ")).UnicodeWidth(); got != boxW {
-		t.Errorf("top border is %d columns wide, want the pane's %d", got, boxW)
+	for y := 0; y < top; y++ {
+		if strings.TrimSpace(stripSGR(lines[y])) != "" {
+			t.Fatalf("row %d = %q, want nothing above the box", y, stripSGR(lines[y]))
+		}
 	}
-	bottom := stripSGR(lines[boxH-1])
+	topRow := stripSGR(lines[top])
+	if got := uv.NewStyledString(strings.TrimRight(topRow, " ")).UnicodeWidth(); got != left+boxW {
+		t.Errorf("top border ends at column %d, want %d — a %d-column box starting at %d", got, left+boxW, boxW, left)
+	}
+	if !strings.HasPrefix(topRow, strings.Repeat(" ", left)+"╭") {
+		t.Errorf("top border = %q, want it starting at column %d", topRow, left)
+	}
+	bottom := stripSGR(lines[top+boxH-1])
 	if !strings.HasSuffix(strings.TrimRight(bottom, " "), "╯") {
-		t.Errorf("row %d = %q, want the bottom border there — the box ends where the screen does", boxH-1, bottom)
+		t.Errorf("row %d = %q, want the bottom border there — the box ends where the screen does", top+boxH-1, bottom)
 	}
 	if !strings.Contains(bottom, "1 viewer") {
 		t.Errorf("bottom border = %q, want the counts in the box's own bottom row", bottom)
 	}
-	for y := boxH; y < len(lines); y++ {
+	for y := top + boxH; y < len(lines); y++ {
 		if strings.TrimSpace(stripSGR(lines[y])) != "" {
 			t.Errorf("row %d = %q, want nothing below the box", y, stripSGR(lines[y]))
 			break
 		}
 	}
-	if !strings.Contains(stripSGR(lines[1]), "shared screen") {
-		t.Errorf("row 1 = %q, want the screen inside the box", stripSGR(lines[1]))
+	if !strings.Contains(stripSGR(lines[top+1]), "shared screen") {
+		t.Errorf("row %d = %q, want the screen inside the box", top+1, stripSGR(lines[top+1]))
+	}
+	// The cursor moves with the box: the pane's origin plus where the program
+	// left it, which is after what it wrote on the first row.
+	if c := h.f.View().Cursor; c == nil || c.X != left+1+len("shared screen") || c.Y != top+1 {
+		t.Errorf("cursor = %v, want (%d,%d) — the pane's origin plus the program's position", c, left+1+len("shared screen"), top+1)
 	}
 
 	// A window smaller than the screen is still the window: the box cannot
