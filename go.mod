@@ -28,6 +28,7 @@ require (
 	golang.org/x/term v0.45.0
 	k8s.io/cri-streaming v0.37.0
 	k8s.io/klog/v2 v2.140.0
+	rsc.io/qr v0.2.0
 )
 
 require (

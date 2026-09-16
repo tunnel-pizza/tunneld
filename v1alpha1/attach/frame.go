@@ -57,6 +57,7 @@ var (
 	// logStyle is dimmer than the terminal it covers, because what it shows is
 	// tunneld talking about itself rather than the thing anybody came to see.
 	logStyle = uv.Style{Fg: ansi.IndexedColor(245)}
+	qrStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 )
 
 // How long a frame waits to be told how big its window is before drawing at
@@ -133,6 +134,11 @@ type frame struct {
 	// the terminal. A view rather than a keystroke: it stays until esc, since
 	// reading is not something anybody finishes in one key.
 	logs bool
+
+	// qr is the frame showing the public address as a code a phone can read,
+	// over the pane. A view for the same reason logs is: pointing a camera at
+	// a screen takes longer than a keystroke.
+	qr bool
 
 	// sized is the window having been reported by the page rather than assumed.
 	// Until it is, the frame draws nothing rather than drawing at a size that
@@ -263,6 +269,15 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return f, nil
 		}
+		// The code is the frame's the same way: somebody holding a phone up
+		// to it is not typing, and a key that reached the program would move
+		// the screen under the camera.
+		if f.qr {
+			if k := tea.Key(msg); k.Code == tea.KeyEscape {
+				f.qr = false
+			}
+			return f, nil
+		}
 		if f.command {
 			return f.commanded(tea.Key(msg))
 		}
@@ -331,7 +346,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // The page sends one message per line rather than one per event, so a notch
 // here is a line, and the frame does no arithmetic on how far a wheel turned.
 func (f frame) wheeled(m tea.MouseWheelMsg) frame {
-	if f.logs || f.command {
+	if f.logs || f.qr || f.command {
 		return f // the frame's own views; nothing to scroll and nobody to tell
 	}
 	var step int
@@ -403,6 +418,11 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// that is somewhere else — or, on a mirrored console, underneath this
 		// very frame.
 		f.logs = true
+		return f, nil
+	case 'q':
+		// The address as a QR code, for the one reader that cannot click it:
+		// a phone pointed at the screen.
+		f.qr = true
 		return f, nil
 	case 'x':
 		// The whole run, not this viewer and not this origin: the command ends,
@@ -501,6 +521,8 @@ func (f frame) View() tea.View {
 		for i, l := range lastOf(f.sess.logLines(), pane.Dy()) {
 			uv.NewStyledString(logStyle.Styled(l)).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
 		}
+	} else if f.qr {
+		f.drawQR(pixels)
 	} else if f.scrolled {
 		// History from this viewer's top, and the live screen under it.
 		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
@@ -531,13 +553,50 @@ func (f frame) View() tea.View {
 	// what a full-screen program does at startup, and the emulator keeps a
 	// position regardless — so drawing one there follows the program's writes
 	// around the screen rather than showing anybody where they are typing.
-	if !f.command && !f.logs && !f.scrolled && !f.sess.cursorHidden() {
+	if !f.command && !f.logs && !f.qr && !f.scrolled && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
 		}
 	}
 	return view
+}
+
+// drawQR draws the public address as a code in the pane, centred, with the
+// address itself under it for the reader who would rather type. A pane that
+// cannot hold the code gets the address and a line saying why, rather than a
+// code with its edges cut off — a partial code is not a smaller one, it is not
+// a code.
+func (f frame) drawQR(pixels uv.ScreenBuffer) {
+	w, h := pixels.Bounds().Dx(), pixels.Bounds().Dy()
+	centred := func(y int, s string, style uv.Style) {
+		width := uv.NewStyledString(s).UnicodeWidth()
+		x := max(0, (w-width)/2)
+		uv.NewStyledString(style.Styled(s)).Draw(pixels, uv.Rect(x, y, w-x, 1))
+	}
+
+	addr := f.sess.announced()
+	if addr == "" {
+		centred(h/2, "no address yet", logStyle)
+		return
+	}
+	lines, err := qrLines(addr)
+	if err != nil {
+		centred(h/2-1, "the address could not be encoded: "+err.Error(), logStyle)
+		centred(h/2+1, addr, qrStyle)
+		return
+	}
+	// The code, a blank row, and the address.
+	if need := len(lines) + 2; need > h || len([]rune(lines[0])) > w {
+		centred(h/2-1, fmt.Sprintf("the pane is too small for a code: %d×%d needed", len([]rune(lines[0])), need), logStyle)
+		centred(h/2+1, addr, qrStyle)
+		return
+	}
+	top := (h - (len(lines) + 2)) / 2
+	for i, line := range lines {
+		centred(top+i, line, qrStyle)
+	}
+	centred(top+len(lines)+1, addr, qrStyle)
 }
 
 // lastOf is the tail of lines that fits in rows, and a line saying so when
@@ -929,7 +988,7 @@ func (f frame) hint() string {
 		return chipStyle.Styled(" ^"+strings.ToUpper(string(f.armed))+" ") +
 			hintStyle.Styled(" again to send it ")
 	}
-	if f.logs {
+	if f.logs || f.qr {
 		return chipStyle.Styled(" esc ") + hintStyle.Styled(" back to the terminal ")
 	}
 	if !f.command {
@@ -938,6 +997,7 @@ func (f frame) hint() string {
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
 		chipStyle.Styled(" l ") + hintStyle.Styled(" logs ") +
+		chipStyle.Styled(" q ") + hintStyle.Styled(" qr ") +
 		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
 }
 
