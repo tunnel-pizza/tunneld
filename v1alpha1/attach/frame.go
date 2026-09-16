@@ -506,7 +506,10 @@ func (f frame) View() tea.View {
 	where := f.where()
 	f.topRow(buf, 0, f.titleLabel(where), f.subtitleLabel(), where)
 
-	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
+	// The counts give way whole on a narrow window, but not the one part of
+	// them that says this screen is not live: a scrolled viewer with no
+	// indicator is a viewer who thinks the program has stopped.
+	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta(), f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -556,17 +559,26 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // pushed into another reads as neither. The centre goes first of the three
 // because it is the least urgent, and it is centred on the frame rather than
 // in the gap so that it stays put as the counts beside it change width.
-func (f frame) row(buf uv.ScreenBuffer, y int, left, centre, right string) {
+//
+// The right label is given as candidates, most complete first, and the first
+// that fits is the one drawn — so a label that is mostly optional detail can
+// fall back to the part of itself that is not, rather than vanishing whole.
+func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...string) {
 	const indent = 2
 	edge := f.width - 1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
 
 	before := edge
-	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
+	for _, label := range right {
+		width := uv.NewStyledString(label).UnicodeWidth()
+		if width == 0 {
+			continue
+		}
 		if x := edge - width; x > after {
-			writeAt(buf, x, y, right, edge-x)
+			writeAt(buf, x, y, label, edge-x)
 			before = x
+			break
 		}
 	}
 	f.between(buf, y, centre, after, before)
@@ -874,15 +886,21 @@ func (f frame) meta() string {
 		where = hostStyle.Styled(" " + host())
 	}
 	// How far back this viewer is reading, where the viewer count goes: it is
-	// the one thing about the frame that is this viewer's alone, and a
-	// screen that has stopped following the program needs to say so.
-	var back string
-	if n := f.behind(); n > 0 {
-		back = backStyle.Styled(fmt.Sprintf(" ↑%d ", n))
-	}
-	return back + where +
+	// the one thing about the frame that is this viewer's alone.
+	return f.back() + where +
 		qualStyle.Styled(" ("+qualifier+")") +
 		countStyle.Styled(fmt.Sprintf(" [%d×%d] ", w, h))
+}
+
+// back is the chip saying how far behind live this viewer is reading, or
+// nothing when they are present. On its own as well as inside meta, because
+// it is the part of the counts a narrow window must not drop: a screen that
+// has stopped following the program needs to say so.
+func (f frame) back() string {
+	if n := f.behind(); n > 0 {
+		return backStyle.Styled(fmt.Sprintf(" ↑%d ", n))
+	}
+	return ""
 }
 
 // hint is the keys, in the bottom border: the one that opens the commands, or

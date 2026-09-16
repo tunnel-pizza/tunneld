@@ -1229,6 +1229,16 @@ func TestTheWheelLooksBackThroughWhatScrolledOff(t *testing.T) {
 	}
 	h.silent(t) // the frame kept the wheel; the program saw no arrow keys
 
+	// The counts give way on a narrow window — and on a CI runner whose
+	// hostname is sixty characters — but the chip is the one part of them
+	// that says this screen is not live, and it stays.
+	wide := h.f.width
+	h.f.width = 24
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "viewer") || !strings.Contains(bottom, "↑1") {
+		t.Errorf("bottom border at 24 columns = %q, want the counts dropped and the chip kept", bottom)
+	}
+	h.f.width = wide
+
 	// Past the top is the top.
 	for range 10 * rows {
 		h.wheel(t, tea.MouseWheelUp, 5, 5)
