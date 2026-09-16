@@ -150,6 +150,14 @@ type frame struct {
 	// distance grows instead, and the border shows it.
 	scrolled bool
 	top      int
+
+	// console is this frame being drawn on the terminal tunneld was started
+	// from rather than in a tab. The one thing that changes: a real terminal
+	// reports no wheel until asked, so this frame asks it for the mouse. The
+	// page needs no asking — it reports every wheel event itself — and is
+	// deliberately not asked, so that selecting text in the tab stays the
+	// browser's.
+	console bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -442,6 +450,14 @@ func (f frame) View() tea.View {
 	view := tea.NewView("")
 	view.AltScreen = true
 	view.WindowTitle = f.pageTitle()
+	if f.console {
+		// Clicks and the wheel, reported in SGR. The clicks are ignored by
+		// Update; the wheel is what this is for. It costs the terminal's own
+		// drag-select the plain drag — most terminals keep it behind a
+		// modifier while an application has the mouse — which is the same
+		// price every full-screen program with a mouse charges.
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 
 	pane := f.pane()
 	if pane.Dx() <= 0 || pane.Dy() <= 0 {

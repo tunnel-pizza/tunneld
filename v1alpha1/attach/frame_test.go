@@ -1368,3 +1368,19 @@ func TestTheWheelReachesAProgramThatAskedForTheMouse(t *testing.T) {
 		t.Errorf("top row = %q, want history — the wheel is the frame's again", got)
 	}
 }
+
+// TestTheConsoleAsksItsTerminalForTheWheel pins the one difference between
+// the two places a frame is drawn. The page reports the wheel on its own, so
+// the browser's frame declares no mouse mode and drag-select in the tab stays
+// the browser's; a real terminal reports nothing until asked, so the console's
+// frame asks — and the same wheeled rule then applies to both.
+func TestTheConsoleAsksItsTerminalForTheWheel(t *testing.T) {
+	h := newFrameHarness(t)
+	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("browser frame MouseMode = %v, want none — the page reports the wheel itself", got)
+	}
+	h.f.console = true
+	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("console frame MouseMode = %v, want cell motion — a terminal reports no wheel unasked", got)
+	}
+}
