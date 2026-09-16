@@ -424,14 +424,6 @@ func (f frame) pane() uv.Rectangle {
 	return uv.Rect(1, 1, f.width-chromeWidth, f.height-chromeHeight)
 }
 
-// paneRows is how many rows of the container's screen this viewer can show.
-func (f frame) paneRows() int {
-	if rows := f.height - chromeHeight; rows > 0 {
-		return rows
-	}
-	return 0
-}
-
 // View draws the container's screen inside a border, with what the session is
 // written into the border itself.
 //

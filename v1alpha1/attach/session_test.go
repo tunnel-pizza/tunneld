@@ -279,3 +279,19 @@ func TestTitleIsEmptyUntilTheShellSays(t *testing.T) {
 		t.Errorf("titles = %q / %q, want nothing said", title, subtitle)
 	}
 }
+
+// paneLines is the screen as rows of text, clipped to rows: what a test reads
+// back to compare against the emulator's own idea of the screen. Rendered
+// rather than replayed, so it asks the emulator every time instead of keeping
+// a copy a missed write would make wrong. Test-only since the frame stopped
+// reading lines back and started drawing cells.
+func (s *session) paneLines(rows int) []string {
+	if rows <= 0 {
+		return nil
+	}
+	lines := strings.Split(s.em.Render(), "\n")
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
+	return lines
+}

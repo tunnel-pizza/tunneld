@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -1014,18 +1013,3 @@ func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
 // paneCursor is where the app inside believes the cursor is.
 func (s *session) paneCursor() uv.Position { return s.em.CursorPosition() }
 
-// paneLines is the screen as rows of text, clipped to rows.
-//
-// Rendered rather than replayed. The emulator holds what the screen is, so a
-// caller asks it every time instead of keeping a copy that a write it missed
-// would make wrong.
-func (s *session) paneLines(rows int) []string {
-	if rows <= 0 {
-		return nil
-	}
-	lines := strings.Split(s.em.Render(), "\n")
-	if len(lines) > rows {
-		lines = lines[:rows]
-	}
-	return lines
-}
