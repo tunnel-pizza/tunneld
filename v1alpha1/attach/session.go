@@ -1012,4 +1012,3 @@ func (s *session) paneSize() (int, int) { return s.em.Width(), s.em.Height() }
 
 // paneCursor is where the app inside believes the cursor is.
 func (s *session) paneCursor() uv.Position { return s.em.CursorPosition() }
-
