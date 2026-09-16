@@ -1161,3 +1161,210 @@ func TestTheLayoutSurvivesALongHostname(t *testing.T) {
 		t.Errorf("bottom border = %q, want the counts kept", got)
 	}
 }
+
+// wheel turns the wheel once at a frame position, the way the page reports it:
+// one message per line, at the cell under the pointer.
+func (h *harness) wheel(t *testing.T, b tea.MouseButton, x, y int) {
+	t.Helper()
+	model, _ := h.f.Update(tea.MouseWheelMsg{X: x, Y: y, Button: b})
+	f, ok := model.(frame)
+	if !ok {
+		t.Fatalf("Update returned %T, want a frame", model)
+	}
+	h.f = f
+}
+
+// paneRow is one row of the pane as text, borders and styling gone.
+func (h *harness) paneRow(t *testing.T, y int) string {
+	t.Helper()
+	lines := strings.Split(h.f.View().Content, "\n")
+	if y+1 >= len(lines)-1 {
+		t.Fatalf("pane row %d asked for, view has %d rows", y, len(lines))
+	}
+	row := stripSGR(lines[y+1])
+	return strings.TrimSpace(strings.Trim(row, "│"))
+}
+
+// scrollOff writes n numbered lines from from, enough to push most of them
+// off the pane and into the emulator's scrollback. The cursor is left at the
+// end of the last line rather than on a fresh one, so the screen's last row is
+// the last line written and the arithmetic in the tests holds.
+func (h *harness) scrollOff(t *testing.T, from, n int) {
+	t.Helper()
+	var b strings.Builder
+	for i := from; i < from+n; i++ {
+		if i > 1 {
+			b.WriteString("\r\n")
+		}
+		fmt.Fprintf(&b, "line %03d", i)
+	}
+	if _, err := h.s.em.WriteString(b.String()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// TestTheWheelLooksBackThroughWhatScrolledOff pins the frame's own use of the
+// wheel: on the main screen, with a program that never asked for the mouse,
+// scrolling up shows what the emulator kept, the border says how far back the
+// viewer is, and the cursor — a position in the present — is withheld.
+// Scrolling down past the end is being live again.
+func TestTheWheelLooksBackThroughWhatScrolledOff(t *testing.T) {
+	h := newFrameHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows) // lines 001..066 on a 22-row pane: 001..044 are history
+
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows+1) {
+		t.Fatalf("live top row = %q, want the first line still on screen", got)
+	}
+
+	h.wheel(t, tea.MouseWheelUp, 5, 5)
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows) {
+		t.Errorf("top row after one notch = %q, want the line just above the screen", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "↑1") {
+		t.Errorf("bottom border = %q, want it saying the viewer is one line back", bottom)
+	}
+	if h.f.View().Cursor != nil {
+		t.Error("a cursor is drawn while scrolled back, where the live position means nothing")
+	}
+	h.silent(t) // the frame kept the wheel; the program saw no arrow keys
+
+	// Past the top is the top.
+	for range 10 * rows {
+		h.wheel(t, tea.MouseWheelUp, 5, 5)
+	}
+	if got := h.paneRow(t, 0); got != "line 001" {
+		t.Errorf("top row at the top = %q, want the oldest line kept", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, fmt.Sprintf("↑%d", 2*rows)) {
+		t.Errorf("bottom border = %q, want the whole history counted", bottom)
+	}
+
+	// And past the bottom is live.
+	for range 10 * rows {
+		h.wheel(t, tea.MouseWheelDown, 5, 5)
+	}
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows+1) {
+		t.Errorf("top row after scrolling back down = %q, want the live screen", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑") {
+		t.Errorf("bottom border = %q, still says scrolled back after returning to live", bottom)
+	}
+	if h.f.View().Cursor == nil {
+		t.Error("no cursor once live again")
+	}
+}
+
+// TestAScrolledViewerStaysPutUnderNewOutput pins the pager's rule over the
+// terminal's: output arriving while somebody is reading history does not
+// move what they are reading. The distance to live grows instead, and the
+// border says so.
+func TestAScrolledViewerStaysPutUnderNewOutput(t *testing.T) {
+	h := newFrameHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows)
+
+	for range 5 {
+		h.wheel(t, tea.MouseWheelUp, 5, 5)
+	}
+	before := h.paneRow(t, 0)
+
+	h.scrollOff(t, 3*rows+1, 3)
+	model, _ := h.f.Update(paneMsg{})
+	h.f = model.(frame)
+
+	if got := h.paneRow(t, 0); got != before {
+		t.Errorf("top row = %q after new output, want %q — the view slid under the reader", got, before)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "↑8") {
+		t.Errorf("bottom border = %q, want the distance to live grown by the three new lines", bottom)
+	}
+}
+
+// TestAKeySnapsAScrolledViewerBackToLive pins that typing is being present:
+// the first keystroke returns the view to the live screen and still reaches
+// the program, so somebody who scrolled up to check something and then typed
+// sees what their typing did.
+func TestAKeySnapsAScrolledViewerBackToLive(t *testing.T) {
+	h := newFrameHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows)
+
+	for range 3 {
+		h.wheel(t, tea.MouseWheelUp, 5, 5)
+	}
+	h.press(t, typing('x'))
+	h.reached(t, "x")
+
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows+1) {
+		t.Errorf("top row after typing = %q, want the live screen", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑") {
+		t.Errorf("bottom border = %q, still says scrolled back after a keystroke", bottom)
+	}
+}
+
+// TestTheWheelIsArrowKeysOnTheAlternateScreen pins today's behaviour for a
+// full-screen program: it has no history to look back at, so a notch is what
+// a terminal with alternate scroll sends it — an arrow key per line.
+func TestTheWheelIsArrowKeysOnTheAlternateScreen(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.scan.Write([]byte("\x1b[?1049h")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !h.s.em.IsAltScreen() {
+		t.Fatal("the emulator is not on the alternate screen; the mode did not reach it")
+	}
+
+	h.wheel(t, tea.MouseWheelUp, 5, 5)
+	h.reached(t, "\x1b[A")
+	h.wheel(t, tea.MouseWheelDown, 5, 5)
+	h.reached(t, "\x1b[B")
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑") {
+		t.Errorf("bottom border = %q, says scrolled back on a screen that has no history", bottom)
+	}
+}
+
+// TestTheWheelReachesAProgramThatAskedForTheMouse pins the first rule: a
+// program that turned mouse reporting on gets the wheel as a mouse event, in
+// its own coordinates, and gets the frame's scrolling back the moment it turns
+// reporting off — every mode, not just the first one it set.
+func TestTheWheelReachesAProgramThatAskedForTheMouse(t *testing.T) {
+	h := newFrameHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows)
+
+	if _, err := h.s.scan.Write([]byte("\x1b[?1000h\x1b[?1002h\x1b[?1006h")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !h.s.mouseWanted() {
+		t.Fatal("the session did not record the mouse modes; the scanner is not wired")
+	}
+
+	// Frame (5,3) is pane (4,2), which SGR reports one-based.
+	h.wheel(t, tea.MouseWheelUp, 5, 3)
+	h.reached(t, "\x1b[<64;5;3M")
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows+1) {
+		t.Errorf("top row = %q, want the live screen — the wheel was the program's", got)
+	}
+
+	// Half off is still on.
+	if _, err := h.s.scan.Write([]byte("\x1b[?1000l")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !h.s.mouseWanted() {
+		t.Fatal("one mode cleared and the session forgot the other")
+	}
+	if _, err := h.s.scan.Write([]byte("\x1b[?1002l")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if h.s.mouseWanted() {
+		t.Fatal("every mode cleared and the session still thinks the program wants the mouse")
+	}
+
+	h.wheel(t, tea.MouseWheelUp, 5, 3)
+	h.silent(t)
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows) {
+		t.Errorf("top row = %q, want history — the wheel is the frame's again", got)
+	}
+}

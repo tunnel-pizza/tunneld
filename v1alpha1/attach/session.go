@@ -110,17 +110,26 @@ type session struct {
 	title    string
 	subtitle string
 
-	// cursorMu guards hidden, and is separate from titleMu for the same reason
-	// titleMu is separate from mu: said writes it from the stream goroutine
-	// and a frame's cursorHidden() reads it from its own, and the two fields
-	// have nothing to do with each other.
+	// modeMu guards hidden and mouse, and is separate from titleMu for the
+	// same reason titleMu is separate from mu: said writes them from the
+	// stream goroutine and a frame reads them from its own, and none of these
+	// fields has anything to do with the others.
 	//
 	// hidden is what the program asked for with DECTCEM. A full-screen program
 	// hides the cursor once, at startup, and then leaves it wherever its last
 	// write ended — so a frame that draws one anyway shows a cursor skating
 	// around the screen on every redraw.
-	cursorMu sync.Mutex
-	hidden   bool
+	//
+	// mouse is the mouse-reporting modes the program has set and not yet
+	// cleared, by number. The emulator knows these too and encodes a mouse
+	// event only when one is on, but it does not say so — and the frame has
+	// to know before it sends, because a wheel the program does not want is
+	// the frame's to scroll with. Kept as a set rather than a flag because a
+	// program that sets 1000 and 1002 and then clears 1000 still wants the
+	// mouse.
+	modeMu sync.Mutex
+	hidden bool
+	mouse  map[int]bool
 
 	// mu guards the viewer set, the size negotiated from it, the public
 	// address, and the clipboard fields below.
@@ -352,6 +361,7 @@ func (s *session) revive() {
 
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
+	s.resetModes()
 	s.scan.reset()
 	s.log.Info("running it again", "target", s.Name())
 	s.stream()
@@ -419,10 +429,14 @@ func paints(cmd int) bool {
 func (s *session) said(seq Sequence) {
 	switch seq.Kind {
 	case Mode:
-		// The CSI is already on the screen; only the cursor is the frame's
-		// business, and only DECTCEM among the modes.
-		if seq.Cmd == 25 { // DECTCEM
+		// The CSI is already on the screen. Two things about it are the
+		// frame's business: whether the program wants a cursor drawn, and
+		// whether it wants the mouse — which decides whose the wheel is.
+		switch seq.Cmd {
+		case 25: // DECTCEM
 			s.setCursorHidden(!seq.Set)
+		case 9, 1000, 1001, 1002, 1003: // X10, normal, highlight, button-event, any-event
+			s.setMouse(seq.Cmd, seq.Set)
 		}
 	case OSC:
 		switch {
@@ -829,9 +843,41 @@ func (s *session) clipboard(sel byte, content string) {
 // from said on the stream goroutine, which is why it takes a lock of its own:
 // a frame reads cursorHidden from its own goroutine, concurrently.
 func (s *session) setCursorHidden(hidden bool) {
-	s.cursorMu.Lock()
+	s.modeMu.Lock()
 	s.hidden = hidden
-	s.cursorMu.Unlock()
+	s.modeMu.Unlock()
+}
+
+// setMouse records one mouse-reporting mode being set or cleared.
+func (s *session) setMouse(mode int, set bool) {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+	if !set {
+		delete(s.mouse, mode)
+		return
+	}
+	if s.mouse == nil {
+		s.mouse = map[int]bool{}
+	}
+	s.mouse[mode] = true
+}
+
+// mouseWanted reports whether the program has any mouse-reporting mode on,
+// which is the frame's cue to hand it the wheel rather than scroll with it.
+func (s *session) mouseWanted() bool {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+	return len(s.mouse) > 0
+}
+
+// resetModes forgets what the program asked for, for a program that is gone.
+// The next one starts from a terminal's defaults, the way the emulator does
+// on the RIS revive writes.
+func (s *session) resetModes() {
+	s.modeMu.Lock()
+	s.hidden = false
+	s.mouse = nil
+	s.modeMu.Unlock()
 }
 
 // cursorHidden reports whether the program has asked for no cursor. A frame
@@ -839,8 +885,8 @@ func (s *session) setCursorHidden(hidden bool) {
 // anything should be shown there, and a full-screen program leaves that
 // position wherever its last write ended.
 func (s *session) cursorHidden() bool {
-	s.cursorMu.Lock()
-	defer s.cursorMu.Unlock()
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
 	return s.hidden
 }
 
@@ -901,6 +947,50 @@ func (s *session) sendKey(k tea.Key) {
 // drawPane has the emulator draw its screen into area of scr. The frame calls
 // it rather than reading lines back, so the cells arrive as cells.
 func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) { s.em.Draw(scr, area) }
+
+// history is how many lines have scrolled off the top of the screen and been
+// kept, which is how far back a frame can look.
+func (s *session) history() int { return s.em.ScrollbackLen() }
+
+// drawHistory draws the pane as a viewer scrolled back sees it: the kept lines
+// from top downward, and below the last of them the live screen from its own
+// first row. A top at or past the end of the history is the live screen.
+//
+// Cell by cell through the emulator's lock rather than through the Scrollback
+// it hands out: that is a pointer into a buffer the stream goroutine is still
+// appending to, and reading it unlocked is a race. The live part is drawn
+// whole and copied, because Draw clips to the screen it is given and not to
+// the area, so it cannot be asked for its top rows only.
+func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
+	kept := s.em.ScrollbackLen()
+	top = max(0, min(top, kept))
+
+	y := 0
+	for ; y < area.Dy() && top+y < kept; y++ {
+		for x := range area.Dx() {
+			scr.SetCell(area.Min.X+x, area.Min.Y+y, s.em.ScrollbackCellAt(x, top+y))
+		}
+	}
+	if y == area.Dy() {
+		return
+	}
+	live := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
+	s.em.Draw(live, live.Bounds())
+	for r := 0; y < area.Dy(); y, r = y+1, r+1 {
+		for x := range area.Dx() {
+			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))
+		}
+	}
+}
+
+// altScreen reports whether the program is on the alternate screen, where
+// nothing scrolls off and there is no history to look back at.
+func (s *session) altScreen() bool { return s.em.IsAltScreen() }
+
+// sendWheel hands a wheel notch to the program as the mouse event it asked
+// for. Through the emulator for the same reason a key goes that way: it knows
+// which encoding the program turned on, and encodes nothing if none is.
+func (s *session) sendWheel(m uv.Mouse) { s.em.SendMouse(uv.MouseWheelEvent(m)) }
 
 // paste hands pasted text to the container, bracketed if the app inside asked
 // for that.
