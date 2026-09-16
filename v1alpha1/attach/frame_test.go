@@ -1443,8 +1443,11 @@ func TestTheBoxIsThePane(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimRight(bottom, " "), "╯") {
 		t.Errorf("row %d = %q, want the bottom border there — the box ends where the screen does", top+boxH-1, bottom)
 	}
-	if !strings.Contains(bottom, "1 viewer") {
-		t.Errorf("bottom border = %q, want the counts in the box's own bottom row", bottom)
+	// The keys, not the counts: the counts carry os.Hostname and give way on
+	// a CI runner's sixty-character name, which TestTheLayoutSurvivesALongHostname
+	// covers. The keys keep their columns, and start where the box does.
+	if !strings.HasPrefix(bottom, strings.Repeat(" ", left)+"╰─ ^K") {
+		t.Errorf("bottom border = %q, want the keys at the box's own left edge, column %d", bottom, left)
 	}
 	for y := top + boxH; y < len(lines); y++ {
 		if strings.TrimSpace(stripSGR(lines[y])) != "" {
