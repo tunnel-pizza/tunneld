@@ -687,7 +687,8 @@ func (s *session) resizeViewer(v *viewer, width, height int) {
 // has one size and every viewer renders all of it: anything larger than the
 // smallest window is drawn wrapped or clipped there, which looks exactly like
 // the corruption this whole session exists to prevent. A larger window gets
-// unused margin instead, which is merely wasteful.
+// a box the smallest viewer's size, and nothing around it, which is merely
+// wasteful.
 //
 // What the target is told is the pane, not the window: the frame keeps rows of
 // its own, and a container sized to the whole window would draw its last rows
