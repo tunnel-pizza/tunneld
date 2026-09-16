@@ -237,6 +237,7 @@ Every key reaches the container except one:
 | Key | |
 | --- | --- |
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
+| wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
@@ -438,9 +439,16 @@ than minting a hostname in front of a page that cannot work.
 
 `Ctrl+K` is the frame's, and it does cost you a key — kill-to-end-of-line — but
 it is the cheaper of the two on offer. The other candidate, `Ctrl-D`, ends a
-shared session for everybody watching. The frame is drawn on the alternate screen, so
-there is no scrolling back through what has gone past — a full-screen program
-redraws and has nothing to look back at, and a shell has `less`.
+shared session for everybody watching.
+
+The wheel is decided per notch. A program that asked for the mouse gets it as a
+mouse event; a full-screen program gets it as arrow keys, the way a terminal
+with alternate scroll would send it; otherwise it is the frame's, and scrolls
+back through what the terminal kept — up to ten thousand lines. Scrolling is
+per viewer, so two people can be reading different places in one terminal. The
+bottom border says how far back you are, output arriving while you read stays
+below you rather than pulling you down to it, and the first key you press puts
+you back on the live screen and still reaches the program.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers

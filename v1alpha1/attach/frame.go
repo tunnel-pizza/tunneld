@@ -52,6 +52,7 @@ var (
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
+	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
 	// logStyle is dimmer than the terminal it covers, because what it shows is
 	// tunneld talking about itself rather than the thing anybody came to see.
@@ -137,6 +138,26 @@ type frame struct {
 	// Until it is, the frame draws nothing rather than drawing at a size that
 	// is somebody else's.
 	sized bool
+
+	// scrolled is this viewer reading history rather than the live screen,
+	// and top is which line of the emulator's history is the pane's first
+	// row while they are. Per viewer, because the screen is shared and two
+	// people can be looking back different distances at it.
+	//
+	// An index into the history rather than a distance from the bottom, so
+	// that output arriving while somebody reads does not slide what they are
+	// reading out from under them: the pager's rule, not the terminal's. The
+	// distance grows instead, and the border shows it.
+	scrolled bool
+	top      int
+
+	// console is this frame being drawn on the terminal tunneld was started
+	// from rather than in a tab. The one thing that changes: a real terminal
+	// reports no wheel until asked, so this frame asks it for the mouse. The
+	// page needs no asking — it reports every wheel event itself — and is
+	// deliberately not asked, so that selecting text in the tab stays the
+	// browser's.
+	console bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -198,9 +219,20 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, tea.Quit
 
 	case paneMsg:
+		// A program that has gone full-screen has no history to be reading;
+		// a viewer left looking back at it would be looking at the main
+		// screen's past under the alternate screen's present.
+		if f.scrolled && f.sess.altScreen() {
+			f.scrolled = false
+		}
 		return f, nil
 
+	case tea.MouseWheelMsg:
+		return f.wheeled(msg), nil
+
 	case tea.PasteMsg:
+		// Pasting is being present, the same as typing below.
+		f.scrolled = false
 		// A paste is one message, not a burst of keystrokes: the frame's own
 		// renderer turns bracketed paste on in the viewer's terminal, so the
 		// browser wraps what was pasted and the decoder hands it over whole.
@@ -218,6 +250,10 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, nil
 
 	case tea.KeyPressMsg:
+		// Typing is being present. The first keystroke returns a viewer who
+		// scrolled back to the live screen, and still goes where it was
+		// going, so what the key did is what they see next.
+		f.scrolled = false
 		// The log view is the frame's, so every key belongs to it: escape
 		// leaves, and anything else is somebody reading rather than typing at
 		// a terminal they cannot see.
@@ -286,6 +322,70 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return f, nil
 }
 
+// wheeled decides whose a wheel notch is and delivers it. Three rules, in
+// order: a program that asked for the mouse gets it as a mouse event; a
+// program on the alternate screen has nothing to scroll back through and gets
+// it the way a terminal with alternate scroll would send it, as an arrow key;
+// otherwise it is the frame's, and moves this viewer through the history.
+//
+// The page sends one message per line rather than one per event, so a notch
+// here is a line, and the frame does no arithmetic on how far a wheel turned.
+func (f frame) wheeled(m tea.MouseWheelMsg) frame {
+	if f.logs || f.command {
+		return f // the frame's own views; nothing to scroll and nobody to tell
+	}
+	var step int
+	switch m.Button {
+	case tea.MouseWheelUp:
+		step = -1
+	case tea.MouseWheelDown:
+		step = 1
+	default:
+		return f // sideways is nobody's
+	}
+
+	switch {
+	case f.sess.mouseWanted():
+		// In the program's coordinates: the frame's border is not its
+		// screen, and a pane larger than the negotiated size has margin the
+		// program cannot see either.
+		pane := f.pane()
+		w, h := f.sess.paneSize()
+		f.sess.sendWheel(uv.Mouse{
+			X:      max(0, min(m.X-pane.Min.X, w-1)),
+			Y:      max(0, min(m.Y-pane.Min.Y, h-1)),
+			Button: m.Button,
+			Mod:    m.Mod,
+		})
+		return f
+	case f.sess.altScreen():
+		code := tea.KeyUp
+		if step > 0 {
+			code = tea.KeyDown
+		}
+		f.sess.sendKey(tea.Key{Code: code})
+		return f
+	}
+
+	kept := f.sess.history()
+	if !f.scrolled {
+		f.top = kept
+	}
+	f.top = max(0, min(f.top+step, kept))
+	f.scrolled = f.top < kept
+	return f
+}
+
+// behind is how many lines below the pane's last row the live screen's last
+// row is: the distance a scrolled viewer would travel to be present again.
+// Zero when they are.
+func (f frame) behind() int {
+	if !f.scrolled {
+		return 0
+	}
+	return max(0, f.sess.history()-f.top)
+}
+
 // commanded handles the keystroke after Ctrl-D and leaves command mode, which
 // every path does: a mode a viewer can be left in without noticing is worse
 // than one that needs the prefix again.
@@ -324,14 +424,6 @@ func (f frame) pane() uv.Rectangle {
 	return uv.Rect(1, 1, f.width-chromeWidth, f.height-chromeHeight)
 }
 
-// paneRows is how many rows of the container's screen this viewer can show.
-func (f frame) paneRows() int {
-	if rows := f.height - chromeHeight; rows > 0 {
-		return rows
-	}
-	return 0
-}
-
 // View draws the container's screen inside a border, with what the session is
 // written into the border itself.
 //
@@ -350,6 +442,14 @@ func (f frame) View() tea.View {
 	view := tea.NewView("")
 	view.AltScreen = true
 	view.WindowTitle = f.pageTitle()
+	if f.console {
+		// Clicks and the wheel, reported in SGR. The clicks are ignored by
+		// Update; the wheel is what this is for. It costs the terminal's own
+		// drag-select the plain drag — most terminals keep it behind a
+		// modifier while an application has the mouse — which is the same
+		// price every full-screen program with a mouse charges.
+		view.MouseMode = tea.MouseModeCellMotion
+	}
 
 	pane := f.pane()
 	if pane.Dx() <= 0 || pane.Dy() <= 0 {
@@ -379,6 +479,9 @@ func (f frame) View() tea.View {
 		for i, l := range lastOf(f.sess.logLines(), pane.Dy()) {
 			uv.NewStyledString(logStyle.Styled(l)).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
 		}
+	} else if f.scrolled {
+		// History from this viewer's top, and the live screen under it.
+		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
 	} else {
 		// The emulator draws itself, cell for cell, with nothing re-parsed on
 		// the way.
@@ -395,7 +498,10 @@ func (f frame) View() tea.View {
 	where := f.where()
 	f.topRow(buf, 0, f.titleLabel(where), f.subtitleLabel(), where)
 
-	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta())
+	// The counts give way whole on a narrow window, but not the one part of
+	// them that says this screen is not live: a scrolled viewer with no
+	// indicator is a viewer who thinks the program has stopped.
+	f.row(buf, f.height-1, f.hint(), f.banner(), f.meta(), f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -403,7 +509,7 @@ func (f frame) View() tea.View {
 	// what a full-screen program does at startup, and the emulator keeps a
 	// position regardless — so drawing one there follows the program's writes
 	// around the screen rather than showing anybody where they are typing.
-	if !f.command && !f.logs && !f.sess.cursorHidden() {
+	if !f.command && !f.logs && !f.scrolled && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
@@ -445,17 +551,26 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // pushed into another reads as neither. The centre goes first of the three
 // because it is the least urgent, and it is centred on the frame rather than
 // in the gap so that it stays put as the counts beside it change width.
-func (f frame) row(buf uv.ScreenBuffer, y int, left, centre, right string) {
+//
+// The right label is given as candidates, most complete first, and the first
+// that fits is the one drawn — so a label that is mostly optional detail can
+// fall back to the part of itself that is not, rather than vanishing whole.
+func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...string) {
 	const indent = 2
 	edge := f.width - 1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
 
 	before := edge
-	if width := uv.NewStyledString(right).UnicodeWidth(); width > 0 {
+	for _, label := range right {
+		width := uv.NewStyledString(label).UnicodeWidth()
+		if width == 0 {
+			continue
+		}
 		if x := edge - width; x > after {
-			writeAt(buf, x, y, right, edge-x)
+			writeAt(buf, x, y, label, edge-x)
 			before = x
+			break
 		}
 	}
 	f.between(buf, y, centre, after, before)
@@ -762,9 +877,22 @@ func (f frame) meta() string {
 	if host() != "" {
 		where = hostStyle.Styled(" " + host())
 	}
-	return where +
+	// How far back this viewer is reading, where the viewer count goes: it is
+	// the one thing about the frame that is this viewer's alone.
+	return f.back() + where +
 		qualStyle.Styled(" ("+qualifier+")") +
 		countStyle.Styled(fmt.Sprintf(" [%d×%d] ", w, h))
+}
+
+// back is the chip saying how far behind live this viewer is reading, or
+// nothing when they are present. On its own as well as inside meta, because
+// it is the part of the counts a narrow window must not drop: a screen that
+// has stopped following the program needs to say so.
+func (f frame) back() string {
+	if n := f.behind(); n > 0 {
+		return backStyle.Styled(fmt.Sprintf(" ↑%d ", n))
+	}
+	return ""
 }
 
 // hint is the keys, in the bottom border: the one that opens the commands, or
