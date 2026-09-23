@@ -21,7 +21,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
@@ -146,23 +145,6 @@ func WithDisplay(display Display) Option {
 	return func(b *BuilderImpl) { b.display = display }
 }
 
-// Counter folds tunnel events into a verdict: has the edge disowned it.
-//
-// Only that. It used to answer whether the public URL was up as well, because
-// libtunnel's Ready once fired a moment before the edge had registered the
-// route; Ready fires on exactly that now, and a question with one owner is
-// asked of that owner.
-type Counter interface {
-	Count(e libtunnel.Event)
-	IsGone() bool
-}
-
-// WithCounter replaces the counter that decides when the edge has disowned
-// the tunnel. The default is counter.New(), armed at counter.DefaultMaxGone.
-func WithCounter(c Counter) Option {
-	return func(b *BuilderImpl) { b.counter = c }
-}
-
 // Binder turns the origins the operator typed into the origins the tunnel
 // dials, standing a loopback server in for each origin that names something to
 // serve rather than an address to reach — a container, a local program. The dialable list
@@ -213,7 +195,6 @@ var (
 	_ v1.Builder = (*BuilderImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Display    = (*display.DisplayImpl)(nil)
-	_ Counter    = (*counter.CounterImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 )
@@ -246,7 +227,6 @@ func New(opts ...Option) *BuilderImpl {
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
 		WithDisplay(display.New()),
-		WithCounter(counter.New()),
 		WithConsole(console.New(
 			console.WithLogs(recent),
 			console.WithHint(stopHint),
@@ -298,7 +278,6 @@ type BuilderImpl struct {
 	// declared above. Seeded by New; a test or a contributor swaps one with
 	// its With* option.
 	display  Display
-	counter  Counter
 	binder   Binder
 	identity Identity
 	// cache is the one collaborator allowed to be nil: that is what caching

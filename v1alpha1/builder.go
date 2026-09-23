@@ -12,7 +12,6 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cnuss/libtunnel"
@@ -223,7 +222,6 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			missing bool
 		}{
 			{"browser", b.display == nil},
-			{"counter", b.counter == nil},
 			{"binder", b.binder == nil},
 		} {
 			if c.missing {
@@ -495,33 +493,15 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// the mint is anonymous, as every mint was before this existed.
 	token := b.identity.Token(ctx, b.identityProviders, log)
 
-	// Events: the tunnel's lifecycle listener. It logs what happened and ends
-	// the tunnel once the edge has disowned it for long enough to be sure.
-	//
-	// libtunnel's prober asks the edge and emits EventGone when it says no,
-	// but emitting is all it does — cloudflared keeps retrying a reaped
-	// tunnel indefinitely and libtunnel leaves it alone — so without this the
-	// process sits there holding a hostname that resolves nowhere, reporting
-	// nothing. Cancel with a cause is what turns that into an exit code a
-	// supervisor can act on: Done fires, Err reports the cause, and the
-	// bottom of this function returns it.
-	//
-	// The counter stays tripped once it has been, and verdicts keep arriving
-	// while the tunnel comes down; without the latch every one of them would
-	// repeat the error and cancel again. Cancelled off the listener's own
-	// goroutine, because listeners run on the one that produced the event and
-	// a teardown waiting on that goroutine would be waiting on itself.
-	var tun libtunnel.TunnelV1
-	var once sync.Once
+	// Events: the tunnel's lifecycle, logged. Nothing is decided here any
+	// more. A tunnel the edge has disowned is ended by libtunnel itself — its
+	// edge watcher asks while the tunnel is short of connections, and the
+	// edge's refusal cancels the tunnel with the reason — so Done fires, Err
+	// carries it, and the bottom of this function returns it. There used to
+	// be a counter here folding gone verdicts into that decision, from when
+	// libtunnel only reported and never acted.
 	listen := func(e libtunnel.Event) {
 		log.Debug("received event", "e", e)
-		b.counter.Count(e)
-		if b.counter.IsGone() {
-			once.Do(func() {
-				log.Error("the edge has disowned this tunnel; stopping", "hostname", e.Hostname)
-				go tun.Cancel(fmt.Errorf("%w: %s", v1.ErrTunnelGone, e.Hostname))
-			})
-		}
 	}
 
 	// What the cache has is what the mint is hinted with, and nothing when it
@@ -530,7 +510,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// before minting, so a dead cached spec is already a fresh mint by the
 	// time it could fail, and the one failure left is a provider that could
 	// not be reached, which a remint could not reach either.
-	tun = b.newTunnel(spec.Load(origins, log)).
+	tun := b.newTunnel(spec.Load(origins, log)).
 		WithToken(token).
 		WithLogger(log).
 		WithContext(ctx).

@@ -662,7 +662,7 @@ github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
                                             between alpha revisions.
 github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each:
                                             origins, cache, panel,
-                                            browser, counter and attach sit
+                                            browser and attach sit
                                             behind the contracts in v1alpha1;
                                             attach declares its own Target and
                                             Targets, and attach/docker
@@ -703,7 +703,7 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
 changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithCounter` and
+`BuilderImpl` also takes `WithCache`, `WithDisplay` and
 `WithBinder`, which swap the collaborators the tunnel run composes, and
 `WithTunnelFactory`, which replaces `libtunnel.From` as how a spec becomes a
 tunnel — `WithCache(nil)` being how an embedder turns caching off, and what
