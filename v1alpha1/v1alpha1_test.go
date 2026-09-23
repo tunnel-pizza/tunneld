@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
@@ -70,7 +69,6 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		b    *BuilderImpl
 	}{
 		{"browser", New(WithOrigin(":3000"), WithDisplay(nil))},
-		{"counter", New(WithOrigin(":3000"), WithCounter(nil))},
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -104,11 +102,10 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	c, o, n, g := &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, counter.New(), &fakeBinder{}
-	b := New(WithCache(c), WithDisplay(o), WithCounter(n), WithBinder(g))
+	c, o, g := &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, &fakeBinder{}
+	b := New(WithCache(c), WithDisplay(o), WithBinder(g))
 
-	if b.cache != Cache(c) ||
-		b.display != Display(o) || b.counter != Counter(n) || b.binder != Binder(g) {
+	if b.cache != Cache(c) || b.display != Display(o) || b.binder != Binder(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}
 

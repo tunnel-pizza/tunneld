@@ -437,9 +437,9 @@ func (u *asTile) Write(b []byte) (int, error) {
 // Waiting for the edge to serve addr is no longer this package's job. It used
 // to probe over HTTP, which asked the right question from the wrong place: the
 // tunnel's own event stream already knows when the edge has accepted a
-// connection, so the counter holds that answer and the caller waits there
-// before calling this. What is left is the launch, and the two promises around
-// it.
+// connection, so the tunnel's Ready holds that answer and the caller waits
+// there before calling this. What is left is the launch, and the two promises
+// around it.
 //
 // A failure goes to the debug log and nowhere else: the tunnel is up and
 // serving either way, and a headless host — a server, a container, CI — is a

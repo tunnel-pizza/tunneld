@@ -27,7 +27,6 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/counter"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 )
 
@@ -373,8 +372,7 @@ func (f *fakeTunnel) URL() *url.URL {
 		*f.order = append(*f.order, "url")
 	}
 	// A tunnel that has a URL has been accepted by the edge, so it announces
-	// the connection — which is what clears the counter's run of gone
-	// verdicts, the way a real reconnect does.
+	// the connection, the way a real one does.
 	if f.url != nil && f.listen != nil {
 		f.listen(libtunnel.Event{Kind: libtunnel.EventConnected, Hostname: f.url.Host})
 	}
@@ -408,7 +406,7 @@ func (f *fakeTunnel) WithToken(token string) libtunnel.TunnelV1 {
 }
 
 // Cancel ends the tunnel the way the lifecycle's does: with a cause it is a
-// failure and Err reports it, which is how the gone verdict reaches Run now.
+// failure and Err reports it.
 func (f *fakeTunnel) Cancel(cause ...error) {
 	if len(cause) > 0 {
 		f.err = cause[0]
@@ -568,11 +566,10 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 	return f.token
 }
 
-// runHarness is run with every collaborator faked except the two that are
+// runHarness is run with every collaborator faked except the one that is
 // pure: the shown's panel half, because its URL and interceptor order are
-// what the assertions check, and a real counter armed at one, because the
-// verdict logic is what the gone case is about. order records the effects
-// that matter in the sequence they landed.
+// what the assertions check. order records the effects that matter in the
+// sequence they landed.
 type runHarness struct {
 	// tunnels are handed out in order through the run's one seam — a remint
 	// after a refused replay gets the second — and specs records what each
@@ -618,9 +615,6 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCache(h.cache),
 		WithDisplay(h.display),
 		WithBinder(h.binder),
-		// A short connect bound so no case can sit on the production default
-		// waiting for an announcement its tunnel may never make.
-		WithCounter(counter.New(counter.WithMaxGone(1))),
 	)
 	return h
 }
@@ -836,35 +830,6 @@ func TestRun(t *testing.T) {
 		err := h.run(t, t.Context())
 		if !errors.Is(err, gone) {
 			t.Errorf("run() = %v, want the tunnel's error", err)
-		}
-	})
-
-	// TestEvents folded in: the gone case delivers three verdicts, pinning
-	// the once.Do latch in the inlined event listener — without it every
-	// verdict would repeat the "disowned" log line and cancel again. Driven
-	// through the whole run rather than the closure directly, because
-	// events no longer exists as a callable method once it is inlined into
-	// Command's RunE; the listener's logger writes to the command's stderr,
-	// which the harness captures.
-	t.Run("enough gone verdicts end the run with ErrTunnelGone", func(t *testing.T) {
-		tun := live(public)
-		h := newRunHarness(t, tun, ":3000")
-		h.cache.onSave = func() {
-			for range 3 {
-				tun.listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneled.pizza"})
-			}
-		}
-		err := h.run(t, t.Context(), "--log-level", "error")
-		logged := h.stderr.String()
-
-		if !errors.Is(err, v1.ErrTunnelGone) {
-			t.Fatalf("run() = %v, want ErrTunnelGone", err)
-		}
-		if !strings.Contains(err.Error(), "foo.tunneled.pizza") {
-			t.Errorf("error %q does not name the hostname", err)
-		}
-		if got := strings.Count(logged, "disowned"); got != 1 {
-			t.Errorf("logged the verdict %d times, want once:\n%s", got, logged)
 		}
 	})
 

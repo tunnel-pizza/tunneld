@@ -655,10 +655,9 @@ func TestInterceptorsOrder(t *testing.T) {
 // TestOpen pins the launch and the two promises around it: it never writes to
 // stdout, and it never raises its voice above a debug line when it fails.
 //
-// The wait that used to stand in front of it lives in the counter now — the
-// edge answers 530 for a moment after a tunnel reports ready, and its own
-// event stream says when that is over, which an HTTP probe from here could
-// only guess at.
+// The wait that used to stand in front of it is the tunnel's own Ready now —
+// libtunnel fires it once the edge has accepted the route, which an HTTP
+// probe from here could only guess at.
 func TestOpen(t *testing.T) {
 	// opens the address and leaves stdout alone: the spawned process
 	// inherits writers from pkg/browser's package globals, which default to
@@ -684,7 +683,7 @@ func TestOpen(t *testing.T) {
 		}
 	})
 
-	// asks the address nothing: the probe moved to the counter, and an Open
+	// asks the address nothing: the wait is the tunnel's Ready, and an Open
 	// that still reached for the network would wait twice for one answer.
 	t.Run("reaches for the network not at all", func(t *testing.T) {
 		var requests atomic.Int32

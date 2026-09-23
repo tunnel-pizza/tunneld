@@ -17,7 +17,6 @@ Deep-link by filename; line numbers will drift.
 | Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
-| Gone-verdict counter (`Counter`)               | [`v1alpha1/counter/`](./v1alpha1/counter)                        |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
@@ -76,8 +75,7 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Counter`, `Binder`, implemented respectively by `cache`, `display`, `counter`,
-`attach`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, implemented respectively by `cache`, `display`, `attach`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
@@ -121,7 +119,7 @@ is applied by hand in `RunE`: argv replaces the variable, which replaces the
 seed.
 
 **Every implementation is a `v1alpha1/<name>` subpackage.** One per contract,
-unconditionally — `cache`, `browser`, `counter`, `attach` — and the `v1alpha1`
+unconditionally — `cache`, `browser`, `attach` — and the `v1alpha1`
 root stays implementation-agnostic:
 `New`, the contracts, the options and `Command`. A second implementation of a
 contract gets a subpackage of its own beside the first. The same applies to
