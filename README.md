@@ -451,14 +451,15 @@ bottom border says how far back you are, output arriving while you read stays
 below you rather than pulling you down to it, and the first key you press puts
 you back on the live screen and still reaches the program.
 
-On the console the frame asks your terminal for the mouse, which is what makes
-the wheel reach it — and what stops the terminal doing its own drag-select. So
-the frame does that too: drag across the pane and the stretch is highlighted
-and copied to your clipboard through OSC 52, with `copied` in the bottom
-border to say so. A terminal that does not honour OSC 52 (Terminal.app) shows
-the highlight and copies nothing; iTerm2 needs "Applications in terminal may
-access clipboard" turned on. The browser tab is unaffected: the page keeps the
-mouse there and selects natively.
+The frame asks whatever it is drawn on for the mouse — your terminal on the
+console, xterm in the tab — which is what makes the wheel reach it, and what
+stops either from doing its own drag-select. So the frame does that too, the
+same way in both places: drag across the pane and the stretch is highlighted
+and copied to your clipboard on release, with `copied` in the bottom border to
+say so. In the tab the copy goes through the browser's clipboard API; on the
+console it goes through OSC 52, which iTerm2 honours once "Applications in
+terminal may access clipboard" is on, VS Code's terminal honours as is, and
+Terminal.app does not — there the highlight shows and nothing is copied.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers

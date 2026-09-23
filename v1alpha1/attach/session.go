@@ -581,11 +581,6 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 // a real terminal — so follow is given none, and stays only for what it does
 // besides: ending this viewer when the run does.
 //
-// One thing a page does not need is added: the frame is told it is on a
-// console, and asks the terminal for the mouse, because a real terminal
-// reports no wheel until it is asked and the page reports every wheel event
-// on its own.
-//
 // Returns when the viewer leaves or the run ends. The console is restored
 // either way, which is Bubble Tea's doing and the reason detaching has to go
 // through it rather than around it.
@@ -598,7 +593,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height, console: true},
+		frame{sess: s, v: v, width: width, height: height},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
