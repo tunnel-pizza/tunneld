@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1539,5 +1540,106 @@ func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
 	h.press(t, typing('q'))
 	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "no address yet") {
 		t.Errorf("pane = %q, want it saying there is no address yet", pane)
+	}
+}
+
+// mouse sends one mouse message to the frame and keeps whatever it became,
+// returning the command it produced.
+func (h *harness) mouse(t *testing.T, msg tea.Msg) tea.Cmd {
+	t.Helper()
+	model, cmd := h.f.Update(msg)
+	f, ok := model.(frame)
+	if !ok {
+		t.Fatalf("Update returned %T, want a frame", model)
+	}
+	h.f = f
+	return cmd
+}
+
+// TestDraggingSelectsAndCopies pins the frame's own selection on a console:
+// press, drag and release over the pane highlights the stretch, copies it to
+// the viewer's terminal, says so in the border, and never reaches the
+// program. The pane starts one cell in from the box, so pane (0,0) is window
+// (1,1) here.
+func TestDraggingSelectsAndCopies(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("hello world\r\nsecond line"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	pane := h.f.pane()
+	at := func(x, y int) (int, int) { return pane.Min.X + x, pane.Min.Y + y }
+
+	x, y := at(0, 0)
+	h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	x, y = at(2, 0)
+	h.mouse(t, tea.MouseMotionMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if !h.f.selecting {
+		t.Fatal("the frame is not selecting after a press and a drag")
+	}
+	if !reversed(h.f.View().Content) {
+		t.Error("nothing is drawn reversed mid-drag, want the stretch highlighted as it grows")
+	}
+
+	x, y = at(5, 1)
+	cmd := h.mouse(t, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("release produced no command, want the copy")
+	}
+	if msg := cmd(); !strings.Contains(fmt.Sprintf("%T", msg), "lipboard") {
+		t.Errorf("release produced %T, want a clipboard message", msg)
+	}
+	if got := h.f.sel.text(h.f.composed()); got != "hello world\nsecond" {
+		t.Errorf("selected text = %q, want the two rows in stream order", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied") {
+		t.Errorf("bottom border = %q, want it saying the text was copied", bottom)
+	}
+	h.silent(t) // the program saw none of it
+
+	// Typing spends the selection, and the key still goes where it was going.
+	h.press(t, typing('x'))
+	h.reached(t, "x")
+	if h.f.selected || reversed(h.f.View().Content) {
+		t.Error("the selection outlived a keystroke")
+	}
+}
+
+// reverseSGR matches an SGR that turns reverse video on, alone or among other
+// parameters — the renderer folds a cell's attributes into one sequence, so
+// a selected cell arrives as \x1b[39;7m as readily as \x1b[7m.
+var reverseSGR = regexp.MustCompile(`\x1b\[(?:[0-9]+;)*7(?:;[0-9]+)*m`)
+
+// reversed reports whether rendered content draws anything in reverse video.
+func reversed(content string) bool { return reverseSGR.MatchString(content) }
+
+// TestAClickIsStillAClick pins the two ways a press selects nothing: let go
+// where it went down, or put down outside the pane. Neither copies, and a
+// press outside clears what was selected before.
+func TestAClickIsStillAClick(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("hello world"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	pane := h.f.pane()
+
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X + 3, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if cmd := h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 3, Y: pane.Min.Y, Button: tea.MouseLeft}); cmd != nil || h.f.selected {
+		t.Error("a press released where it began selected something")
+	}
+
+	// A real selection, then a press on the border.
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseLeft})
+	h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 4, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if !h.f.selected {
+		t.Fatal("a drag did not select")
+	}
+	if cmd := h.mouse(t, tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft}); cmd != nil || h.f.selected || h.f.selecting {
+		t.Error("a press on the border kept or started a selection")
+	}
+
+	// The right button is nobody's.
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseRight})
+	if h.f.selecting {
+		t.Error("a right press started a selection")
 	}
 }
