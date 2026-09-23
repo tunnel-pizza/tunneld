@@ -53,6 +53,7 @@ var (
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
 	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
+	copyStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(114), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
 	// logStyle is dimmer than the terminal it covers, because what it shows is
 	// tunneld talking about itself rather than the thing anybody came to see.
@@ -157,6 +158,18 @@ type frame struct {
 	scrolled bool
 	top      int
 
+	// sel is what this viewer has dragged across, in pane coordinates, and
+	// selecting is the button still being down. selected is a finished drag
+	// that is still shown: it stays highlighted, so what was copied can be
+	// seen, until a key, a wheel or another click.
+	//
+	// The frame's own, because the console's terminal has handed the mouse
+	// over — see console — and a terminal that is not doing selection
+	// leaves nobody but the frame to do it. The browser never sends these.
+	sel       selection
+	selecting bool
+	selected  bool
+
 	// console is this frame being drawn on the terminal tunneld was started
 	// from rather than in a tab. The one thing that changes: a real terminal
 	// reports no wheel until asked, so this frame asks it for the mouse. The
@@ -234,11 +247,25 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, nil
 
 	case tea.MouseWheelMsg:
+		// A selection is in view coordinates and the wheel moves the view.
+		f.selected, f.selecting = false, false
 		return f.wheeled(msg), nil
+
+	case tea.MouseClickMsg:
+		return f.pressed(msg), nil
+
+	case tea.MouseMotionMsg:
+		if f.selecting {
+			f.sel.head = f.onPane(msg.X, msg.Y)
+		}
+		return f, nil
+
+	case tea.MouseReleaseMsg:
+		return f.released(msg)
 
 	case tea.PasteMsg:
 		// Pasting is being present, the same as typing below.
-		f.scrolled = false
+		f.scrolled, f.selected = false, false
 		// A paste is one message, not a burst of keystrokes: the frame's own
 		// renderer turns bracketed paste on in the viewer's terminal, so the
 		// browser wraps what was pasted and the decoder hands it over whole.
@@ -258,8 +285,9 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// Typing is being present. The first keystroke returns a viewer who
 		// scrolled back to the live screen, and still goes where it was
-		// going, so what the key did is what they see next.
-		f.scrolled = false
+		// going, so what the key did is what they see next. A selection is
+		// spent the same way: it was copied when the button came up.
+		f.scrolled, f.selected = false, false
 		// The log view is the frame's, so every key belongs to it: escape
 		// leaves, and anything else is somebody reading rather than typing at
 		// a terminal they cannot see.
@@ -391,6 +419,56 @@ func (f frame) wheeled(m tea.MouseWheelMsg) frame {
 	return f
 }
 
+// pressed starts a selection where the left button went down, if that is on
+// the pane. Anywhere else — the border, the margin outside the box — only
+// clears the one there was. Other buttons are nobody's: a right click has no
+// menu here and a middle click no paste.
+func (f frame) pressed(m tea.MouseClickMsg) frame {
+	if m.Button != tea.MouseLeft {
+		return f
+	}
+	f.selected, f.selecting = false, false
+	if !uv.Pos(m.X, m.Y).In(f.pane()) {
+		return f
+	}
+	pos := f.onPane(m.X, m.Y)
+	f.sel = selection{anchor: pos, head: pos}
+	f.selecting = true
+	return f
+}
+
+// released finishes a selection and copies it. The copy is OSC 52 to this
+// viewer's terminal, which is the only clipboard a frame on a console can
+// reach; a terminal that does not honour it leaves the selection drawn and
+// the text where it was. A press with no drag under it selects nothing and
+// copies nothing, so a click is still just a click.
+func (f frame) released(m tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	if !f.selecting {
+		return f, nil
+	}
+	f.selecting = false
+	f.sel.head = f.onPane(m.X, m.Y)
+	if f.sel.empty() {
+		return f, nil
+	}
+	f.selected = true
+	text := f.sel.text(f.composed())
+	if text == "" {
+		return f, nil
+	}
+	return f, tea.SetClipboard(text)
+}
+
+// onPane translates a window position into pane coordinates, clamped to the
+// pane — a drag that leaves the box selects to its edge rather than past it.
+func (f frame) onPane(x, y int) uv.Position {
+	pane := f.pane()
+	return uv.Pos(
+		max(0, min(x-pane.Min.X, pane.Dx()-1)),
+		max(0, min(y-pane.Min.Y, pane.Dy()-1)),
+	)
+}
+
 // behind is how many lines below the pane's last row the live screen's last
 // row is: the distance a scrolled viewer would travel to be present again.
 // Zero when they are.
@@ -514,22 +592,9 @@ func (f frame) View() tea.View {
 	// the emulator disagree about size. They disagree on the ordinary path: a
 	// window that has just shrunk draws once before the resize it asked for
 	// has come back.
-	pixels := uv.NewScreenBuffer(pane.Dx(), pane.Dy())
-	if f.logs {
-		// The last lines that fit, because what somebody opening this wants is
-		// what just happened rather than what happened first.
-		for i, l := range lastOf(f.sess.logLines(), pane.Dy()) {
-			uv.NewStyledString(logStyle.Styled(l)).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
-		}
-	} else if f.qr {
-		f.drawQR(pixels)
-	} else if f.scrolled {
-		// History from this viewer's top, and the live screen under it.
-		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
-	} else {
-		// The emulator draws itself, cell for cell, with nothing re-parsed on
-		// the way.
-		f.sess.drawPane(pixels, pixels.Bounds())
+	pixels := f.composed()
+	if f.selecting || f.selected {
+		f.sel.highlight(pixels)
 	}
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)
 
@@ -545,7 +610,7 @@ func (f frame) View() tea.View {
 	// The counts give way whole on a narrow window, but not the one part of
 	// them that says this screen is not live: a scrolled viewer with no
 	// indicator is a viewer who thinks the program has stopped.
-	f.row(buf, f.box().Max.Y-1, f.hint(), f.banner(), f.meta(), f.back())
+	f.row(buf, f.box().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -597,6 +662,34 @@ func (f frame) drawQR(pixels uv.ScreenBuffer) {
 		centred(top+i, line, qrStyle)
 	}
 	centred(top+len(lines)+1, addr, qrStyle)
+}
+
+// composed is the pane as this viewer sees it, at the pane's own size: the
+// logs, the code, history from this viewer's top, or the live screen. What
+// View blits into the frame, and what a selection reads its text from — the
+// same cells either way, so what is copied is what was highlighted.
+func (f frame) composed() uv.ScreenBuffer {
+	pane := f.pane()
+	pixels := uv.NewScreenBuffer(max(0, pane.Dx()), max(0, pane.Dy()))
+	switch {
+	case pane.Dx() <= 0 || pane.Dy() <= 0:
+	case f.logs:
+		// The last lines that fit, because what somebody opening this wants is
+		// what just happened rather than what happened first.
+		for i, l := range lastOf(f.sess.logLines(), pane.Dy()) {
+			uv.NewStyledString(logStyle.Styled(l)).Draw(pixels, uv.Rect(0, i, pane.Dx(), 1))
+		}
+	case f.qr:
+		f.drawQR(pixels)
+	case f.scrolled:
+		// History from this viewer's top, and the live screen under it.
+		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
+	default:
+		// The emulator draws itself, cell for cell, with nothing re-parsed on
+		// the way.
+		f.sess.drawPane(pixels, pixels.Bounds())
+	}
+	return pixels
 }
 
 // lastOf is the tail of lines that fits in rows, and a line saying so when
@@ -961,7 +1054,7 @@ func (f frame) meta() string {
 	}
 	// How far back this viewer is reading, where the viewer count goes: it is
 	// the one thing about the frame that is this viewer's alone.
-	return f.back() + where +
+	return f.copied() + f.back() + where +
 		qualStyle.Styled(" ("+qualifier+")") +
 		countStyle.Styled(fmt.Sprintf(" [%d×%d] ", w, h))
 }
@@ -973,6 +1066,16 @@ func (f frame) meta() string {
 func (f frame) back() string {
 	if n := f.behind(); n > 0 {
 		return backStyle.Styled(fmt.Sprintf(" ↑%d ", n))
+	}
+	return ""
+}
+
+// copied is the chip saying the highlighted text went to the clipboard, or
+// nothing when nothing is selected. The only acknowledgement a terminal gives
+// for OSC 52 is none, so this is it.
+func (f frame) copied() string {
+	if f.selected {
+		return copyStyle.Styled(" copied ")
 	}
 	return ""
 }
