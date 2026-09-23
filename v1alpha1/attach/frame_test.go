@@ -1390,19 +1390,15 @@ func TestTheWheelReachesAProgramThatAskedForTheMouse(t *testing.T) {
 	}
 }
 
-// TestTheConsoleAsksItsTerminalForTheWheel pins the one difference between
-// the two places a frame is drawn. The page reports the wheel on its own, so
-// the browser's frame declares no mouse mode and drag-select in the tab stays
-// the browser's; a real terminal reports nothing until asked, so the console's
-// frame asks — and the same wheeled rule then applies to both.
-func TestTheConsoleAsksItsTerminalForTheWheel(t *testing.T) {
+// TestEveryFrameAsksForTheMouse pins that a frame declares the mouse to
+// whatever it is drawn on — a console's terminal and xterm in a tab alike.
+// That is what brings the wheel in for scrollback, and it is what takes the
+// host's own drag-select away, which the frame's selection gives back the
+// same way in both places.
+func TestEveryFrameAsksForTheMouse(t *testing.T) {
 	h := newFrameHarness(t)
-	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("browser frame MouseMode = %v, want none — the page reports the wheel itself", got)
-	}
-	h.f.console = true
 	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("console frame MouseMode = %v, want cell motion — a terminal reports no wheel unasked", got)
+		t.Errorf("MouseMode = %v, want cell motion — clicks, drags and the wheel", got)
 	}
 }
 

@@ -343,49 +343,6 @@
     return false;
   });
 
-  // The wheel is decided on the other side. Left to itself xterm would scroll
-  // its own buffer — empty, since the frame draws on the alternate screen —
-  // and on that screen turn each notch into arrow keys for whatever is
-  // running. Neither is right in general: whether a notch belongs to the
-  // program (it asked for the mouse), to a full-screen program's cursor (it
-  // has no history), or to the frame's own scrollback is known only where the
-  // program's output is read, so every wheel event goes over as the mouse
-  // report a terminal would send and xterm is told to leave it alone.
-  //
-  // One report per line rather than one per event. A trackpad sends many
-  // small pixel deltas per gesture and a mouse one large one per notch, and
-  // the same movement should scroll the same distance either way — so the
-  // deltas accumulate here in cells and cross the socket a line at a time,
-  // which is also how xterm itself meters the wheel for a program. The
-  // remainder carries over, so a slow trackpad still adds up to lines.
-  let owed = 0;
-  term.attachCustomWheelEventHandler((e) => {
-    const screen = term.element && term.element.querySelector('.xterm-screen');
-    if (!screen) return true;
-    const rect = screen.getBoundingClientRect();
-    const cellW = rect.width / term.cols, cellH = rect.height / term.rows;
-    if (!(cellW > 0) || !(cellH > 0)) return true;
-    e.preventDefault();
-
-    let lines = e.deltaY;
-    if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) lines /= cellH;
-    else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) lines *= term.rows;
-    owed += lines;
-    const n = Math.trunc(owed);
-    owed -= n;
-    if (n === 0) return false;
-
-    // SGR: button 64 is up and 65 down, modifiers added on, and the cell
-    // under the pointer one-based — the frame subtracts its border and clamps
-    // to the program's screen before anything sees it.
-    const col = Math.min(term.cols, Math.max(1, Math.floor((e.clientX - rect.left) / cellW) + 1));
-    const row = Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / cellH) + 1));
-    const button = (n < 0 ? 64 : 65) + (e.shiftKey ? 4 : 0) + (e.altKey ? 8 : 0) + (e.ctrlKey ? 16 : 0);
-    const report = encoder.encode(`\x1b[<${button};${col};${row}M`);
-    for (let i = Math.abs(n); i > 0; i--) send(STDIN, report);
-    return false;
-  });
-
   new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
 
   // Cloudflare closes idle websockets and a page cannot send a websocket ping,
