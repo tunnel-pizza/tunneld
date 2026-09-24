@@ -144,6 +144,11 @@ func newFakeTarget(name string, tty, stdin bool) *fakeTarget {
 }
 
 func (f *fakeTarget) Name() string { return f.name }
+
+// End implements Ender as a no-op: the fake's run is whatever its test made
+// it, and this is here so a repeatable fake is restartable the way a program
+// is — the frame offers r on exactly that.
+func (f *fakeTarget) End(context.Context) error { return nil }
 func (f *fakeTarget) Origin() string {
 	return cmp.Or(f.origin, v1.AttachScheme+"://"+v1.DockerProvider+"/"+f.name)
 }
@@ -1113,6 +1118,17 @@ func (r *rerunTarget) Stdin() bool      { return true }
 func (r *rerunTarget) Close() error     { return nil }
 func (r *rerunTarget) Repeatable() bool { return r.repeat }
 
+// End implements Ender: the held run is let go, the way a real program leaves
+// when told to. A run that is not being held has already returned, and there
+// is nothing to end.
+func (r *rerunTarget) End(ctx context.Context) error {
+	select {
+	case r.hold <- struct{}{}:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
 func (r *rerunTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.Reader, out, _ io.WriteCloser, _ bool, resize <-chan remotecommand.TerminalSize) error {
 	r.mu.Lock()
 	r.runs++
@@ -1589,5 +1605,63 @@ func TestBindHandsAProgramItsArguments(t *testing.T) {
 
 	if want := []string{"--resume", "--model", "opus"}; len(programs.args) != 1 || !slices.Equal(programs.args[0], want) {
 		t.Errorf("the program was opened with %q, want %q", programs.args, want)
+	}
+}
+
+// TestRestartRunsTheProgramAgainAndKeepsTheViewers pins ^K r's contract: the
+// running program is ended and started over, and a viewer watching through
+// the socket is still there for the second run — where a run ending on its
+// own drops every viewer, this end is not theirs. The first run's exit is
+// what restart waits for, and the second run's first output is what reaches
+// the socket that was never closed.
+func TestRestartRunsTheProgramAgainAndKeepsTheViewers(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 1
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+
+	c := dial(t, s)
+	stdoutUntil(t, c, "run 1")
+
+	s.session.restart()
+	target.awaitOver(t, 1)
+	target.awaitRun(t, 2)
+
+	// Same socket, second run: the restart's end of run 1 dropped nobody. The
+	// renderer diffs, so the repaint is the one changed digit rather than the
+	// words; what is pinned is that the socket still delivers and the session
+	// still counts the viewer, where a run ending on its own hangs up on all.
+	if _, _, err := c.ReadMessage(); err != nil {
+		t.Fatalf("the socket ended across the restart: %v", err)
+	}
+	if got := s.session.count(); got != 1 {
+		t.Errorf("viewers after restart = %d, want 1", got)
+	}
+	if screen := strings.TrimSpace(s.session.em.String()); !strings.Contains(screen, "run 2") || strings.Contains(screen, "run 1") {
+		t.Errorf("screen after restart = %q, want run 2 on a screen cleared of run 1", screen)
+	}
+}
+
+// TestRestartIsNothingForAContainer pins the negative: a target that cannot
+// be started again is not ended either, and a second restart while one is in
+// flight is nothing to do.
+func TestRestartIsNothingForAContainer(t *testing.T) {
+	target := newFakeTarget("api", true, true) // not repeatable
+	s := serveFake(t, target)
+	if s.session.restartable() {
+		t.Fatal("a container reports restartable")
+	}
+	done := make(chan struct{})
+	go func() { s.session.restart(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart on a container did not return at once")
+	}
+	select {
+	case <-s.session.ended():
+		t.Error("restart ended a container's run")
+	default:
 	}
 }

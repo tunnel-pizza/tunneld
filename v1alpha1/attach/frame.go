@@ -516,6 +516,15 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// a phone pointed at the screen.
 		f.qr = true
 		return f, nil
+	case 'r':
+		// The program, started over, for every viewer at once — where the
+		// program can be: a container has no PID 1 to start again, and the
+		// key is not offered there. Off this goroutine, because ending a
+		// program takes as long as it takes to leave.
+		if f.sess.restartable() {
+			go f.sess.restart()
+		}
+		return f, nil
 	case 'x':
 		// The whole run, not this viewer and not this origin: the command ends,
 		// its context goes with it, and everything it started — the programs,
@@ -1113,8 +1122,16 @@ func (f frame) hint() string {
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
+	// r only where it works: a program can be started over, a container
+	// cannot, and a key that appears to do nothing reads as a key that is
+	// broken.
+	var restart string
+	if f.sess.restartable() {
+		restart = chipStyle.Styled(" r ") + hintStyle.Styled(" restart ")
+	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
+		restart +
 		chipStyle.Styled(" l ") + hintStyle.Styled(" logs ") +
 		chipStyle.Styled(" q ") + hintStyle.Styled(" qr ") +
 		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")

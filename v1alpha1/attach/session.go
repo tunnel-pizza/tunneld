@@ -130,6 +130,12 @@ type session struct {
 	hidden bool
 	mouse  map[int]bool
 
+	// restarting is non-nil while ^K r is ending the run to start it again,
+	// and closes when the new run is up. follow and redraw read it so a run
+	// ending that way drops nobody: the viewers stay for the run that
+	// replaces it, where a run ending on its own drops them all.
+	restarting chan struct{}
+
 	// mu guards the viewer set, the size negotiated from it, the public
 	// address, and the clipboard fields below.
 	mu      sync.Mutex
@@ -364,6 +370,69 @@ func (s *session) revive() {
 	s.scan.reset()
 	s.log.Info("running it again", "target", s.Name())
 	s.stream()
+}
+
+// restartable reports whether ^K r has anything to do: a target that can be
+// started again and can be told to end. A container is neither — there is no
+// PID 1 to start over — and the key is not offered for it.
+func (s *session) restartable() bool {
+	_, ends := s.Target.(Ender)
+	return ends && s.recoverable()
+}
+
+// restart ends the current run and starts it again, for every viewer at
+// once. revive without waiting for the program to exit first: the program is
+// told to end, the run's end is waited for, then the same reset and stream
+// revive does on its own. A run that has already ended is simply revived.
+//
+// Blocks for as long as the program takes to leave — the frame calls it off
+// its own goroutine. A second restart while one is in flight is nothing to
+// do; a target that cannot be restarted is nothing to do either.
+func (s *session) restart() {
+	ender, ok := s.Target.(Ender)
+	if !ok || !s.recoverable() {
+		return
+	}
+	s.mu.Lock()
+	if s.restarting != nil || s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return
+	}
+	over := make(chan struct{})
+	s.restarting = over
+	done := s.done
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.restarting = nil
+		s.mu.Unlock()
+		close(over)
+	}()
+
+	select {
+	case <-done:
+		// Already over on its own; nothing to end.
+	default:
+		s.log.Info("ending the program to run it again", "target", s.Name())
+		if err := ender.End(s.ctx); err != nil {
+			s.log.Warn("the program did not end", "target", s.Name(), "error", err)
+			return
+		}
+		select {
+		case <-done:
+		case <-s.ctx.Done():
+			return
+		}
+	}
+	s.revive()
+}
+
+// restartInFlight is the channel a restart in progress closes when the new
+// run is up, or nil when none is.
+func (s *session) restartInFlight() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restarting
 }
 
 // close ends the shared attach. The pipe is what the target is reading, so
@@ -635,6 +704,11 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 			v.prog.Send(paneMsg{})
 			select {
 			case <-s.ended():
+				// Unless the run is being started over: then the end is
+				// not this viewer's end, and the next wake is the new run.
+				if s.restartInFlight() != nil {
+					continue
+				}
 				v.prog.Send(goneMsg{})
 				return
 			default:
@@ -767,6 +841,7 @@ func (s *session) apply(ctx context.Context, size remotecommand.TerminalSize) {
 func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *viewer, resize <-chan remotecommand.TerminalSize) {
 	defer cancel()
 	for {
+		done := s.ended()
 		select {
 		case size, ok := <-resize:
 			if !ok {
@@ -775,7 +850,17 @@ func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *view
 			v.prog.Send(tea.WindowSizeMsg{Width: int(size.Width), Height: int(size.Height)})
 		case <-ctx.Done():
 			return
-		case <-s.ended():
+		case <-done:
+			// A run ending on its own ends this viewer with it. A run being
+			// started over does not: wait for the new one, and if there is
+			// one — the session's done is no longer the channel that
+			// closed — go on following it.
+			if over := s.restartInFlight(); over != nil {
+				<-over
+			}
+			if s.ended() != done {
+				continue
+			}
 			return
 		}
 	}

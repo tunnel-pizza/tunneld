@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/creack/pty"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -154,6 +155,9 @@ type TargetImpl struct {
 	cmd    *exec.Cmd
 	term   *os.File
 	closed bool
+	// exited closes when the current run's program has exited, for End to
+	// wait on. Replaced per run, under mu, beside cmd and term.
+	exited chan struct{}
 }
 
 // Name is the reference the operator typed, not the resolved path: it is what
@@ -204,6 +208,47 @@ func (a *TargetImpl) Close() error {
 
 	a.closed = true
 	return a.stop()
+}
+
+// endGrace is how long End gives a program to leave on SIGTERM before it is
+// killed: long enough for a dev server to shut its workers and release its
+// port, short enough that the key does not feel ignored.
+const endGrace = 5 * time.Second
+
+// End implements attach.Ender: the running program is asked to stop and, if
+// it has not gone within endGrace, killed. It returns once the program has
+// exited, or when ctx ends. A target with nothing running is already ended.
+//
+// The program's whole process group, not the child alone — see terminate. A
+// dev server's workers are in that group holding the port, and the next run
+// needs the port back.
+func (a *TargetImpl) End(ctx context.Context) error {
+	a.mu.Lock()
+	cmd, exited := a.cmd, a.exited
+	a.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if err := terminate(cmd.Process); err != nil {
+		a.log.Debug("could not signal the program", "program", a.ref, "error", err)
+	}
+	select {
+	case <-exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(endGrace):
+	}
+	a.log.Debug("program did not leave when asked; killing it", "program", a.ref)
+	if err := kill(cmd.Process); err != nil {
+		a.log.Debug("could not kill the program", "program", a.ref, "error", err)
+	}
+	select {
+	case <-exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // stop kills whatever is running and closes its terminal, leaving the target
@@ -267,8 +312,10 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 		_ = cmd.Process.Kill()
 		return nil
 	}
-	a.cmd, a.term = cmd, term
+	exited := make(chan struct{})
+	a.cmd, a.term, a.exited = cmd, term, exited
 	a.mu.Unlock()
+	defer close(exited)
 
 	defer func() {
 		a.mu.Lock()
