@@ -139,7 +139,7 @@ Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engin
 ```sh
 git clone https://github.com/tunnel-pizza/tunneld.git
 cd tunneld
-make test     # unit tests (fast, in-package)
+make test     # unit tests (fast, in-package, never opens a tunnel)
 make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
 ```
