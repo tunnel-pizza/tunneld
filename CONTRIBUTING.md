@@ -944,8 +944,8 @@ Patch releases are automatic. Every push to `main` runs four jobs in
   signature depends on the bytes and this workflow's identity, not on a tag —
   and uploads binary and `.sigstore` bundle as one artifact. It runs on pull
   requests too, so the build, the signing and the artifact hand-off are
-  exercised before a merge — except on a PR from a fork or from dependabot,
-  whose token gets no OIDC; the `ci` matrix still builds every pair there —
+  exercised before a merge — signing skips on a PR from a fork or from
+  dependabot, whose token gets no OIDC token; those still build and upload —
   and it is what stands between a broken build and a tag: `release` needs
   every cell, so a failure here leaves no tag pushed and no release opened.
 - **`image`** is a matrix of two cells, `linux/amd64` and `linux/arm64`, each
@@ -956,10 +956,11 @@ Patch releases are automatic. Every push to `main` runs four jobs in
   inside, so `tunneld version` in the container names the release; what is
   not yet public is the name. This is what puts the image on the same footing
   as the binaries: an image that stops building fails here, under its own
-  name, before any tag exists. The steps are the same on every run, pull
-  requests included (again except forks and dependabot): a PR's digest is an
+  name, before any tag exists. The build is the same on every run, pull
+  requests included, and a run whose token can push does: a PR's digest is an
   untagged manifest in ghcr that nothing will ever tag, invisible to a pull,
-  which is the price of every PR exercising exactly what a release runs.
+  which is the price of every PR exercising exactly what a release runs. A
+  fork's or dependabot's PR builds into the layer cache and stops there.
 - **`release`** downloads the six binaries and their bundles and the two
   digests, restores the binaries' executable bit — `upload-artifact` zips its
   input and that zip carries no mode bits, so they arrive `0644`, and npm
