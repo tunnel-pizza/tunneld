@@ -240,6 +240,7 @@ Every key reaches the container except one:
 | wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
+| then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
@@ -437,6 +438,12 @@ visit runs it once more on a clean screen. That is a new program and not a
 resumed one: nothing it had open before is still open. A container cannot be
 offered this, since once its PID 1 has exited there is nothing left to attach
 to.
+
+You do not have to wait for it to end. `Ctrl+K` then `r` ends the program and
+starts it again, for everyone watching, with the address unchanged — the same
+argv, working directory and environment it had the first time. The program is
+asked first (`SIGTERM` to it and everything it started) and killed if it has
+not left after five seconds.
 
 It is an origin like any other, so it takes an index, gets a multiview tile,
 frames itself as `exec:///usr/bin/htop`, and mixes freely with the rest:

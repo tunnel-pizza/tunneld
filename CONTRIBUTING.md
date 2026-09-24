@@ -749,6 +749,18 @@ Two things there will bite if you change them without knowing why:
   arrival starts anything. Reconnecting to a stopped container gets the last
   screen and nothing else, and a button promising otherwise is a lie the page
   tells once per visit.
+- **`^K r` is `End` then `revive`, and a viewer must not mistake it for the
+  run ending.** A run ending on its own drops every viewer (`goneMsg`, and
+  `follow` returns); a restart ends the run on purpose and wants them kept.
+  So `session.restart` publishes a `restarting` channel for as long as it is
+  in flight, `redraw` skips `goneMsg` while one is, and `follow`, on seeing the
+  run's `done` close, waits for the restart to finish and carries on if the
+  session now has a different `done`. `attach.Ender` is what makes a target
+  restartable alongside `Repeatable`: the shell provider implements it as
+  `SIGTERM` to the program's process group (`pty.Start` gives it a session of
+  its own, so the group is its pid), then `SIGKILL` after `endGrace`. The
+  group matters for a child that ignores the hangup the terminal sends when
+  its leader exits — `shell_test.go` pins that with a `trap '' HUP` child.
 - **A run is told its size when it starts, whether or not anything changed.**
   `negotiate` only speaks when the window moves, and the viewer who asks for a
   restart is the size the session already settled on — so a second run would
