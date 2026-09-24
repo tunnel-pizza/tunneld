@@ -1132,15 +1132,16 @@ func (b *BuilderImpl) Origins() Origins {
 		// A word with spaces in it is a program and its arguments quoted as
 		// one thing — no origin can contain whitespace, and the shell has
 		// already taken the quotes off. Split the way a shell would, so an
-		// argument that was itself quoted stays whole. It is then a program
-		// like any other: the words after it on the line are its too, up to
-		// the first origin. Quoting is also the one way to spell a program
-		// with arguments inside a comma-separated TUNNELD_ORIGINS.
+		// argument that was itself quoted stays whole. The group is complete:
+		// the space inside the word is the one piece of quoting that survives
+		// the shell, and it says the person closed the group where they did,
+		// so the words after it on the line are origins again and a bare
+		// `bash` after `'next dev'` is a second terminal, not next's third
+		// argument. Quoting is also how a program with arguments reads inside
+		// a comma-separated TUNNELD_ORIGINS.
 		if fs := fields(s); len(fs) > 1 {
 			if path, ok := shell.Resolve(fs[0]); ok {
-				args, _ := split(fs[0], settled[i+1:])
-				urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, append(fs[1:], args...)))
-				i += len(args)
+				urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, fs[1:]))
 				continue
 			}
 			log.Warn("dropping an origin", "origin", s, "reason", "has spaces but "+fs[0]+" names no program that can be run")
