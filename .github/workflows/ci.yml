@@ -411,11 +411,18 @@ jobs:
       # package's bin entry, which is the launcher, not what dist/ holds.
       #
       # Mode is not part of what cosign signed or what sha256sum hashes — the
-      # bytes are the same either side of this. The bundles get the bit too,
-      # harmlessly. The glob is unquoted so a dist/ without binaries in it
-      # fails here rather than publishing six unrunnable files.
+      # bytes are the same either side of this. The binaries only: their
+      # bundles sit beside them under the same prefix and are not programs.
+      # A dist/ without binaries in it fails here rather than publishing six
+      # unrunnable files.
       - name: restore the executable bit
-        run: chmod +x dist/tunneld-*
+        run: |
+          set -euo pipefail
+          n=0
+          for f in dist/tunneld-*; do
+            case "$f" in *.sigstore) ;; *) chmod +x "$f"; n=$((n + 1)) ;; esac
+          done
+          test "$n" -eq 6
 
       - name: push tag
         if: needs.tag.outputs.needs_push == 'true'
