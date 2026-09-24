@@ -336,6 +336,15 @@ func TestServeShell(t *testing.T) {
 	// keyboard and every keystroke keeps going to whichever tile had it last.
 	// Asserted here because the reason is invisible from the markup: nothing
 	// looks broken if it is deleted until two origins are open at once.
+	// Each tile reloads its own frame on a press: the button, and the reload
+	// of the frame's window where it is. Nothing looks broken without them
+	// either — the tile simply has no way to come current short of reloading
+	// the panel, and every other tile with it.
+	for _, want := range []string{"data-reload", "location.reload()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page does not contain %q", want)
+		}
+	}
 	for _, want := range []string{"pointerdown", "contentWindow.focus()"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page does not contain %q, so a clicked tile will not take focus", want)

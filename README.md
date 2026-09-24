@@ -507,9 +507,10 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 ```
 
 One iframe per origin, two columns, and an odd count gives the last tile the
-full width of the final row. Each tile is labelled with its routing index and
-its local address, and links out to that origin on its own. When a browser is
-opened at all, this is the page it lands on.
+full width of the final row. Each tile names its local address in its
+corner controls: one reloads that frame where it is, and one opens the origin
+in a tab of its own. When a browser is opened
+at all, this is the page it lands on.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
