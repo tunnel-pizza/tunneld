@@ -354,6 +354,13 @@ jobs:
       # builder would otherwise keep whatever it pulled last time. No push:
       # input — that is --output=type=registry, a push by tag, and there is
       # no tag here by design.
+      #
+      # Two attestations ride the image as manifests beside it, and the index
+      # release assembles carries them: SLSA provenance at mode=max — the
+      # full build definition, source and materials, not the minimal one the
+      # action attaches by default — and an SPDX SBOM from BuildKit's scanner.
+      # Read them back with `docker buildx imagetools inspect <ref> --format
+      # '{{json .Provenance}}'` and `'{{json .SBOM}}'`.
       - name: build and push by digest
         id: image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -361,6 +368,8 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           pull: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ needs.prepare.outputs.tag }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
