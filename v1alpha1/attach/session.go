@@ -96,6 +96,14 @@ type session struct {
 	// under mu: writing to it can block until its replies are drained, and a
 	// viewer joining must never wait on that.
 	em *vt.SafeEmulator
+	// screen is held for writing around every write that changes what the
+	// emulator shows — the stream's bytes, a resize, revive's reset — and
+	// for reading across a frame's copy of the cells. The emulator's own lock
+	// covers a cell lookup and lets go before the pointer it returned is
+	// read, so a frame copying the screen while the stream clears it is a
+	// race the emulator cannot prevent on its own. Never taken with mu held
+	// for longer than the call; a write can block on the pty's replies.
+	screen sync.RWMutex
 
 	// scan pulls the sequences a program uses to talk about itself out of its
 	// output before the emulator sees them. Built by watch, reset by revive.
@@ -364,8 +372,10 @@ func (s *session) revive() {
 		return
 	}
 
+	s.screen.Lock()
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
+	s.screen.Unlock()
 	s.resetModes()
 	s.scan.reset()
 	s.log.Info("running it again", "target", s.Name())
@@ -514,7 +524,9 @@ func (s *session) said(seq Sequence) {
 			// The emulator's, verbatim: a hyperlink becomes cell links it
 			// draws, a colour query one it answers. An OSC with no numeric
 			// command is not ours to judge, so it goes there too.
+			s.screen.Lock()
 			_, _ = s.em.Write(seq.Raw)
+			s.screen.Unlock()
 		default:
 			// A read query — 52;<sel>;? — opens a window in which a reply is
 			// accepted. Stamped before the forward so an answer that races
@@ -794,7 +806,9 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
 	pane := paneOf(s.size)
+	s.screen.Lock()
 	s.em.Resize(int(pane.Width), int(pane.Height))
+	s.screen.Unlock()
 	return pane
 }
 
@@ -1058,6 +1072,13 @@ func (s *session) sendKey(k tea.Key) {
 // terminal colours, the same as the emulator's Draw left it. A wide
 // character's head carries its width and its tail is skipped.
 func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	s.drawPaneLocked(scr, area)
+}
+
+// drawPaneLocked is drawPane for a caller already holding screen for reading.
+func (s *session) drawPaneLocked(scr uv.Screen, area uv.Rectangle) {
 	fill := uv.EmptyCell
 	fill.Style.Bg = s.em.BackgroundColor()
 	for y := range area.Dy() {
@@ -1088,11 +1109,13 @@ func (s *session) history() int { return s.em.ScrollbackLen() }
 // from top downward, and below the last of them the live screen from its own
 // first row. A top at or past the end of the history is the live screen.
 //
-// Cell by cell through the emulator's lock rather than through the Scrollback
-// it hands out: that is a pointer into a buffer the stream goroutine is still
+// Cell by cell under screen rather than through the Scrollback the emulator
+// hands out: that is a pointer into a buffer the stream goroutine is still
 // appending to, and reading it unlocked is a race. The live part is drawn
 // whole and copied from its top rows.
 func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
 	kept := s.em.ScrollbackLen()
 	top = max(0, min(top, kept))
 
@@ -1106,7 +1129,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 		return
 	}
 	live := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
-	s.drawPane(live, live.Bounds())
+	s.drawPaneLocked(live, live.Bounds())
 	for r := 0; y < area.Dy(); y, r = y+1, r+1 {
 		for x := range area.Dx() {
 			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))

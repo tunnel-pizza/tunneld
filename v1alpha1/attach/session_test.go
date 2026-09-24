@@ -1,10 +1,12 @@
 package attach
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
@@ -294,4 +296,31 @@ func (s *session) paneLines(rows int) []string {
 		lines = lines[:rows]
 	}
 	return lines
+}
+
+// TestAFrameCopiesTheScreenWhileTheStreamResetsIt pins the lock a frame's
+// copy of the screen holds. The emulator's own lock covers a cell lookup and
+// releases before the pointer it returned is read; a frame copying cells while
+// the stream clears the screen for a second run read freed rows — a data race
+// the race lane caught on main (#163). The two run at once here, and the race
+// detector is the assertion: without screen held across the copy, this fails
+// under -race.
+func TestAFrameCopiesTheScreenWhileTheStreamResetsIt(t *testing.T) {
+	s := &session{em: vt.NewSafeEmulator(40, 8)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			s.screen.Lock()
+			_, _ = s.em.Write([]byte("\x1bcrun " + strconv.Itoa(i) + "\r\n"))
+			s.em.ClearScrollback()
+			s.screen.Unlock()
+		}
+	}()
+	buf := uv.NewScreenBuffer(40, 8)
+	for range 200 {
+		s.drawPane(buf, buf.Bounds())
+		s.drawHistory(buf, buf.Bounds(), 0)
+	}
+	<-done
 }
