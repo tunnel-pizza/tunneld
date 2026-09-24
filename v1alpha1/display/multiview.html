@@ -78,16 +78,23 @@
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
-  /* One control per tile, in the corner: the index, the local address and the
-     route repeated the same three facts on every frame, and the frame itself
-     already says which service it is. What is left is the one thing the page
-     cannot do for itself — open this origin on its own. It rests translucent
-     so it never competes with the content, and comes forward on hover. */
-  .tile > a {
+  /* Three controls per tile, in the corner: the index, the local address and
+     the route repeated the same three facts on every frame, and the frame
+     itself already says which service it is. What is left is what the page
+     cannot do for itself — step this one frame back, reload it, and open this
+     origin on its own.
+     They rest translucent so they never compete with the content, and come
+     forward on hover. */
+  .tile > .controls {
     position: absolute;
     top: .375rem;
     right: .375rem;
     z-index: 1;
+    display: flex;
+    gap: .25rem;
+  }
+
+  .tile .controls > .btn {
     display: grid;
     place-items: center;
     width: 1.625rem;
@@ -102,16 +109,25 @@
     transition: opacity .15s ease, background-color .15s ease;
   }
 
-  .tile > a:hover,
-  .tile > a:focus-visible {
+  .tile .controls > .btn:hover,
+  .tile .controls > .btn:focus-visible {
     opacity: 1;
     background: var(--card);
   }
 
-  .tile > a svg {
+  /* Basecoat gives .btn a display of its own, which would outrank the
+     browser's [hidden] rule; the hidden back button has to actually go. */
+  .tile .controls > .btn[hidden] { display: none; }
+
+  .tile .controls svg {
     width: .8125rem;
     height: .8125rem;
   }
+
+  /* The reload turns while the frame is loading, so a press on a slow origin
+     is seen to have done something; it stops when the frame says it is back. */
+  @keyframes turn { to { transform: rotate(360deg); } }
+  .tile .controls > .busy svg { animation: turn .8s linear infinite; }
 
   .tile iframe {
     flex: 1;
@@ -140,16 +156,36 @@
   <section class="card tile">
     <!-- The label the strip used to carry lives in the tooltip now: present
          when someone goes looking, invisible the rest of the time. -->
-    <a class="btn" href="{{.Route}}" target="_blank" rel="noopener"
-       title="Open {{.Local}} ({{.Route}}) in a new tab"
-       aria-label="Open {{.Local}} in a new tab">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M15 3h6v6"/>
-        <path d="M10 14 21 3"/>
-        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"/>
-      </svg>
-    </a>
+    <div class="controls">
+      <button class="btn" type="button" data-back
+              title="Back, in {{.Local}} ({{.Route}})"
+              aria-label="Back, in {{.Local}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m12 19-7-7 7-7"/>
+          <path d="M19 12H5"/>
+        </svg>
+      </button>
+      <button class="btn" type="button" data-reload
+              title="Reload {{.Local}} ({{.Route}})"
+              aria-label="Reload {{.Local}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+          <path d="M21 3v5h-5"/>
+        </svg>
+      </button>
+      <a class="btn" href="{{.Route}}" target="_blank" rel="noopener"
+         title="Open {{.Local}} ({{.Route}}) in a new tab"
+         aria-label="Open {{.Local}} in a new tab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M15 3h6v6"/>
+          <path d="M10 14 21 3"/>
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"/>
+        </svg>
+      </a>
+    </div>
     <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
   </section>
   {{- end}}
@@ -204,6 +240,80 @@
     };
     frame.addEventListener('load', wire);
     wire(); // a frame that is already there when this runs
+  }
+
+  // Reload one frame. It reloads where it is, not back at the route it began
+  // on: a page that navigated somewhere and stayed is what the tile shows,
+  // and what is stale. A reload revalidates the document the way the
+  // browser's own reload does; the browser scopes nothing harder to a frame,
+  // and the page's subresources keep whatever caching it gave them, as they
+  // would at the top level. A frame whose window cannot be read — it left the
+  // origin — is pointed at its route again, which is all that can be done.
+  const reload = (frame) => {
+    const tile = frame.closest('.tile');
+    const button = tile && tile.querySelector('[data-reload]');
+    if (button) button.classList.add('busy');
+    const again = () => { frame.src = frame.getAttribute('src'); };
+    let win, href;
+    try { win = frame.contentWindow; href = win.location.href; } catch (e) { win = null; }
+    if (!win || href === 'about:blank') return again();
+    try { win.location.reload(); } catch (e) { again(); }
+  };
+  // Step one frame back — and only within that frame's own history. A
+  // frame's history.back() walks the page's joint history, the same walk the
+  // browser's back button takes, and with nothing of the frame's to step to
+  // it leaves the panel instead: pressed on a fresh tile it lands the tab on
+  // whatever came before. So the button only fires when the frame has an
+  // entry of its own behind it, and is hidden the rest of the time: a tile
+  // that has gone nowhere shows nothing to go back to.
+  //
+  // The Navigation API knows exactly that, per frame and pushState included.
+  // Where it is missing the frame's loads are counted instead: one up per
+  // load the button did not cause, one down per back. In-page routing goes
+  // uncounted there, which leaves the button inert rather than wrong.
+  const back = (frame) => {
+    const tile = frame.closest('.tile');
+    const button = tile.querySelector('[data-back]');
+    let depth = 0;
+    let expected = false; // the next load is one the button caused
+    const can = () => {
+      try {
+        const nav = frame.contentWindow.navigation;
+        return nav ? nav.canGoBack : depth > 0;
+      } catch (e) { return false; }
+    };
+    const show = () => { button.hidden = !can(); };
+    button.addEventListener('click', () => {
+      if (!can()) return;
+      expected = true;
+      depth = Math.max(0, depth - 1);
+      try { frame.contentWindow.history.back(); } catch (e) { expected = false; }
+    });
+    tile.querySelector('[data-reload]').addEventListener('click', () => { expected = true; });
+    // A frame that finished loading before this ran has had its first load:
+    // counting the next one as it would count a fresh page's first load
+    // swallows a real step. One that cannot be read has certainly loaded.
+    let first = true;
+    try {
+      const doc = frame.contentDocument;
+      first = !(doc && doc.readyState === 'complete' && frame.contentWindow.location.href !== 'about:blank');
+    } catch (e) { first = false; }
+    frame.addEventListener('load', () => {
+      if (first) first = false;
+      else if (expected) expected = false;
+      else depth++;
+      try {
+        frame.contentWindow.navigation?.addEventListener('currententrychange', show);
+      } catch (e) { /* left the origin: nothing to count */ }
+      show();
+    });
+    show();
+  };
+  for (const frame of document.querySelectorAll('.tile iframe')) back(frame);
+  for (const button of document.querySelectorAll('.tile [data-reload]')) {
+    const frame = button.closest('.tile').querySelector('iframe');
+    button.addEventListener('click', () => reload(frame));
+    frame.addEventListener('load', () => button.classList.remove('busy'));
   }
 </script>
 
