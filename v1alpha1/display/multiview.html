@@ -118,7 +118,6 @@
     width: 100%;
     min-height: 0;
     border: 0;
-    background: #fff; /* most origins are light; don't flash the shell's ink */
   }
 
   /* Narrow: one column, still dividing the viewport rather than scrolling —
@@ -178,37 +177,21 @@
   // On load rather than once, because a frame that navigates — an origin
   // redirecting, or reconnecting — replaces the window this was attached to.
   //
-  // The same reach into the frame is what puts the right backdrop behind an
-  // origin. The tile paints white behind every frame (see .tile iframe) so a
-  // light page does not flash the shell's ink while it loads — and a page
-  // that renders dark and paints no background of its own then sits on that
-  // white: light text on a light tile. Two kinds of page do that.
-  //
-  // A page that declares `color-scheme: light dark` and styles nothing else —
-  // Python's directory listing — follows the system theme for its text and
-  // leaves the canvas to the browser, which the tile's white is standing in
-  // for. A page with no CSS at all — a bare "hello" — renders in the browser's
-  // light defaults, a light tile in a dark panel; it is told it is dark, which
-  // switches the defaults it was already using and nothing else.
-  //
-  // Either way the frame's backdrop follows the scheme the document ends up
-  // in: the panel's background when that is dark, the white otherwise. The
-  // test for "no CSS at all" is exactly that — a stylesheet, a style element
-  // or a style attribute is a page that chose its colours (Cloudflare's error
-  // page leaves html and body transparent and paints a wrapper; a background
-  // test read it as bare and inverted it), and its colours are its own.
-  const dark = matchMedia('(prefers-color-scheme: dark)');
+  // The same reach into the frame is what keeps a bare page legible. A page
+  // with no CSS at all — a bare "hello", anything a stock dev server hands
+  // out without a stylesheet — renders in the browser's light defaults:
+  // black text on a canvas it never painted, which is the tile's dark card
+  // showing through. Telling that document it is dark switches the defaults
+  // it was already using and nothing else. A page that chose anything — a
+  // stylesheet, a style element, a style attribute, a color-scheme meta — is
+  // left exactly as it is; its colours are its own, and the browser lays it
+  // on the card the way it lays any framed page.
   const paint = (frame) => {
     try {
       const doc = frame.contentDocument;
       if (!doc || !doc.documentElement) return;
-      const root = doc.documentElement;
-      if (!doc.querySelector('meta[name="color-scheme"], style, link[rel~="stylesheet"], [style]')) {
-        root.style.colorScheme = 'dark';
-      }
-      const scheme = getComputedStyle(root).colorScheme;
-      const usedDark = scheme === 'dark' || (scheme.includes('dark') && dark.matches);
-      frame.style.backgroundColor = usedDark ? getComputedStyle(document.body).backgroundColor : '';
+      if (doc.querySelector('meta[name="color-scheme"], style, link[rel~="stylesheet"], [style]')) return;
+      doc.documentElement.style.colorScheme = 'dark';
     } catch (e) { /* cross-origin: its colours are its own */ }
   };
   for (const frame of document.querySelectorAll('.tile iframe')) {
@@ -221,7 +204,6 @@
     };
     frame.addEventListener('load', wire);
     wire(); // a frame that is already there when this runs
-    dark.addEventListener('change', () => paint(frame));
   }
 </script>
 
