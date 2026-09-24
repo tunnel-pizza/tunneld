@@ -311,6 +311,8 @@ jobs:
   image:
     needs: [prepare]
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
     permissions:
       contents: read
       packages: write   # push to ghcr
@@ -342,13 +344,13 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE }}
           tags: type=raw,value=${{ needs.prepare.outputs.tag }}
           flavor: latest=false
 
-      # Pushed by digest when the token allows; otherwise the same build goes
-      # no further than the layer cache, which is still the Dockerfile
-      # exercised end to end.
+      # Pushed by digest when the token allows. push=false is the same build
+      # stopping at buildkit's store, which is still the Dockerfile exercised
+      # end to end.
       - name: build and push by digest
         id: image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -358,7 +360,7 @@ jobs:
           build-args: VERSION=${{ needs.prepare.outputs.tag }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          outputs: ${{ needs.prepare.outputs.signed == 'true' && format('type=image,name=ghcr.io/{0},push-by-digest=true,name-canonical=true,push=true', github.repository) || 'type=cacheonly' }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ needs.prepare.outputs.signed }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
@@ -376,7 +378,7 @@ jobs:
         if: needs.prepare.outputs.signed == 'true'
         run: |
           cosign sign --yes \
-            "ghcr.io/${GITHUB_REPOSITORY}@${{ steps.image.outputs.digest }}"
+            "${IMAGE}@${{ steps.image.outputs.digest }}"
 
       # The digest is all release needs from this cell: it tags what is
       # already there rather than building anything again.
