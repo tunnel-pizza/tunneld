@@ -1639,3 +1639,53 @@ func TestAClickIsStillAClick(t *testing.T) {
 		t.Error("a right press started a selection")
 	}
 }
+
+// TestAConsoleFrameLingersAfterTheRunEnds pins #146's fix. A frame told to
+// linger keeps the last screen up when the run ends, says so in the border,
+// withholds the cursor, and leaves on the next key — which is what keeps the
+// terminal's answers to the renderer's startup queries from landing on the
+// prompt, and what lets the line saying why a program exited be read. A
+// frame not told to linger, the browser's, quits at once as before.
+func TestAConsoleFrameLingersAfterTheRunEnds(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("bash: bash: No such file or directory"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The browser's frame: gone means quit.
+	model, cmd := h.f.Update(goneMsg{})
+	if cmd == nil {
+		t.Fatal("a tab's frame produced no command on goneMsg, want Quit")
+	} else if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("a tab's frame produced %T on goneMsg, want QuitMsg", cmd())
+	}
+	h.f = model.(frame)
+
+	// The console's: gone means stay, say so, wait for a key.
+	h.f.linger = true
+	model, cmd = h.f.Update(goneMsg{})
+	h.f = model.(frame)
+	if cmd != nil {
+		t.Errorf("a lingering frame produced %T on goneMsg, want nothing — it stays up", cmd())
+	}
+	if !h.f.ended {
+		t.Fatal("the frame did not record the run ending")
+	}
+	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "No such file or directory") {
+		t.Errorf("pane = %q, want the last screen still shown", pane)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "ended") || !strings.Contains(bottom, "any key") {
+		t.Errorf("bottom border = %q, want it saying the run ended and how to leave", bottom)
+	}
+	if h.f.View().Cursor != nil {
+		t.Error("a cursor is drawn on a screen whose program is gone")
+	}
+
+	cmd = h.press(t, typing('x'))
+	if cmd == nil {
+		t.Fatal("a key on a lingering frame produced no command, want Quit")
+	} else if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("a key on a lingering frame produced %T, want QuitMsg", cmd())
+	}
+	h.silent(t) // the key was the reader leaving, not typing at a dead program
+}

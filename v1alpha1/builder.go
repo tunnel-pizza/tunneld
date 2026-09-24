@@ -928,6 +928,41 @@ func program(u *url.URL, args []string) *url.URL {
 	return u
 }
 
+// split divides the words after a program into its arguments and what comes
+// after them: the arguments run until the first word that can only be an
+// origin, and that word and the rest are origins again.
+//
+// The docker-run rule — a program takes every word after it — is what lets
+// `tunneld claude --resume` work without a separator, and it is kept. But
+// ":8000" is not an argument anybody means: a port with nothing in front of it
+// is the shorthand every other position reads as this machine's :8000, and a
+// URL with a scheme is an address. Either one after a program is a second
+// origin, so `tunneld bash :8000` is a shell beside a service rather than a
+// shell told to run a script called :8000. So is the program's own word said
+// again: `tunneld bash bash` is two shells, not a shell looking for a script
+// called bash — nobody passes a program its own name as an argument on
+// purpose, and two of the same terminal is the ordinary way to want a second
+// one. A flag, a path, any other bare word — a program's, as before.
+func split(word string, words []string) (args, rest []string) {
+	for i, w := range words {
+		if isOrigin(w) || w == word {
+			return words[:i], words[i:]
+		}
+	}
+	return words, nil
+}
+
+// isOrigin reports whether a word can only be an origin: a port shorthand
+// (":8000") or a URL with a scheme ("http://…", "attach://…"). Anything else
+// after a program is the program's.
+func isOrigin(word string) bool {
+	if port, ok := strings.CutPrefix(word, ":"); ok {
+		_, err := strconv.Atoi(port)
+		return err == nil && port != ""
+	}
+	return strings.Contains(word, "://")
+}
+
 // label is an origin as a person reads it: a program without its arguments.
 //
 // The arguments ride the origin as a query because that is how they travel —
@@ -1013,8 +1048,8 @@ func (b *BuilderImpl) Origins() Origins {
 	urls := make([]*url.URL, 0, len(settled))
 	// The first origin seen carrying a +ws marker, kept to strip a second.
 	wsOrigin := ""
-	for i, s := range settled {
-		s = strings.TrimSpace(s)
+	for i := 0; i < len(settled); i++ {
+		s := strings.TrimSpace(settled[i])
 		if s == "" {
 			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
 			continue
@@ -1032,8 +1067,10 @@ func (b *BuilderImpl) Origins() Origins {
 			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
-			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, settled[i+1:]))
-			break
+			args, _ := split(s, settled[i+1:])
+			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
+			i += len(args)
+			continue
 		}
 		if !strings.Contains(s, "://") {
 			s = "http://" + s
@@ -1058,8 +1095,10 @@ func (b *BuilderImpl) Origins() Origins {
 			// that looked it up.
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
-					urls = append(urls, program(&url.URL{Scheme: u.Scheme, Path: path}, settled[i+1:]))
-					break
+					args, _ := split(s, settled[i+1:])
+					urls = append(urls, program(&url.URL{Scheme: u.Scheme, Path: path}, args))
+					i += len(args)
+					continue
 				}
 			}
 			// The reference is the path. The authority beside it names the
@@ -1081,8 +1120,10 @@ func (b *BuilderImpl) Origins() Origins {
 				continue
 			}
 			if u.Scheme == v1.ExecScheme {
-				urls = append(urls, program(u, settled[i+1:]))
-				break
+				args, _ := split(s, settled[i+1:])
+				urls = append(urls, program(u, args))
+				i += len(args)
+				continue
 			}
 			urls = append(urls, u)
 			continue

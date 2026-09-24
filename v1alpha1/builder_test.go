@@ -1207,9 +1207,29 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 			want:    []string{"http://localhost:3000", "attach://dockerd/api", program("--resume")},
 		},
 		{
-			name:    "a URL after the program is the program's argument",
-			origins: []string{name, "http://localhost:3000"},
-			want:    []string{program("http://localhost:3000")},
+			name:    "a port after the program is a second origin, not a script to run",
+			origins: []string{name, ":8000"},
+			want:    []string{program(), "http://localhost:8000"},
+		},
+		{
+			name:    "a URL after the program is a second origin",
+			origins: []string{name, "--resume", "http://localhost:3000"},
+			want:    []string{program("--resume"), "http://localhost:3000"},
+		},
+		{
+			name:    "the arguments stop at the first origin and the program after it takes its own",
+			origins: []string{name, "-x", ":8000", name, "-y"},
+			want:    []string{program("-x"), "http://localhost:8000", program("-y")},
+		},
+		{
+			name:    "the program's own word again is a second one, not an argument",
+			origins: []string{name, name, "-x"},
+			want:    []string{program(), program("-x")},
+		},
+		{
+			name:    "a bare word or a path after the program is still its argument",
+			origins: []string{name, "8000", "./script.sh", "host:8000"},
+			want:    []string{program("8000", "./script.sh", "host:8000")},
 		},
 		{
 			name:    "a program spelled as a URL takes the rest too",
