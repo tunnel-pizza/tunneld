@@ -115,6 +115,10 @@
     background: var(--card);
   }
 
+  /* Basecoat gives .btn a display of its own, which would outrank the
+     browser's [hidden] rule; the hidden back button has to actually go. */
+  .tile .controls > .btn[hidden] { display: none; }
+
   .tile .controls svg {
     width: .8125rem;
     height: .8125rem;
@@ -260,7 +264,8 @@
   // browser's back button takes, and with nothing of the frame's to step to
   // it leaves the panel instead: pressed on a fresh tile it lands the tab on
   // whatever came before. So the button only fires when the frame has an
-  // entry of its own behind it, and is disabled the rest of the time.
+  // entry of its own behind it, and is hidden the rest of the time: a tile
+  // that has gone nowhere shows nothing to go back to.
   //
   // The Navigation API knows exactly that, per frame and pushState included.
   // Where it is missing the frame's loads are counted instead: one up per
@@ -277,7 +282,7 @@
         return nav ? nav.canGoBack : depth > 0;
       } catch (e) { return false; }
     };
-    const show = () => { button.disabled = !can(); };
+    const show = () => { button.hidden = !can(); };
     button.addEventListener('click', () => {
       if (!can()) return;
       expected = true;
