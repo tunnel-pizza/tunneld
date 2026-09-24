@@ -1227,9 +1227,9 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 			want:    []string{program(), program("-x")},
 		},
 		{
-			name:    "a program quoted with its arguments is a program, and the words after it are its too",
-			origins: []string{":8000", name + " -m http.server 8000", "-y", ":9000"},
-			want:    []string{"http://localhost:8000", program("-m", "http.server", "8000", "-y"), "http://localhost:9000"},
+			name:    "a program quoted with its arguments is complete, and a bare word after it is the next origin",
+			origins: []string{name + " -m http.server 8000", name, ":9000"},
+			want:    []string{program("-m", "http.server", "8000"), program(), "http://localhost:9000"},
 		},
 		{
 			name:    "quotes inside the group keep an argument whole",

@@ -24,6 +24,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -764,10 +765,17 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 	if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
 		return slog.New(slog.DiscardHandler), fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
 	}
-	// Through the ring, so the same lines stderr shows are the ones a terminal
-	// can show. A builder assembled as a bare struct rather than through New
-	// has none, and logs the way it always did.
-	handler := slog.Handler(slog.NewTextHandler(b.Command().ErrOrStderr(), &slog.HandlerOptions{Level: level}))
+	// For a person at a terminal, one readable line per record; for anything
+	// else reading stderr — a file, a supervisor, grep — logfmt, where the
+	// fields are the point. Then through the ring, so the same lines stderr
+	// shows are the ones a terminal can show. A builder assembled as a bare
+	// struct rather than through New has no ring, and logs the way it
+	// always did.
+	stderr := b.Command().ErrOrStderr()
+	var handler slog.Handler = slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})
+	if console.IsTerminal(stderr) {
+		handler = logs.Pretty(stderr, level)
+	}
 	if b.recent != nil {
 		handler = b.recent.Wrap(handler)
 	}
@@ -1103,10 +1111,19 @@ func (b *BuilderImpl) Origins() Origins {
 	}
 
 	urls := make([]*url.URL, 0, len(settled))
+	// One line per origin at the moment it is settled, because how the words
+	// were read is the thing the report cannot show: a program's arguments
+	// hide behind its label, and a word taken as an argument looks exactly
+	// like a word that was never there.
+	add := func(word string, u *url.URL) {
+		log.Info(fmt.Sprintf("%q interpolated into %s", word, u))
+		urls = append(urls, u)
+	}
 	// The first origin seen carrying a +ws marker, kept to strip a second.
 	wsOrigin := ""
 	for i := 0; i < len(settled); i++ {
 		s := strings.TrimSpace(settled[i])
+		word := s // as typed, for the log; s is rewritten on the way to a URL
 		if s == "" {
 			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
 			continue
@@ -1125,22 +1142,23 @@ func (b *BuilderImpl) Origins() Origins {
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
 			args, _ := split(s, settled[i+1:])
-			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
+			add(word, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
 			i += len(args)
 			continue
 		}
 		// A word with spaces in it is a program and its arguments quoted as
 		// one thing — no origin can contain whitespace, and the shell has
 		// already taken the quotes off. Split the way a shell would, so an
-		// argument that was itself quoted stays whole. It is then a program
-		// like any other: the words after it on the line are its too, up to
-		// the first origin. Quoting is also the one way to spell a program
-		// with arguments inside a comma-separated TUNNELD_ORIGINS.
+		// argument that was itself quoted stays whole. The group is complete:
+		// the space inside the word is the one piece of quoting that survives
+		// the shell, and it says the person closed the group where they did,
+		// so the words after it on the line are origins again and a bare
+		// `bash` after `'next dev'` is a second terminal, not next's third
+		// argument. Quoting is also how a program with arguments reads inside
+		// a comma-separated TUNNELD_ORIGINS.
 		if fs := fields(s); len(fs) > 1 {
 			if path, ok := shell.Resolve(fs[0]); ok {
-				args, _ := split(fs[0], settled[i+1:])
-				urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, append(fs[1:], args...)))
-				i += len(args)
+				add(word, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, fs[1:]))
 				continue
 			}
 			log.Warn("dropping an origin", "origin", s, "reason", "has spaces but "+fs[0]+" names no program that can be run")
@@ -1170,7 +1188,7 @@ func (b *BuilderImpl) Origins() Origins {
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
 					args, _ := split(s, settled[i+1:])
-					urls = append(urls, program(&url.URL{Scheme: u.Scheme, Path: path}, args))
+					add(word, program(&url.URL{Scheme: u.Scheme, Path: path}, args))
 					i += len(args)
 					continue
 				}
@@ -1195,11 +1213,11 @@ func (b *BuilderImpl) Origins() Origins {
 			}
 			if u.Scheme == v1.ExecScheme {
 				args, _ := split(s, settled[i+1:])
-				urls = append(urls, program(u, args))
+				add(word, program(u, args))
 				i += len(args)
 				continue
 			}
-			urls = append(urls, u)
+			add(word, u)
 			continue
 		}
 		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
@@ -1248,7 +1266,7 @@ func (b *BuilderImpl) Origins() Origins {
 			}
 			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
-		urls = append(urls, u)
+		add(word, u)
 	}
 	return origins.New(origins.WithURL(urls...))
 }
