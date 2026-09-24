@@ -75,8 +75,11 @@ windows:
 	GOOS=windows go build ./...
 
 # Unit tests: every package's own *_test.go, plus the godoc examples in lib.
+# Not ./... — that reaches e2e/, whose live row mints a real tunnel, and the
+# examples are programs the e2e harness drives, not packages with tests. The
+# unit lane stays offline; `make e2e` is the target that goes out.
 test:
-	go test ./...
+	go test . ./v1/... ./v1alpha1/...
 
 # Every package under the race detector — the same lane CI runs, runnable
 # locally to reproduce a CI race find. The recipe-line CGO_ENABLED=1 overrides
