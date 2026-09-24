@@ -885,7 +885,7 @@ gh pr create --title "<type>: …" --body "Closes #<n>. …"  # 3. PR refs the i
 gh pr merge <pr#> --squash --delete-branch
 ```
 
-`main` is protected (`ci` required; no force-push). Don't push directly to it
+`main` is protected (the `build-test` matrix and `race` required; no force-push). Don't push directly to it
 for routine work — PR flow gives CI + auto-release a clean audit trail. Pushing
 to `main` auto-bumps a patch tag and signs the release (see Releasing below).
 
@@ -927,49 +927,85 @@ Wrap body at ~72 cols. Explain the *why*; the diff covers the *what*.
 
 ## Releasing
 
-Patch releases are automatic. Every push to `main` runs three jobs in
-[`ci.yml`](./.github/workflows/ci.yml) after the test matrix and the race lane:
+Patch releases are automatic. Every push to `main` runs the jobs in
+[`ci.yml`](./.github/workflows/ci.yml): `prepare` first, then the
+`build-test` matrix, `race`, `binaries` and `image` all needing it, and
+`release` needing all of those:
 
-- **`tag`** resolves the version — the patch bump of the latest `v*` tag, or
+- **`prepare`** resolves the version — the patch bump of the latest `v*` tag, or
   the tag itself when one was pushed by hand — and only resolves it. Nothing
-  is pushed yet.
-- **`binaries`** runs `make binaries VERSION=<tag>` on one Linux runner: six
-  pure-Go cross-compiles with `-trimpath` into `dist/`, handed on as an
-  artifact. It is not a pull-request check — the `ci` matrix already builds
-  every one of those `GOOS`/`GOARCH` pairs natively — and it is what stands
-  between a broken build and a tag: `release` needs it, so a failure here
-  leaves no tag pushed and no release opened.
-- **`release`** downloads those binaries and restores their executable bit —
-  `upload-artifact` zips its input and that zip carries no mode bits, so they
-  arrive `0644`, and npm packs a file with the mode it finds — and then, in
-  order: pushes the tag; creates a GitHub Release with auto-generated notes;
-  signs the source archives, the six binaries and a `checksums.txt` with
-  cosign, and uploads binaries, checksums and every bundle; builds and pushes
-  `ghcr.io/tunnel-pizza/tunneld` for `linux/amd64` and `linux/arm64`, tagged
-  with the release and `latest`; warms `proxy.golang.org` so
+  is pushed yet. It runs on every event: a pull request gets a throwaway
+  version (`v0.0.0-pr<n>.<sha>`) and `release=false`, and a `main` commit that
+  opted out with `[skip release]` or already carries a tag gets `release=false`
+  too. Only `release` reads that flag; the build jobs run regardless. It also
+  answers `signed`: whether this run's token can sign and push, which is no
+  for a fork's or dependabot's pull request.
+- **`binaries`** is a matrix of six cells, one per platform in the Makefile's
+  `PLATFORMS`, each running `make binaries VERSION=<tag> PLATFORMS=<platform>`
+  on a Linux runner: the same target, its list narrowed to one, a pure-Go
+  cross-compile with `-trimpath`.
+  Each cell then signs its own binary with cosign in keyless mode — a blob
+  signature depends on the bytes and this workflow's identity, not on a tag —
+  and uploads binary and `.sigstore` bundle as one artifact. It runs on pull
+  requests too, so the build, the signing and the artifact hand-off are
+  exercised before a merge — signing skips on a PR from a fork or from
+  dependabot, whose token gets no OIDC token; those still build and upload —
+  and it is what stands between a broken build and a tag: `release` needs
+  every cell, so a failure here leaves no tag pushed and no release opened.
+- **`image`** is a matrix of two cells, `linux/amd64` and `linux/arm64`, each
+  building the [`Dockerfile`](./Dockerfile) natively (it builds on
+  `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so no QEMU) and
+  pushing to `ghcr.io/tunnel-pizza/tunneld` **by digest only** — no tag, not
+  even a temporary one — then signing that digest. The version is stamped
+  inside, so `tunneld version` in the container names the release; what is
+  not yet public is the name. This is what puts the image on the same footing
+  as the binaries: an image that stops building fails here, under its own
+  name, before any tag exists. The build is the same on every run, pull
+  requests included, and a run whose token can push does: a PR's digest is an
+  untagged manifest in ghcr that nothing will ever tag, invisible to a pull,
+  which is the price of every PR exercising exactly what a release runs. A
+  fork's or dependabot's PR builds into the layer cache and stops there.
+- **`release`** downloads the six binaries and their bundles and the two
+  digests, restores the binaries' executable bit — `upload-artifact` zips its
+  input and that zip carries no mode bits, so they arrive `0644`, and npm
+  packs a file with the mode it finds — and then, in order: pushes the tag;
+  creates a GitHub Release with auto-generated notes; signs the two things
+  that could not be signed earlier — the source archives, which GitHub
+  generates once the tag exists, and `checksums.txt`, which covers all six
+  binaries — and uploads binaries, checksums and every bundle; tags the image
+  with `docker buildx imagetools create`, writing a manifest list over the two
+  digests already in the registry under the release tag and `latest` (nothing
+  is rebuilt), and signs the list's own digest; warms `proxy.golang.org` so
   [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld) surfaces
   the version; and publishes `tunneld` to npm with provenance, through npm's
   trusted publisher binding for this repo and workflow (no token).
   `--ignore-scripts` keeps `prepublishOnly` from rebuilding `dist/`, so the
-  package packs the same bytes the release signed; `package.json` is
-  rewritten to the tag for that publish only. By then `dist/` also holds the
-  cosign bundles, `checksums.txt` and the source archives the signing step
-  downloaded, so `files` names the binaries and excludes the bundles rather
-  than globbing the directory — npm ships the six binaries and the launcher,
-  nothing else. A release publishes to `latest`. For a `beta` instead, merge
-  with `[skip release]`, then run the CI workflow by hand from `main` with the
-  dist-tag input set to `beta`; that cuts the release and publishes it there.
-  Promote later without rebuilding: `npm dist-tag add tunneld@<version> latest`.
+  package packs the same bytes the cells signed; `package.json` is rewritten
+  to the tag for that publish only. By then `dist/` also holds the cosign
+  bundles, `checksums.txt` and the source archives, so `files` names the
+  binaries and excludes the bundles rather than globbing the directory — npm
+  ships the six binaries and the launcher, nothing else. A release publishes
+  to `latest`. For a `beta` instead, merge with `[skip release]`, then run the
+  CI workflow by hand from `main` with the dist-tag input set to `beta`; that
+  cuts the release and publishes it there. Promote later without rebuilding:
+  `npm dist-tag add tunneld@<version> latest`.
 
 Source archives, binaries and the image are all signed with cosign in keyless
 mode; [SECURITY.md](./SECURITY.md) carries the verification recipes. The image
 is signed **by digest**, not by tag: a tag can be moved to point at other
 bytes, and a signature that followed it would vouch for whatever it moved to.
+Each architecture's manifest is signed in its cell and the manifest list is
+signed in `release`, so verifying by tag lands on a signed index whose members
+are signed.
 
-The image is multi-arch without QEMU — the [`Dockerfile`](./Dockerfile) builds
-on `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so both arches
-are native compiles. `make image` builds it for the host platform from the same
-file, which is how you catch a break before a tag does.
+Untagged manifests accumulate in ghcr: two per pull-request run, two per
+release that failed after `image`. They are invisible to `docker pull`, cost
+nothing that matters, and are the same class of leftover as a run's
+artifacts; the next successful release does not depend on them. A periodic
+sweep of untagged versions is the answer if the count ever matters.
+
+`make image` builds the image for the host platform from the same
+`Dockerfile`, which is how you catch a break before a tag does.
 
 To opt a commit out of the auto-bump, put `[skip release]` on its own
 line in the commit body. (It must be the only thing on its line, so

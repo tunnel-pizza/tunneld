@@ -69,7 +69,7 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 - **Branch protection on `main`.** The PR flow assumes it; a fresh repo has none.
   - Check: `gh api repos/$REPO/branches/main/protection >/dev/null 2>&1 && echo protected || echo UNPROTECTED`
   - Fix (require every `ci.yml` gating check, block force-push). The required
-    contexts are the matrix cells `ci (<os>, <go>)`, not bare `ci`, plus the
+    contexts are the matrix cells `build-test (<os>, <go>)`, not bare `build-test`, plus the
     standalone `race` lane — list the live names first, then require them:
     ```sh
     # discover the real check names from the latest commit on main
@@ -77,9 +77,9 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 
     gh api -X PUT repos/$REPO/branches/main/protection --input - <<'JSON'
     {"required_status_checks":{"strict":true,"contexts":[
-       "ci (ubuntu-24.04, stable)","ci (windows-2025, stable)",
-       "ci (ubuntu-24.04-arm, stable)","ci (windows-11-arm, stable)",
-       "ci (macos-26-intel, stable)","ci (macos-26, stable)",
+       "build-test (ubuntu-24.04, stable)","build-test (windows-2025, stable)",
+       "build-test (ubuntu-24.04-arm, stable)","build-test (windows-11-arm, stable)",
+       "build-test (macos-26-intel, stable)","build-test (macos-26, stable)",
        "race"]},
      "enforce_admins":true,"required_pull_request_reviews":null,"restrictions":null,
      "allow_force_pushes":false,"allow_deletions":false}

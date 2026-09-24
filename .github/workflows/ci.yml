@@ -21,15 +21,104 @@ on:
         options: [latest, beta]
         default: latest
 
+# id-token is what cosign's keyless signing exchanges for a certificate. It is
+# granted here for the whole workflow, and GitHub still withholds it on two
+# kinds of pull request — a fork's, and dependabot's — so the steps that need
+# it check tag's `signed` output and skip there. A job that declares its own
+# permissions replaces this block for that job, so those restate it.
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  ci:
+  # The version is decided once, here, and read by the jobs that stamp it into
+  # the binaries and the image and by the job that publishes them. Its own job
+  # rather than a step of release so the builds can run — and fail — before
+  # any tag is pushed or release created. Resolves only; the push is release's.
+  # Every other job needs it, so it is also where a run begins.
+  #
+  # It runs on every event, because binaries and image do: a pull request gets
+  # a throwaway version and release=false, so the same build and artifact
+  # steps that a release will use are exercised on every PR, and only the
+  # publishing is held back.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      needs_push: ${{ steps.tag.outputs.needs_push }}
+      release: ${{ steps.tag.outputs.release }}
+      # Whether this run's token can sign and push: GitHub issues no OIDC
+      # token and a read-only GITHUB_TOKEN to a pull request from a fork or
+      # from dependabot, whatever permissions ask for. Decided once, here, so
+      # every step that needs the token asks the same question.
+      signed: ${{ github.event_name != 'pull_request' || (!github.event.pull_request.head.repo.fork && github.actor != 'dependabot[bot]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: resolve tag
+        id: tag
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # A pull request builds under a version that names it and never
+          # releases. A prerelease shape, so nothing sorts it above a release.
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            {
+              echo "tag=v0.0.0-pr${PR_NUMBER}.${GITHUB_SHA:0:7}"
+              echo "needs_push=false"
+              echo "release=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Manual tag push (minor/major bumps): use the tag as-is.
+            {
+              echo "tag=${GITHUB_REF_NAME}"
+              echo "needs_push=false"
+              echo "release=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # main push, or a manual run from main: no release if the commit
+          # opted out or already has a tag — the builds still run, under the
+          # version they would have had, so a build break is caught either way.
+          # Token must sit alone on its own line so prose mentioning it inline
+          # (subjects, doc paragraphs) doesn't accidentally suppress the release.
+          msg=$(git log -1 --pretty=%B)
+          release=true
+          if grep -qE '^[[:space:]]*\[skip release\][[:space:]]*$' <<<"$msg"; then
+            release=false
+          fi
+          if git tag --points-at HEAD | grep -q '^v'; then
+            release=false
+          fi
+
+          # Auto-bump patch from the latest v* tag (default v0.0.1 for first release).
+          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$latest" ]; then
+            next="v0.0.1"
+          else
+            IFS=. read -r major minor patch <<<"${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          {
+            echo "tag=${next}"
+            echo "needs_push=${release}"
+            echo "release=${release}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-test:
+    needs: [prepare]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -51,7 +140,7 @@ jobs:
           - macos-26
         # Whatever setup-go's `stable` alias resolves to. Single-valued, but
         # kept as a matrix dimension: it keeps the check context names
-        # (`ci (<os>, stable)`) stable, and another version can be added here
+        # (`build-test (<os>, stable)`) stable, and another version can be added here
         # without renaming every existing one — a rename means updating the
         # branch-protection required contexts.
         go: [stable]
@@ -88,29 +177,38 @@ jobs:
       - name: go vet
         run: make vet
 
-      - name: go build
+      - name: build
         run: make build
 
-      - name: tests
+      - name: unit
         run: make test
 
-      # ACTIONS_RUNTIME_TOKEN is the runner's own credential and the last thing
-      # the github identity provider looks for, so a mint from CI is
-      # authenticated rather than anonymous. It is ambient on GitHub-hosted
-      # runners and e2e's strippedEnv deliberately passes it through, so
-      # nothing here needs to set it — and nothing here may: it is not in the
-      # env context, so naming it in an env: block would resolve to empty and
-      # overwrite the value it was meant to forward.
-      #
-      # Reported present or absent, never printed, so a runner that stops
-      # exporting it to run steps shows up as a line here rather than as a
-      # silently anonymous mint.
+      # The mint credential. A run:` step never sees the runner's own tokens —
+      # GitHub injects them into node actions, not shells — so this step asks
+      # a node action to hand them over. With id-token: write granted, `token`
+      # is the OIDC JWT naming this repository, workflow and ref, which is an
+      # identity a mint provider can verify without trusting the runner; on a
+      # PR from a fork or dependabot it falls back to the runtime token, and
+      # the provider treats that as the anonymous mint it always was.
+      - name: identity
+        id: identity
+        uses: cnuss/actions-identity@b9bc5d6472e00dfca0490bdf539eb4d4b729807d # v1.1.0
+
+      # LIBTUNNEL_TOKEN is libtunnel's own knob and beats anything the binary
+      # would resolve for itself, so every tunnel e2e mints carries this
+      # identity. The harness's strippedEnv passes it through: it strips
+      # TUNNELD_ variables, and this is not one. Reported present or absent,
+      # never printed, so a token that stops arriving shows up as a line here
+      # rather than as a silently anonymous mint.
       - name: e2e
+        env:
+          LIBTUNNEL_TOKEN: ${{ steps.identity.outputs.token }}
         run: |
-          echo "ACTIONS_RUNTIME_TOKEN: ${ACTIONS_RUNTIME_TOKEN:+present}${ACTIONS_RUNTIME_TOKEN:-absent}"
+          echo "LIBTUNNEL_TOKEN: ${LIBTUNNEL_TOKEN:+present}${LIBTUNNEL_TOKEN:-absent}"
           make e2e
 
   race:
+    needs: [prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,86 +218,42 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: race tests
+      - name: race
         # The make target owns the lane's definition (CGO on for the detector,
         # which the matrix above can't provide — it forces CGO off for
         # cross-host determinism), so a CI race find reproduces locally with
         # the same command.
         run: make race
 
-  # The release's version is decided once, here, and read by both the job that
-  # stamps it into the binaries and the job that publishes them. Its own job
-  # rather than a step of release so the binaries can be built — and fail —
-  # before any tag is pushed or release created. Resolves only; the push is
-  # release's, after the build has succeeded.
-  tag:
-    if: >-
-      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
-      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      needs_push: ${{ steps.tag.outputs.needs_push }}
-      skip: ${{ steps.tag.outputs.skip }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: resolve tag
-        id: tag
-        run: |
-          set -euo pipefail
-
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            # Manual tag push (minor/major bumps): use the tag as-is.
-            {
-              echo "tag=${GITHUB_REF_NAME}"
-              echo "needs_push=false"
-              echo "skip=false"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # main push, or a manual run from main: skip release if the commit
-          # opted out or already has a tag.
-          # Token must sit alone on its own line so prose mentioning it inline
-          # (subjects, doc paragraphs) doesn't accidentally suppress the release.
-          msg=$(git log -1 --pretty=%B)
-          if grep -qE '^[[:space:]]*\[skip release\][[:space:]]*$' <<<"$msg"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          if git tag --points-at HEAD | grep -q '^v'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-
-          # Auto-bump patch from the latest v* tag (default v0.0.1 for first release).
-          latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
-          if [ -z "$latest" ]; then
-            next="v0.0.1"
-          else
-            IFS=. read -r major minor patch <<<"${latest#v}"
-            next="v${major}.${minor}.$((patch + 1))"
-          fi
-          {
-            echo "tag=${next}"
-            echo "needs_push=true"
-            echo "skip=false"
-          } >> "$GITHUB_OUTPUT"
-
-  # The six platform binaries, cross-compiled once and handed to release as an
-  # artifact. Its own job so a build that fails is a failed build under its own
-  # name, and so release — which needs it — never pushes a tag or opens a
-  # release for bytes that do not exist. Not run on pull requests: the ci
-  # matrix above already builds every one of these GOOS/GOARCH pairs natively,
-  # so a cross-compile break is caught there, on every PR.
+  # One binary per cell, six cells, cross-compiled on Linux — pure Go with CGO
+  # off and -trimpath, so a cross-compile gives the same bytes a native build
+  # would. The Makefile's PLATFORMS list is the source of truth for names; each
+  # cell runs the same target with that list narrowed to itself. Its own job so a build
+  # that fails is a failed build under its own name, and so release — which
+  # needs every cell — never pushes a tag or opens a release for bytes that do
+  # not exist. Run on pull requests too, under a throwaway version, so the
+  # build and the artifact hand-off are exercised before a merge rather than
+  # discovered by the release that needs them.
   #
-  # Pure Go with CGO off and -trimpath, so a cross-compile on one Linux runner
-  # gives the same bytes a native build would; six of them take about a minute.
+  # Each cell also signs its binary. A cosign blob signature depends on the
+  # bytes and on this workflow's identity, not on any tag, so it can be made
+  # here before a tag exists — and then release uploads exactly what was
+  # signed, with nothing between the build and the signature. Signing is the
+  # one step that skips on a pull request whose token gets no OIDC — a fork's,
+  # or dependabot's; those still build and upload.
   binaries:
-    needs: [tag]
-    if: needs.tag.outputs.skip != 'true'
+    needs: [prepare]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux-x64
+          - linux-arm64
+          - darwin-x64
+          - darwin-arm64
+          - win32-x64
+          - win32-arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -208,38 +262,187 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: build binaries
-        run: make binaries VERSION=${{ needs.tag.outputs.tag }}
+      # The Makefile's own target with its platform list narrowed to this
+      # cell: it derives the file name (win32 carries .exe) and wipes dist/
+      # first, so dist/ holds exactly this one binary afterwards.
+      - name: build
+        run: make binaries VERSION=${{ needs.prepare.outputs.tag }} PLATFORMS=${{ matrix.platform }}
+
+      - name: install cosign
+        if: needs.prepare.outputs.signed == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless: OIDC -> Fulcio cert -> Rekor transparency log, bundled in one
+      # .sigstore file beside the binary. Windows executables are cosign-signed
+      # like the rest, not Authenticode-signed; SECURITY.md says so.
+      - name: sign
+        if: needs.prepare.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          for f in dist/tunneld-*; do
+            cosign sign-blob --yes --bundle "${f}.sigstore" "${f}"
+          done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist
+          name: dist-${{ matrix.platform }}
           path: dist/
           if-no-files-found: error
 
-  # Skipped whenever tag says skip: binaries is skipped then, and a job that
-  # needs a skipped job is skipped with it. So every step below runs, or none.
+  # One image per architecture, pushed by digest only — no tag, not even a
+  # temporary one — and signed by that digest, all before any release tag
+  # exists. The version is still stamped inside, so `tunneld version` in the
+  # container names the release; what is not yet public is the name. release
+  # tags the digests once the tag is pushed, which puts the image on the same
+  # footing as the binaries: an image that fails to build fails here, under its
+  # own name, and leaves no tag pushed and no release opened.
+  #
+  # No QEMU: the Dockerfile builds on BUILDPLATFORM and lets Go cross-compile
+  # to TARGETARCH, so each cell is a native compile. A release that fails after
+  # this job leaves two untagged manifests in ghcr — invisible to a pull, and
+  # the same class of leftover as a failed run's artifacts.
+  #
+  # Every run builds the same way, pull requests included, and a run whose
+  # token can push does: a digest that never gets a tag is an untagged
+  # manifest in ghcr, invisible to a pull, and the price of every PR
+  # exercising the exact steps a release will run. A PR whose token cannot
+  # push or sign — a fork's, or dependabot's — builds into the cache and stops
+  # there; the steps that need the token skip.
+  image:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    permissions:
+      contents: read
+      packages: write   # push to ghcr
+      id-token: write   # restated: a job's own block replaces the workflow's
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: set up buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: log in to ghcr
+        if: needs.prepare.outputs.signed == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The OCI labels and manifest annotations — source, revision, version,
+      # created, licence, the repository's description — from the metadata
+      # action, so a `docker inspect` names the release and the commit. The
+      # tags it computes are not applied here: this cell pushes by digest and
+      # release does the naming, with the same action's output.
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: type=raw,value=${{ needs.prepare.outputs.tag }}
+          flavor: latest=false
+
+      # Pushed by digest when the token allows. push=false is the same build
+      # stopping at buildkit's store, which is still the Dockerfile exercised
+      # end to end. pull, because the base images are moving tags and a warm
+      # builder would otherwise keep whatever it pulled last time. No push:
+      # input — that is --output=type=registry, a push by tag, and there is
+      # no tag here by design.
+      #
+      # Two attestations ride the image as manifests beside it, and the index
+      # release assembles carries them: SLSA provenance at mode=max — the
+      # full build definition, source and materials, not the minimal one the
+      # action attaches by default — and an SPDX SBOM from BuildKit's scanner.
+      # Read them back with `docker buildx imagetools inspect <ref> --format
+      # '{{json .Provenance}}'` and `'{{json .SBOM}}'`.
+      - name: build and push by digest
+        id: image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: VERSION=${{ needs.prepare.outputs.tag }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ needs.prepare.outputs.signed }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: install cosign
+        if: needs.prepare.outputs.signed == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Signed by digest, not by tag: a tag can be moved to point at other
+      # bytes, and a signature that followed it would vouch for whatever it
+      # moved to. There is no tag yet anyway. Verify with:
+      #   cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
+      #     --certificate-identity-regexp '^https://github.com/tunnel-pizza/tunneld/' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      - name: sign the image by digest
+        if: needs.prepare.outputs.signed == 'true'
+        run: |
+          cosign sign --yes \
+            "${IMAGE}@${{ steps.image.outputs.digest }}"
+
+      # The digest is all release needs from this cell: it tags what is
+      # already there rather than building anything again.
+      - name: record the digest
+        if: needs.prepare.outputs.signed == 'true'
+        run: |
+          mkdir -p digests
+          echo "${{ steps.image.outputs.digest }}" > "digests/linux-${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: needs.prepare.outputs.signed == 'true'
+        with:
+          name: digest-linux-${{ matrix.arch }}
+          path: digests/
+          if-no-files-found: error
+
+  # The one job that is gated: it runs only when tag said this run releases —
+  # a push to main without [skip release] and without a tag already on the
+  # commit, a v* tag pushed by hand, or a manual run from main. Everything
+  # before it ran regardless. Everything here is publishing: the bytes and
+  # their signatures already exist, and this job is what gives them a name.
   release:
-    needs: [ci, race, tag, binaries]
+    needs: [prepare, build-test, race, binaries, image]
     if: >-
-      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
-      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+      needs.prepare.outputs.release == 'true'
+      && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     permissions:
       contents: write   # push tag + create release
-      packages: write   # push the container image to ghcr
-      id-token: write   # cosign keyless signing via OIDC
+      packages: write   # tag the image in ghcr
+      id-token: write   # restated: a job's own block replaces the workflow's
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      # The binaries the release ships, built and stamped by the job above.
-      # Everything below signs, uploads and publishes these exact bytes.
+      # The six binaries and their bundles, one artifact per cell, merged back
+      # into the dist/ the npm package packs. Everything below uploads and
+      # publishes these exact bytes.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: dist
+          pattern: dist-*
           path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
 
       # upload-artifact zips what it is handed and that zip carries no mode
       # bits, so the binaries the build wrote 0755 arrive here 0644. npm packs
@@ -248,45 +451,52 @@ jobs:
       # first run with EACCES. Nothing downstream restores it: npm chmods the
       # package's bin entry, which is the launcher, not what dist/ holds.
       #
-      # Before the signing step, because mode is not part of what cosign signs
-      # or what sha256sum hashes — the bytes are the same either side of this.
-      # The glob is unquoted so a dist/ without binaries in it fails here
-      # rather than publishing six unrunnable files.
+      # Mode is not part of what cosign signed or what sha256sum hashes — the
+      # bytes are the same either side of this. The binaries only: their
+      # bundles sit beside them under the same prefix and are not programs.
+      # A dist/ without binaries in it fails here rather than publishing six
+      # unrunnable files.
       - name: restore the executable bit
-        run: chmod +x dist/tunneld-*
+        run: |
+          set -euo pipefail
+          n=0
+          for f in dist/tunneld-*; do
+            case "$f" in *.sigstore) ;; *) chmod +x "$f"; n=$((n + 1)) ;; esac
+          done
+          test "$n" -eq 6
 
       - name: push tag
-        if: needs.tag.outputs.needs_push == 'true'
+        if: needs.prepare.outputs.needs_push == 'true'
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git tag "${{ needs.tag.outputs.tag }}"
-          git push origin "${{ needs.tag.outputs.tag }}"
+          git tag "${{ needs.prepare.outputs.tag }}"
+          git push origin "${{ needs.prepare.outputs.tag }}"
 
       - name: create github release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ needs.tag.outputs.tag }}" \
-            --title "${{ needs.tag.outputs.tag }}" \
+          gh release create "${{ needs.prepare.outputs.tag }}" \
+            --title "${{ needs.prepare.outputs.tag }}" \
             --generate-notes
 
       - name: install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: sign the release assets
+      # Two things can only be signed here. The source archives, because
+      # GitHub generates them once the tag exists. And checksums.txt, because
+      # it covers all six binaries and no cell had more than one — signed so
+      # anyone who verifies once can then trust sha256sum. The binaries were
+      # signed where they were built; their bundles are already in dist/.
+      - name: sign the rest and upload the release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="${{ needs.tag.outputs.tag }}"
+          tag="${{ needs.prepare.outputs.tag }}"
           repo="${GITHUB_REPOSITORY}"
-          mkdir -p dist
 
-          # Pull the auto-generated source archives that GitHub publishes
-          # alongside every tag, then sign them with cosign in keyless mode
-          # (OIDC -> Fulcio cert -> Rekor transparency log). The signature,
-          # cert, and Rekor entry are bundled in a single .sigstore file.
           for ext in tar.gz zip; do
             curl -fsSL "https://github.com/${repo}/archive/refs/tags/${tag}.${ext}" \
               -o "dist/${tag}.${ext}"
@@ -295,29 +505,19 @@ jobs:
               "dist/${tag}.${ext}"
           done
 
-          # The binaries the same way — one bundle each, and a checksum file
-          # with a bundle of its own for anyone who verifies once and then
-          # trusts sha256sum. Windows executables are cosign-signed like the
-          # rest, not Authenticode-signed; SECURITY.md says so.
-          #
-          # The glob is expanded before the loop runs, so the bundles it
-          # writes are not themselves signed on the same pass.
-          (cd dist && sha256sum tunneld-* > checksums.txt)
-          for f in dist/tunneld-* dist/checksums.txt; do
-            cosign sign-blob --yes --bundle "${f}.sigstore" "${f}"
-          done
+          # The binaries only: dist/tunneld-* also matches their bundles now.
+          (cd dist && for f in tunneld-*; do
+            case "$f" in *.sigstore) ;; *) sha256sum "$f" ;; esac
+          done > checksums.txt)
+          cosign sign-blob --yes --bundle dist/checksums.txt.sigstore dist/checksums.txt
 
-          # dist/tunneld-* now matches each binary and its bundle. The source
-          # archives themselves are not uploaded: GitHub serves those.
+          # The source archives themselves are not uploaded: GitHub serves those.
           gh release upload "${tag}" \
             dist/tunneld-* \
             dist/checksums.txt dist/checksums.txt.sigstore \
             "dist/${tag}.tar.gz.sigstore" \
             "dist/${tag}.zip.sigstore"
 
-      # The image is the same artifact as the binary, built from the same
-      # commit and stamped with the same tag, so `tunneld version` inside a
-      # container names the release it came from.
       - name: set up buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -328,36 +528,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # No QEMU: the Dockerfile builds on BUILDPLATFORM and lets Go
-      # cross-compile to TARGETARCH, so both arches are native compiles.
-      - name: build and push the image
-        id: image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+      # The image was built and signed per architecture before the tag
+      # existed; this gives those digests their names. imagetools create
+      # writes a manifest list pointing at the two manifests already in the
+      # registry — nothing is rebuilt or re-pushed — under the release tag and
+      # latest. The list gets a digest of its own, signed here the same way,
+      # so verifying by tag lands on a signed index whose members are signed.
+      # The names, and the annotations the manifest list itself carries, from
+      # the same metadata action the cells used for their labels: the release
+      # tag and latest, plus the OCI source/revision/version/created set at the
+      # index level, which is what a registry UI reads off a multi-arch image.
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: VERSION=${{ needs.tag.outputs.tag }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.tag.outputs.tag }}
-            ghcr.io/${{ github.repository }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=latest
+          flavor: latest=false
 
-      # Signed by digest, not by tag: a tag can be moved to point at other
-      # bytes, and a signature that follows it would vouch for whatever it
-      # moved to. Verify with:
-      #   cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
-      #     --certificate-identity-regexp '^https://github.com/tunnel-pizza/tunneld/' \
-      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-      - name: sign the image
+      - name: tag the image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
         run: |
-          cosign sign --yes \
-            "ghcr.io/${GITHUB_REPOSITORY}@${{ steps.image.outputs.digest }}"
+          set -euo pipefail
+          tag="${{ needs.prepare.outputs.tag }}"
+          image="ghcr.io/${GITHUB_REPOSITORY}"
+          args=()
+          while IFS= read -r t; do [ -n "$t" ] && args+=(-t "$t"); done <<<"$TAGS"
+          while IFS= read -r a; do [ -n "$a" ] && args+=(--annotation "$a"); done <<<"$ANNOTATIONS"
+          for d in digests/*; do args+=("${image}@$(cat "$d")"); done
+          docker buildx imagetools create "${args[@]}"
+          # The json form: the bare field prints the whole default view on
+          # some buildx versions, checked against v0.32.
+          digest=$(docker buildx imagetools inspect "${image}:${tag}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          cosign sign --yes "${image}@${digest}"
 
       - name: warm proxy.golang.org
         run: |
-          tag="${{ needs.tag.outputs.tag }}"
+          tag="${{ needs.prepare.outputs.tag }}"
           mod="github.com/${GITHUB_REPOSITORY}"
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.info" >/dev/null
           curl -fsSL "https://proxy.golang.org/${mod}/@v/${tag}.mod"  >/dev/null
@@ -393,6 +606,6 @@ jobs:
       - name: publish to npm
         run: |
           set -euo pipefail
-          tag="${{ needs.tag.outputs.tag }}"
+          tag="${{ needs.prepare.outputs.tag }}"
           npm version "${tag#v}" --no-git-tag-version
           npm publish --ignore-scripts --tag "${{ inputs.dist_tag || 'latest' }}" --provenance
