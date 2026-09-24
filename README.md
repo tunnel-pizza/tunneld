@@ -508,8 +508,8 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 
 One iframe per origin, two columns, and an odd count gives the last tile the
 full width of the final row. Each tile names its local address in its
-corner controls: one reloads that frame where it is, and one opens the origin
-in a tab of its own. When a browser is opened
+corner controls: one steps that frame back, one reloads it where it is, and
+one opens the origin in a tab of its own. When a browser is opened
 at all, this is the page it lands on.
 
 The panel is served in front of the origin proxy, so it needs no port and no

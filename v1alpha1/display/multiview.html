@@ -78,10 +78,11 @@
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
-  /* Two controls per tile, in the corner: the index, the local address and the
-     route repeated the same three facts on every frame, and the frame itself
-     already says which service it is. What is left is what the page cannot
-     do for itself — reload this one frame, and open this origin on its own.
+  /* Three controls per tile, in the corner: the index, the local address and
+     the route repeated the same three facts on every frame, and the frame
+     itself already says which service it is. What is left is what the page
+     cannot do for itself — step this one frame back, reload it, and open this
+     origin on its own.
      They rest translucent so they never compete with the content, and come
      forward on hover. */
   .tile > .controls {
@@ -152,6 +153,15 @@
     <!-- The label the strip used to carry lives in the tooltip now: present
          when someone goes looking, invisible the rest of the time. -->
     <div class="controls">
+      <button class="btn" type="button" data-back
+              title="Back, in {{.Local}} ({{.Route}})"
+              aria-label="Back, in {{.Local}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m12 19-7-7 7-7"/>
+          <path d="M19 12H5"/>
+        </svg>
+      </button>
       <button class="btn" type="button" data-reload
               title="Reload {{.Local}} ({{.Route}})"
               aria-label="Reload {{.Local}}">
@@ -245,6 +255,56 @@
     if (!win || href === 'about:blank') return again();
     try { win.location.reload(); } catch (e) { again(); }
   };
+  // Step one frame back — and only within that frame's own history. A
+  // frame's history.back() walks the page's joint history, the same walk the
+  // browser's back button takes, and with nothing of the frame's to step to
+  // it leaves the panel instead: pressed on a fresh tile it lands the tab on
+  // whatever came before. So the button only fires when the frame has an
+  // entry of its own behind it, and is disabled the rest of the time.
+  //
+  // The Navigation API knows exactly that, per frame and pushState included.
+  // Where it is missing the frame's loads are counted instead: one up per
+  // load the button did not cause, one down per back. In-page routing goes
+  // uncounted there, which leaves the button inert rather than wrong.
+  const back = (frame) => {
+    const tile = frame.closest('.tile');
+    const button = tile.querySelector('[data-back]');
+    let depth = 0;
+    let expected = false; // the next load is one the button caused
+    const can = () => {
+      try {
+        const nav = frame.contentWindow.navigation;
+        return nav ? nav.canGoBack : depth > 0;
+      } catch (e) { return false; }
+    };
+    const show = () => { button.disabled = !can(); };
+    button.addEventListener('click', () => {
+      if (!can()) return;
+      expected = true;
+      depth = Math.max(0, depth - 1);
+      try { frame.contentWindow.history.back(); } catch (e) { expected = false; }
+    });
+    tile.querySelector('[data-reload]').addEventListener('click', () => { expected = true; });
+    // A frame that finished loading before this ran has had its first load:
+    // counting the next one as it would count a fresh page's first load
+    // swallows a real step. One that cannot be read has certainly loaded.
+    let first = true;
+    try {
+      const doc = frame.contentDocument;
+      first = !(doc && doc.readyState === 'complete' && frame.contentWindow.location.href !== 'about:blank');
+    } catch (e) { first = false; }
+    frame.addEventListener('load', () => {
+      if (first) first = false;
+      else if (expected) expected = false;
+      else depth++;
+      try {
+        frame.contentWindow.navigation?.addEventListener('currententrychange', show);
+      } catch (e) { /* left the origin: nothing to count */ }
+      show();
+    });
+    show();
+  };
+  for (const frame of document.querySelectorAll('.tile iframe')) back(frame);
   for (const button of document.querySelectorAll('.tile [data-reload]')) {
     const frame = button.closest('.tile').querySelector('iframe');
     button.addEventListener('click', () => reload(frame));
