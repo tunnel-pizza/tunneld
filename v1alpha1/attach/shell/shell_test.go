@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
+
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -304,5 +307,61 @@ func TestAttachPassesTheArguments(t *testing.T) {
 	// started: the query is the carrier, and a person is shown the path.
 	if got, want := target.Origin(), v1.ExecScheme+"://"+path; got != want {
 		t.Errorf("Origin() = %q, want %q", got, want)
+	}
+}
+
+// TestEndStopsTheProgramAndWhatItStarted pins End against the case that made
+// it necessary: a program with a child of its own, a dev server and its
+// worker. Ending the program alone would leave the child holding the port;
+// End signals the group, and the attach returns with nothing left running.
+//
+// The child ignores SIGHUP. When a session leader exits the terminal hangs up
+// on its foreground group, which would end an ordinary child on its own and
+// prove nothing about End; a child that shrugs the hangup off — a worker that
+// was nohup'd, a daemon — is the one only the group signal reaches.
+func TestEndStopsTheProgramAndWhatItStarted(t *testing.T) {
+	needsPTY(t)
+
+	dir := t.TempDir()
+	path := write(t, dir, runnable("tunneld-parent"), 0o755)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ntrap '' HUP\nsleep 31337 &\nwait\n"), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+
+	target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Open() = %v", err)
+	}
+	defer func() { _ = target.Close() }()
+
+	resize := make(chan remotecommand.TerminalSize)
+	close(resize)
+	attached := make(chan error, 1)
+	go func() {
+		attached <- target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), &sink{}, &sink{}, true, resize)
+	}()
+	// Give the shell a moment to start its child.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if out, _ := exec.Command("pgrep", "-f", "sleep 31337").Output(); len(out) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	ender, ok := target.(attach.Ender)
+	if !ok {
+		t.Fatal("the shell target does not implement Ender")
+	}
+	if err := ender.End(t.Context()); err != nil {
+		t.Fatalf("End() = %v", err)
+	}
+	select {
+	case <-attached:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the attach did not return after End")
+	}
+	if out, _ := exec.Command("pgrep", "-f", "sleep 31337").Output(); len(out) > 0 {
+		t.Errorf("the program's child is still running after End: pids %s", strings.TrimSpace(string(out)))
 	}
 }

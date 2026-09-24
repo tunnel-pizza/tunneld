@@ -146,6 +146,15 @@ type Repeatable interface {
 	Repeatable() bool
 }
 
+// Ender can end the program it is running, so a run can be started over while
+// it is still going rather than only once it has ended on its own. Optional
+// the way Repeatable is, and only meaningful alongside it: a target that is
+// both is what ^K r restarts. End returns once the program is gone, however
+// it went; ctx bounds the wait.
+type Ender interface {
+	End(ctx context.Context) error
+}
+
 // Targets opens an origin's reference as a Target. It is the half of the
 // provider contract the binder depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider

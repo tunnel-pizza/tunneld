@@ -1720,3 +1720,21 @@ func TestTheFrameDrawsEveryRowAfterAResize(t *testing.T) {
 		t.Errorf("pane = %q, want the screen still drawn while scrolled after a resize", pane)
 	}
 }
+
+// TestRestartIsOfferedOnlyWhereItWorks pins the hint: r appears in the
+// command menu for a program that can be started over, and not for a
+// container, where the key would promise something it cannot do.
+func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
+	h := newFrameHarness(t) // a container: not repeatable
+	h.press(t, commandKey)
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, " r ") {
+		t.Errorf("bottom border = %q, offers r for a container", bottom)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+
+	h.s.Target = newRerunTarget(true) // a program that can run again and can be ended
+	h.press(t, commandKey)
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, " r ") || !strings.Contains(bottom, "restart") {
+		t.Errorf("bottom border = %q, want r restart offered for a program", bottom)
+	}
+}
