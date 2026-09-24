@@ -179,28 +179,26 @@
   // redirecting, or reconnecting — replaces the window this was attached to.
   //
   // The same reach into the frame is what makes an unstyled origin match the
-  // panel. A page that declares no colour scheme and paints no background of
-  // its own — a directory listing, a bare "hello", anything a stock dev server
-  // hands out — renders in the browser's light defaults, and the browser then
-  // shows the white the tile paints behind every frame (see .tile iframe): a
-  // white tile in a dark panel. Telling that document it is dark switches the
-  // defaults it was already using — text, links, form controls — and giving
-  // its root the panel's own background is what it then sits on, since a
-  // document that painted nothing shows whatever is behind it. Nothing else
-  // changes, so a page that styles itself is left exactly as it was, and one
-  // that did not gets the panel's colours instead of the browser's.
+  // panel. A page with no CSS at all — a directory listing, a bare "hello",
+  // anything a stock dev server hands out — renders in the browser's light
+  // defaults, and the browser then shows the white the tile paints behind
+  // every frame (see .tile iframe): a white tile in a dark panel. Telling that
+  // document it is dark switches the defaults it was already using — text,
+  // links, form controls — and giving its root the panel's own background is
+  // what it then sits on, since a document that painted nothing shows
+  // whatever is behind it.
+  //
+  // The test is "no CSS anywhere", not "no background": plenty of styled
+  // pages leave html and body transparent and paint a wrapper instead —
+  // Cloudflare's error pages among them — and a scheme flipped under one of
+  // those inverts it. A stylesheet, a style element or a style attribute is a
+  // page that chose its colours, and they are its own.
   const darken = (frame) => {
     try {
       const doc = frame.contentDocument;
       if (!doc || !doc.documentElement) return;
-      if (doc.querySelector('meta[name="color-scheme"]')) return;
-      const root = doc.documentElement, body = doc.body;
-      const bare = (el) => !el || getComputedStyle(el).backgroundColor === 'rgba(0, 0, 0, 0)';
-      // "normal" is a document that said nothing; "light dark" is the same
-      // document as some browsers report it inside a frame that has a
-      // scheme of its own. Either way it chose nothing, and paints nothing.
-      const scheme = getComputedStyle(root).colorScheme;
-      if ((scheme !== 'normal' && scheme !== 'light dark') || !bare(root) || !bare(body)) return;
+      if (doc.querySelector('meta[name="color-scheme"], style, link[rel~="stylesheet"], [style]')) return;
+      const root = doc.documentElement;
       root.style.colorScheme = 'dark';
       root.style.backgroundColor = getComputedStyle(document.body).backgroundColor;
     } catch (e) { /* cross-origin: its colours are its own */ }
