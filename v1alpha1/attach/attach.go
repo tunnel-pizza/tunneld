@@ -357,21 +357,25 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
-	// A closer that can be shown on a console says so by carrying the method, and only
-	// when it can: one origin, which is one served origin because nothing
-	// else gets a server. A caller then asks by type assertion and gets a
-	// straight answer, rather than re-deriving from the origin list what was
-	// already decided here.
-	if len(servers) == 1 {
+	// A closer that can be shown on a console says so by carrying the method,
+	// and only when it can: one origin in the whole run, and that one served.
+	// Not merely one served origin — a shell beside a dev server is one
+	// served origin among two, and a console that showed the shell would be
+	// showing a viewer's-eye slice of a run whose face is the panel with both
+	// tiles. That run gets the report on the console and the panel in a tab.
+	// A caller then asks by type assertion and gets a straight answer, rather
+	// than re-deriving from the origin list what was already decided here.
+	if len(servers) == 1 && shown.Len() == 1 {
 		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
 	}
 	return origins.New(origins.WithURL(dialable...)), servers, nil
 }
 
-// sole is a bound list of exactly one, which is the only shape that can put a
-// terminal on a console: with several, a console has no way to say
-// which it is watching and no room to watch them at once — that is what the
-// public hostname and its routing parameter are for.
+// sole is a bound list of exactly one, from a run of exactly one origin, which
+// is the only shape that can put a terminal on a console: with several
+// origins, served or not, a console has no way to say which it is watching
+// and no room to watch them at once — that is what the public hostname, its
+// routing parameter and the panel are for.
 //
 // A wrapper rather than a flag, because what a caller wants to know is whether
 // to ask, and a method set is how Go says that. bound keeps show unexported

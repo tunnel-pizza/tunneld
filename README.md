@@ -389,9 +389,12 @@ tunneld claude --resume
 tunneld :3000 htop -d 5
 ```
 
-Origins are read left to right, and the first word that names a program takes
-every word after it as its arguments — so the program is the last origin on
-the line, and `tunneld htop :3000` runs htop with `:3000` as an argument. The
+Origins are read left to right, and a word that names a program takes the
+words after it as its arguments — up to the first word that can only be an
+origin: a bare port like `:3000`, or a URL with a scheme. That word starts the
+next origin, so `tunneld bash :8000` is a shell beside a service, and
+`tunneld htop -d 5 :3000` is the same run as the second line above. A flag, a
+path, a bare word or a `host:port` after a program is the program's. The
 arguments ride the origin as a query, in order, which is how the frame shows
 them and how the same run is spelled from the environment or an embedding
 program:

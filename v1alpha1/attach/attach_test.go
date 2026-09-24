@@ -1308,9 +1308,10 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 //
 // Carrying Show is the answer. With several origins a console has no way to
 // say which it is watching and no room to watch them at once — that is what
-// the public hostname and its routing parameter are for — so the method is not
-// there to call. One origin is one served origin, since nothing else gets a
-// server, which makes the assertion the whole check.
+// the public hostname, its routing parameter and the panel are for — so the
+// method is not there to call. That counts every origin, not only the served
+// ones: a shell beside a dev server is one served origin among two, and the
+// run's face is the panel with both tiles, so the console gets the report.
 func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1319,7 +1320,7 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	}{
 		{"one container is a console's to show", []string{"attach://dockerd/api"}, true},
 		{"two is nobody's", []string{"attach://dockerd/api", "attach://dockerd/db"}, false},
-		{"a served origin beside a proxied one is still one", []string{"attach://dockerd/api", "http://localhost:3000"}, true},
+		{"a served origin beside a proxied one is two", []string{"attach://dockerd/api", "http://localhost:3000"}, false},
 		{"nothing served is nothing to show", []string{"http://localhost:3000"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
