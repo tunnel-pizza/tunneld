@@ -932,18 +932,22 @@ Patch releases are automatic. Every push to `main` runs four jobs in
 
 - **`tag`** resolves the version — the patch bump of the latest `v*` tag, or
   the tag itself when one was pushed by hand — and only resolves it. Nothing
-  is pushed yet.
+  is pushed yet. It runs on every event: a pull request gets a throwaway
+  version (`v0.0.0-pr<n>.<sha>`) and `release=false`, and a `main` commit that
+  opted out with `[skip release]` or already carries a tag gets `release=false`
+  too. Only `release` reads that flag; the build jobs run regardless.
 - **`binaries`** is a matrix of six cells, one per platform in the Makefile's
   `PLATFORMS`, each running `make binaries VERSION=<tag> PLATFORMS=<platform>`
   on a Linux runner: the same target, its list narrowed to one, a pure-Go
   cross-compile with `-trimpath`.
   Each cell then signs its own binary with cosign in keyless mode — a blob
   signature depends on the bytes and this workflow's identity, not on a tag —
-  and uploads binary and `.sigstore` bundle as one artifact. It is not a
-  pull-request check — the `ci` matrix already builds every one of those
-  `GOOS`/`GOARCH` pairs natively — and it is what stands between a broken
-  build and a tag: `release` needs every cell, so a failure here leaves no tag
-  pushed and no release opened.
+  and uploads binary and `.sigstore` bundle as one artifact. It runs on pull
+  requests too, so the build and the artifact hand-off are exercised before a
+  merge (signing is skipped on a PR from a fork or from dependabot, where no
+  OIDC token is issued), and it is what stands between a broken build and a
+  tag: `release` needs every cell, so a failure here leaves no tag pushed and
+  no release opened.
 - **`image`** is a matrix of two cells, `linux/amd64` and `linux/arm64`, each
   building the [`Dockerfile`](./Dockerfile) natively (it builds on
   `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so no QEMU) and
@@ -952,7 +956,10 @@ Patch releases are automatic. Every push to `main` runs four jobs in
   inside, so `tunneld version` in the container names the release; what is
   not yet public is the name. This is what puts the image on the same footing
   as the binaries: an image that stops building fails here, under its own
-  name, before any tag exists.
+  name, before any tag exists. On a run that does not release — a pull
+  request, a `[skip release]` commit — the same build is exported as an OCI
+  archive artifact instead of pushed, so the Dockerfile is exercised on every
+  PR and ghcr sees nothing that will never be tagged.
 - **`release`** downloads the six binaries and their bundles and the two
   digests, restores the binaries' executable bit — `upload-artifact` zips its
   input and that zip carries no mode bits, so they arrive `0644`, and npm
