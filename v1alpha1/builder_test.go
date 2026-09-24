@@ -1227,6 +1227,16 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 			want:    []string{program(), program("-x")},
 		},
 		{
+			name:    "a program quoted with its arguments is a program, and the words after it are its too",
+			origins: []string{":8000", name + " -m http.server 8000", "-y", ":9000"},
+			want:    []string{"http://localhost:8000", program("-m", "http.server", "8000", "-y"), "http://localhost:9000"},
+		},
+		{
+			name:    "quotes inside the group keep an argument whole",
+			origins: []string{name + ` -c 'echo hi there' "a b"`},
+			want:    []string{program("-c", "echo hi there", "a b")},
+		},
+		{
 			name:    "a bare word or a path after the program is still its argument",
 			origins: []string{name, "8000", "./script.sh", "host:8000"},
 			want:    []string{program("8000", "./script.sh", "host:8000")},
@@ -2112,5 +2122,30 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 	}
 	if since := time.Since(ts); since < 0 || since > time.Minute {
 		t.Errorf("tracking[TS] = %s, %s ago — want the moment the run cached", ts, since)
+	}
+}
+
+// TestFieldsSplitLikeAShell pins the small lexer a quoted program goes
+// through: whitespace separates, either quote keeps a run whole, a backslash
+// keeps the next character, an empty quoted string is a word, and an unclosed
+// quote runs to the end rather than failing.
+func TestFieldsSplitLikeAShell(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"python3 -m http.server 8000", []string{"python3", "-m", "http.server", "8000"}},
+		{"  spaced   out  ", []string{"spaced", "out"}},
+		{`bash -c 'echo hi there'`, []string{"bash", "-c", "echo hi there"}},
+		{`bash -c "echo \"quoted\" $x"`, []string{"bash", "-c", `echo "quoted" $x`}},
+		{`printf a\ b`, []string{"printf", "a b"}},
+		{`echo ''`, []string{"echo", ""}},
+		{`echo 'unclosed`, []string{"echo", "unclosed"}},
+		{"single", []string{"single"}},
+		{"", nil},
+	} {
+		if got := fields(tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("fields(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
