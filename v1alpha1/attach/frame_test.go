@@ -1689,3 +1689,34 @@ func TestAConsoleFrameLingersAfterTheRunEnds(t *testing.T) {
 	}
 	h.silent(t) // the key was the reader leaving, not typing at a dead program
 }
+
+// TestTheFrameDrawsEveryRowAfterAResize pins the pane against vt's dirty-row
+// optimisation. Emulator.Draw paints only the rows touched since the last
+// Draw, and a Resize clears that set — so a program that wrote two lines and
+// then fell quiet, as a server does after its startup banner, drew as an
+// empty screen with the cursor two rows down from the moment the first viewer
+// settled the size. The frame composes a fresh buffer every render, so it
+// has to draw every row every time.
+func TestTheFrameDrawsEveryRowAfterAResize(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("Serving HTTP on :: port 8000 ...\r\nGET / 200\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.window(defaultCols+40, defaultRows+10) // the first viewer settles the size
+
+	pane := stripSGR(h.f.View().Content)
+	if !strings.Contains(pane, "Serving HTTP on :: port 8000") || !strings.Contains(pane, "GET / 200") {
+		t.Errorf("pane = %q, want both lines the program wrote before the resize", pane)
+	}
+	if c := h.f.View().Cursor; c == nil || c.Y != h.f.pane().Min.Y+2 {
+		t.Errorf("cursor = %v, want it two rows down, under the text", c)
+	}
+
+	// And through history: a scrolled viewer's live part is drawn the same way.
+	h.scrollOff(t, 1, 3*(defaultRows+10))
+	h.wheel(t, tea.MouseWheelUp, 5, 5)
+	h.window(defaultCols+60, defaultRows+10)
+	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "line ") {
+		t.Errorf("pane = %q, want the screen still drawn while scrolled after a resize", pane)
+	}
+}

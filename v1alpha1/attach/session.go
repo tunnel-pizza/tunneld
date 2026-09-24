@@ -955,9 +955,45 @@ func (s *session) sendKey(k tea.Key) {
 	s.em.SendKey(asKeyEvent(k))
 }
 
-// drawPane has the emulator draw its screen into area of scr. The frame calls
-// it rather than reading lines back, so the cells arrive as cells.
-func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) { s.em.Draw(scr, area) }
+// drawPane draws the emulator's screen into area of scr, every row, cell by
+// cell. The frame calls it rather than reading lines back, so the cells arrive
+// as cells.
+//
+// Not the emulator's own Draw, which paints only the rows touched since the
+// last Draw — an optimisation for a renderer that keeps the previous frame,
+// which this is not: every render composes a fresh buffer. A Resize clears
+// the touched set, so a program that wrote its lines and then fell quiet — a
+// server after its banner — drew as an empty screen from the moment the
+// first viewer settled the size until it wrote again. Reading the cells
+// directly costs one lock per cell and forgets nothing.
+//
+// Cells the emulator leaves nil are its background, filled first the way its
+// Draw fills. A cell's own style is copied as it is — a cell with no colour
+// of its own stays that way, so a program's SGR reset renders as the viewer's
+// terminal colours, the same as the emulator's Draw left it. A wide
+// character's head carries its width and its tail is skipped.
+func (s *session) drawPane(scr uv.Screen, area uv.Rectangle) {
+	fill := uv.EmptyCell
+	fill.Style.Bg = s.em.BackgroundColor()
+	for y := range area.Dy() {
+		for x := range area.Dx() {
+			scr.SetCell(area.Min.X+x, area.Min.Y+y, &fill)
+		}
+	}
+	w, h := s.em.Width(), s.em.Height()
+	for y := 0; y < h && y < area.Dy(); y++ {
+		for x := 0; x < w && x < area.Dx(); {
+			c := s.em.CellAt(x, y)
+			if c == nil {
+				x++
+				continue
+			}
+			cell := *c
+			scr.SetCell(area.Min.X+x, area.Min.Y+y, &cell)
+			x += max(1, cell.Width)
+		}
+	}
+}
 
 // history is how many lines have scrolled off the top of the screen and been
 // kept, which is how far back a frame can look.
@@ -970,8 +1006,7 @@ func (s *session) history() int { return s.em.ScrollbackLen() }
 // Cell by cell through the emulator's lock rather than through the Scrollback
 // it hands out: that is a pointer into a buffer the stream goroutine is still
 // appending to, and reading it unlocked is a race. The live part is drawn
-// whole and copied, because Draw clips to the screen it is given and not to
-// the area, so it cannot be asked for its top rows only.
+// whole and copied from its top rows.
 func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	kept := s.em.ScrollbackLen()
 	top = max(0, min(top, kept))
@@ -986,7 +1021,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 		return
 	}
 	live := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
-	s.em.Draw(live, live.Bounds())
+	s.drawPane(live, live.Bounds())
 	for r := 0; y < area.Dy(); y, r = y+1, r+1 {
 		for x := range area.Dx() {
 			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))
