@@ -333,6 +333,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The OCI labels and manifest annotations — source, revision, version,
+      # created, licence, the repository's description — from the metadata
+      # action, so a `docker inspect` names the release and the commit. The
+      # tags it computes are not applied here: this cell pushes by digest and
+      # release does the naming, with the same action's output.
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=raw,value=${{ needs.prepare.outputs.tag }}
+          flavor: latest=false
+
       # Pushed by digest when the token allows; otherwise the same build goes
       # no further than the layer cache, which is still the Dockerfile
       # exercised end to end.
@@ -343,6 +356,8 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           build-args: VERSION=${{ needs.prepare.outputs.tag }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           outputs: ${{ needs.prepare.outputs.signed == 'true' && format('type=image,name=ghcr.io/{0},push-by-digest=true,name-canonical=true,push=true', github.repository) || 'type=cacheonly' }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
@@ -504,16 +519,35 @@ jobs:
       # registry — nothing is rebuilt or re-pushed — under the release tag and
       # latest. The list gets a digest of its own, signed here the same way,
       # so verifying by tag lands on a signed index whose members are signed.
+      # The names, and the annotations the manifest list itself carries, from
+      # the same metadata action the cells used for their labels: the release
+      # tag and latest, plus the OCI source/revision/version/created set at the
+      # index level, which is what a registry UI reads off a multi-arch image.
+      - name: metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.tag }}
+            type=raw,value=latest
+          flavor: latest=false
+
       - name: tag the image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
         run: |
           set -euo pipefail
           tag="${{ needs.prepare.outputs.tag }}"
           image="ghcr.io/${GITHUB_REPOSITORY}"
-          refs=()
-          for d in digests/*; do refs+=("${image}@$(cat "$d")"); done
-          docker buildx imagetools create \
-            -t "${image}:${tag}" -t "${image}:latest" \
-            "${refs[@]}"
+          args=()
+          while IFS= read -r t; do [ -n "$t" ] && args+=(-t "$t"); done <<<"$TAGS"
+          while IFS= read -r a; do [ -n "$a" ] && args+=(--annotation "$a"); done <<<"$ANNOTATIONS"
+          for d in digests/*; do args+=("${image}@$(cat "$d")"); done
+          docker buildx imagetools create "${args[@]}"
           # The json form: the bare field prints the whole default view on
           # some buildx versions, checked against v0.32.
           digest=$(docker buildx imagetools inspect "${image}:${tag}" --format '{{json .Manifest.Digest}}' | tr -d '"')
