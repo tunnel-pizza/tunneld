@@ -943,11 +943,11 @@ Patch releases are automatic. Every push to `main` runs four jobs in
   Each cell then signs its own binary with cosign in keyless mode — a blob
   signature depends on the bytes and this workflow's identity, not on a tag —
   and uploads binary and `.sigstore` bundle as one artifact. It runs on pull
-  requests too, so the build and the artifact hand-off are exercised before a
-  merge (signing is skipped on a PR from a fork or from dependabot, where no
-  OIDC token is issued), and it is what stands between a broken build and a
-  tag: `release` needs every cell, so a failure here leaves no tag pushed and
-  no release opened.
+  requests too, so the build, the signing and the artifact hand-off are
+  exercised before a merge — except on a PR from a fork or from dependabot,
+  whose token gets no OIDC; the `ci` matrix still builds every pair there —
+  and it is what stands between a broken build and a tag: `release` needs
+  every cell, so a failure here leaves no tag pushed and no release opened.
 - **`image`** is a matrix of two cells, `linux/amd64` and `linux/arm64`, each
   building the [`Dockerfile`](./Dockerfile) natively (it builds on
   `BUILDPLATFORM` and lets Go cross-compile to `TARGETARCH`, so no QEMU) and
@@ -956,10 +956,10 @@ Patch releases are automatic. Every push to `main` runs four jobs in
   inside, so `tunneld version` in the container names the release; what is
   not yet public is the name. This is what puts the image on the same footing
   as the binaries: an image that stops building fails here, under its own
-  name, before any tag exists. On a run that does not release — a pull
-  request, a `[skip release]` commit — the same build is exported as an OCI
-  archive artifact instead of pushed, so the Dockerfile is exercised on every
-  PR and ghcr sees nothing that will never be tagged.
+  name, before any tag exists. The steps are the same on every run, pull
+  requests included (again except forks and dependabot): a PR's digest is an
+  untagged manifest in ghcr that nothing will ever tag, invisible to a pull,
+  which is the price of every PR exercising exactly what a release runs.
 - **`release`** downloads the six binaries and their bundles and the two
   digests, restores the binaries' executable bit — `upload-artifact` zips its
   input and that zip carries no mode bits, so they arrive `0644`, and npm
@@ -993,10 +993,11 @@ Each architecture's manifest is signed in its cell and the manifest list is
 signed in `release`, so verifying by tag lands on a signed index whose members
 are signed.
 
-A `release` that fails after `image` has pushed leaves two untagged manifests
-in ghcr. They are invisible to `docker pull`, cost nothing that matters, and
-are the same class of leftover as a failed run's artifacts; the next
-successful release does not depend on them.
+Untagged manifests accumulate in ghcr: two per pull-request run, two per
+release that failed after `image`. They are invisible to `docker pull`, cost
+nothing that matters, and are the same class of leftover as a run's
+artifacts; the next successful release does not depend on them. A periodic
+sweep of untagged versions is the answer if the count ever matters.
 
 `make image` builds the image for the host platform from the same
 `Dockerfile`, which is how you catch a break before a tag does.
