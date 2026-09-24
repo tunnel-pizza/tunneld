@@ -183,20 +183,28 @@ jobs:
       - name: unit
         run: make test
 
-      # ACTIONS_RUNTIME_TOKEN is the runner's own credential and the last thing
-      # the github identity provider looks for, so a mint from CI is
-      # authenticated rather than anonymous. It is ambient on GitHub-hosted
-      # runners and e2e's strippedEnv deliberately passes it through, so
-      # nothing here needs to set it — and nothing here may: it is not in the
-      # env context, so naming it in an env: block would resolve to empty and
-      # overwrite the value it was meant to forward.
-      #
-      # Reported present or absent, never printed, so a runner that stops
-      # exporting it to run steps shows up as a line here rather than as a
-      # silently anonymous mint.
+      # The mint credential. A run:` step never sees the runner's own tokens —
+      # GitHub injects them into node actions, not shells — so this step asks
+      # a node action to hand them over. With id-token: write granted, `token`
+      # is the OIDC JWT naming this repository, workflow and ref, which is an
+      # identity a mint provider can verify without trusting the runner; on a
+      # PR from a fork or dependabot it falls back to the runtime token, and
+      # the provider treats that as the anonymous mint it always was.
+      - name: identity
+        id: identity
+        uses: cnuss/actions-identity@b9bc5d6472e00dfca0490bdf539eb4d4b729807d # v1.1.0
+
+      # LIBTUNNEL_TOKEN is libtunnel's own knob and beats anything the binary
+      # would resolve for itself, so every tunnel e2e mints carries this
+      # identity. The harness's strippedEnv passes it through: it strips
+      # TUNNELD_ variables, and this is not one. Reported present or absent,
+      # never printed, so a token that stops arriving shows up as a line here
+      # rather than as a silently anonymous mint.
       - name: e2e
+        env:
+          LIBTUNNEL_TOKEN: ${{ steps.identity.outputs.token }}
         run: |
-          echo "ACTIONS_RUNTIME_TOKEN: ${ACTIONS_RUNTIME_TOKEN:+present}${ACTIONS_RUNTIME_TOKEN:-absent}"
+          echo "LIBTUNNEL_TOKEN: ${LIBTUNNEL_TOKEN:+present}${LIBTUNNEL_TOKEN:-absent}"
           make e2e
 
   race:
