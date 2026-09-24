@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
@@ -952,6 +953,62 @@ func split(word string, words []string) (args, rest []string) {
 	return words, nil
 }
 
+// fields splits one word into the words a shell would have made of it had the
+// outer quotes not been there: whitespace separates, single quotes keep
+// everything literal, double quotes keep everything but a backslash escape,
+// and a backslash outside quotes keeps the next character. An unclosed quote
+// runs to the end rather than failing — the word already reached us, and
+// what it meant is clearer kept than dropped.
+func fields(word string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		open  bool // something has gone into cur, even if empty ("")
+		quote rune // 0, '\'', or '"'
+	)
+	flush := func() {
+		if open {
+			out = append(out, cur.String())
+			cur.Reset()
+			open = false
+		}
+	}
+	rs := []rune(word)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case quote == '"':
+			if r == '"' {
+				quote = 0
+			} else if r == '\\' && i+1 < len(rs) && strings.ContainsRune("\"\\$`", rs[i+1]) {
+				i++
+				cur.WriteRune(rs[i])
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote, open = r, true
+		case r == '\\' && i+1 < len(rs):
+			i++
+			cur.WriteRune(rs[i])
+			open = true
+		case unicode.IsSpace(r):
+			flush()
+		default:
+			cur.WriteRune(r)
+			open = true
+		}
+	}
+	flush()
+	return out
+}
+
 // isOrigin reports whether a word can only be an origin: a port shorthand
 // (":8000") or a URL with a scheme ("http://…", "attach://…"). Anything else
 // after a program is the program's.
@@ -1070,6 +1127,23 @@ func (b *BuilderImpl) Origins() Origins {
 			args, _ := split(s, settled[i+1:])
 			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
 			i += len(args)
+			continue
+		}
+		// A word with spaces in it is a program and its arguments quoted as
+		// one thing — no origin can contain whitespace, and the shell has
+		// already taken the quotes off. Split the way a shell would, so an
+		// argument that was itself quoted stays whole. It is then a program
+		// like any other: the words after it on the line are its too, up to
+		// the first origin. Quoting is also the one way to spell a program
+		// with arguments inside a comma-separated TUNNELD_ORIGINS.
+		if fs := fields(s); len(fs) > 1 {
+			if path, ok := shell.Resolve(fs[0]); ok {
+				args, _ := split(fs[0], settled[i+1:])
+				urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, append(fs[1:], args...)))
+				i += len(args)
+				continue
+			}
+			log.Warn("dropping an origin", "origin", s, "reason", "has spaces but "+fs[0]+" names no program that can be run")
 			continue
 		}
 		if !strings.Contains(s, "://") {

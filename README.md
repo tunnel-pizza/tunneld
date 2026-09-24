@@ -395,7 +395,11 @@ origin: a bare port like `:3000`, a URL with a scheme, or the program's own
 word again. That word starts the next origin, so `tunneld bash :8000` is a
 shell beside a service, `tunneld bash bash` is two shells, and
 `tunneld htop -d 5 :3000` is the same run as the second line above. A flag, a
-path, any other bare word or a `host:port` after a program is the program's. The
+path, any other bare word or a `host:port` after a program is the program's. A
+program can also be quoted together with its arguments, which every shell hands
+over as one word — `tunneld :8000 "python3 -m http.server 8000"` — which is
+also how one reads inside a comma-separated `TUNNELD_ORIGINS`, beside the
+`?arg=` form below. The
 arguments ride the origin as a query, in order, which is how the frame shows
 them and how the same run is spelled from the environment or an embedding
 program:
