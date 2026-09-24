@@ -391,10 +391,11 @@ tunneld :3000 htop -d 5
 
 Origins are read left to right, and a word that names a program takes the
 words after it as its arguments — up to the first word that can only be an
-origin: a bare port like `:3000`, or a URL with a scheme. That word starts the
-next origin, so `tunneld bash :8000` is a shell beside a service, and
+origin: a bare port like `:3000`, a URL with a scheme, or the program's own
+word again. That word starts the next origin, so `tunneld bash :8000` is a
+shell beside a service, `tunneld bash bash` is two shells, and
 `tunneld htop -d 5 :3000` is the same run as the second line above. A flag, a
-path, a bare word or a `host:port` after a program is the program's. The
+path, any other bare word or a `host:port` after a program is the program's. The
 arguments ride the origin as a query, in order, which is how the frame shows
 them and how the same run is spelled from the environment or an embedding
 program:

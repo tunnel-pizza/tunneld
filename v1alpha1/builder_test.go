@@ -1222,6 +1222,11 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 			want:    []string{program("-x"), "http://localhost:8000", program("-y")},
 		},
 		{
+			name:    "the program's own word again is a second one, not an argument",
+			origins: []string{name, name, "-x"},
+			want:    []string{program(), program("-x")},
+		},
+		{
 			name:    "a bare word or a path after the program is still its argument",
 			origins: []string{name, "8000", "./script.sh", "host:8000"},
 			want:    []string{program("8000", "./script.sh", "host:8000")},

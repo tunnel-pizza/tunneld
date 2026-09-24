@@ -171,6 +171,17 @@ type frame struct {
 	sel       selection
 	selecting bool
 	selected  bool
+
+	// linger is this frame staying on the screen after the run ends, until a
+	// key, rather than quitting with it. Set for the console: a tab has the
+	// page to say "ended" and offer a way back, and a console has nothing
+	// under the frame but a prompt. Quitting at once would also lose the
+	// last screen — the line that says why a program exited — and hand the
+	// terminal back before it has answered the queries Bubble Tea sent at
+	// startup, which then land on the prompt as text. ended is the run
+	// having ended while lingering.
+	linger bool
+	ended  bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -229,7 +240,11 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
 
 	case goneMsg:
-		return f, tea.Quit
+		if !f.linger {
+			return f, tea.Quit
+		}
+		f.ended = true
+		return f, nil
 
 	case paneMsg:
 		// A program that has gone full-screen has no history to be reading;
@@ -277,6 +292,11 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, nil
 
 	case tea.KeyPressMsg:
+		// A frame that outlived its run is waiting for exactly this: any key
+		// is the reader saying they have seen the last screen.
+		if f.ended {
+			return f, tea.Quit
+		}
 		// Typing is being present. The first keystroke returns a viewer who
 		// scrolled back to the live screen, and still goes where it was
 		// going, so what the key did is what they see next. A selection is
@@ -611,7 +631,7 @@ func (f frame) View() tea.View {
 	// what a full-screen program does at startup, and the emulator keeps a
 	// position regardless — so drawing one there follows the program's writes
 	// around the screen rather than showing anybody where they are typing.
-	if !f.command && !f.logs && !f.qr && !f.scrolled && !f.sess.cursorHidden() {
+	if !f.command && !f.logs && !f.qr && !f.scrolled && !f.ended && !f.sess.cursorHidden() {
 		pos := f.sess.paneCursor()
 		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
 			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
@@ -1076,6 +1096,9 @@ func (f frame) copied() string {
 // hint is the keys, in the bottom border: the one that opens the commands, or
 // the commands themselves once it has.
 func (f frame) hint() string {
+	if f.ended {
+		return chipStyle.Styled(" ended ") + hintStyle.Styled(" any key to leave ")
+	}
 	if f.armed != 0 {
 		// Which key, and what to do about it. Nothing about what it will do:
 		// Ctrl-C at a shell prompt clears the line and nothing else, and a

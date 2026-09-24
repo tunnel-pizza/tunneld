@@ -938,11 +938,14 @@ func program(u *url.URL, args []string) *url.URL {
 // is the shorthand every other position reads as this machine's :8000, and a
 // URL with a scheme is an address. Either one after a program is a second
 // origin, so `tunneld bash :8000` is a shell beside a service rather than a
-// shell told to run a script called :8000. A flag, a path, a bare word — a
-// program's, as before.
-func split(words []string) (args, rest []string) {
+// shell told to run a script called :8000. So is the program's own word said
+// again: `tunneld bash bash` is two shells, not a shell looking for a script
+// called bash — nobody passes a program its own name as an argument on
+// purpose, and two of the same terminal is the ordinary way to want a second
+// one. A flag, a path, any other bare word — a program's, as before.
+func split(word string, words []string) (args, rest []string) {
 	for i, w := range words {
-		if isOrigin(w) {
+		if isOrigin(w) || w == word {
 			return words[:i], words[i:]
 		}
 	}
@@ -1064,7 +1067,7 @@ func (b *BuilderImpl) Origins() Origins {
 			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
-			args, _ := split(settled[i+1:])
+			args, _ := split(s, settled[i+1:])
 			urls = append(urls, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
 			i += len(args)
 			continue
@@ -1092,7 +1095,7 @@ func (b *BuilderImpl) Origins() Origins {
 			// that looked it up.
 			if what.resolve != nil && u.Host != "" && u.Path == "" {
 				if path, ok := what.resolve(u.Host); ok {
-					args, _ := split(settled[i+1:])
+					args, _ := split(s, settled[i+1:])
 					urls = append(urls, program(&url.URL{Scheme: u.Scheme, Path: path}, args))
 					i += len(args)
 					continue
@@ -1117,7 +1120,7 @@ func (b *BuilderImpl) Origins() Origins {
 				continue
 			}
 			if u.Scheme == v1.ExecScheme {
-				args, _ := split(settled[i+1:])
+				args, _ := split(s, settled[i+1:])
 				urls = append(urls, program(u, args))
 				i += len(args)
 				continue

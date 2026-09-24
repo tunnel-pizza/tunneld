@@ -581,6 +581,12 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 // a real terminal — so follow is given none, and stays only for what it does
 // besides: ending this viewer when the run does.
 //
+// The frame lingers when the run ends rather than quitting with it: a tab
+// has the page to say so, a console has only the prompt underneath, and a
+// program that exits at once would otherwise take its last screen — the line
+// saying why — down with it, and hand the terminal back before it had
+// answered the queries the renderer sent at startup.
+//
 // Returns when the viewer leaves or the run ends. The console is restored
 // either way, which is Bubble Tea's doing and the reason detaching has to go
 // through it rather than around it.
@@ -593,7 +599,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height},
+		frame{sess: s, v: v, width: width, height: height, linger: true},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
@@ -602,7 +608,12 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 	s.join(v)
 	defer s.part(v)
 
-	go s.follow(ctx, cancel, v, nil)
+	// follow is given nothing to cancel: the run ending is not this
+	// viewer's end. redraw sends goneMsg, the frame lingers on it, and the
+	// key that leaves is what ends the program — through Bubble Tea, which
+	// is what restores the console. follow still stays for the resize it
+	// does not receive here, so the shape of a viewer is one shape.
+	go s.follow(ctx, func() {}, v, nil)
 	go s.redraw(ctx, v)
 
 	_, err := v.prog.Run()
