@@ -885,7 +885,7 @@ gh pr create --title "<type>: …" --body "Closes #<n>. …"  # 3. PR refs the i
 gh pr merge <pr#> --squash --delete-branch
 ```
 
-`main` is protected (`ci` required; no force-push). Don't push directly to it
+`main` is protected (the `build-test` matrix and `race` required; no force-push). Don't push directly to it
 for routine work — PR flow gives CI + auto-release a clean audit trail. Pushing
 to `main` auto-bumps a patch tag and signs the release (see Releasing below).
 
@@ -927,15 +927,19 @@ Wrap body at ~72 cols. Explain the *why*; the diff covers the *what*.
 
 ## Releasing
 
-Patch releases are automatic. Every push to `main` runs four jobs in
-[`ci.yml`](./.github/workflows/ci.yml) after the test matrix and the race lane:
+Patch releases are automatic. Every push to `main` runs the jobs in
+[`ci.yml`](./.github/workflows/ci.yml): `prepare` first, then the
+`build-test` matrix, `race`, `binaries` and `image` all needing it, and
+`release` needing all of those:
 
-- **`tag`** resolves the version — the patch bump of the latest `v*` tag, or
+- **`prepare`** resolves the version — the patch bump of the latest `v*` tag, or
   the tag itself when one was pushed by hand — and only resolves it. Nothing
   is pushed yet. It runs on every event: a pull request gets a throwaway
   version (`v0.0.0-pr<n>.<sha>`) and `release=false`, and a `main` commit that
   opted out with `[skip release]` or already carries a tag gets `release=false`
-  too. Only `release` reads that flag; the build jobs run regardless.
+  too. Only `release` reads that flag; the build jobs run regardless. It also
+  answers `signed`: whether this run's token can sign and push, which is no
+  for a fork's or dependabot's pull request.
 - **`binaries`** is a matrix of six cells, one per platform in the Makefile's
   `PLATFORMS`, each running `make binaries VERSION=<tag> PLATFORMS=<platform>`
   on a Linux runner: the same target, its list narrowed to one, a pure-Go
