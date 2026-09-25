@@ -37,13 +37,29 @@ func (s Severity) Color() ansi.Color {
 	return nil
 }
 
-// styled wraps text in the severity's colour, bold, or returns it as is.
+// Contrast is the text colour that reads on Color's fill: near-black on the
+// two light hues (note, warning), near-white on the dark one (caution). Nil
+// when the message has no severity, the same as Color.
+func (s Severity) Contrast() ansi.Color {
+	switch s {
+	case SeverityNote, SeverityWarning:
+		return ansi.IndexedColor(232)
+	case SeverityCaution:
+		return ansi.IndexedColor(255)
+	}
+	return nil
+}
+
+// styled is the severity's bar: the whole run filled with Color and the text
+// in Contrast, bold, the same treatment the panel's strip gets — so on a tty
+// Print's label becomes a chip in the frame's own colours, and a frame's row
+// is the bar the panel draws rather than an island of coloured text on it.
 func (s Severity) styled(text string) string {
 	c := s.Color()
 	if c == nil || text == "" {
 		return text
 	}
-	return ansi.Style{}.Bold().ForegroundColor(c).Styled(text)
+	return ansi.Style{}.Bold().BackgroundColor(c).ForegroundColor(s.Contrast()).Styled(text)
 }
 
 // Rendered is one message for the panel.

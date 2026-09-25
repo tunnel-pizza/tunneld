@@ -139,6 +139,14 @@ func TestLines(t *testing.T) {
 	if !strings.Contains(lines[0], "\x1b[") {
 		t.Error("a caution row carries no colour")
 	}
+	// A row is the strip's own bar: the severity fills the background and the
+	// text is the contrasting colour, not just coloured foreground text.
+	if !strings.Contains(lines[0], "48;5;196") || !strings.Contains(lines[0], "38;5;255") {
+		t.Errorf("caution row = %q, want a 196 background and 255 (light) text", lines[0])
+	}
+	if !strings.Contains(lines[1], "48;5;214") || !strings.Contains(lines[1], "38;5;232") {
+		t.Errorf("warning row = %q, want a 214 background and 232 (dark) text", lines[1])
+	}
 
 	long := learned(t, "> [!note]\n> "+strings.Repeat("x", 100))
 	row := sgr.ReplaceAllString(long.Lines(20)[0], "")
@@ -174,6 +182,24 @@ func TestLines(t *testing.T) {
 
 	if got := New().Lines(40); got != nil {
 		t.Errorf("Lines with nothing learned = %v, want nil", got)
+	}
+}
+
+// TestContrast pins which text colour reads on each severity's fill: near-black
+// on the two light hues, near-white on the dark one, nothing for no severity.
+func TestContrast(t *testing.T) {
+	for _, tc := range []struct {
+		severity Severity
+		want     ansi.Color
+	}{
+		{SeverityNote, ansi.IndexedColor(232)},
+		{SeverityWarning, ansi.IndexedColor(232)},
+		{SeverityCaution, ansi.IndexedColor(255)},
+		{Severity(""), nil},
+	} {
+		if got := tc.severity.Contrast(); got != tc.want {
+			t.Errorf("Severity(%q).Contrast() = %v, want %v", tc.severity, got, tc.want)
+		}
 	}
 }
 

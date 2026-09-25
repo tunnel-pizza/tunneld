@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -1800,6 +1801,33 @@ func TestBannerSitsAboveTheBox(t *testing.T) {
 		view()
 		if got := strings.TrimSpace(stripSGR(strings.Split(h.f.View().Content, "\n")[0])); got != "WARNING public" {
 			t.Errorf("a frame view lost the banner: row 0 = %q", got)
+		}
+	}
+}
+
+// TestBannerIsABar pins that a banner row fills edge to edge in the
+// severity's colour, the same bar the panel's own strip draws, rather than an
+// island of coloured text with the window's own background showing on either
+// side of it.
+func TestBannerIsABar(t *testing.T) {
+	styled := ansi.Style{}.BackgroundColor(ansi.IndexedColor(214)).ForegroundColor(ansi.IndexedColor(232)).Styled("WARNING public")
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{styled, "plain, no severity"}
+
+	buf := uv.NewScreenBuffer(h.f.width, h.f.height)
+	h.f.drawBanner(buf)
+
+	for _, x := range []int{0, h.f.width - 1} {
+		if cell := buf.CellAt(x, 0); cell == nil || cell.Style.Bg != ansi.IndexedColor(214) {
+			t.Errorf("row 0 col %d = %+v, want the fill colour 214 all the way to the edge", x, cell)
+		}
+	}
+	// A plain row carries no severity to read a fill colour off of, so
+	// nothing past its text is touched: the window's own background still
+	// shows at both ends, the way it always has.
+	for _, x := range []int{0, h.f.width - 1} {
+		if cell := buf.CellAt(x, 1); cell != nil && cell.Style.Bg != nil {
+			t.Errorf("plain row col %d background = %v, want none", x, cell.Style.Bg)
 		}
 	}
 }

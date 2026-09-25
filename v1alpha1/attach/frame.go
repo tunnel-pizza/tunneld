@@ -603,15 +603,7 @@ func (f frame) View() tea.View {
 
 	// The provider's word, above the box in every view: one row per message,
 	// centred, and no key touches it.
-	if f.sess.motd != nil {
-		for i, line := range f.sess.motd.Lines(f.width) {
-			if i >= f.height {
-				break
-			}
-			x := max(0, (f.width-ansi.StringWidth(line))/2)
-			uv.NewStyledString(line).Draw(buf, uv.Rect(x, i, f.width-x, 1))
-		}
-	}
+	f.drawBanner(buf)
 
 	// No room to frame a screen. The border and the banner are what there
 	// is; the pane, its labels and the cursor wait for a window that fits
@@ -662,6 +654,42 @@ func (f frame) View() tea.View {
 		}
 	}
 	return view
+}
+
+// drawBanner draws the provider's word into buf: one row per message,
+// centred, and no key touches it.
+//
+// Each row is filled edge to edge in the message's own severity colour, the
+// same bar the panel's strip draws rather than the frame's own chrome — read
+// off a cell the centred text already landed on rather than carried
+// separately, so a message with no severity leaves the row exactly as it was
+// drawn. An island of colour in the middle of the top row reads as a chip;
+// spanning the window is what makes it a notice.
+func (f frame) drawBanner(buf uv.ScreenBuffer) {
+	if f.sess.motd == nil {
+		return
+	}
+	for i, line := range f.sess.motd.Lines(f.width) {
+		if i >= f.height {
+			break
+		}
+		width := ansi.StringWidth(line)
+		x := max(0, (f.width-width)/2)
+		uv.NewStyledString(line).Draw(buf, uv.Rect(x, i, f.width-x, 1))
+
+		cell := buf.CellAt(x, i)
+		if cell == nil || cell.Style.Bg == nil {
+			continue
+		}
+		for cx := range f.width {
+			if cx >= x && cx < x+width {
+				continue
+			}
+			fill := uv.EmptyCell
+			fill.Style.Bg = cell.Style.Bg
+			buf.SetCell(cx, i, &fill)
+		}
+	}
 }
 
 // drawQR draws the public address as a code in the pane, centred, with the
