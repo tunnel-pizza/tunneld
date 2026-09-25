@@ -570,11 +570,10 @@ those pipeable.
 
 **stderr** carries everything human: the build banner, the origin each address
 reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
-one address, and every origin it serves is listed beneath it. After that map
-comes whatever the provider said with the mint — a note, a warning or a
-caution, rendered from its markdown on a terminal and printed as its text
-anywhere else — so the word about this tunnel reaches
-the person who started it, every run, cached spec or fresh.
+one address, and every origin it serves is listed beneath it. Whatever the
+provider said with the mint — a note, a warning or a caution — is not printed
+here: it is shown on every terminal frame and above the panel's tiles, where
+the reader is, every run, cached spec or fresh.
 
 On a terminal holding both, that reads as a map:
 
@@ -737,7 +736,7 @@ func WithOpen(open bool) Option                   // force the browser decision;
 func WithMultiview(mv bool) Option                // frame the origins together; default true
 func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
 func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
-func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, the provider's messages, logs
+func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
 ```
 
 There are no fluent setters: every knob is an option passed to `New`, and

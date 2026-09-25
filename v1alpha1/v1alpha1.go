@@ -190,13 +190,14 @@ func WithIdentity(i Identity) Option {
 //
 // Learn takes the strings as libtunnel hands them over — data URLs, severity
 // inside the markdown — once the URL is live, which is when the spec, and so
-// the messages, are known. Print is the builder's own reading, for the console
-// the run was started on; the frame and the panel read the same instance
-// through interfaces they declare themselves (attach.Motd, display.Motd), so
-// the one instance New builds is shared into both, the way the log ring is.
+// the messages, are known. That is the whole of what the builder asks of it:
+// the frame and the panel read the same instance through interfaces they
+// declare themselves (attach.Motd, display.Motd), so the one instance New
+// builds is shared into both, the way the log ring is. Nothing goes to
+// stderr; a rendered notice among the addresses was noise on the console,
+// and the console frame shows it where the reader is looking anyway.
 type Motd interface {
 	Learn(raw []string, log v1.Logger)
-	Print(w io.Writer, width int)
 }
 
 // WithMotd replaces what keeps and renders the provider's messages of the day.

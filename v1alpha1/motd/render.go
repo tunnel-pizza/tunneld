@@ -2,14 +2,10 @@ package motd
 
 import (
 	"bytes"
-	"fmt"
 	"html"
 	"html/template"
-	"io"
-	"os"
 	"strings"
 
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/yuin/goldmark"
 	gmast "github.com/yuin/goldmark/ast"
@@ -17,7 +13,6 @@ import (
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
-	"golang.org/x/term"
 )
 
 // Label is the severity as a heading: NOTE, WARNING, CAUTION, or nothing.
@@ -51,9 +46,8 @@ func (s Severity) Contrast() ansi.Color {
 }
 
 // styled is the severity's bar: the whole run filled with Color and the text
-// in Contrast, bold, the same treatment the panel's strip gets — so on a tty
-// Print's label becomes a chip in the frame's own colours, and a frame's row
-// is the bar the panel draws rather than an island of coloured text on it.
+// in Contrast, bold, the same treatment the panel's strip gets — so a frame's
+// row is the bar the panel draws rather than an island of coloured text on it.
 func (s Severity) styled(text string) string {
 	c := s.Color()
 	if c == nil || text == "" {
@@ -67,59 +61,6 @@ type Rendered struct {
 	Severity Severity
 	Label    string // Severity.Label(), for the template to lead the strip with
 	HTML     template.HTML
-}
-
-// isTerminal reports whether w is a terminal somebody is reading: an
-// *os.File that the OS says is a tty. A file, a pipe or a buffer is not, and
-// gets plain text — colour and glamour's layout are for eyes, not for grep.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
-}
-
-// Print writes every message to w for a reader at a terminal width columns
-// wide: the label in the severity's colour, then the body through glamour.
-// A body glamour cannot render is written as it is. Off a terminal — a file,
-// a pipe, a buffer — colour and glamour are for eyes, not for grep, so the
-// label is written bare and the body as decoded. Nothing is written when
-// there is nothing to say.
-func (m *MotdImpl) Print(w io.Writer, width int) {
-	msgs := m.Messages()
-	if len(msgs) == 0 {
-		return
-	}
-	if width <= 0 {
-		width = 80
-	}
-	terminal := isTerminal(w)
-	var r *glamour.TermRenderer
-	var err error
-	if terminal {
-		// A fixed style, not glamour's auto style: auto makes termenv ask the
-		// terminal for its background colour and read the reply off the
-		// operator's terminal, right before the console frame takes stdin
-		// over. The frame's own chrome is fixed-colour for the same reason,
-		// so the body follows it.
-		r, err = glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(width))
-	}
-	for _, msg := range msgs {
-		if label := msg.Severity.Label(); label != "" {
-			if terminal {
-				label = msg.Severity.styled(label)
-			}
-			_, _ = fmt.Fprintln(w, label)
-		}
-		body := msg.Body
-		if terminal && err == nil && msg.MediaType == "text/markdown" {
-			if out, rerr := r.Render(body); rerr == nil {
-				body = out
-			}
-		}
-		body = strings.TrimRight(body, "\n")
-		if body != "" {
-			_, _ = fmt.Fprintln(w, body)
-		}
-	}
 }
 
 // Lines is one row per message for a frame's banner: the label, a space, and

@@ -1,17 +1,12 @@
 package motd
 
 import (
-	"bytes"
-	"io"
 	"log/slog"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/creack/pty"
 )
 
 var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -29,89 +24,6 @@ func learned(t *testing.T, markdown ...string) *MotdImpl {
 	}
 	m.Learn(raw, slog.New(slog.DiscardHandler))
 	return m
-}
-
-// TestPrint pins the stderr rendering: a label per message, the body rendered
-// after it, nothing at all when there is nothing to say.
-func TestPrint(t *testing.T) {
-	var out bytes.Buffer
-	New().Print(&out, 80)
-	if out.Len() != 0 {
-		t.Errorf("Print with nothing learned wrote %q", out.String())
-	}
-
-	// A bytes.Buffer is never a terminal, so Print must fall back to plain
-	// text: no SGR anywhere, and the body as decoded rather than through
-	// glamour (the asterisks survive; glamour would have styled them away).
-	// That also means colour can't be asserted from this call — the
-	// terminal path is exercised live, per the design doc.
-	m := learned(t, "> [!warning]\n> This tunnel is **public**.", "> [!note]\n> Expires soon.")
-	out.Reset()
-	m.Print(&out, 80)
-	got := out.String()
-	if strings.Contains(got, "\x1b[") {
-		t.Errorf("Print wrote %q, want no SGR off a terminal", got)
-	}
-	for _, want := range []string{"WARNING", "This tunnel is **public**.", "NOTE", "Expires soon."} {
-		if !strings.Contains(got, want) {
-			t.Errorf("Print wrote %q, want it to contain %q", got, want)
-		}
-	}
-	if strings.Index(got, "WARNING") > strings.Index(got, "NOTE") {
-		t.Error("messages printed out of order")
-	}
-}
-
-// TestPrintOnATerminal pins the path TestPrint cannot reach: on a real tty
-// the label is coloured and the body goes through glamour, so the emphasis
-// markers are gone from what the operator reads.
-func TestPrintOnATerminal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("no pty on Windows")
-	}
-	ptmx, tty, err := pty.Open()
-	if err != nil {
-		t.Skipf("no pty to be a terminal on: %v", err)
-	}
-	t.Cleanup(func() { tty.Close(); ptmx.Close() })
-
-	// The master is read on its own goroutine: a pty's buffer is small, and
-	// Print would block on a full one if nothing drained it. Reading stops at
-	// a marker written after Print rather than at the tty's close, since a
-	// closing tty may discard what the master has not read yet.
-	const done = "--done--"
-	read := make(chan string, 1)
-	go func() {
-		var b strings.Builder
-		buf := make([]byte, 4096)
-		for !strings.Contains(b.String(), done) {
-			n, err := ptmx.Read(buf)
-			b.Write(buf[:n])
-			if err != nil {
-				break
-			}
-		}
-		read <- b.String()
-	}()
-	learned(t, "> [!warning]\n> Be **careful**.").Print(tty, 60)
-	_, _ = io.WriteString(tty, done+"\n")
-
-	var got string
-	select {
-	case got = <-read:
-	case <-time.After(5 * time.Second):
-		t.Fatal("nothing came back from the pty")
-	}
-	at := strings.Index(got, "WARNING")
-	if at < 0 {
-		t.Fatalf("Print wrote %q, want the label", got)
-	}
-	if !strings.Contains(got[:at], "\x1b[") {
-		t.Errorf("Print wrote %q, want an SGR sequence before the label", got)
-	}
-	if !strings.Contains(got, "careful") || strings.Contains(got, "**") {
-		t.Errorf("Print wrote %q, want the emphasis rendered by glamour", got)
-	}
 }
 
 // TestLines pins the frame's row per message: label and body on one line,

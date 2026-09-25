@@ -578,11 +578,6 @@ type fakeMotd struct {
 }
 
 func (f *fakeMotd) Learn(raw []string, _ v1.Logger) { f.learned = raw }
-func (f *fakeMotd) Print(w io.Writer, _ int) {
-	for _, m := range f.learned {
-		_, _ = fmt.Fprintf(w, "MOTD %s\n", m)
-	}
-}
 
 // runHarness is run with every collaborator faked except the one that is
 // pure: the shown's panel half, because its URL and interceptor order are
@@ -759,7 +754,7 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("what the provider said is learned and printed after the origins", func(t *testing.T) {
+	t.Run("what the provider said is learned, and stderr stays the map", func(t *testing.T) {
 		tun := live(public)
 		tun.messages = []string{"data:text/markdown;base64,PiBbIXdhcm5pbmdd"} // "> [!warning]"
 		h := newRunHarness(t, tun, ":3000", ":4000")
@@ -772,10 +767,10 @@ func TestRun(t *testing.T) {
 		if !slices.Equal(h.motd.learned, tun.messages) {
 			t.Errorf("Learn was handed %q, want the tunnel's %q", h.motd.learned, tun.messages)
 		}
-		out := h.stderr.String()
-		origin, motd := strings.Index(out, "  -> http://localhost:4000\n"), strings.Index(out, "MOTD data:")
-		if origin < 0 || motd < 0 || motd < origin {
-			t.Errorf("stderr = %q, want the message after the last origin line", out)
+		// Nothing of it reaches stderr: the map and the logs are what that
+		// stream carries, and the message is read on the frame and the panel.
+		if out := h.stderr.String(); strings.Contains(out, "warning") || strings.Contains(out, "data:") {
+			t.Errorf("stderr = %q, want no trace of the message", out)
 		}
 	})
 

@@ -1,5 +1,6 @@
 // Package motd keeps what the provider said with the spec — its messages of
-// the day — and renders them for each place tunneld shows them.
+// the day — and renders them for the two places tunneld shows them: a row
+// on every terminal frame, and a bar above the multiview panel's tiles.
 //
 // A message arrives as an RFC 2397 data URL, data:text/markdown;base64,…, and
 // its severity is not on the wire: the markdown opens with a GitHub alert
