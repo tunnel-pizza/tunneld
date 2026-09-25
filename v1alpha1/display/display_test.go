@@ -390,7 +390,7 @@ func TestServeShellCarriesTheMessages(t *testing.T) {
 			t.Errorf("page does not contain %q", want)
 		}
 	}
-	if strings.Index(body, "message-warning") > strings.Index(body, "message-note") {
+	if strings.Index(body, `<div class="message message-warning">`) > strings.Index(body, `<div class="message message-note">`) {
 		t.Error("messages rendered out of order")
 	}
 	if strings.Index(body, `<header class="motd">`) > strings.Index(body, `<main class="grid">`) {
