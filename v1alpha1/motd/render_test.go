@@ -167,6 +167,9 @@ func TestHTML(t *testing.T) {
 	if len(r) != 1 || r[0].Severity != SeverityWarning {
 		t.Fatalf("HTML() = %+v, want one warning", r)
 	}
+	if r[0].Label != "WARNING" {
+		t.Errorf("Label = %q, want the severity as its heading, WARNING", r[0].Label)
+	}
 	h := string(r[0].HTML)
 	for _, want := range []string{"<strong>careful</strong>", "&lt;script&gt;", `href="https://tunnel.pizza/docs"`, `target="_blank"`, `rel="noopener"`} {
 		if !strings.Contains(h, want) {

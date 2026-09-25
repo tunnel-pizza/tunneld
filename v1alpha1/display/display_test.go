@@ -382,10 +382,13 @@ func TestServeShellCarriesTheMessages(t *testing.T) {
 	}
 
 	body := render(New(WithMotd(testMotd{
-		{Severity: motd.SeverityWarning, HTML: "<p>This tunnel is <strong>public</strong>.</p>"},
-		{Severity: motd.SeverityNote, HTML: "<p>Expires soon.</p>"},
+		{Severity: motd.SeverityWarning, Label: "WARNING", HTML: "<p>This tunnel is <strong>public</strong>.</p>"},
+		{Severity: motd.SeverityNote, Label: "NOTE", HTML: "<p>Expires soon.</p>"},
 	})))
-	for _, want := range []string{`<header class="motd">`, `class="message message-warning"`, "<strong>public</strong>", `class="message message-note"`, "Expires soon."} {
+	for _, want := range []string{`<header class="motd">`, `class="message message-warning"`, "<strong>public</strong>", `class="message message-note"`, "Expires soon.",
+		`<span class="label">WARNING</span>`,
+		// The strip's typeface, the one tunnel.pizza sets for everything.
+		"fonts.googleapis.com/css2?family=IBM+Plex+Mono"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %q", want)
 		}

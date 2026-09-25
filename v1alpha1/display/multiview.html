@@ -19,6 +19,12 @@
       integrity="sha384-lbWbDDZc0lBRulCtOY3TsBD/aqRxsW0E2fSB4SdB92ulxl6EJTh4CYpNEojYQEWE"
       crossorigin="anonymous"
       referrerpolicy="no-referrer">
+<!-- The strip speaks in the site's own voice: the one monospace tunnel.pizza
+     sets for everything. Only the strip uses it; the tiles are the origins'. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/js/all.min.js"
         integrity="sha384-rD2ZCuReXV7nIneJcn1lsTn6yOv87YARLQyUsemVAxrYYHdy5hcAW8XZEQxx87Dj"
         crossorigin="anonymous"
@@ -28,7 +34,10 @@
 <style>
   /* Layout only. Every colour, border, radius and typeface comes from
      Basecoat; the CDN build ships component classes without Tailwind's
-     utilities, so the arrangement below is the part no class can supply. */
+     utilities, so the arrangement below is the part no class can supply.
+     The message strip is the exception: it is tunnel.pizza talking rather
+     than part of the shell, so it wears the site's typeface and its three
+     severity colours, which Basecoat has no tokens for. */
 
   html, body { height: 100%; margin: 0; }
 
@@ -50,14 +59,38 @@
   body::-webkit-scrollbar-corner { background: transparent; }
 
   /* The provider's word, above the frames: a strip per message, centred,
-     coloured by how loudly it was said. The grid takes what is left. */
-  .motd { flex: none; display: flex; flex-direction: column; gap: .125rem; padding: .25rem .25rem 0; }
-  .message { text-align: center; padding: .375rem .75rem; border-radius: .375rem; border: 1px solid var(--border); background: var(--card); color: var(--card-foreground); }
-  .message p { margin: 0; }
+     solid in the colour of how loudly it was said. Square and edge to edge,
+     with no gap between strips, so they read as a notice bar across the top
+     of the page rather than as cards among the tiles. Set small, in the
+     site's own monospace, since it is the site speaking. The label sits on
+     the message's line, which is why the paragraph goes inline. A message
+     with no severity keeps the muted background. The grid takes what is
+     left. */
+  .motd { flex: none; display: flex; flex-direction: column; }
+  .message {
+    text-align: center;
+    padding: .2rem .75rem;
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .75rem;
+    line-height: 1.4;
+    background: var(--muted);
+    color: var(--foreground);
+  }
+  .message p { display: inline; margin: 0; }
+  /* Basecoat has a .label of its own, a form label: a flex box in its own
+     small type that cannot be selected. Undone here, so the severity reads
+     inline in the strip's type and copies with the message. */
+  .message .label {
+    display: inline;
+    font: inherit;
+    font-weight: 700;
+    margin-right: .5ch;
+    user-select: auto;
+  }
   .message a { color: inherit; text-decoration: underline; }
-  .message-note { border-color: oklch(70% .15 230); }
-  .message-warning { border-color: oklch(80% .17 80); }
-  .message-caution { border-color: oklch(60% .22 25); }
+  .message-note    { background: oklch(70% .15 230); color: oklch(15% 0 0); }
+  .message-warning { background: oklch(80% .17 80);  color: oklch(15% 0 0); }
+  .message-caution { background: oklch(60% .22 25);  color: oklch(98% 0 0); }
 
   /* The grid is the rest of the page: the frames are the content, and a bar
      naming the host only repeated what the tab title already says. */
@@ -171,7 +204,7 @@
 {{- if .Messages}}
 <header class="motd">
   {{- range .Messages}}
-  <div class="message message-{{.Severity}}">{{.HTML}}</div>
+  <div class="message message-{{.Severity}}">{{if .Severity}}<span class="label">{{.Label}}</span> {{end}}{{.HTML}}</div>
   {{- end}}
 </header>
 {{- end}}

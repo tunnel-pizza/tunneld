@@ -49,6 +49,7 @@ func (s Severity) styled(text string) string {
 // Rendered is one message for the panel.
 type Rendered struct {
 	Severity Severity
+	Label    string // Severity.Label(), for the template to lead the strip with
 	HTML     template.HTML
 }
 
@@ -241,10 +242,10 @@ func (m *MotdImpl) HTML() []Rendered {
 	for _, msg := range msgs {
 		var buf bytes.Buffer
 		if msg.MediaType == "text/markdown" && markdown.Convert([]byte(msg.Body), &buf) == nil {
-			out = append(out, Rendered{msg.Severity, template.HTML(strings.TrimSpace(buf.String()))})
+			out = append(out, Rendered{msg.Severity, msg.Severity.Label(), template.HTML(strings.TrimSpace(buf.String()))})
 			continue
 		}
-		out = append(out, Rendered{msg.Severity, template.HTML("<p>" + html.EscapeString(msg.Body) + "</p>")})
+		out = append(out, Rendered{msg.Severity, msg.Severity.Label(), template.HTML("<p>" + html.EscapeString(msg.Body) + "</p>")})
 	}
 	return out
 }
