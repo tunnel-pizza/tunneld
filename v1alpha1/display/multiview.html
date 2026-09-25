@@ -7,45 +7,46 @@
 <meta name="robots" content="noindex, nofollow">
 <title>{{.Host}} multiview</title>
 
-<!-- The panel is tunnel.pizza's own switchboard, and it dresses the way the
-     site does: one console face for everything, the warm greys of a printed
-     board, edges cut rather than rounded, no shadows, and emphasis by
-     contrast alone. The font is the only thing fetched; the rest is here,
-     so nothing at a CDN can change what a tunnel serves. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- The panel looks like the terminal the frame draws, because that is what
+     sits inside its tiles: xterm's own stylesheet, the same pinned copy the
+     attach page loads, for the face and the metrics; the frame's palette for
+     everything the stylesheet does not carry. One look across the tunnel,
+     whether a page is a frame or a page of frames. -->
 <link rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap">
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css"
+      integrity="sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer">
 
 <style>
-  /* Radix sand, dark: the site's own greys. A tile's rail is one step up
-     from the page, a hairline two steps up separates everything, and text
-     is either quiet or full — there is no accent colour on this board. The
-     three severity colours are the provider's, not ours, and appear only
-     when it speaks. */
+  /* The frame's colours, by their ANSI-256 index in frame.go: the border,
+     the name of what is framed, the address that reaches it, the chips, and
+     the three severities the provider speaks in. Black is the terminal's.
+     The row is xterm's cell at 13px, so the panel's chrome and the frame's
+     rows inside a tile fall on the same grid. */
   :root {
-    --sand-1: #111110;
-    --sand-2: #191918;
-    --sand-3: #222221;
-    --sand-6: #3b3a37;
-    --sand-8: #62605b;
-    --sand-11: #b5b3ad;
-    --sand-12: #eeeeec;
-    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --border: #87afff;   /* 111 */
+    --name:   #00d7ff;   /* 45, bold */
+    --addr:   #87d787;   /* 114 */
+    --hint:   #8a8a8a;   /* 245 */
+    --chip:   #ffaf00;   /* 214 */
+    --ink:    #080808;   /* 232 */
+    --paper:  #eeeeee;   /* 255 */
+    --note:    #00d7ff;  /* 45 */
+    --warning: #ffaf00;  /* 214 */
+    --caution: #ff0000;  /* 196 */
+    --row: 15.6px;
   }
 
-  html, body { height: 100%; margin: 0; }
+  html, body { height: 100%; margin: 0; background: #000; }
   body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--sand-1);
-    color: var(--sand-12);
-    font-family: var(--mono);
-    font-size: .75rem;
-    line-height: 1.4;
+    color: var(--paper);
+    font: 13px/var(--row) monospace;
   }
-  :focus-visible { outline: 2px solid var(--sand-11); outline-offset: -2px; }
+  :focus-visible { outline: 1px solid var(--paper); outline-offset: 1px; }
 
   /* macOS hides overlay scrollbars until something moves, and when the page
      does overflow the bar is the only sign that more tiles exist below.
@@ -53,107 +54,137 @@
      only; Firefox follows the OS setting and offers no way to override it. */
   body::-webkit-scrollbar { width: 10px; height: 10px; }
   body::-webkit-scrollbar-track { background: transparent; }
-  body::-webkit-scrollbar-thumb { background: var(--sand-6); }
-  body::-webkit-scrollbar-thumb:hover { background: var(--sand-8); }
+  body::-webkit-scrollbar-thumb { background: #333; }
+  body::-webkit-scrollbar-thumb:hover { background: var(--hint); }
   body::-webkit-scrollbar-corner { background: transparent; }
 
-  /* The provider's word, above the board: one bar per message, solid in the
-     colour of how loudly it was said, text in the inverse so it reads on the
-     fill. Edge to edge and stacked flush, so several read as one notice bar
-     rather than as cards. The same bar the terminal frame draws in its top
-     row, in the same three colours. A message with no severity is a quiet
-     bar in the board's own grey. */
+  /* The provider's word, in the bar the frame draws on its own top row: one
+     row per message, solid in the colour of how loudly it was said, the
+     text bold in the inverse. Edge to edge and stacked flush. */
   .motd { flex: none; display: flex; flex-direction: column; }
   .message {
+    height: var(--row);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     text-align: center;
-    padding: .2rem .75rem;
-    background: var(--sand-3);
-    color: var(--sand-12);
+    padding: 0 1ch;
+    font-weight: 700;
+    background: #333;
+    color: var(--paper);
   }
   .message p { display: inline; margin: 0; }
-  .message .label { font-weight: 700; margin-right: .5ch; }
-  .message a { color: inherit; text-decoration: underline; text-underline-offset: .15em; }
-  .message-note    { background: oklch(70% .15 230); color: oklch(15% 0 0); }
-  .message-warning { background: oklch(80% .17 80);  color: oklch(15% 0 0); }
-  .message-caution { background: oklch(60% .22 25);  color: oklch(98% 0 0); }
+  .message .label { margin-right: 1ch; }
+  .message a { color: inherit; text-decoration: underline; }
+  .message-note    { background: var(--note);    color: var(--ink); }
+  .message-warning { background: var(--warning); color: var(--ink); }
+  .message-caution { background: var(--caution); color: var(--paper); }
 
-  /* The board: tiles set in a hairline grid, two across. The gap is the
-     board showing through, which is what draws the lines; no tile has a
-     border of its own to double up at a seam. A wrapped flex container with
-     a definite height hands its leftover space to the rows equally, so the
-     rows come out even without anyone counting them. */
+  /* The board: two frames across, each the size the flex line hands it. A
+     wrapped flex container with a definite height shares its leftover space
+     between the lines, so the rows come out even without anyone counting. */
   .grid {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-wrap: wrap;
     align-content: stretch;
-    gap: 1px;
-    padding: 1px;
-    background: var(--sand-6);
   }
   .tile {
-    flex: 1 1 calc(50% - 1px);
+    position: relative;
+    box-sizing: border-box; /* the padding is the frame's chrome, inside the half */
+    flex: 1 1 50%;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    background: var(--sand-1);
+    /* One row above and below for the border and its labels, one column
+       either side: the frame's own chrome, in the frame's own units. */
+    padding: var(--row) 1ch;
   }
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
-  /* The rail: one line above each frame that says what this bay is
-     patched to — the routing index, then the local address it reaches — and
-     holds the three things the page can do for the frame. It is the console
-     idea of a window title, and like a console it shows which window has
-     the keyboard: the tile that does wears its rail inverted, full text on
-     no ground, so a keystroke's destination is never a guess. */
-  .rail {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 1ch;
-    height: 1.625rem;
-    padding: 0 .25rem 0 .75rem;
-    background: var(--sand-2);
-    color: var(--sand-11);
-    white-space: nowrap;
+  /* The frame's rounded box, drawn as a border rather than as ╭─╮ cells so
+     it stays continuous at any width. It sits half a row in from the
+     tile's edge, which puts the labels on the line the way the frame puts
+     them on its top and bottom rows. The tile that has the keyboard wears
+     it in full white — a console's active pane. */
+  .tile::before {
+    content: "";
+    position: absolute;
+    inset: calc(var(--row) / 2) .5ch;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    pointer-events: none;
   }
-  .rail .index { font-weight: 700; color: var(--sand-12); }
-  .rail .local { overflow: hidden; text-overflow: ellipsis; }
-  .tile.active .rail { background: var(--sand-12); color: var(--sand-1); }
-  .tile.active .rail .index { color: var(--sand-1); }
+  .tile.active::before { border-color: var(--paper); }
 
-  .controls { margin-left: auto; display: flex; }
+  /* A label on the border: black behind it breaks the line, as the frame's
+     text does, and a column of space either side keeps the line off the
+     letters. Top left names what is framed, top right where it is reached;
+     bottom left is what the page can do for it. */
+  .edge {
+    position: absolute;
+    left: 2.5ch;
+    right: 2.5ch;
+    height: var(--row);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 2ch;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .edge > * { pointer-events: auto; }
+  .edge.top { top: 0; }
+  .edge.bottom { bottom: 0; }
+  .edge span, .edge a, .edge .controls { background: #000; padding: 0 1ch; }
+  .edge .local { color: var(--name); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+  .edge .route { color: var(--addr); text-decoration: underline; text-underline-offset: 2px; }
+  .edge .route:hover { color: var(--paper); }
+
+  /* Chips, as the frame draws ^K: bold ink on orange, one glyph each,
+     with the word in the hint grey beside it. */
+  .controls { display: flex; gap: 1ch; }
   .ctl {
-    display: grid;
-    place-items: center;
-    width: 1.625rem;
-    height: 1.625rem;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 1ch;
     padding: 0;
     border: 0;
-    background: transparent;
-    color: inherit;
+    background: #000;
+    color: var(--hint);
+    font: inherit;
     cursor: pointer;
-    opacity: .7;
   }
-  .ctl:hover, .ctl:focus-visible { opacity: 1; }
+  .ctl .key {
+    display: inline-block;
+    min-width: 3ch;
+    text-align: center;
+    padding: 0 .5ch;
+    font-weight: 700;
+    color: var(--ink);
+    background: var(--chip);
+  }
+  .ctl:hover, .ctl:focus-visible { color: var(--paper); }
   .ctl[hidden] { display: none; }
-  .ctl svg { width: .875rem; height: .875rem; }
 
-  /* The reload turns while the frame is loading, so a press on a slow origin
-     is seen to have done something; it stops when the frame says it is back.
-     The one motion on the page, and it answers a press. */
+  /* The reload's glyph turns while the frame is loading, so a press on a
+     slow origin is seen to have done something; it stops when the frame says
+     it is back. The one motion on the page, and it answers a press. */
   @keyframes turn { to { transform: rotate(360deg); } }
-  .ctl.busy svg { animation: turn .8s linear infinite; }
-  @media (prefers-reduced-motion: reduce) { .ctl.busy svg { animation: none; opacity: .4; } }
+  .ctl.busy .key { animation: turn .8s linear infinite; }
+  @media (prefers-reduced-motion: reduce) { .ctl.busy .key { animation: none; opacity: .5; } }
 
+  /* The screen inside the frame: one row and one column in from the border,
+     as the pane sits inside the frame's box. */
   .tile iframe {
     flex: 1;
-    width: 100%;
+    width: calc(100% - 2ch);
     min-height: 0;
+    margin: 0 1ch;
     border: 0;
-    background: var(--sand-1);
+    background: #000;
   }
 
   /* Narrow: one column, still dividing the viewport rather than scrolling —
@@ -165,7 +196,7 @@
      page scrolls instead. body may scroll here for that reason alone. */
   @media (max-width: 45rem) {
     body { overflow: auto; }
-    .tile { flex-basis: 100%; min-height: 14rem; }
+    .tile { flex-basis: 100%; min-height: 16rem; }
   }
 </style>
 </head>
@@ -181,41 +212,22 @@
 <main class="grid">
   {{- range .Origins}}
   <section class="tile">
-    <div class="rail">
-      <span class="index">{{.Route}}</span>
+    <div class="edge top">
       <span class="local">{{.Local}}</span>
-      <div class="controls">
-        <button class="ctl" type="button" data-back
-                title="Back, in {{.Local}}"
-                aria-label="Back, in {{.Local}}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m12 19-7-7 7-7"/>
-            <path d="M19 12H5"/>
-          </svg>
-        </button>
-        <button class="ctl" type="button" data-reload
-                title="Reload {{.Local}}"
-                aria-label="Reload {{.Local}}">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-            <path d="M21 3v5h-5"/>
-          </svg>
-        </button>
-        <a class="ctl" href="{{.Route}}" target="_blank" rel="noopener"
-           title="Open {{.Local}} in a new tab"
-           aria-label="Open {{.Local}} in a new tab">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M15 3h6v6"/>
-            <path d="M10 14 21 3"/>
-            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"/>
-          </svg>
-        </a>
-      </div>
+      <a class="route" href="{{.Route}}" target="_blank" rel="noopener"
+         aria-label="Open {{.Local}} in a new tab">{{.Route}}</a>
     </div>
     <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
+    <div class="edge bottom">
+      <div class="controls">
+        <button class="ctl" type="button" data-back aria-label="Back, in {{.Local}}">
+          <span class="key" aria-hidden="true">←</span>back
+        </button>
+        <button class="ctl" type="button" data-reload aria-label="Reload {{.Local}}">
+          <span class="key" aria-hidden="true">↻</span>reload
+        </button>
+      </div>
+    </div>
   </section>
   {{- end}}
 </main>
@@ -235,11 +247,11 @@
   //
   // So the panel focuses the frame itself, in the capture phase, before the
   // origin's handler runs and regardless of what it does afterwards, and
-  // marks the tile so its rail inverts: the console's way of saying which
-  // window the keyboard belongs to. Every frame here is the tunnel's own
-  // hostname, so reaching into one is same-origin and allowed; the try/catch
-  // is for the case where it somehow is not, where the old behaviour is the
-  // right thing to fall back to.
+  // marks the tile so its border goes white: a console's active pane, so a
+  // keystroke's destination is never a guess. Every frame here is the
+  // tunnel's own hostname, so reaching into one is same-origin and allowed;
+  // the try/catch is for the case where it somehow is not, where the old
+  // behaviour is the right thing to fall back to.
   //
   // On load rather than once, because a frame that navigates — an origin
   // redirecting, or reconnecting — replaces the window this was attached to.
@@ -247,9 +259,9 @@
   // The same reach into the frame is what keeps a bare page legible. A page
   // with no CSS at all — a bare "hello", anything a stock dev server hands
   // out without a stylesheet — renders in the browser's light defaults:
-  // black text on a canvas it never painted, which is the board showing
-  // through. Telling that document it is dark switches the defaults it was
-  // already using and nothing else. A page that chose anything — a
+  // black text on a canvas it never painted, which is the terminal's black
+  // showing through. Telling that document it is dark switches the defaults
+  // it was already using and nothing else. A page that chose anything — a
   // stylesheet, a style element, a style attribute, a color-scheme meta — is
   // left exactly as it is; its colours are its own.
   const tiles = [...document.querySelectorAll('.tile')];
@@ -276,15 +288,6 @@
     };
     frame.addEventListener('load', wire);
     wire(); // a frame that is already there when this runs
-  }
-  // A click on a rail hands the keyboard to its frame too: the rail is the
-  // window's title, and a title bar is what you click to bring a window up.
-  for (const tile of tiles) {
-    tile.querySelector('.rail').addEventListener('pointerdown', (e) => {
-      if (e.target.closest('.ctl')) return;
-      try { tile.querySelector('iframe').contentWindow.focus(); } catch (err) { /* nothing to focus */ }
-      activate(tile);
-    });
   }
 
   // Reload one frame. It reloads where it is, not back at the route it began

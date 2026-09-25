@@ -388,7 +388,7 @@ func TestServeShellCarriesTheMessages(t *testing.T) {
 	for _, want := range []string{`<header class="motd">`, `class="message message-warning"`, "<strong>public</strong>", `class="message message-note"`, "Expires soon.",
 		`<span class="label">WARNING</span>`,
 		// The strip's typeface, the one tunnel.pizza sets for everything.
-		"fonts.googleapis.com/css2?family=IBM+Plex+Mono"} {
+		"@xterm/xterm@6.0.0/css/xterm.css"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page does not contain %q", want)
 		}

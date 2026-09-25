@@ -516,15 +516,16 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 ```
 
 One iframe per origin, two columns, and an odd count gives the last tile the
-full width of the final row. Each tile has a rail above its frame, in the
-site's own monospace: the routing index, the local address it reaches, and
-the three things the page can do for the frame — reload it where it is, open
-the origin in a tab of its own, and once the frame has gone somewhere, step it
-back. The rail inverts on the tile that has the keyboard, the way a console
-marks its active window, so a keystroke's destination is never a guess.
-Anything the provider said with the mint sits in a bar above the tiles, solid
-in the colour of how loudly it was said. When a browser is opened at all, this
-is the page it lands on.
+full width of the final row. Each tile is drawn the way the terminal frame
+draws itself — xterm's own stylesheet and the frame's palette — with the local
+address on the top border, the route that reaches it at the other corner as a
+link into a tab of its own, and chips on the bottom border for what the page
+can do for the frame: reload it where it is, and once it has gone somewhere,
+step it back. The border goes white on the tile that has the keyboard, the way
+a console marks its active pane, so a keystroke's destination is never a
+guess. Anything the provider said with the mint sits in a bar above the
+tiles, the same bar the frame draws, in the colour of how loudly it was said.
+When a browser is opened at all, this is the page it lands on.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
