@@ -238,6 +238,7 @@ Every key reaches the container except one:
 | --- | --- |
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
+| — | Messages from the provider sit above the frame in every view. No key moves them. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
 | then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
@@ -516,8 +517,9 @@ tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
 One iframe per origin, two columns, and an odd count gives the last tile the
 full width of the final row. Each tile names its local address in its
 corner controls: one reloads that frame where it is, one opens the origin in
-a tab of its own, and once the frame has gone somewhere a third steps it back. When a browser is opened
-at all, this is the page it lands on.
+a tab of its own, and once the frame has gone somewhere a third steps it back. Anything the provider
+said with the mint sits in a strip above the tiles, coloured by how loudly it
+was said. When a browser is opened at all, this is the page it lands on.
 
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
@@ -562,7 +564,10 @@ those pipeable.
 
 **stderr** carries everything human: the build banner, the origin each address
 reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
-one address, and every origin it serves is listed beneath it.
+one address, and every origin it serves is listed beneath it. After that map
+comes whatever the provider said with the mint — a note, a warning or a
+caution, rendered from its markdown — so the word about this tunnel reaches
+the person who started it, every run, cached spec or fresh.
 
 On a terminal holding both, that reads as a map:
 

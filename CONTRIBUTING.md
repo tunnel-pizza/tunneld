@@ -23,6 +23,7 @@ Deep-link by filename; line numbers will drift.
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| Messages of the day: parsing, and rendering for stderr, the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -875,6 +876,9 @@ are easy to forget:
    tunable;
 3. the field on `BuilderImpl`, in the collaborators group;
 4. `With<Name>(x <Name>) Option` in `v1alpha1.go`, and the default in `New`;
+   a collaborator another package reads (the log ring, the motd board) is
+   built before the builder in `New` and shared into that package through its
+   own `With*` option;
 5. a line in the assertion block, one in the wiring check at the top of
    `Command`, and a row in `TestNewWiresEveryCollaborator`;
 6. a fake in `v1alpha1/builder_test.go` and a case in `TestRun` for what
