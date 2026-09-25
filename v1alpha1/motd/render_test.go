@@ -32,20 +32,25 @@ func TestPrint(t *testing.T) {
 		t.Errorf("Print with nothing learned wrote %q", out.String())
 	}
 
+	// A bytes.Buffer is never a terminal, so Print must fall back to plain
+	// text: no SGR anywhere, and the body as decoded rather than through
+	// glamour (the asterisks survive; glamour would have styled them away).
+	// That also means colour can't be asserted from this call — the
+	// terminal path is exercised live, per the design doc.
 	m := learned(t, "> [!warning]\n> This tunnel is **public**.", "> [!note]\n> Expires soon.")
 	out.Reset()
 	m.Print(&out, 80)
-	plain := sgr.ReplaceAllString(out.String(), "")
-	for _, want := range []string{"WARNING", "This tunnel is", "public", "NOTE", "Expires soon."} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("Print wrote %q, want it to contain %q", plain, want)
+	got := out.String()
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("Print wrote %q, want no SGR off a terminal", got)
+	}
+	for _, want := range []string{"WARNING", "This tunnel is **public**.", "NOTE", "Expires soon."} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Print wrote %q, want it to contain %q", got, want)
 		}
 	}
-	if strings.Index(plain, "WARNING") > strings.Index(plain, "NOTE") {
+	if strings.Index(got, "WARNING") > strings.Index(got, "NOTE") {
 		t.Error("messages printed out of order")
-	}
-	if !strings.Contains(out.String(), "\x1b[") {
-		t.Error("Print wrote no colour; the label should carry the severity's")
 	}
 }
 

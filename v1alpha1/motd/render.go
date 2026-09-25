@@ -6,6 +6,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -15,6 +16,7 @@ import (
 	"github.com/yuin/goldmark/renderer"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/util"
+	"golang.org/x/term"
 )
 
 // Label is the severity as a heading: NOTE, WARNING, CAUTION, or nothing.
@@ -49,9 +51,19 @@ type Rendered struct {
 	HTML     template.HTML
 }
 
+// isTerminal reports whether w is a terminal somebody is reading: an
+// *os.File that the OS says is a tty. A file, a pipe or a buffer is not, and
+// gets plain text — colour and glamour's layout are for eyes, not for grep.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
 // Print writes every message to w for a reader at a terminal width columns
 // wide: the label in the severity's colour, then the body through glamour.
-// A body glamour cannot render is written as it is. Nothing is written when
+// A body glamour cannot render is written as it is. Off a terminal — a file,
+// a pipe, a buffer — colour and glamour are for eyes, not for grep, so the
+// label is written bare and the body as decoded. Nothing is written when
 // there is nothing to say.
 func (m *MotdImpl) Print(w io.Writer, width int) {
 	msgs := m.Messages()
@@ -61,13 +73,21 @@ func (m *MotdImpl) Print(w io.Writer, width int) {
 	if width <= 0 {
 		width = 80
 	}
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(width))
+	terminal := isTerminal(w)
+	var r *glamour.TermRenderer
+	var err error
+	if terminal {
+		r, err = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(width))
+	}
 	for _, msg := range msgs {
 		if label := msg.Severity.Label(); label != "" {
-			_, _ = fmt.Fprintln(w, msg.Severity.styled(label))
+			if terminal {
+				label = msg.Severity.styled(label)
+			}
+			_, _ = fmt.Fprintln(w, label)
 		}
 		body := msg.Body
-		if err == nil && msg.MediaType == "text/markdown" {
+		if terminal && err == nil && msg.MediaType == "text/markdown" {
 			if out, rerr := r.Render(body); rerr == nil {
 				body = out
 			}
