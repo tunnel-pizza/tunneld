@@ -19,6 +19,7 @@ import (
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -351,6 +352,53 @@ func TestServeShell(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page does not contain %q, so a clicked tile will not take focus", want)
 		}
+	}
+}
+
+// testMotd is a panel's messages, fixed.
+type testMotd []motd.Rendered
+
+func (m testMotd) HTML() []motd.Rendered { return []motd.Rendered(m) }
+
+// TestServeShellCarriesTheMessages pins the strip above the tiles: one
+// element per message, classed by severity, carrying the rendered HTML — and
+// no header at all when there is nothing to say.
+func TestServeShellCarriesTheMessages(t *testing.T) {
+	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	if err != nil {
+		t.Fatalf("origins: %v", err)
+	}
+	render := func(d *DisplayImpl) string {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "foo.tunneled.pizza"
+		ic := &fakeIC{}
+		d.Interceptors(true, shown, discard)[0].Handler(ic)
+		ic.installed(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	body := render(New(WithMotd(testMotd{
+		{Severity: motd.SeverityWarning, HTML: "<p>This tunnel is <strong>public</strong>.</p>"},
+		{Severity: motd.SeverityNote, HTML: "<p>Expires soon.</p>"},
+	})))
+	for _, want := range []string{`<header class="motd">`, `class="message message-warning"`, "<strong>public</strong>", `class="message message-note"`, "Expires soon."} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	if strings.Index(body, "message-warning") > strings.Index(body, "message-note") {
+		t.Error("messages rendered out of order")
+	}
+	if strings.Index(body, `<header class="motd">`) > strings.Index(body, `<main class="grid">`) {
+		t.Error("the strip is not above the tiles")
+	}
+
+	if body := render(New()); strings.Contains(body, `class="motd"`) {
+		t.Error("a panel with nothing to say still has a header")
 	}
 }
 

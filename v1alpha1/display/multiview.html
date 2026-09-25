@@ -32,7 +32,10 @@
 
   html, body { height: 100%; margin: 0; }
 
-  body { overflow: hidden; }
+  /* A column so the strip and the grid stack rather than overlap: the strip
+     takes the rows its messages need and the grid is handed whatever is
+     left, below. */
+  body { overflow: hidden; display: flex; flex-direction: column; }
 
   /* macOS hides overlay scrollbars until something moves, and when the page
      does overflow the bar is the only sign that more tiles exist below.
@@ -46,13 +49,27 @@
   body::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
   body::-webkit-scrollbar-corner { background: transparent; }
 
-  /* The grid is the whole page: the frames are the content, and a bar naming
-     the host only repeated what the tab title already says. */
+  /* The provider's word, above the frames: a strip per message, centred,
+     coloured by how loudly it was said. The grid takes what is left. */
+  .motd { flex: none; display: flex; flex-direction: column; gap: .125rem; padding: .25rem .25rem 0; }
+  .message { text-align: center; padding: .375rem .75rem; border-radius: .375rem; border: 1px solid var(--border); background: var(--card); color: var(--card-foreground); }
+  .message p { margin: 0; }
+  .message a { color: inherit; text-decoration: underline; }
+  .message-warning { border-color: oklch(80% .17 80); }
+  .message-note { border-color: oklch(70% .15 230); }
+  .message-caution { border-color: oklch(60% .22 25); }
+
+  /* The grid is the rest of the page: the frames are the content, and a bar
+     naming the host only repeated what the tab title already says. */
   .grid {
     display: flex;
     flex-wrap: wrap;
     gap: .25rem;
-    height: 100%;
+    /* Was height: 100% back when the grid was the whole page; now the strip
+       above it may take a row of its own, so the grid takes whatever height
+       is left instead of assuming it owns the body. */
+    flex: 1;
+    min-height: 0;
     padding: .25rem;
 
     /* Load-bearing, though it is also the initial value: a wrapped flex
@@ -151,6 +168,13 @@
 </head>
 <body>
 
+{{- if .Messages}}
+<header class="motd">
+  {{- range .Messages}}
+  <div class="message message-{{.Severity}}">{{.HTML}}</div>
+  {{- end}}
+</header>
+{{- end}}
 <main class="grid">
   {{- range .Origins}}
   <section class="card tile">

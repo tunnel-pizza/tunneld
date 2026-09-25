@@ -260,7 +260,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithMotd(board),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
-		WithDisplay(display.New()),
+		WithDisplay(display.New(display.WithMotd(board))),
 		WithConsole(console.New(
 			console.WithLogs(recent),
 			console.WithHint(stopHint),
