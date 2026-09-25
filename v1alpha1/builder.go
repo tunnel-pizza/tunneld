@@ -26,6 +26,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
+	"golang.org/x/term"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -225,6 +226,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		}{
 			{"browser", b.display == nil},
 			{"binder", b.binder == nil},
+			{"motd", b.motd == nil},
 		} {
 			if c.missing {
 				err := fmt.Errorf("builder has no %s: construct it with New", c.name)
@@ -611,6 +613,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 		}
 	}
+
+	// What the provider said with the spec, after the map and before the
+	// hand-off: the addresses are the answer, this is the provider's note on
+	// it. Learn here because Messages resolves the spec, which URL returning
+	// has already done. Every run, cached or fresh — the messages ride the
+	// envelope with the spec they came with.
+	b.motd.Learn(tun.Messages(), log)
+	b.motd.Print(stderr, widthOf(stderr))
 
 	// Putting the tunnel in front of a person is the browser package's, both
 	// ways it can be done: a tab, or the console this was started from. What
@@ -1042,6 +1052,17 @@ func label(u *url.URL) string {
 		return bare.String()
 	}
 	return u.String()
+}
+
+// widthOf is the columns a writer has when it is a terminal, and 80 otherwise:
+// what a renderer wraps to.
+func widthOf(w io.Writer) int {
+	if f, ok := w.(*os.File); ok {
+		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 {
+			return width
+		}
+	}
+	return 80
 }
 
 // arguments reports whether a served origin's query is a program's arguments

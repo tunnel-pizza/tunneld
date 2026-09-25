@@ -25,6 +25,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -181,6 +182,32 @@ func WithIdentity(i Identity) Option {
 	return func(b *BuilderImpl) { b.identity = i }
 }
 
+// Motd is what the provider said with the spec, kept for every surface that
+// shows it.
+//
+// Learn takes the strings as libtunnel hands them over — data URLs, severity
+// inside the markdown — once the URL is live, which is when the spec, and so
+// the messages, are known. Print is the builder's own reading, for the console
+// the run was started on; the frame and the panel read the same instance
+// through interfaces they declare themselves (attach.Motd, display.Motd), so
+// the one instance New builds is shared into both, the way the log ring is.
+type Motd interface {
+	Learn(raw []string, log v1.Logger)
+	Print(w io.Writer, width int)
+}
+
+// WithMotd replaces what keeps and renders the provider's messages of the day.
+// The default is motd.New(), shared into the binder and the display; a
+// replacement is shared the same way by whoever builds it:
+//
+//	board := motd.New()
+//	v1alpha1.New(v1alpha1.WithMotd(board),
+//	    v1alpha1.WithDisplay(display.New(display.WithMotd(board))),
+//	    v1alpha1.WithBinder(attach.New(attach.WithMotd(board), …)))
+func WithMotd(m Motd) Option {
+	return func(b *BuilderImpl) { b.motd = m }
+}
+
 // WithBinder replaces what stands a loopback origin in for a container or a
 // program. The default is
 // attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):
@@ -197,6 +224,7 @@ var (
 	_ Display    = (*display.DisplayImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
+	_ Motd       = (*motd.MotdImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -219,11 +247,17 @@ func New(opts ...Option) *BuilderImpl {
 	// later — by which time the binder has already been constructed with it.
 	recent := logs.New()
 
+	// One board for the three places a message is shown, built before the
+	// builder for the same reason the ring is: the binder and the display
+	// are constructed here with it, and the builder learns into it later.
+	board := motd.New()
+
 	b := v1.Apply(&BuilderImpl{recent: recent},
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New()))),
+		WithMotd(board),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
 		WithDisplay(display.New()),
@@ -303,6 +337,9 @@ type BuilderImpl struct {
 	// streams it actually got, and the browser package decides whether it is
 	// what the tunnel gets put in front of.
 	console Console
+
+	// motd keeps what the provider said with the spec for every surface.
+	motd Motd
 
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once
