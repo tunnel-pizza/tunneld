@@ -115,7 +115,9 @@ type Logs interface {
 
 // Motd is where the provider's messages of the day come from, for a frame to
 // draw above the box. Read when the frame draws, like Logs; a frame with no
-// board draws no banner.
+// board draws no banner. Lines returns one row per message whatever the width
+// it is given, and the count is fixed once viewers are connected: the frame
+// sizes the pane from it, and every viewer has to agree on that size.
 type Motd interface {
 	Lines(width int) []string
 }

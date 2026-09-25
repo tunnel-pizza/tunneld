@@ -846,8 +846,9 @@ func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.Termina
 }
 
 // bannerRows is how many rows the messages of the day take above the box:
-// one each, constant for the run and the same for every viewer, which is
-// what lets the pane's size stay one negotiation.
+// one each, since Lines returns one row per message whatever the width, and
+// the count is fixed once viewers are connected. That is what makes it the
+// same for every viewer, and what lets the pane's size stay one negotiation.
 func (s *session) bannerRows() int {
 	if s.motd == nil {
 		return 0

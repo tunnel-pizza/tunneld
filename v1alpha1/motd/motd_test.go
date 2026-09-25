@@ -44,6 +44,8 @@ func TestParse(t *testing.T) {
 		{"other media type", "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("> [!note]\nraw")),
 			Message{"", "text/plain", "> [!note]\nraw"}, false},
 		{"default media type", "data:,hello", Message{"", "text/plain", "hello"}, false},
+		{"media type in any case", "data:Text/Markdown;base64," + base64.StdEncoding.EncodeToString([]byte("> [!note]\nhi")),
+			Message{SeverityNote, "text/markdown", "hi"}, false},
 		{"escape sequences are stripped", dataURL("> [!note]\n> hi\x1b]0;PWNED\x07 there\x1b[31m!"),
 			Message{SeverityNote, "text/markdown", "hi]0;PWNED there[31m!"}, false},
 		{"CRLF is LF", dataURL("> [!note]\r\n> one\r\n> two"),

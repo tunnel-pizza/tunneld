@@ -575,13 +575,11 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 // where its output landed.
 type fakeMotd struct {
 	learned []string
-	printed int
 }
 
 func (f *fakeMotd) Learn(raw []string, _ v1.Logger) { f.learned = raw }
 func (f *fakeMotd) Print(w io.Writer, _ int) {
 	for _, m := range f.learned {
-		f.printed++
 		_, _ = fmt.Fprintf(w, "MOTD %s\n", m)
 	}
 }

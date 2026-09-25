@@ -24,7 +24,7 @@ import (
 func (s Severity) Label() string { return strings.ToUpper(string(s)) }
 
 // Color is the severity's colour on a terminal, the same three hues the panel
-// uses: cyan, yellow, red. Nil when the message has no severity.
+// uses: cyan, orange, red. Nil when the message has no severity.
 func (s Severity) Color() ansi.Color {
 	switch s {
 	case SeverityNote:

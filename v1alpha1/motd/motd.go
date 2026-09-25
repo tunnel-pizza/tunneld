@@ -96,6 +96,9 @@ func parse(s string) (Message, error) {
 		return Message{}, errors.New("data URL has no comma")
 	}
 	mediaType, params, _ := strings.Cut(header, ";")
+	// Media types are case-insensitive (RFC 2045), so one is compared, and
+	// kept, lower-cased: TEXT/Markdown is still markdown.
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
 	if mediaType == "" {
 		mediaType = "text/plain" // RFC 2397's default
 	}
