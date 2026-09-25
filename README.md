@@ -730,7 +730,7 @@ func WithOpen(open bool) Option                   // force the browser decision;
 func WithMultiview(mv bool) Option                // frame the origins together; default true
 func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
 func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
-func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
+func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, the provider's messages, logs
 ```
 
 There are no fluent setters: every knob is an option passed to `New`, and

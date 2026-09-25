@@ -76,7 +76,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, implemented respectively by `cache`, `display`, `attach`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, `Console`, `Identity`, `Motd`, implemented respectively by `cache`,
+`display`, `attach`, `console`, `identity`, `motd`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
