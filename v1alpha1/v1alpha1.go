@@ -140,8 +140,11 @@ type Display interface {
 }
 
 // WithDisplay replaces what serves the tunnel's bare address and opens it
-// once the tunnel is live. The default is display.New(): the panel from
-// multiview.html, and the host's browser launched as-is.
+// once the tunnel is live. The default is display.New(display.WithMotd(board)):
+// the panel from multiview.html, and the host's browser launched as-is, with
+// board the one motd instance New also gives WithMotd, so the panel shows
+// what the builder learned. A replacement that should show the messages is
+// built with that same board.
 func WithDisplay(display Display) Option {
 	return func(b *BuilderImpl) { b.display = display }
 }
@@ -210,8 +213,14 @@ func WithMotd(m Motd) Option {
 
 // WithBinder replaces what stands a loopback origin in for a container or a
 // program. The default is
-// attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…)):
-// attach serves, and each provider resolves the one scheme it answers.
+//
+//	attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…),
+//	    attach.WithLogs(recent), attach.WithMotd(board))
+//
+// attach serves, and each provider resolves the one scheme it answers. recent
+// is the log ring New shares with the console and board the motd instance it
+// gives WithMotd; a replacement built without them serves a frame whose logs
+// view is empty and with no messages above it.
 func WithBinder(binder Binder) Option {
 	return func(b *BuilderImpl) { b.binder = binder }
 }

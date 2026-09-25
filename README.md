@@ -230,7 +230,8 @@ the space empty, and one that has not spoken since you connected shows whatever
 it last said.
 
 A narrow window drops what it cannot hold, in order: the build first, then the
-counts, and the keys last.
+counts, and the keys last. Above the frame, centred and one row each, sit the
+messages the provider sent with the mint, as text with their links by name.
 
 Every key reaches the container except one:
 
@@ -238,13 +239,13 @@ Every key reaches the container except one:
 | --- | --- |
 | `Ctrl+K` | Opens the frame's commands. The container never sees it. |
 | wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
-| — | Messages from the provider sit above the frame in every view. No key moves them. |
 | then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
 | then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
+| — | Messages from the provider sit above the frame in every view. No key moves them. |
 
 ### No arguments at all
 
@@ -566,7 +567,8 @@ those pipeable.
 reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
 one address, and every origin it serves is listed beneath it. After that map
 comes whatever the provider said with the mint — a note, a warning or a
-caution, rendered from its markdown — so the word about this tunnel reaches
+caution, rendered from its markdown on a terminal and printed as its text
+anywhere else — so the word about this tunnel reaches
 the person who started it, every run, cached spec or fresh.
 
 On a terminal holding both, that reads as a map:
@@ -737,13 +739,17 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is only `Command` and `Name`. An embedder on the old shape
 changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithCache`, `WithDisplay` and
-`WithBinder`, which swap the collaborators the tunnel run composes, and
-`WithTunnelFactory`, which replaces `libtunnel.From` as how a spec becomes a
-tunnel — `WithCache(nil)` being how an embedder turns caching off, and what
-`--no-cache` leaves a run in. They are a contributor's and a test's
-concern, not an embedder's — see
+`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithBinder`,
+`WithConsole`, `WithIdentity` and `WithMotd`, which swap the collaborators the
+tunnel run composes, and `WithTunnelFactory`, which replaces `libtunnel.From`
+as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
+caching off, and what `--no-cache` leaves a run in. They are a contributor's
+and a test's concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
+The motd board and the log ring are built once in `New` and shared through
+their own options — the board into the display and the binder, the ring into
+the console and the binder — so an embedder replacing one of those passes the
+same instance.
 
 What `v1` declares — the contract it satisfies, and the option type every
 `New` takes:
