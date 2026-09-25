@@ -92,6 +92,11 @@ func TestLines(t *testing.T) {
 		t.Errorf("wide row = %q has width %d, want at most 12", row, w)
 	}
 
+	linked := learned(t, "> [!warning]\n> This tunnel is **public**. [manage](https://tunnel.pizza/cnuss?utm_source=x)")
+	if got := sgr.ReplaceAllString(linked.Lines(80)[0], ""); got != "WARNING This tunnel is public. manage" {
+		t.Errorf("row = %q, want the message's text with the link as its text", got)
+	}
+
 	if got := New().Lines(40); got != nil {
 		t.Errorf("Lines with nothing learned = %v, want nil", got)
 	}

@@ -15,6 +15,7 @@ import (
 	gmast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/renderer"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 	"golang.org/x/term"
 )
@@ -110,7 +111,11 @@ func (m *MotdImpl) Lines(width int) []string {
 	}
 	rows := make([]string, 0, len(msgs))
 	for _, msg := range msgs {
-		text := strings.Join(strings.Fields(msg.Body), " ")
+		body := msg.Body
+		if msg.MediaType == "text/markdown" {
+			body = plainText(body)
+		}
+		text := strings.Join(strings.Fields(body), " ")
 		if label := msg.Severity.Label(); label != "" {
 			text = strings.TrimSpace(label + " " + text)
 		}
@@ -120,6 +125,40 @@ func (m *MotdImpl) Lines(width int) []string {
 		rows = append(rows, msg.Severity.styled(text))
 	}
 	return rows
+}
+
+// plainText is what a markdown body says, without its markup: the text of
+// every node, a link by its text with its destination dropped, a code span by
+// its literal, with a space between blocks and at line breaks so words never
+// run together. A frame's row is one line for a viewer's eye; a raw
+// [text](url) reads as broken there and its URL eats the width, while the
+// link's text is what the message says.
+func plainText(body string) string {
+	src := []byte(body)
+	doc := markdown.Parser().Parse(text.NewReader(src))
+	var b strings.Builder
+	_ = gmast.Walk(doc, func(n gmast.Node, entering bool) (gmast.WalkStatus, error) {
+		if !entering {
+			return gmast.WalkContinue, nil
+		}
+		switch n := n.(type) {
+		case *gmast.Text:
+			b.Write(n.Segment.Value(src))
+			if n.SoftLineBreak() || n.HardLineBreak() {
+				b.WriteByte(' ')
+			}
+		case *gmast.String:
+			b.Write(n.Value)
+		case *gmast.AutoLink:
+			b.Write(n.Label(src))
+		default:
+			if n.Type() == gmast.TypeBlock {
+				b.WriteByte(' ')
+			}
+		}
+		return gmast.WalkContinue, nil
+	})
+	return b.String()
 }
 
 // newTab customizes goldmark's HTML rendering for the panel: links open in a
