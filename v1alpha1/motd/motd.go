@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/tunnel-pizza/tunneld/v1"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // Severity is how loudly a message was said, from the alert line that opened
