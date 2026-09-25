@@ -147,6 +147,28 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	}
 }
 
+// TestNegotiateResizesForALateBanner pins the banner that arrives after the
+// session sized itself. The messages come with the mint, after the session
+// has started, so a viewer of exactly the size the session began at still
+// has to shrink the pane by their rows — or the screen is drawn taller than
+// the box it sits in.
+func TestNegotiateResizesForALateBanner(t *testing.T) {
+	s := &session{
+		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight),
+		viewers: map[*viewer]struct{}{},
+		size:    size(80, 24),
+	}
+	s.motd = testMotd{"WARNING public", "NOTE"}
+
+	s.viewers[&viewer{wake: make(chan struct{}, 1), size: size(80, 24)}] = struct{}{}
+	if got, want := s.negotiate(), size(80-chromeWidth, 24-chromeHeight-2); got != want {
+		t.Errorf("an unchanged window under a new banner settled on %v, want %v", got, want)
+	}
+	if w, h := s.em.Width(), s.em.Height(); w != 80-chromeWidth || h != 24-chromeHeight-2 {
+		t.Errorf("emulator is %dx%d, want %dx%d", w, h, 80-chromeWidth, 24-chromeHeight-2)
+	}
+}
+
 // TestPaneOfLeavesRoomForTheBanner pins the chrome a banner adds: one row per
 // message off the pane, the one-row floor kept when the window has no room.
 func TestPaneOfLeavesRoomForTheBanner(t *testing.T) {

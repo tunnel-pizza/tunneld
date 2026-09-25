@@ -806,15 +806,23 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 			h = v.size.Height
 		}
 	}
-	if w == 0 || h == 0 || (w == s.size.Width && h == s.size.Height) {
+	if w == 0 || h == 0 {
 		return remotecommand.TerminalSize{} // nothing to apply
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
+	// Decided by the pane, not the window. The banner can grow between the
+	// first stream and the first viewer — the messages come with the mint,
+	// after the session has started — so a window the session already
+	// settled on can still need a shorter pane, and a guard on the window
+	// alone would leave the screen taller than the box drawn around it.
 	pane := paneOf(s.size, s.bannerRows())
 	s.screen.Lock()
+	defer s.screen.Unlock()
+	if int(pane.Width) == s.em.Width() && int(pane.Height) == s.em.Height() {
+		return remotecommand.TerminalSize{} // nothing to apply
+	}
 	s.em.Resize(int(pane.Width), int(pane.Height))
-	s.screen.Unlock()
 	return pane
 }
 
