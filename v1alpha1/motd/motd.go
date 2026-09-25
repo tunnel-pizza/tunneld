@@ -77,7 +77,13 @@ func (m *MotdImpl) Messages() []Message {
 	return *p
 }
 
-var alertLine = regexp.MustCompile(`(?i)^>\s*\[!(note|warning|caution)\]\s*$`)
+// alertLine matches a GitHub-style alert marker, with the rest of its line
+// captured in group 2: tunnel.pizza writes the message's first sentence on
+// the marker's own line ("> [!warning] This tunnel is publicly accessible."),
+// while GitHub's own form leaves the marker alone on its line. Both are read
+// the same way; parse below folds a non-empty group 2 back into the body as
+// its first line.
+var alertLine = regexp.MustCompile(`(?i)^>\s*\[!(note|warning|caution)\]\s*(.*)$`)
 
 // parse reads one data URL into a Message.
 func parse(s string) (Message, error) {
@@ -129,6 +135,9 @@ func parse(s string) (Message, error) {
 	for i, l := range lines {
 		l = strings.TrimPrefix(l, ">")
 		lines[i] = strings.TrimPrefix(l, " ")
+	}
+	if text := strings.TrimSpace(m[2]); text != "" {
+		lines = append([]string{text}, lines...)
 	}
 	msg.Body = strings.Join(lines, "\n")
 	return msg, nil
