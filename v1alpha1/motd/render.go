@@ -78,7 +78,12 @@ func (m *MotdImpl) Print(w io.Writer, width int) {
 	var r *glamour.TermRenderer
 	var err error
 	if terminal {
-		r, err = glamour.NewTermRenderer(glamour.WithAutoStyle(), glamour.WithWordWrap(width))
+		// A fixed style, not glamour's auto style: auto makes termenv ask the
+		// terminal for its background colour and read the reply off the
+		// operator's terminal, right before the console frame takes stdin
+		// over. The frame's own chrome is fixed-colour for the same reason,
+		// so the body follows it.
+		r, err = glamour.NewTermRenderer(glamour.WithStandardStyle("dark"), glamour.WithWordWrap(width))
 	}
 	for _, msg := range msgs {
 		if label := msg.Severity.Label(); label != "" {
