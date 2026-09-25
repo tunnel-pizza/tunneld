@@ -2,12 +2,16 @@ package motd
 
 import (
 	"bytes"
+	"io"
+	"log/slog"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"log/slog"
+	"github.com/creack/pty"
 )
 
 var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -51,6 +55,58 @@ func TestPrint(t *testing.T) {
 	}
 	if strings.Index(got, "WARNING") > strings.Index(got, "NOTE") {
 		t.Error("messages printed out of order")
+	}
+}
+
+// TestPrintOnATerminal pins the path TestPrint cannot reach: on a real tty
+// the label is coloured and the body goes through glamour, so the emphasis
+// markers are gone from what the operator reads.
+func TestPrintOnATerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no pty on Windows")
+	}
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to be a terminal on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+
+	// The master is read on its own goroutine: a pty's buffer is small, and
+	// Print would block on a full one if nothing drained it. Reading stops at
+	// a marker written after Print rather than at the tty's close, since a
+	// closing tty may discard what the master has not read yet.
+	const done = "--done--"
+	read := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		buf := make([]byte, 4096)
+		for !strings.Contains(b.String(), done) {
+			n, err := ptmx.Read(buf)
+			b.Write(buf[:n])
+			if err != nil {
+				break
+			}
+		}
+		read <- b.String()
+	}()
+	learned(t, "> [!warning]\n> Be **careful**.").Print(tty, 60)
+	_, _ = io.WriteString(tty, done+"\n")
+
+	var got string
+	select {
+	case got = <-read:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing came back from the pty")
+	}
+	at := strings.Index(got, "WARNING")
+	if at < 0 {
+		t.Fatalf("Print wrote %q, want the label", got)
+	}
+	if !strings.Contains(got[:at], "\x1b[") {
+		t.Errorf("Print wrote %q, want an SGR sequence before the label", got)
+	}
+	if !strings.Contains(got, "careful") || strings.Contains(got, "**") {
+		t.Errorf("Print wrote %q, want the emphasis rendered by glamour", got)
 	}
 }
 

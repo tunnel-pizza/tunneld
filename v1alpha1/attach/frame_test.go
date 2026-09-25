@@ -1777,6 +1777,25 @@ func TestBannerSitsAboveTheBox(t *testing.T) {
 			h.press(t, commandKey)
 			h.press(t, tea.Key{Code: 'l'})
 		},
+		// Scrolled back: enough lines to push most into the emulator's
+		// history, then one notch up. The banner is the frame's, not the
+		// screen's, so looking back through what scrolled off keeps it.
+		func() {
+			h.press(t, tea.Key{Code: tea.KeyEscape})
+			h.scrollOff(t, 1, 3*defaultRows)
+			h.wheel(t, tea.MouseWheelUp, 5, 5)
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "↑1") {
+				t.Fatalf("bottom border = %q, want the view scrolled back one line", bottom)
+			}
+		},
+		// The QR code, ^K q.
+		func() {
+			h.press(t, commandKey)
+			h.press(t, typing('q'))
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "back to the terminal") {
+				t.Fatalf("bottom border = %q, want the QR view", bottom)
+			}
+		},
 	} {
 		view()
 		if got := strings.TrimSpace(stripSGR(strings.Split(h.f.View().Content, "\n")[0])); got != "WARNING public" {
