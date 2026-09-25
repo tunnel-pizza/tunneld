@@ -182,6 +182,13 @@ type frame struct {
 	// having ended while lingering.
 	linger bool
 	ended  bool
+
+	// embedded is this viewer being a tile in the multiview panel, which
+	// already shows what the provider said, once, in its own bar above every
+	// tile. A frame that drew the bar as well would put the same warning on the
+	// page once per terminal plus the panel's own, so an embedded frame draws
+	// none. The page says which it is on the socket's path; see index.html.
+	embedded bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -561,10 +568,22 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // place relative to the screen everywhere too, instead of a screen-height
 // above it in a window much larger than the smallest.
 func (f frame) box() uv.Rectangle {
-	banner := f.sess.bannerRows()
+	banner := f.barRows()
 	w, h := f.sess.paneSize()
 	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight+banner)
 	return uv.Rect((f.width-w)/2, (f.height-h)/2, w, h)
+}
+
+// barRows is how many rows this frame's own bar takes: the session's count, or
+// none for a viewer embedded in the panel, whose bar is the panel's. The pane
+// is sized for the session's count either way — it is one screen shared by
+// every viewer — so an embedded box is that many rows shorter than its window
+// and centres in it like any box smaller than its window does.
+func (f frame) barRows() int {
+	if f.embedded {
+		return 0
+	}
+	return f.sess.bannerRows()
 }
 
 // frameRect is the box less its bar: the rectangle the border is drawn
@@ -576,7 +595,7 @@ func (f frame) box() uv.Rectangle {
 // box, and the box stays the answer only to where the whole thing is.
 func (f frame) frameRect() uv.Rectangle {
 	box := f.box()
-	banner := min(f.sess.bannerRows(), box.Dy())
+	banner := min(f.barRows(), box.Dy())
 	return uv.Rect(box.Min.X, box.Min.Y+banner, box.Dx(), box.Dy()-banner)
 }
 
@@ -690,8 +709,11 @@ func (f frame) View() tea.View {
 // separately, so a message with no severity leaves the row exactly as it was
 // drawn. An island of colour in the middle of the row reads as a chip;
 // spanning the box is what makes it a notice.
+//
+// An embedded viewer draws none: the panel around it is showing the same
+// messages already. See embedded.
 func (f frame) drawBanner(buf uv.ScreenBuffer) {
-	if f.sess.motd == nil {
+	if f.embedded || f.sess.motd == nil {
 		return
 	}
 	box := f.box()

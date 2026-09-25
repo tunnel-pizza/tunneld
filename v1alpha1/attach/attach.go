@@ -698,7 +698,13 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 
 	// The attach handler hands the request to ServeAttach, which owns the
 	// websocket upgrade and the v4.channel.k8s.io framing on it.
-	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {
+	//
+	// embedded is the page being a tile in the multiview panel, which says so
+	// by the path it dials: the panel shows the provider's messages once, in
+	// its own bar, and a viewer drawing them again inside every tile repeats
+	// the same warning down the page. Both paths are the same socket in every
+	// other respect, the Origin check included.
+	attach := func(w http.ResponseWriter, r *http.Request, embedded bool) {
 		// Refuse a handshake that came from somewhere else. A websocket is exempt
 		// from the same-origin policy — new WebSocket() reaches any host the page
 		// can resolve, with no preflight in the way — and the Handshake wsstream
@@ -744,6 +750,9 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 		// "simplify" this back to r.Context().
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
+		if embedded {
+			ctx = context.WithValue(ctx, embeddedKey{}, true)
+		}
 
 		r = r.WithContext(ctx)
 
@@ -760,7 +769,9 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 		remotecommand.ServeAttach(w, r, s.session, name, "", name, opts,
 			idleTimeout, remotecommand.DefaultStreamCreationTimeout,
 			remotecommand.SupportedStreamingProtocols)
-	})
+	}
+	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) { attach(w, r, false) })
+	mux.HandleFunc("GET /attach/embedded", func(w http.ResponseWriter, r *http.Request) { attach(w, r, true) })
 
 	s.srv = &http.Server{
 		Handler:           mux,

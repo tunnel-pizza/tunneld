@@ -1899,3 +1899,38 @@ func TestBannerNeverEatsTheWholeWindow(t *testing.T) {
 	h.window(40, 4)
 	_ = h.f.View() // must not panic
 }
+
+// TestAnEmbeddedViewerDrawsNoBar pins a viewer framed by the multiview panel:
+// the panel already shows what the provider said, once, above every tile, so
+// the frame inside a tile draws no bar of its own. The pane is still the
+// session's, shorter by the bar everyone else has, so the box has a spare row
+// in the window and the border is where the box starts.
+//
+// The same session with the flag down is the control: the bar is still there
+// for a viewer in its own right. TestBannerSitsAboveTheBox covers that viewer
+// whole.
+func TestAnEmbeddedViewerDrawsNoBar(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"WARNING public"}
+	h.f.embedded = true
+	h.window(defaultCols, defaultRows)
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if !strings.Contains(lines[0], "╭") {
+		t.Errorf("row 0 = %q, want the box's top border", stripSGR(lines[0]))
+	}
+	for i, line := range lines {
+		if strings.Contains(stripSGR(line), "WARNING") {
+			t.Errorf("row %d = %q, want no bar in an embedded viewer", i, stripSGR(line))
+		}
+	}
+	if pane := h.f.pane(); pane.Min.Y != 1 {
+		t.Errorf("pane starts at row %d, want 1 (the border alone)", pane.Min.Y)
+	}
+
+	h.f.embedded = false
+	lines = strings.Split(h.f.View().Content, "\n")
+	if got := strings.TrimSpace(stripSGR(lines[0])); got != "WARNING public" {
+		t.Errorf("row 0 = %q, want the bar back for a viewer in its own right", got)
+	}
+}

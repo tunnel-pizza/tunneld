@@ -181,6 +181,13 @@ type viewer struct {
 	said chan []byte
 }
 
+// embeddedKey marks an attach request's context as coming from a page framed
+// by the multiview panel, which dials /attach/embedded rather than /attach.
+// A context value rather than a parameter because the request reaches
+// AttachContainer through ServeAttach, whose signature is the streaming
+// library's and has no room for one.
+type embeddedKey struct{}
+
 // watch builds the scanner that reads what a program says about itself, ahead
 // of the emulator. Split out of newSession so a frame test can drive a session
 // the way a real stream does.
@@ -621,10 +628,11 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	s.revive()
 
 	width, height := s.window()
+	embedded, _ := ctx.Value(embeddedKey{}).(bool)
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height},
+		frame{sess: s, v: v, width: width, height: height, embedded: embedded},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
@@ -849,6 +857,10 @@ func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.Termina
 // one each, since Lines returns one row per message whatever the width, and
 // the count is fixed once viewers are connected. That is what makes it the
 // same for every viewer, and what lets the pane's size stay one negotiation.
+//
+// The count is the session's, not any one frame's. A viewer embedded in the
+// panel draws no bar, and simply has this many spare rows around its box:
+// the screen stays one size for everybody rather than one per kind of viewer.
 func (s *session) bannerRows() int {
 	if s.motd == nil {
 		return 0

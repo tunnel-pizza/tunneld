@@ -230,7 +230,18 @@
   // would let a second tab's container steal this one's socket, and a
   // websocket handshake sends no Referer for the tunnel to route by.
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/attach' + location.search,
+  // Framed by the panel, the page says so on its socket's path: the panel
+  // already shows what the provider said, once, in its own bar, so the frame
+  // this viewer gets draws none — a page of terminals is not a page of the
+  // same warning repeated. Only the top document is a viewer in its own
+  // right. Comparing window.top is allowed across origins, which a tile is —
+  // the panel is served from its own hostname — so the catch is for a browser
+  // stricter than that, where a top that cannot even be looked at is still a
+  // page inside somebody else's.
+  let embedded = false;
+  try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+  const path = embedded ? '/attach/embedded' : '/attach';
+  const ws = new WebSocket(proto + '//' + location.host + path + location.search,
                            ['v4.channel.k8s.io']);
   ws.binaryType = 'arraybuffer';
 
