@@ -118,7 +118,7 @@ func parse(s string) (Message, error) {
 	if !utf8.Valid(body) {
 		return Message{}, errors.New("not UTF-8")
 	}
-	msg := Message{MediaType: mediaType, Body: string(body)}
+	msg := Message{MediaType: mediaType, Body: sanitize(string(body))}
 	if mediaType != "text/markdown" {
 		return msg, nil
 	}
@@ -141,4 +141,25 @@ func parse(s string) (Message, error) {
 	}
 	msg.Body = strings.Join(lines, "\n")
 	return msg, nil
+}
+
+// sanitize makes a message's text safe to print: CRLF becomes LF, and every
+// other control character goes, except the newline and the tab that shape
+// the text. The provider is a remote host chosen with --provider, and its
+// text is printed on the operator's terminal and replayed from the cache on
+// every later run, so a title-setting or clipboard-writing sequence in a
+// message must never reach that terminal. Deleting ESC (and BEL, and the C1
+// introducers) is enough: what is left of a sequence is inert text, so
+// nothing here has to parse one.
+func sanitize(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return -1
+		}
+		return r
+	}, s)
 }
