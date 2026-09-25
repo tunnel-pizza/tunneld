@@ -1,0 +1,126 @@
+package motd
+
+import (
+	"bytes"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+	"log/slog"
+)
+
+var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func learned(t *testing.T, markdown ...string) *MotdImpl {
+	t.Helper()
+	m := New()
+	raw := make([]string, len(markdown))
+	for i, md := range markdown {
+		raw[i] = dataURL(md)
+	}
+	m.Learn(raw, slog.New(slog.DiscardHandler))
+	return m
+}
+
+// TestPrint pins the stderr rendering: a label per message, the body rendered
+// after it, nothing at all when there is nothing to say.
+func TestPrint(t *testing.T) {
+	var out bytes.Buffer
+	New().Print(&out, 80)
+	if out.Len() != 0 {
+		t.Errorf("Print with nothing learned wrote %q", out.String())
+	}
+
+	m := learned(t, "> [!warning]\n> This tunnel is **public**.", "> [!note]\n> Expires soon.")
+	out.Reset()
+	m.Print(&out, 80)
+	plain := sgr.ReplaceAllString(out.String(), "")
+	for _, want := range []string{"WARNING", "This tunnel is", "public", "NOTE", "Expires soon."} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("Print wrote %q, want it to contain %q", plain, want)
+		}
+	}
+	if strings.Index(plain, "WARNING") > strings.Index(plain, "NOTE") {
+		t.Error("messages printed out of order")
+	}
+	if !strings.Contains(out.String(), "\x1b[") {
+		t.Error("Print wrote no colour; the label should carry the severity's")
+	}
+}
+
+// TestLines pins the frame's row per message: label and body on one line,
+// newlines folded, truncated to the width with an ellipsis, and a message that
+// is only its alert line still gets a row.
+func TestLines(t *testing.T) {
+	m := learned(t, "> [!caution]\n> line one\n> line two", "> [!warning]", "no alert here")
+	lines := m.Lines(40)
+	if len(lines) != 3 {
+		t.Fatalf("Lines() gave %d rows, want one per message", len(lines))
+	}
+	plain := make([]string, len(lines))
+	for i, l := range lines {
+		plain[i] = sgr.ReplaceAllString(l, "")
+	}
+	if plain[0] != "CAUTION line one line two" {
+		t.Errorf("row 0 = %q, want label and the body on one line", plain[0])
+	}
+	if plain[1] != "WARNING" {
+		t.Errorf("row 1 = %q, want the bare label", plain[1])
+	}
+	if plain[2] != "no alert here" {
+		t.Errorf("row 2 = %q, want the body with no label", plain[2])
+	}
+	if !strings.Contains(lines[0], "\x1b[") {
+		t.Error("a caution row carries no colour")
+	}
+
+	long := learned(t, "> [!note]\n> "+strings.Repeat("x", 100))
+	row := sgr.ReplaceAllString(long.Lines(20)[0], "")
+	if w := ansi.StringWidth(row); w != 20 || !strings.HasSuffix(row, "…") {
+		t.Errorf("truncated row = %q (width %d), want width 20 ending in …", row, w)
+	}
+
+	wide := learned(t, "> [!note]\n> 日本語のメッセージです")
+	row = sgr.ReplaceAllString(wide.Lines(12)[0], "")
+	if w := ansi.StringWidth(row); w > 12 {
+		t.Errorf("wide row = %q has width %d, want at most 12", row, w)
+	}
+
+	if got := New().Lines(40); got != nil {
+		t.Errorf("Lines with nothing learned = %v, want nil", got)
+	}
+}
+
+// TestHTML pins the panel's rendering: markdown becomes HTML, raw HTML in a
+// message is escaped rather than served, links open in a new tab, and a
+// non-markdown message is escaped text.
+func TestHTML(t *testing.T) {
+	m := learned(t, "> [!warning]\n> Be **careful** <script>alert(1)</script> and see [docs](https://tunnel.pizza/docs).")
+	r := m.HTML()
+	if len(r) != 1 || r[0].Severity != SeverityWarning {
+		t.Fatalf("HTML() = %+v, want one warning", r)
+	}
+	h := string(r[0].HTML)
+	for _, want := range []string{"<strong>careful</strong>", "&lt;script&gt;", `href="https://tunnel.pizza/docs"`, `target="_blank"`, `rel="noopener"`} {
+		if !strings.Contains(h, want) {
+			t.Errorf("HTML = %q, want it to contain %q", h, want)
+		}
+	}
+	if strings.Contains(h, "<script>") {
+		t.Errorf("HTML = %q served raw HTML from a message", h)
+	}
+
+	plain := New()
+	plain.Learn([]string{"data:text/plain,<b>not markdown</b>"}, slog.New(slog.DiscardHandler))
+	if got := string(plain.HTML()[0].HTML); got != "<p>&lt;b&gt;not markdown&lt;/b&gt;</p>" {
+		t.Errorf("text/plain HTML = %q, want it escaped in a paragraph", got)
+	}
+	if got := New().HTML(); got != nil {
+		t.Errorf("HTML with nothing learned = %v, want nil", got)
+	}
+	// A message that is only its alert line: one entry, an empty body, no panic.
+	if got := learned(t, "> [!caution]").HTML(); len(got) != 1 || got[0].Severity != SeverityCaution || got[0].HTML != "" {
+		t.Errorf("alert-only HTML = %+v, want one caution with an empty body", got)
+	}
+}
