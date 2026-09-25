@@ -588,7 +588,7 @@ func roomFor(f frame) (all, withoutBuild int) {
 // follows the window. A test that wants the two to differ sets the fields.
 func (h *harness) window(width, height int) {
 	h.f.width, h.f.height = width, height
-	h.s.em.Resize(max(1, width-chromeWidth), max(1, height-chromeHeight))
+	h.s.em.Resize(max(1, width-chromeWidth), max(1, height-chromeHeight-h.s.bannerRows()))
 }
 
 // bottomOf is the frame's bottom border row as it renders now.
@@ -1737,4 +1737,60 @@ func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, " r ") || !strings.Contains(bottom, "restart") {
 		t.Errorf("bottom border = %q, want r restart offered for a program", bottom)
 	}
+}
+
+// TestBannerSitsAboveTheBox pins the messages of the day: one row per
+// message at the top of the window, centred, in every view the frame has,
+// with the box below them and the pane shorter by their count.
+func TestBannerSitsAboveTheBox(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"WARNING public", "NOTE 日本語"}
+	h.window(defaultCols, defaultRows)
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if got := strings.TrimSpace(stripSGR(lines[0])); got != "WARNING public" {
+		t.Errorf("row 0 = %q, want the first message", got)
+	}
+	if got := strings.TrimSpace(stripSGR(lines[1])); got != "NOTE 日本語" {
+		t.Errorf("row 1 = %q, want the second message", got)
+	}
+	// Centred: as much space before as after, within a cell. The render
+	// trims a row's trailing blanks, so what is after is measured against
+	// the window rather than read off the row.
+	plain := strings.TrimRight(stripSGR(lines[0]), " ")
+	left := len(plain) - len(strings.TrimLeft(plain, " "))
+	right := defaultCols - uv.NewStyledString(plain).UnicodeWidth()
+	if d := left - right; d < -1 || d > 1 {
+		t.Errorf("row 0 has %d cells left and %d right, want centred", left, right)
+	}
+	if !strings.Contains(lines[2], "╭") {
+		t.Errorf("row 2 = %q, want the box's top border under the banner", stripSGR(lines[2]))
+	}
+	if pane := h.f.pane(); pane.Min.Y != 3 {
+		t.Errorf("pane starts at row %d, want 3 (two banner rows and the border)", pane.Min.Y)
+	}
+
+	for _, view := range []func(){
+		func() { h.press(t, commandKey) },
+		func() {
+			h.press(t, tea.Key{Code: tea.KeyEscape})
+			h.press(t, commandKey)
+			h.press(t, tea.Key{Code: 'l'})
+		},
+	} {
+		view()
+		if got := strings.TrimSpace(stripSGR(strings.Split(h.f.View().Content, "\n")[0])); got != "WARNING public" {
+			t.Errorf("a frame view lost the banner: row 0 = %q", got)
+		}
+	}
+}
+
+// TestBannerNeverEatsTheWholeWindow pins the short window: the banner rows
+// are drawn, the pane keeps its one-row floor, and nothing indexes past the
+// buffer.
+func TestBannerNeverEatsTheWholeWindow(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"a", "b", "c"}
+	h.window(40, 4)
+	_ = h.f.View() // must not panic
 }

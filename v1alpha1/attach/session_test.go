@@ -147,6 +147,26 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	}
 }
 
+// TestPaneOfLeavesRoomForTheBanner pins the chrome a banner adds: one row per
+// message off the pane, the one-row floor kept when the window has no room.
+func TestPaneOfLeavesRoomForTheBanner(t *testing.T) {
+	for _, tc := range []struct {
+		window       remotecommand.TerminalSize
+		banner       int
+		wantW, wantH uint16
+	}{
+		{remotecommand.TerminalSize{Width: 80, Height: 24}, 0, 78, 22},
+		{remotecommand.TerminalSize{Width: 80, Height: 24}, 2, 78, 20},
+		{remotecommand.TerminalSize{Width: 80, Height: 3}, 2, 78, 1},
+		{remotecommand.TerminalSize{Width: 2, Height: 24}, 1, 1, 21},
+	} {
+		got := paneOf(tc.window, tc.banner)
+		if got.Width != tc.wantW || got.Height != tc.wantH {
+			t.Errorf("paneOf(%v, %d) = %dx%d, want %dx%d", tc.window, tc.banner, got.Width, got.Height, tc.wantW, tc.wantH)
+		}
+	}
+}
+
 // TestClipboardReplyReachesTheContainerOnlyWhenAsked pins the guard: a reply to
 // an outstanding OSC 52 query is written to the container's stdin, and an
 // unsolicited one — the danger of forwarding the query at all — is dropped.

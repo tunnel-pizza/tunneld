@@ -554,9 +554,10 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // edges — half the difference each way — where a top-left box would move one;
 // the return is a screen that sits where a reader's eye already is.
 func (f frame) box() uv.Rectangle {
+	top := f.sess.bannerRows()
 	w, h := f.sess.paneSize()
-	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight)
-	return uv.Rect((f.width-w)/2, (f.height-h)/2, w, h)
+	w, h = min(f.width, w+chromeWidth), min(max(0, f.height-top), h+chromeHeight)
+	return uv.Rect((f.width-w)/2, top+(f.height-top-h)/2, w, h)
 }
 
 // pane is the area inside the border, in this viewer's window.
@@ -591,13 +592,6 @@ func (f frame) View() tea.View {
 	// the same way on both, in stream order, copied on release.
 	view.MouseMode = tea.MouseModeCellMotion
 
-	pane := f.pane()
-	if pane.Dx() <= 0 || pane.Dy() <= 0 {
-		// No room to frame anything. Better an empty screen than a border
-		// drawn over the only rows the container had.
-		return view
-	}
-
 	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
 	// width method, which is what makes a wide character occupy two columns
 	// here the way it does on the terminal this is drawn for.
@@ -606,6 +600,27 @@ func (f frame) View() tea.View {
 	buf := uv.NewScreenBuffer(f.width, f.height)
 	border := uv.RoundedBorder().Style(borderStyle)
 	border.Draw(buf, f.box())
+
+	// The provider's word, above the box in every view: one row per message,
+	// centred, and no key touches it.
+	if f.sess.motd != nil {
+		for i, line := range f.sess.motd.Lines(f.width) {
+			if i >= f.height {
+				break
+			}
+			x := max(0, (f.width-ansi.StringWidth(line))/2)
+			uv.NewStyledString(line).Draw(buf, uv.Rect(x, i, f.width-x, 1))
+		}
+	}
+
+	// No room to frame a screen. The border and the banner are what there
+	// is; the pane, its labels and the cursor wait for a window that fits
+	// them, rather than being drawn over the rows the box has.
+	pane := f.pane()
+	if pane.Dx() <= 0 || pane.Dy() <= 0 {
+		view.Content = buf.Render()
+		return view
+	}
 
 	// Filled at its own size and copied in, never drawn straight into the
 	// frame's buffer. Neither the emulator nor a styled line clips to the area

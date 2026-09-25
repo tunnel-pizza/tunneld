@@ -77,6 +77,11 @@ type session struct {
 	// Nil when nothing was configured, which a frame says rather than hides.
 	logs Logs
 
+	// motd is the provider's messages of the day, drawn above the box. Nil
+	// when nothing was configured, and then there is no banner and no row
+	// spent on one.
+	motd Motd
+
 	// sinks are told what the terminal says about itself, after the built-in
 	// routing. Empty unless a caller installed some with WithSinks.
 	sinks []Sink
@@ -193,7 +198,7 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -203,6 +208,7 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, si
 		log:     log,
 		banner:  banner,
 		logs:    logs,
+		motd:    motd,
 		sinks:   sinks,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
@@ -275,7 +281,7 @@ func (s *session) stream() {
 	// same size the session already settled on. Without this it draws into a
 	// size no one is looking at, which for a full-screen program means drawing
 	// nothing at all.
-	go s.apply(s.ctx, paneOf(s.size))
+	go s.apply(s.ctx, paneOf(s.size, s.bannerRows()))
 }
 
 // logLines are tunneld's own recent lines, oldest first, or nil when nothing
@@ -805,7 +811,7 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
-	pane := paneOf(s.size)
+	pane := paneOf(s.size, s.bannerRows())
 	s.screen.Lock()
 	s.em.Resize(int(pane.Width), int(pane.Height))
 	s.screen.Unlock()
@@ -813,22 +819,32 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 }
 
 // paneOf is the screen inside a window: the window less the frame's own
-// border.
+// border and the banner rows above it.
 //
 // A window with no room for the pane still leaves a screen, because one
 // resized to nothing has nowhere to put what the target says next.
-func paneOf(window remotecommand.TerminalSize) remotecommand.TerminalSize {
+func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.TerminalSize {
 	pane := remotecommand.TerminalSize{
 		Width:  window.Width - chromeWidth,
-		Height: window.Height - chromeHeight,
+		Height: window.Height - chromeHeight - uint16(banner),
 	}
-	if window.Height <= chromeHeight {
+	if int(window.Height) <= chromeHeight+banner {
 		pane.Height = 1
 	}
 	if window.Width <= chromeWidth {
 		pane.Width = 1
 	}
 	return pane
+}
+
+// bannerRows is how many rows the messages of the day take above the box:
+// one each, constant for the run and the same for every viewer, which is
+// what lets the pane's size stay one negotiation.
+func (s *session) bannerRows() int {
+	if s.motd == nil {
+		return 0
+	}
+	return len(s.motd.Lines(0))
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:

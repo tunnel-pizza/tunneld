@@ -270,6 +270,7 @@ func New(opts ...Option) *BuilderImpl {
 			// Built here, before a flag has been parsed: no run to name yet.
 			attach.WithBanner(VersionLine(nil)),
 			attach.WithLogs(recent),
+			attach.WithMotd(board),
 		)),
 	)
 	return v1.Apply(b, opts...)
