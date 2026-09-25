@@ -118,6 +118,10 @@
     pointer-events: none;
   }
   .tile.active::before { border-color: var(--paper); }
+  /* A terminal's tile is bare: the frame inside is its chrome. */
+  .tile.bare { padding: 0; }
+  .tile.bare::before { content: none; }
+  .tile.bare iframe { width: 100%; margin: 0; }
 
   /* A label on the border: black behind it breaks the line, as the frame's
      text does, and a column of space either side keeps the line off the
@@ -211,6 +215,13 @@
 {{- end}}
 <main class="grid">
   {{- range .Origins}}
+  {{- if .Terminal}}
+  <!-- A terminal draws its own frame, labels and bar; the panel adds nothing
+       around it but the space every tile gets. -->
+  <section class="tile bare">
+    <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
+  </section>
+  {{- else}}
   <section class="tile">
     <div class="edge top">
       <span class="local">{{.Local}}</span>
@@ -229,6 +240,7 @@
       </div>
     </div>
   </section>
+  {{- end}}
   {{- end}}
 </main>
 
@@ -357,7 +369,7 @@
     });
     show();
   };
-  for (const frame of document.querySelectorAll('.tile iframe')) back(frame);
+  for (const frame of document.querySelectorAll('.tile:not(.bare) iframe')) back(frame);
   for (const button of document.querySelectorAll('.tile [data-reload]')) {
     const frame = button.closest('.tile').querySelector('iframe');
     button.addEventListener('click', () => reload(frame));

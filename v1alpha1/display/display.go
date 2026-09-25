@@ -192,6 +192,11 @@ type tile struct {
 	Index int
 	Local string
 	Route string
+	// Terminal is an origin tunneld serves itself — a program or a container —
+	// whose page is the frame the terminal draws, chrome and all. The panel
+	// adds none of its own around one: a frame in a frame reads as a mistake,
+	// and the frame already says what the tile would have said.
+	Terminal bool
 }
 
 // Interceptors is what the tunnel registers when the panel is wanted: the
@@ -292,15 +297,17 @@ func (d *DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logg
 						// sockets land on says nothing about that.
 						scheme, _, _ := strings.Cut(origin.Scheme, "+")
 						local := origin.Host
-						if scheme != "http" && scheme != "https" {
+						terminal := scheme != "http" && scheme != "https"
+						if terminal {
 							// A served origin is the verb, the provider that
 							// answers it and the reference — and the reference is
 							// always the path, so the three join in order.
 							local = origin.Scheme + "://" + origin.Host + origin.Path
 						}
 						data.Origins = append(data.Origins, tile{
-							Index: i,
-							Local: local,
+							Index:    i,
+							Local:    local,
+							Terminal: terminal,
 							// Relative, so the page works under whatever hostname served it.
 							Route: "/?" + strconv.Itoa(i),
 						})

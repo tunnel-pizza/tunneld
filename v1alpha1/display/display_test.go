@@ -820,3 +820,31 @@ func mustOrigins(raw []string) (v1.Origins, error) {
 	}
 	return origins.New(origins.WithURL(urls...)), nil
 }
+
+// TestATerminalTileIsBare pins that the panel adds no chrome around an origin
+// tunneld serves itself: its page is the frame the terminal draws, so a
+// second frame, second labels and a second bar around it read as a mistake.
+// An http origin keeps the panel's frame.
+func TestATerminalTileIsBare(t *testing.T) {
+	shown, err := mustOrigins([]string{"http://localhost:3000", "exec:///bin/bash"})
+	if err != nil {
+		t.Fatalf("origins: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Host = "foo.tunneled.pizza"
+	ic := &fakeIC{}
+	pageOf(t, shown).Handler(ic)
+	ic.installed(rec, r)
+	body := rec.Body.String()
+	if got := strings.Count(body, `class="tile bare"`); got != 1 {
+		t.Errorf("page has %d bare tiles, want 1 for the one terminal", got)
+	}
+	if got := strings.Count(body, `class="edge top"`); got != 1 {
+		t.Errorf("page has %d framed tiles, want 1 for the one http origin", got)
+	}
+	// The markup, not the script's selectors, which name the attribute too.
+	if got := strings.Count(body, `type="button" data-reload`); got != 1 {
+		t.Errorf("page has %d reload controls, want 1 — a terminal has ^K", got)
+	}
+}
