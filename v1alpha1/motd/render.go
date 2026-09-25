@@ -126,6 +126,8 @@ func (m *MotdImpl) Lines(width int) []string {
 			text = strings.TrimSpace(label + " " + text)
 		}
 		if width > 0 && ansi.StringWidth(text) > width {
+			// Sequences past the cut are kept, so a link cut inside its text
+			// still closes rather than running on into what is drawn next.
 			text = ansi.Truncate(text, width, "…")
 		}
 		rows = append(rows, msg.Severity.styled(text))
@@ -134,16 +136,33 @@ func (m *MotdImpl) Lines(width int) []string {
 }
 
 // plainText is what a markdown body says, without its markup: the text of
-// every node, a link by its text with its destination dropped, a code span by
-// its literal, with a space between blocks and at line breaks so words never
-// run together. A frame's row is one line for a viewer's eye; a raw
-// [text](url) reads as broken there and its URL eats the width, while the
-// link's text is what the message says.
+// every node, a code span by its literal, with a space between blocks and at
+// line breaks so words never run together. A frame's row is one line for a
+// viewer's eye; a raw [text](url) reads as broken there and its URL eats the
+// width, while the link's text is what the message says.
+//
+// A link keeps its destination as an OSC 8 hyperlink around its text rather
+// than as text. The frame already draws the public address that way: the
+// styled-string draw parses OSC 8 into cell links, and the page's xterm
+// registers a link handler that opens them, so a link in a message row is
+// clickable in the browser and in any terminal that understands OSC 8, while
+// one that does not shows the text alone. A destination with whitespace in
+// it gets no hyperlink: Lines folds the row on whitespace, which would split
+// the sequence.
 func plainText(body string) string {
 	src := []byte(body)
 	doc := markdown.Parser().Parse(text.NewReader(src))
 	var b strings.Builder
+	linkable := func(dest []byte) bool { return len(bytes.Fields(dest)) == 1 }
 	_ = gmast.Walk(doc, func(n gmast.Node, entering bool) (gmast.WalkStatus, error) {
+		if l, ok := n.(*gmast.Link); ok && linkable(l.Destination) {
+			if entering {
+				b.WriteString(ansi.SetHyperlink(string(l.Destination)))
+			} else {
+				b.WriteString(ansi.ResetHyperlink())
+			}
+			return gmast.WalkContinue, nil
+		}
 		if !entering {
 			return gmast.WalkContinue, nil
 		}
@@ -156,7 +175,11 @@ func plainText(body string) string {
 		case *gmast.String:
 			b.Write(n.Value)
 		case *gmast.AutoLink:
-			b.Write(n.Label(src))
+			if url := n.URL(src); linkable(url) {
+				b.WriteString(ansi.SetHyperlink(string(url)) + string(n.Label(src)) + ansi.ResetHyperlink())
+			} else {
+				b.Write(n.Label(src))
+			}
 		default:
 			if n.Type() == gmast.TypeBlock {
 				b.WriteByte(' ')

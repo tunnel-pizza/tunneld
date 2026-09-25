@@ -16,6 +16,10 @@ import (
 
 var sgr = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
+// osc strips an operating system command, such as an OSC 8 hyperlink, for
+// comparing what a row says rather than what it links to.
+var osc = regexp.MustCompile(`\x1b\][^\x1b\x07]*(\x1b\\|\x07)`)
+
 func learned(t *testing.T, markdown ...string) *MotdImpl {
 	t.Helper()
 	m := New()
@@ -149,8 +153,23 @@ func TestLines(t *testing.T) {
 	}
 
 	linked := learned(t, "> [!warning]\n> This tunnel is **public**. [manage](https://tunnel.pizza/cnuss?utm_source=x)")
-	if got := sgr.ReplaceAllString(linked.Lines(80)[0], ""); got != "WARNING This tunnel is public. manage" {
+	raw := linked.Lines(80)[0]
+	if got := osc.ReplaceAllString(sgr.ReplaceAllString(raw, ""), ""); got != "WARNING This tunnel is public. manage" {
 		t.Errorf("row = %q, want the message's text with the link as its text", got)
+	}
+	if want := ansi.SetHyperlink("https://tunnel.pizza/cnuss?utm_source=x") + "manage" + ansi.ResetHyperlink(); !strings.Contains(raw, want) {
+		t.Errorf("row = %q, want the link's text wrapped in an OSC 8 hyperlink to its destination", raw)
+	}
+	// Cut inside the link's text: the row still closes the link, or it
+	// would run on into whatever is drawn after the row. ansi.Truncate keeps
+	// the sequences past the cut, which is what this pins.
+	cut := sgr.ReplaceAllString(linked.Lines(33)[0], "")
+	if !strings.HasSuffix(cut, ansi.ResetHyperlink()) {
+		t.Errorf("truncated row = %q, want it to end by closing the hyperlink", cut)
+	}
+	spaced := learned(t, "> [!note]\n> see [docs](<https://x.test/a b>)")
+	if row := spaced.Lines(80)[0]; strings.Contains(row, "\x1b]8;") {
+		t.Errorf("row = %q, want no hyperlink for a destination with whitespace in it", row)
 	}
 
 	if got := New().Lines(40); got != nil {
