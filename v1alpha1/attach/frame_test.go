@@ -1741,8 +1741,10 @@ func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
 }
 
 // TestBannerSitsAboveTheBox pins the messages of the day: one row per
-// message at the top of the window, centred, in every view the frame has,
-// with the box below them and the pane shorter by their count.
+// message on top of the border, centred, in every view the frame has, with
+// the pane shorter by their count. The window here is the box's own size, so
+// the bar's rows are the window's first ones; TestBannerRidesOnTheBox covers
+// a window with room to spare.
 func TestBannerSitsAboveTheBox(t *testing.T) {
 	h := newFrameHarness(t)
 	h.s.motd = testMotd{"WARNING public", "NOTE 日本語"}
@@ -1805,10 +1807,11 @@ func TestBannerSitsAboveTheBox(t *testing.T) {
 	}
 }
 
-// TestBannerIsABar pins that a banner row fills edge to edge in the
+// TestBannerIsABar pins that a banner row fills the box edge to edge in the
 // severity's colour, the same bar the panel's own strip draws, rather than an
 // island of coloured text with the window's own background showing on either
-// side of it.
+// side of it. The box fills the harness's window, so its edges are the
+// window's.
 func TestBannerIsABar(t *testing.T) {
 	styled := ansi.Style{}.BackgroundColor(ansi.IndexedColor(214)).ForegroundColor(ansi.IndexedColor(232)).Styled("WARNING public")
 	h := newFrameHarness(t)
@@ -1829,6 +1832,61 @@ func TestBannerIsABar(t *testing.T) {
 		if cell := buf.CellAt(x, 1); cell != nil && cell.Style.Bg != nil {
 			t.Errorf("plain row col %d background = %v, want none", x, cell.Style.Bg)
 		}
+	}
+}
+
+// TestBannerRidesOnTheBox pins where the bar goes when the box is smaller
+// than the window: on the box, as its title bar, box-wide and directly above
+// the border — not at the top of the window a screen-height away, and not
+// across columns the box does not have.
+func TestBannerRidesOnTheBox(t *testing.T) {
+	styled := ansi.Style{}.BackgroundColor(ansi.IndexedColor(214)).ForegroundColor(ansi.IndexedColor(232)).Styled("WARNING public")
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{styled}
+	h.window(160, 50)
+	// A smaller viewer has negotiated the screen down, so this window holds
+	// a box with margin on every side.
+	h.s.em.Resize(78, 22)
+
+	box := h.f.box()
+	if want := 22 + chromeHeight + 1; box.Dy() != want {
+		t.Errorf("box is %d rows, want %d (the screen, its border and the bar)", box.Dy(), want)
+	}
+
+	// Replayed into a screen of the window's size, so what is asserted is the
+	// cells a viewer's terminal ends up holding rather than the frame's own
+	// buffer.
+	screen := vt.NewEmulator(h.f.width, h.f.height)
+	if _, err := screen.WriteString(strings.ReplaceAll(h.f.View().Content, "\n", "\r\n")); err != nil {
+		t.Fatalf("replay the view: %v", err)
+	}
+	bg := func(x, y int) any {
+		if cell := screen.CellAt(x, y); cell != nil && cell.Style.Bg != nil {
+			return cell.Style.Bg
+		}
+		return nil
+	}
+
+	for _, x := range []int{box.Min.X, box.Max.X - 1} {
+		if got := bg(x, box.Min.Y); got != ansi.IndexedColor(214) {
+			t.Errorf("bar at col %d row %d background = %v, want 214 to the box's edge", x, box.Min.Y, got)
+		}
+	}
+	if got := bg(0, box.Min.Y); got != nil {
+		t.Errorf("col 0 on the bar's row background = %v, want none outside the box", got)
+	}
+	if box.Min.Y > 0 {
+		if got := bg(box.Min.X, 0); got != nil {
+			t.Errorf("window row 0 background = %v, want none: the bar is on the box, not the window", got)
+		}
+	} else {
+		t.Errorf("box starts at row 0, want it centred below the window's top")
+	}
+	if cell := screen.CellAt(box.Min.X, box.Min.Y+1); cell == nil || cell.Content != "╭" {
+		t.Errorf("cell under the bar = %+v, want the border's top-left corner", cell)
+	}
+	if got, want := h.f.pane().Min.Y, box.Min.Y+2; got != want {
+		t.Errorf("pane starts at row %d, want %d (the bar and the border)", got, want)
 	}
 }
 

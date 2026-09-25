@@ -77,7 +77,7 @@ type session struct {
 	// Nil when nothing was configured, which a frame says rather than hides.
 	logs Logs
 
-	// motd is the provider's messages of the day, drawn above the box. Nil
+	// motd is the provider's messages of the day, drawn on top of the box. Nil
 	// when nothing was configured, and then there is no banner and no row
 	// spent on one.
 	motd Motd
@@ -845,7 +845,7 @@ func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.Termina
 	return pane
 }
 
-// bannerRows is how many rows the messages of the day take above the box:
+// bannerRows is how many rows the messages of the day take on top of the box:
 // one each, since Lines returns one row per message whatever the width, and
 // the count is fixed once viewers are connected. That is what makes it the
 // same for every viewer, and what lets the pane's size stay one negotiation.
