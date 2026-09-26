@@ -198,7 +198,7 @@ type embeddedKey struct{}
 // lock. The scanner owns every OSC and reports every private mode, and said
 // routes them.
 func (s *session) watch() {
-	s.scan = newScanner(s.em, s.said)
+	s.scan = newScanner(lockedScreen{s}, s.said)
 }
 
 // newSession opens the one attach and starts feeding the emulator from it. It
@@ -482,6 +482,20 @@ func (s *session) endRun() {
 // sink is where the target's output lands: into the emulator, which is the
 // screen, and a nudge to everyone drawing it.
 type sink struct{ s *session }
+
+// lockedScreen is the emulator behind the session's screen lock. The scanner
+// writes what a program printed through it — every run of plain text, and
+// every sequence it holds back and then lets through — so a frame copying the
+// screen never reads a cell the stream is mid-way through writing. The few
+// sequences the session forwards to the emulator itself take the same lock at
+// their call sites; nothing reaches the emulator's Write without it.
+type lockedScreen struct{ s *session }
+
+func (w lockedScreen) Write(p []byte) (int, error) {
+	w.s.screen.Lock()
+	defer w.s.screen.Unlock()
+	return w.s.em.Write(p)
+}
 
 func (w *sink) Close() error { return nil }
 

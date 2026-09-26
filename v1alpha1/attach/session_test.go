@@ -366,3 +366,25 @@ func TestAFrameCopiesTheScreenWhileTheStreamResetsIt(t *testing.T) {
 	}
 	<-done
 }
+
+// TestAFrameCopiesTheScreenWhileTheScannerWrites pins the other writer: plain
+// text goes to the emulator through the scanner, not through the session's
+// own locked writes, and the race lane caught a frame copying cells while a
+// run of text landed. The scanner's screen is the emulator behind the lock,
+// so the two cannot overlap; under -race this fails without that.
+func TestAFrameCopiesTheScreenWhileTheScannerWrites(t *testing.T) {
+	s := &session{em: vt.NewSafeEmulator(40, 8)}
+	scan := newScanner(lockedScreen{s}, func(Sequence) {})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 300 {
+			_, _ = scan.Write([]byte("line " + strconv.Itoa(i) + " of plain text\r\n"))
+		}
+	}()
+	buf := uv.NewScreenBuffer(40, 8)
+	for range 300 {
+		s.drawPane(buf, buf.Bounds())
+	}
+	<-done
+}
