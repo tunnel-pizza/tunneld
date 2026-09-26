@@ -81,16 +81,19 @@ windows:
 test:
 	go test . ./v1/... ./v1alpha1/...
 
-# Every package under the race detector — the same lane CI runs, runnable
+# The unit packages under the race detector — the same lane CI runs, runnable
 # locally to reproduce a CI race find. The recipe-line CGO_ENABLED=1 overrides
 # the global export above: the detector links through cgo. Kept out of `all`
 # for that reason — it is the one target needing a C toolchain.
 #
-# -short is what keeps the live e2e row out of this lane. That row mints a real
-# tunnel, and running it here would mint a second one per CI push to re-check
-# what the e2e lane already checked, under a detector that only slows it down.
+# The same package list as `test`, for the same reason and one more. The e2e
+# harness builds tunneld and every example with a plain `go build` and drives
+# them as child processes, so the detector would instrument the harness and
+# never the binaries it is testing: a minute of build work per push that could
+# not find a race if there were one. The live row would also mint a second
+# tunnel to re-check what the e2e lane already did.
 race:
-	CGO_ENABLED=1 go test -short -race ./...
+	CGO_ENABLED=1 go test -race . ./v1/... ./v1alpha1/...
 
 # End-to-end: the harness builds the tunneld binary and every example binary and
 # drives them. -count=1 disables go test caching, since the harness builds those

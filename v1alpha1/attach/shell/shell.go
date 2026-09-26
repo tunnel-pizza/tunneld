@@ -333,9 +333,21 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	// size taken by a terminal that is already gone is a size the running
 	// program never hears, which for a full-screen program means a pty left at
 	// nothing and a screen left blank.
+	//
+	// Ended and waited for, not just told. Cancelling only asks: the reader
+	// notices at its next select, and a select with a size ready on one arm
+	// and the cancel on the other picks between them at random. The next run
+	// starts the moment this returns and is told its size at once, so a
+	// reader still parked here would win that coin toss often enough to blank
+	// a screen on CI. Nothing is left on the channel when this returns.
 	attached, done := context.WithCancel(ctx)
-	defer done()
+	stopped := make(chan struct{})
+	defer func() {
+		done()
+		<-stopped
+	}()
 	go func() {
+		defer close(stopped)
 		for {
 			var size remotecommand.TerminalSize
 			select {

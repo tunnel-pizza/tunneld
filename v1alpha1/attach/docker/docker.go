@@ -366,9 +366,20 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	// Without a TTY there is nothing to resize, but the channel is still
 	// drained: the page sends its size as a heartbeat regardless, and a
 	// blocked send would stall the whole stream.
+	//
+	// Ended and waited for, not just told: a reader that had only been
+	// cancelled notices at its next select, and with a size ready on the
+	// other arm the pick is a coin toss — the next run's first size, taken
+	// by a container that is no longer attached. Nothing is left reading the
+	// channel when this returns. The shell target says the same, at length.
 	attached, done := context.WithCancel(ctx)
-	defer done()
+	stopped := make(chan struct{})
+	defer func() {
+		done()
+		<-stopped
+	}()
 	go func() {
+		defer close(stopped)
 		for {
 			var size remotecommand.TerminalSize
 			select {

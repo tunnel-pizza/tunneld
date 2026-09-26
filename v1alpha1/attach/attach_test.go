@@ -1617,6 +1617,35 @@ func TestBindWithoutContainers(t *testing.T) {
 	}
 }
 
+// TestBindPassesTheWebSocketMarkerThrough pins #173: an origin marked +ws or
+// +wss is an http origin the tunnel dials itself, and the marker has to reach
+// the tunnel engine, which is what strips and acts on it. The binder used to
+// test the scheme literally, refuse "http+ws" as one nobody answers, and
+// take the documented way of routing WebSockets down with it — before the
+// engine, and so before anything could have routed them.
+func TestBindPassesTheWebSocketMarkerThrough(t *testing.T) {
+	targets := &stubTargets{}
+	display := shown(t, "http+ws://localhost:3000", "https+wss://localhost:4000", "http://localhost:5000")
+
+	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind refused a marked origin: %v", err)
+	}
+	defer closer.Close()
+
+	if len(targets.asked) != 0 {
+		t.Errorf("opened %q, want nothing — a marked origin is dialed, not served", targets.asked)
+	}
+	for i, u := range dialable.URLs() {
+		if u != display.At(i) {
+			t.Errorf("dialable[%d] = %q, want the original origin, marker intact", i, u)
+		}
+	}
+	if got := dialable.At(0).Scheme; got != "http+ws" {
+		t.Errorf("dialable[0].Scheme = %q, want the marker kept for the engine", got)
+	}
+}
+
 // TestBindUnwindsOnFailure pins that a later container failing does not leave
 // an earlier one's server listening. The command is about to return an error
 // and exit; a leaked goroutine holding a port would outlive it in an

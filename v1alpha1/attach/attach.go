@@ -344,10 +344,15 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
-		// judgement.
+		// judgement — with one exception it has to know about. The parser
+		// lets a +ws / +wss suffix through on purpose: the marker names the
+		// origin that owns WebSockets, and the tunnel engine is what strips
+		// and consumes it (#173). So the test here is on the base scheme, and
+		// the URL goes through untouched, marker and all, or the engine never
+		// sees the one thing the operator typed it for.
 		provider, served := b.targets[answers(origin.Scheme, origin.Host)]
 		if !served {
-			if origin.Scheme != "http" && origin.Scheme != "https" {
+			if base, _, _ := strings.Cut(origin.Scheme, "+"); base != "http" && base != "https" {
 				_ = servers.Close()
 				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
 					origin.Scheme, origin.Host, strings.Join(b.answered(), ", "))
