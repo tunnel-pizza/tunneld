@@ -64,6 +64,18 @@
   body { display: flex; flex-direction: column; position: relative; }
   #term { flex: 1; min-height: 0; width: 100%; }
 
+  /* A hovered chip, in the panel's hover colours, laid over its cells. */
+  #hover {
+    position: fixed;
+    z-index: 3;
+    pointer-events: none;
+    background: #eeeeee;
+    color: #080808;
+    font: 700 13px monospace;
+    text-align: center;
+    white-space: pre;
+  }
+
   /* The one thing worth framing it for: what the container cannot do. That is
      a fact about how it was started — settled before the socket opened, and
      unchanged by anything printed after — so it belongs to the page rather
@@ -130,6 +142,7 @@
 </style>
 </head>
 <body>
+<div id="hover" hidden></div>
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <div id="gone" hidden>
@@ -174,10 +187,44 @@
         event.preventDefault();
         window.open(uri, '_blank', 'noopener,noreferrer');
       },
+      hover(event, text, range) { chip(text, range); },
+      leave() { chip(); },
     },
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+
+  // A chip under the mouse goes white, the way the panel's chips do. xterm's
+  // own cue for a hovered link is a dotted underline beneath the cells, and
+  // there is no option to draw anything else; so for a link that is a chip —
+  // a single glyph, the popout in the frame's corner — the page lays the same
+  // cells over the canvas in the hover colours for as long as the mouse is on
+  // them, and takes them away when it leaves. The address in full and a
+  // message's link keep the underline: they are text, and text underlines.
+  //
+  // xterm hands hover the link's target, not its text, so a chip is known by
+  // its width — three cells, a glyph between two spaces — and the glyph is
+  // read back off the buffer to draw.
+  function chip(uri, range) {
+    const el = document.getElementById('hover');
+    const width = range ? range.end.x - range.start.x + 1 : 0;
+    if (!uri || !range || width < 1 || width > 3) { el.hidden = true; return; }
+    const screen = document.querySelector('.xterm-screen');
+    const line = term.buffer.active.getLine(range.start.y - 1);
+    if (!screen || !line || !term.cols || !term.rows) return;
+    let text = '';
+    for (let x = range.start.x - 1; x < range.end.x; x++) text += line.getCell(x)?.getChars() || ' ';
+    const r = screen.getBoundingClientRect();
+    const cellW = r.width / term.cols, cellH = r.height / term.rows;
+    const row = range.start.y - 1 - term.buffer.active.viewportY;
+    el.textContent = text;
+    el.style.left = (r.left + (range.start.x - 1) * cellW) + 'px';
+    el.style.top = (r.top + row * cellH) + 'px';
+    el.style.width = ((range.end.x - range.start.x + 1) * cellW) + 'px';
+    el.style.height = cellH + 'px';
+    el.style.lineHeight = cellH + 'px';
+    el.hidden = false;
+  }
   // The terminal names the tab it is displayed in. The frame sets its window
   // title to the origin and whatever the container is calling itself, the
   // renderer emits that as an OSC, and xterm hands it over here.
