@@ -728,11 +728,16 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 			// the bytes a reader most wants: what the program said on its way
 			// out. A program that exits quickly is all last words.
 			v.prog.Send(paneMsg{})
+			done := s.ended()
 			select {
-			case <-s.ended():
+			case <-done:
 				// Unless the run is being started over: then the end is
 				// not this viewer's end, and the next wake is the new run.
-				if s.restartInFlight() != nil {
+				// Two signs of that, because the restart's flag is cleared
+				// the moment the new run is up: the flag still set, or the
+				// session already holding a newer done than the one read
+				// above — a restart that finished in between.
+				if s.restartInFlight() != nil || s.ended() != done {
 					continue
 				}
 				v.prog.Send(goneMsg{})
