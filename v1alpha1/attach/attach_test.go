@@ -112,6 +112,12 @@ type testLogs struct{}
 
 func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
 
+// testMotd is a banner of fixed rows, what a frame test hands the session to
+// have something above the box.
+type testMotd []string
+
+func (m testMotd) Lines(int) []string { return []string(m) }
+
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a
 // container somebody has to arrange, which is what makes them testable at all.
@@ -203,7 +209,7 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -248,7 +254,7 @@ func TestWithSinksStoresAndServeAccepts(t *testing.T) {
 		t.Fatalf("binder carries %d sinks, want 2", got)
 	}
 
-	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, []Sink{&recorder{}}, slog.New(slog.DiscardHandler))
+	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, nil, []Sink{&recorder{}}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -263,7 +269,7 @@ func TestWithSinksSeesWhatAnAppSays(t *testing.T) {
 	// A title, a mode, and a clipboard write — one of each shape.
 	target.out = "\x1b]0;hi\a\x1b[?25l\x1b]52;c;aGk=\a"
 
-	s, err := Serve(t.Context(), target, testBanner, testLogs{}, []Sink{rec}, slog.New(slog.DiscardHandler))
+	s, err := Serve(t.Context(), target, testBanner, testLogs{}, nil, []Sink{rec}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -384,10 +390,17 @@ func TestURLIsLoopback(t *testing.T) {
 // server negotiates the base64 variant and every assertion below shifts.
 func dial(t *testing.T, s *Server) *websocket.Conn {
 	t.Helper()
+	return dialPath(t, s, "/attach")
+}
+
+// dialPath is dial to a path of the caller's choosing: /attach/embedded is
+// the same socket, dialed by a page the multiview panel has framed.
+func dialPath(t *testing.T, s *Server, path string) *websocket.Conn {
+	t.Helper()
 	d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
-	c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", nil)
+	c, resp, err := d.Dial("ws://"+s.URL().Host+path, nil)
 	if err != nil {
-		t.Fatalf("dial /attach: %v", err)
+		t.Fatalf("dial %s: %v", path, err)
 	}
 	if resp != nil {
 		_ = resp.Body.Close()
@@ -413,24 +426,35 @@ func dial(t *testing.T, s *Server) *websocket.Conn {
 // forwards the inbound Host rather than rewriting it to the origin's. It is
 // also the multiview shape: a tile's document is served from that same
 // hostname, so its socket's Origin is the same string again.
+//
+// The rows on /attach/embedded are the panel's tiles dialing their own path:
+// the same socket, so the same gate.
 func TestCrossOriginHandshake(t *testing.T) {
 	cases := []struct {
 		name string
+		// path is what is dialed; "" is /attach.
+		path string
 		// host overrides the Host header; "" leaves the dialed 127.0.0.1:port.
 		host string
 		// origin is given the effective Host. "" sends no Origin at all.
 		origin func(host string) string
 		want   bool // whether the handshake should succeed
 	}{
-		{"a foreign origin is refused", "", func(string) string { return "https://evil.example" }, false},
-		{"a foreign origin on loopback is refused", "", func(string) string { return "http://127.0.0.1:1" }, false},
-		{"an unparsable origin is refused", "", func(string) string { return "://" }, false},
-		{"the page's own origin is accepted", "", func(host string) string { return "http://" + host }, true},
-		{"no origin at all is accepted", "", func(string) string { return "" }, true},
-		{"the tunnel's public hostname is accepted", "demo.tunnel.pizza",
+		{"a foreign origin is refused", "", "", func(string) string { return "https://evil.example" }, false},
+		{"a foreign origin on loopback is refused", "", "", func(string) string { return "http://127.0.0.1:1" }, false},
+		{"an unparsable origin is refused", "", "", func(string) string { return "://" }, false},
+		{"the page's own origin is accepted", "", "", func(host string) string { return "http://" + host }, true},
+		{"no origin at all is accepted", "", "", func(string) string { return "" }, true},
+		{"the tunnel's public hostname is accepted", "", "demo.tunnel.pizza",
 			func(host string) string { return "https://" + host }, true},
-		{"a foreign origin through the tunnel is refused", "demo.tunnel.pizza",
+		{"a foreign origin through the tunnel is refused", "", "demo.tunnel.pizza",
 			func(string) string { return "https://evil.example" }, false},
+		{"a foreign origin on the embedded path is refused", "/attach/embedded", "",
+			func(string) string { return "https://evil.example" }, false},
+		{"the page's own origin on the embedded path is accepted", "/attach/embedded", "",
+			func(host string) string { return "http://" + host }, true},
+		{"the tunnel's public hostname on the embedded path is accepted", "/attach/embedded", "demo.tunnel.pizza",
+			func(host string) string { return "https://" + host }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,8 +472,12 @@ func TestCrossOriginHandshake(t *testing.T) {
 			if o := tc.origin(host); o != "" {
 				header.Set("Origin", o)
 			}
+			path := tc.path
+			if path == "" {
+				path = "/attach"
+			}
 			d := websocket.Dialer{Subprotocols: []string{"v4.channel.k8s.io"}}
-			c, resp, err := d.Dial("ws://"+s.URL().Host+"/attach", header)
+			c, resp, err := d.Dial("ws://"+s.URL().Host+path, header)
 			if resp != nil {
 				defer resp.Body.Close()
 			}
@@ -642,6 +670,65 @@ func TestColourSurvivesTheFrame(t *testing.T) {
 
 	readFrame(t, c) // the established frame
 	stdoutUntil(t, c, "\x1b[31mred")
+}
+
+// TestAnEmbeddedSocketDrawsNoBar pins the path a framed page dials: a viewer
+// on /attach/embedded gets its frame without the provider's bar, because the
+// multiview panel around it already shows that bar once. A viewer on /attach,
+// on a session with the same message, is the control — it is what shows the
+// message is there to be drawn, and that WARNING arrives whole on the wire.
+func TestAnEmbeddedSocketDrawsNoBar(t *testing.T) {
+	serve := func(t *testing.T) *Server {
+		s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, testMotd{"WARNING public"}, nil, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+
+	t.Run("a viewer in its own right draws the bar", func(t *testing.T) {
+		c := dialPath(t, serve(t), "/attach")
+		readFrame(t, c) // the established frame
+		stdoutUntil(t, c, "WARNING public")
+	})
+
+	t.Run("an embedded viewer draws none", func(t *testing.T) {
+		c := dialPath(t, serve(t), "/attach/embedded")
+		readFrame(t, c) // the established frame
+
+		// Everything the socket carries until the border has arrived and the
+		// socket has then gone quiet. Kept from the first byte rather than
+		// from the border on: the bar is drawn on the rows above the border,
+		// so it would arrive ahead of it.
+		//
+		// A read that times out ends the socket for reading, so the wait is
+		// one bounded read for the border and then a short one for quiet.
+		var seen strings.Builder
+		border := time.Now().Add(10 * time.Second)
+		for {
+			wait := border
+			if strings.Contains(seen.String(), "╭") {
+				wait = time.Now().Add(300 * time.Millisecond)
+			}
+			if err := c.SetReadDeadline(wait); err != nil {
+				t.Fatalf("set a read deadline: %v", err)
+			}
+			kind, data, err := c.ReadMessage()
+			if err != nil {
+				if !strings.Contains(seen.String(), "╭") {
+					t.Fatalf("never saw the border; got %q (%v)", seen.String(), err)
+				}
+				break
+			}
+			if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
+				seen.Write(data[1:])
+			}
+		}
+		if strings.Contains(seen.String(), "WARNING") {
+			t.Errorf("an embedded viewer was sent the bar: %q", seen.String())
+		}
+	})
 }
 
 // TestStdin pins that keystrokes reach the target.

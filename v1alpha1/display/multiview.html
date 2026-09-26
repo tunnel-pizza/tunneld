@@ -1,38 +1,60 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
-<title>{{.Host}} · multiview</title>
+<title>{{.Host}} multiview</title>
 
-<!-- Basecoat (Lyra): shadcn/ui's components and design tokens as plain CSS, no
-     framework. Pinned by version and checked by digest, so a change at the CDN
-     cannot silently alter what a tunnel serves.
-
-     Dark, because the tiles frame other people's pages and most of those are
-     light: a dark shell keeps the boundary between chrome and content legible
-     instead of letting the two bleed together. -->
+<!-- The panel looks like the terminal the frame draws, because that is what
+     sits inside its tiles: xterm's own stylesheet, the same pinned copy the
+     attach page loads, for the face and the metrics; the frame's palette for
+     everything the stylesheet does not carry. One look across the tunnel,
+     whether a page is a frame or a page of frames. -->
 <link rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/basecoat-lyra.cdn.min.css"
-      integrity="sha384-lbWbDDZc0lBRulCtOY3TsBD/aqRxsW0E2fSB4SdB92ulxl6EJTh4CYpNEojYQEWE"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css"
+      integrity="sha384-n2n7twoohnW+d3myBKaUgl7DSiwidw6MkQy9oesGzkPpMjejKRR3XlnD+5yCdtBD"
       crossorigin="anonymous"
       referrerpolicy="no-referrer">
-<script src="https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/js/all.min.js"
-        integrity="sha384-rD2ZCuReXV7nIneJcn1lsTn6yOv87YARLQyUsemVAxrYYHdy5hcAW8XZEQxx87Dj"
-        crossorigin="anonymous"
-        referrerpolicy="no-referrer"
-        defer></script>
 
 <style>
-  /* Layout only. Every colour, border, radius and typeface comes from
-     Basecoat; the CDN build ships component classes without Tailwind's
-     utilities, so the arrangement below is the part no class can supply. */
+  /* The frame's colours, by their ANSI-256 index in frame.go: the border,
+     the name of what is framed, the address that reaches it, the chips, and
+     the three severities the provider speaks in. Black is the terminal's.
+     The row is xterm's cell at 13px, so the panel's chrome and the frame's
+     rows inside a tile fall on the same grid. */
+  :root {
+    --border: #87afff;   /* 111 */
+    --name:   #00d7ff;   /* 45, bold */
+    --addr:   #87d787;   /* 114 */
+    --hint:   #8a8a8a;   /* 245 */
+    --chip:   #ffaf00;   /* 214 */
+    --ink:    #080808;   /* 232 */
+    --paper:  #eeeeee;   /* 255 */
+    --note:    #00d7ff;  /* 45 */
+    --warning: #ffaf00;  /* 214 */
+    --caution: #ff0000;  /* 196 */
+    /* One cell of the terminal's grid. These are the panel's own guess for a
+       page with no terminal on it; when a tile holds one, the script below
+       reads the cell that terminal actually settled on and sets these, so a
+       frame the panel draws and a frame the terminal draws share their rows
+       and columns. --scrollbar is the width xterm's fit keeps for its bar. */
+    --row: 15.85px;
+    --col: 7.56px;
+    --scrollbar: 15px;
+    --font: monospace; /* what xterm draws with here; its own stack resolves to the same face */
+  }
 
-  html, body { height: 100%; margin: 0; }
-
-  body { overflow: hidden; }
+  html, body { height: 100%; margin: 0; background: #000; }
+  body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: var(--paper);
+    font: 13px/var(--row) var(--font);
+  }
+  :focus-visible { outline: 1px solid var(--paper); outline-offset: 1px; }
 
   /* macOS hides overlay scrollbars until something moves, and when the page
      does overflow the bar is the only sign that more tiles exist below.
@@ -40,100 +62,147 @@
      only; Firefox follows the OS setting and offers no way to override it. */
   body::-webkit-scrollbar { width: 10px; height: 10px; }
   body::-webkit-scrollbar-track { background: transparent; }
-  body::-webkit-scrollbar-thumb {
-    background: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
-  }
-  body::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+  body::-webkit-scrollbar-thumb { background: #333; }
+  body::-webkit-scrollbar-thumb:hover { background: var(--hint); }
   body::-webkit-scrollbar-corner { background: transparent; }
 
-  /* The grid is the whole page: the frames are the content, and a bar naming
-     the host only repeated what the tab title already says. */
+  /* The provider's word, in the bar the frame draws on its own top row: one
+     row per message, solid in the colour of how loudly it was said, the
+     text bold in the inverse. Edge to edge and stacked flush. */
+  .motd { flex: none; display: flex; flex-direction: column; }
+  .message {
+    height: var(--row);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    text-align: center;
+    padding: 0 1ch;
+    font-weight: 700;
+    background: #333;
+    color: var(--paper);
+  }
+  .message p { display: inline; margin: 0; }
+  .message .label { margin-right: 1ch; }
+  .message a { color: inherit; text-decoration: underline; }
+  .message-note    { background: var(--note);    color: var(--ink); }
+  .message-warning { background: var(--warning); color: var(--ink); }
+  .message-caution { background: var(--caution); color: var(--paper); }
+
+  /* The board: two frames across, each the size the flex line hands it. A
+     wrapped flex container with a definite height shares its leftover space
+     between the lines, so the rows come out even without anyone counting. */
   .grid {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: .25rem;
-    height: 100%;
-    padding: .25rem;
-
-    /* Load-bearing, though it is also the initial value: a wrapped flex
-       container with a definite height hands its leftover space to the flex
-       lines equally. Every tile has the same base height, so the rows come out
-       even without anyone counting them. */
     align-content: stretch;
   }
-
-  /* Two columns. The height is left to align-content above rather than
-     calculated from a row count, which keeps the server out of the layout. */
   .tile {
-    position: relative;  /* the label strip is positioned against this */
-    flex: 1 1 calc(50% - .125rem);  /* half the gap, so two tiles fit a row */
-    min-width: 0;      /* let a tile shrink past its iframe's intrinsic width */
-
-    /* A card spaces its own children; a tile's child is a full-bleed iframe,
-       so the padding and gap would only frame it in dead space. */
-    gap: 0;
-    padding-block: 0;
+    position: relative;
+    box-sizing: border-box; /* the padding is the frame's chrome, inside the half */
+    flex: 1 1 50%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    /* One row above for the border and its labels; the screen inside sets
+       its own bottom and sides on the grid, below. */
+    padding: var(--row) 0 0;
   }
-
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
-  /* Three controls per tile, in the corner: the index, the local address and
-     the route repeated the same three facts on every frame, and the frame
-     itself already says which service it is. What is left is what the page
-     cannot do for itself — step this one frame back, reload it, and open this
-     origin on its own.
-     They rest translucent so they never compete with the content, and come
-     forward on hover. */
-  .tile > .controls {
+  /* The frame's rounded box, drawn as a border rather than as ╭─╮ cells so
+     it stays continuous at any width. It is laid on the terminal's grid:
+     the terminal beside it fits whole rows and columns into the same tile
+     and draws its border in the last of each, so this one ends where that
+     one does — half a cell in from the first row and column, and half a
+     cell before the last whole one, with the remainder left dark below
+     and to the right exactly as xterm leaves it. The tile that has the
+     keyboard wears it in full white — a console's active pane. */
+  .tile::before {
+    content: "";
     position: absolute;
-    top: .375rem;
-    right: .375rem;
-    z-index: 1;
+    top: calc(var(--row) / 2);
+    left: calc(var(--col) / 2);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col));
+    height: calc(round(down, 100%, var(--row)) - var(--row));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    pointer-events: none;
+  }
+  .tile.active::before { border-color: var(--paper); }
+  /* A terminal's tile is bare: the frame inside is its chrome. */
+  .tile.bare { padding: 0; }
+  .tile.bare::before { content: none; }
+  .tile.bare iframe { flex: 1; width: 100%; height: auto; min-height: 0; margin: 0; }
+
+  /* A label on the border: black behind it breaks the line, as the frame's
+     text does, and a column of space either side keeps the line off the
+     letters. Top left names what is framed; top right holds the page's
+     controls for the frame, as chips in the frame's own orange — one text
+     glyph each, in the frame's font and weight, because a terminal beside
+     them draws the same chip as text and an icon next to a glyph never
+     matches. */
+  .edge {
+    position: absolute;
+    top: 0;
+    left: calc(var(--col) * 2.5);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col) * 5);
+    height: var(--row);
     display: flex;
-    gap: .25rem;
+    justify-content: space-between;
+    align-items: center;
+    gap: 2ch;
+    white-space: nowrap;
+    pointer-events: none;
   }
+  .edge > * { pointer-events: auto; }
+  .edge .local, .edge .controls { background: #000; padding: 0 1ch; }
+  .edge .local { color: var(--name); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
 
-  .tile .controls > .btn {
-    display: grid;
-    place-items: center;
-    width: 1.625rem;
-    height: 1.625rem;
+  .controls { display: flex; gap: var(--col); }
+  .ctl {
+    display: inline-block;
+    width: calc(var(--col) * 3);
+    height: var(--row);
     padding: 0;
-    opacity: .45;
-    color: var(--card-foreground);
-    background: color-mix(in oklab, var(--card) 72%, transparent);
-    border-color: color-mix(in oklab, var(--border) 60%, transparent);
-    backdrop-filter: blur(8px) saturate(140%);
-    -webkit-backdrop-filter: blur(8px) saturate(140%);
-    transition: opacity .15s ease, background-color .15s ease;
-  }
-
-  .tile .controls > .btn:hover,
-  .tile .controls > .btn:focus-visible {
-    opacity: 1;
-    background: var(--card);
-  }
-
-  /* Basecoat gives .btn a display of its own, which would outrank the
-     browser's [hidden] rule; the hidden back button has to actually go. */
-  .tile .controls > .btn[hidden] { display: none; }
-
-  .tile .controls svg {
-    width: .8125rem;
-    height: .8125rem;
-  }
-
-  /* The reload turns while the frame is loading, so a press on a slow origin
-     is seen to have done something; it stops when the frame says it is back. */
-  @keyframes turn { to { transform: rotate(360deg); } }
-  .tile .controls > .busy svg { animation: turn .8s linear infinite; }
-
-  .tile iframe {
-    flex: 1;
-    width: 100%;
-    min-height: 0;
     border: 0;
+    background: var(--chip);
+    color: var(--ink);
+    font: inherit;
+    font-weight: 700;
+    line-height: var(--row);
+    text-align: center;
+    cursor: pointer;
+    text-underline-offset: 2px;
+  }
+  /* A link's own underline is off until xterm's class puts a dotted one on;
+     scoped so the borrowed rule, declared earlier, is the one that wins. */
+  .ctl:not(.xterm-underline-4) { text-decoration: none; }
+  .ctl:hover, .ctl:focus-visible { background: var(--paper); }
+  .ctl[hidden] { display: none; }
+
+  /* The reload's glyph turns while the frame is loading, so a press on a
+     slow origin is seen to have done something; it stops when the frame says
+     it is back. The one motion on the page, and it answers a press. */
+  @keyframes turn { to { transform: rotate(360deg); } }
+  .ctl.busy { animation: turn .8s linear infinite; }
+  @media (prefers-reduced-motion: reduce) { .ctl.busy { animation: none; opacity: .5; } }
+
+  /* The screen inside the frame: one row and one column in from the border
+     on every side, as the pane sits inside the frame's box — and on the
+     same grid as the border, so the page never paints under it. The box
+     ends half a cell before the last whole row and column; the screen ends
+     a whole cell before, and the row and column between are the border's.
+     The width leaves xterm's scrollbar allowance the way the border does. */
+  .tile iframe {
+    flex: none;
+    margin: 0 0 0 calc(var(--col) * 1.5);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col) * 3);
+    height: calc(round(down, 100%, var(--row)) - var(--row));
+    border: 0;
+    background: #000;
   }
 
   /* Narrow: one column, still dividing the viewport rather than scrolling —
@@ -145,54 +214,46 @@
      page scrolls instead. body may scroll here for that reason alone. */
   @media (max-width: 45rem) {
     body { overflow: auto; }
-    .tile { flex-basis: 100%; min-height: 12rem; }
+    .tile { flex-basis: 100%; min-height: 16rem; }
   }
 </style>
 </head>
 <body>
 
+{{- if .Messages}}
+<header class="motd">
+  {{- range .Messages}}
+  <div class="message message-{{.Severity}}">{{if .Severity}}<span class="label">{{.Label}}</span> {{end}}{{.HTML}}</div>
+  {{- end}}
+</header>
+{{- end}}
 <main class="grid">
   {{- range .Origins}}
-  <section class="card tile">
-    <!-- The label the strip used to carry lives in the tooltip now: present
-         when someone goes looking, invisible the rest of the time. -->
-    <div class="controls">
-      <button class="btn" type="button" data-back
-              title="Back, in {{.Local}} ({{.Route}})"
-              aria-label="Back, in {{.Local}}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="m12 19-7-7 7-7"/>
-          <path d="M19 12H5"/>
-        </svg>
-      </button>
-      <button class="btn" type="button" data-reload
-              title="Reload {{.Local}} ({{.Route}})"
-              aria-label="Reload {{.Local}}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-          <path d="M21 3v5h-5"/>
-        </svg>
-      </button>
-      <a class="btn" href="{{.Route}}" target="_blank" rel="noopener"
-         title="Open {{.Local}} ({{.Route}}) in a new tab"
-         aria-label="Open {{.Local}} in a new tab">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M15 3h6v6"/>
-          <path d="M10 14 21 3"/>
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6"/>
-        </svg>
-      </a>
+  {{- if .Terminal}}
+  <!-- A terminal draws its own frame, labels and bar; the panel adds nothing
+       around it but the space every tile gets. -->
+  <section class="tile bare">
+    <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
+  </section>
+  {{- else}}
+  <section class="tile">
+    <div class="edge">
+      <span class="local">{{.Local}}</span>
+      <div class="controls">
+        <button class="ctl" type="button" data-back aria-label="Back, in {{.Local}}">←</button>
+        <button class="ctl" type="button" data-reload aria-label="Reload {{.Local}}">↻</button>
+        <a class="ctl" href="{{.Route}}" target="_blank" rel="noopener"
+           aria-label="Open {{.Local}} in a new tab">↗</a>
+      </div>
     </div>
     <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
   </section>
   {{- end}}
+  {{- end}}
 </main>
 
 <script>
-  // Give a tile focus when it is clicked.
+  // Give a tile focus when it is clicked, and show which one has it.
   //
   // The browser normally does this itself: a click inside a frame focuses that
   // frame. It does it as the default action of the mousedown, though, so an
@@ -205,10 +266,12 @@
   // had it last, which reads as the wrong window being typed into.
   //
   // So the panel focuses the frame itself, in the capture phase, before the
-  // origin's handler runs and regardless of what it does afterwards. Every
-  // frame here is the tunnel's own hostname, so reaching into one is
-  // same-origin and allowed; the try/catch is for the case where it somehow is
-  // not, where the old behaviour is the right thing to fall back to.
+  // origin's handler runs and regardless of what it does afterwards, and
+  // marks the tile so its border goes white: a console's active pane, so a
+  // keystroke's destination is never a guess. Every frame here is the
+  // tunnel's own hostname, so reaching into one is same-origin and allowed;
+  // the try/catch is for the case where it somehow is not, where the old
+  // behaviour is the right thing to fall back to.
   //
   // On load rather than once, because a frame that navigates — an origin
   // redirecting, or reconnecting — replaces the window this was attached to.
@@ -216,12 +279,15 @@
   // The same reach into the frame is what keeps a bare page legible. A page
   // with no CSS at all — a bare "hello", anything a stock dev server hands
   // out without a stylesheet — renders in the browser's light defaults:
-  // black text on a canvas it never painted, which is the tile's dark card
+  // black text on a canvas it never painted, which is the terminal's black
   // showing through. Telling that document it is dark switches the defaults
   // it was already using and nothing else. A page that chose anything — a
   // stylesheet, a style element, a style attribute, a color-scheme meta — is
-  // left exactly as it is; its colours are its own, and the browser lays it
-  // on the card the way it lays any framed page.
+  // left exactly as it is; its colours are its own.
+  const tiles = [...document.querySelectorAll('.tile')];
+  const activate = (tile) => {
+    for (const t of tiles) t.classList.toggle('active', t === tile);
+  };
   const paint = (frame) => {
     try {
       const doc = frame.contentDocument;
@@ -231,16 +297,42 @@
     } catch (e) { /* cross-origin: its colours are its own */ }
   };
   for (const frame of document.querySelectorAll('.tile iframe')) {
+    const tile = frame.closest('.tile');
     const wire = () => {
       try {
         frame.contentWindow.addEventListener(
-          'pointerdown', () => frame.contentWindow.focus(), true);
+          'pointerdown', () => { frame.contentWindow.focus(); activate(tile); }, true);
+        frame.contentWindow.addEventListener('focus', () => activate(tile));
       } catch (e) { /* cross-origin: leave the browser's default alone */ }
       paint(frame);
     };
     frame.addEventListener('load', wire);
     wire(); // a frame that is already there when this runs
   }
+
+  // The grid. A terminal tile's page says what its fit settled on — rows,
+  // columns, the cell — on its document element; the panel takes the cell
+  // from the first tile that has one and lays its own frames on it, so the
+  // borders it draws and the borders the terminals draw share rows and
+  // columns. Read again whenever a terminal loads or the page resizes, since
+  // the fit runs then; a page with no terminal keeps the stylesheet's guess.
+  const grid = () => {
+    for (const frame of document.querySelectorAll('.tile.bare iframe')) {
+      try {
+        const d = frame.contentDocument.documentElement.dataset;
+        if (d.cellH && d.cellW) {
+          document.documentElement.style.setProperty('--row', d.cellH + 'px');
+          document.documentElement.style.setProperty('--col', d.cellW + 'px');
+          return;
+        }
+      } catch (e) { /* cross-origin, or not loaded yet */ }
+    }
+  };
+  for (const frame of document.querySelectorAll('.tile.bare iframe')) {
+    frame.addEventListener('load', () => { grid(); setTimeout(grid, 300); });
+  }
+  new ResizeObserver(() => setTimeout(grid, 100)).observe(document.body);
+  grid();
 
   // Reload one frame. It reloads where it is, not back at the route it began
   // on: a page that navigated somewhere and stayed is what the tile shows,
@@ -309,7 +401,14 @@
     });
     show();
   };
-  for (const frame of document.querySelectorAll('.tile iframe')) back(frame);
+  for (const frame of document.querySelectorAll('.tile:not(.bare) iframe')) back(frame);
+  // A hovered chip wears xterm's own dotted underline, the class its
+  // stylesheet draws a hovered link with, so the panel's chips and the
+  // terminal's answer the mouse the same way.
+  for (const ctl of document.querySelectorAll('.ctl')) {
+    ctl.addEventListener('pointerenter', () => ctl.classList.add('xterm-underline-4'));
+    ctl.addEventListener('pointerleave', () => ctl.classList.remove('xterm-underline-4'));
+  }
   for (const button of document.querySelectorAll('.tile [data-reload]')) {
     const frame = button.closest('.tile').querySelector('iframe');
     button.addEventListener('click', () => reload(frame));

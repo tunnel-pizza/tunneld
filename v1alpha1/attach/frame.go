@@ -52,6 +52,13 @@ var (
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
+	// popoutStyle is the chip an embedded frame puts in its corner: the chip,
+	// with its underline coloured like its ground. xterm marks every link
+	// cell with a dashed underline in the cell's underline colour, and a
+	// chip the panel's neighbours draw without one would otherwise be the
+	// odd one out; drawn in the chip's own orange the mark is still there
+	// for a terminal that wants it and invisible on the one that shows it.
+	popoutStyle = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), UnderlineColor: ansi.IndexedColor(214), Attrs: uv.AttrBold}
 	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
 	copyStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(114), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
@@ -182,6 +189,13 @@ type frame struct {
 	// having ended while lingering.
 	linger bool
 	ended  bool
+
+	// embedded is this viewer being a tile in the multiview panel, which
+	// already shows what the provider said, once, in its own bar above every
+	// tile. A frame that drew the bar as well would put the same warning on the
+	// page once per terminal plus the panel's own, so an embedded frame draws
+	// none. The page says which it is on the socket's path; see index.html.
+	embedded bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -541,7 +555,8 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 }
 
 // box is the frame's outline in this viewer's window: the shared screen with
-// the chrome around it, or the window itself when that is smaller.
+// the chrome around it and the bar on top, or the window itself when that is
+// smaller.
 //
 // Around the screen rather than around the window, because the screen is the
 // smallest viewer's and this window may be larger. A border at the window's
@@ -553,16 +568,59 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // Centred in the window. The price is that a renegotiation moves all four
 // edges — half the difference each way — where a top-left box would move one;
 // the return is a screen that sits where a reader's eye already is.
+//
+// The bar is part of the box rather than of the window. The rows it takes are
+// the same count in every viewer, so the pane is already that much shorter
+// everywhere; putting them on the box is what puts the notice at the same
+// place relative to the screen everywhere too, instead of a screen-height
+// above it in a window much larger than the smallest.
+//
+// Embedded in the panel, the box is the window. The panel lays a frame of its
+// own around every origin that has none, on this terminal's own grid of rows
+// and columns, and those frames fill their tiles; a box the size of the
+// smallest viewer's screen would stop a row or two short of its neighbours
+// and read as the odd one out. So an embedded viewer's border runs to its
+// edges and the screen sits inside it, top left, with the room left over
+// dark — the corner chip still says whose size the screen is.
 func (f frame) box() uv.Rectangle {
+	if f.embedded {
+		return uv.Rect(0, 0, f.width, f.height)
+	}
+	banner := f.barRows()
 	w, h := f.sess.paneSize()
-	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight)
+	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight+banner)
 	return uv.Rect((f.width-w)/2, (f.height-h)/2, w, h)
+}
+
+// barRows is how many rows this frame's own bar takes: the session's count, or
+// none for a viewer embedded in the panel, whose bar is the panel's. The pane
+// is sized for the session's count either way — it is one screen shared by
+// every viewer — so an embedded box is that many rows shorter than its window
+// and centres in it like any box smaller than its window does.
+func (f frame) barRows() int {
+	if f.embedded {
+		return 0
+	}
+	return f.sess.bannerRows()
+}
+
+// frameRect is the box less its bar: the rectangle the border is drawn
+// around, and the one the labels in the border are measured against.
+//
+// The border goes around the screen, not around the notice. The bar sits on
+// top of it the way a title bar sits on a window — the same width, moving
+// with it — so everything that is about the border reads this rather than the
+// box, and the box stays the answer only to where the whole thing is.
+func (f frame) frameRect() uv.Rectangle {
+	box := f.box()
+	banner := min(f.barRows(), box.Dy())
+	return uv.Rect(box.Min.X, box.Min.Y+banner, box.Dx(), box.Dy()-banner)
 }
 
 // pane is the area inside the border, in this viewer's window.
 func (f frame) pane() uv.Rectangle {
-	box := f.box()
-	return uv.Rect(box.Min.X+1, box.Min.Y+1, box.Dx()-chromeWidth, box.Dy()-chromeHeight)
+	rect := f.frameRect()
+	return uv.Rect(rect.Min.X+1, rect.Min.Y+1, rect.Dx()-chromeWidth, rect.Dy()-chromeHeight)
 }
 
 // View draws the container's screen inside a border, with what the session is
@@ -591,13 +649,6 @@ func (f frame) View() tea.View {
 	// the same way on both, in stream order, copied on release.
 	view.MouseMode = tea.MouseModeCellMotion
 
-	pane := f.pane()
-	if pane.Dx() <= 0 || pane.Dy() <= 0 {
-		// No room to frame anything. Better an empty screen than a border
-		// drawn over the only rows the container had.
-		return view
-	}
-
 	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
 	// width method, which is what makes a wide character occupy two columns
 	// here the way it does on the terminal this is drawn for.
@@ -605,7 +656,20 @@ func (f frame) View() tea.View {
 	// nothing rather than left as whatever was there; the border is the box.
 	buf := uv.NewScreenBuffer(f.width, f.height)
 	border := uv.RoundedBorder().Style(borderStyle)
-	border.Draw(buf, f.box())
+	border.Draw(buf, f.frameRect())
+
+	// The provider's word, on top of the border in every view: one row per
+	// message, centred on the box, and no key touches it.
+	f.drawBanner(buf)
+
+	// No room to frame a screen. The border and the banner are what there
+	// is; the pane, its labels and the cursor wait for a window that fits
+	// them, rather than being drawn over the rows the box has.
+	pane := f.pane()
+	if pane.Dx() <= 0 || pane.Dy() <= 0 {
+		view.Content = buf.Render()
+		return view
+	}
 
 	// Filled at its own size and copied in, never drawn straight into the
 	// frame's buffer. Neither the emulator nor a styled line clips to the area
@@ -627,12 +691,12 @@ func (f frame) View() tea.View {
 	// The address is worked out first: it has the top row's other corner, and
 	// what is left after it is what the origin has to fit in.
 	where := f.where()
-	f.topRow(buf, f.box().Min.Y, f.titleLabel(where), f.subtitleLabel(), where)
+	f.topRow(buf, f.frameRect().Min.Y, f.titleLabel(where), f.subtitleLabel(), where)
 
 	// The counts give way whole on a narrow window, but not the one part of
 	// them that says this screen is not live: a scrolled viewer with no
 	// indicator is a viewer who thinks the program has stopped.
-	f.row(buf, f.box().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back())
+	f.row(buf, f.frameRect().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -647,6 +711,54 @@ func (f frame) View() tea.View {
 		}
 	}
 	return view
+}
+
+// drawBanner draws the provider's word into buf: one row per message across
+// the top of the box, centred on it, and no key touches it.
+//
+// The bar is the box's title bar. It travels with the box, so every viewer
+// sees the same notice at the same place relative to the screen — the console
+// and a browser tab alike — and a small box in a large window does not carry
+// a strip a screen-height away from it, over columns the box does not have.
+//
+// Each row is filled across the box in the message's own severity colour, the
+// same bar the panel's strip draws rather than the frame's own chrome — read
+// off a cell the centred text already landed on rather than carried
+// separately, so a message with no severity leaves the row exactly as it was
+// drawn. An island of colour in the middle of the row reads as a chip;
+// spanning the box is what makes it a notice.
+//
+// An embedded viewer draws none: the panel around it is showing the same
+// messages already. See embedded.
+func (f frame) drawBanner(buf uv.ScreenBuffer) {
+	if f.embedded || f.sess.motd == nil {
+		return
+	}
+	box := f.box()
+	for i, line := range f.sess.motd.Lines(box.Dx()) {
+		y := box.Min.Y + i
+		if y >= f.height {
+			break
+		}
+		width := ansi.StringWidth(line)
+		x := box.Min.X + max(0, (box.Dx()-width)/2)
+		// Bounded by the box's right edge, so a message wider than the box
+		// is cut there rather than running on over the window's margin.
+		uv.NewStyledString(line).Draw(buf, uv.Rect(x, y, box.Max.X-x, 1))
+
+		cell := buf.CellAt(x, y)
+		if cell == nil || cell.Style.Bg == nil {
+			continue
+		}
+		for cx := box.Min.X; cx < box.Max.X; cx++ {
+			if cx >= x && cx < x+width {
+				continue
+			}
+			fill := uv.EmptyCell
+			fill.Style.Bg = cell.Style.Bg
+			buf.SetCell(cx, y, &fill)
+		}
+	}
 }
 
 // drawQR draws the public address as a code in the pane, centred, with the
@@ -752,7 +864,7 @@ func blit(dst, src uv.ScreenBuffer, x, y int) {
 // that fits is the one drawn — so a label that is mostly optional detail can
 // fall back to the part of itself that is not, rather than vanishing whole.
 func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...string) {
-	box := f.box()
+	box := f.frameRect()
 	indent, edge := box.Min.X+2, box.Max.X-1
 
 	after := writeAt(buf, indent, y, left, edge-indent)
@@ -785,7 +897,7 @@ func (f frame) row(buf uv.ScreenBuffer, y int, left, centre string, right ...str
 // there is nothing to trade against, and an address clipped to a corner is not
 // an address. The origin has the row to itself again there.
 func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
-	box := f.box()
+	box := f.frameRect()
 	indent, edge := box.Min.X+2, box.Max.X-1
 
 	before := edge
@@ -811,7 +923,7 @@ func (f frame) topRow(buf uv.ScreenBuffer, y int, left, centre, right string) {
 // labels can hold it.
 func (f frame) between(buf uv.ScreenBuffer, y int, centre string, after, before int) {
 	if width := uv.NewStyledString(centre).UnicodeWidth(); width > 0 {
-		box := f.box()
+		box := f.frameRect()
 		if x := box.Min.X + (box.Dx()-width)/2; x > after && x+width < before {
 			writeAt(buf, x, y, centre, before-x)
 		}
@@ -876,7 +988,7 @@ func (f frame) titleLabel(beside string) string {
 // this it does not fit the row on its own, and topRow drops it.
 func (f frame) drawn(beside string) bool {
 	width := uv.NewStyledString(beside).UnicodeWidth()
-	return width > 0 && width < f.box().Dx()-3
+	return width > 0 && width < f.frameRect().Dx()-3
 }
 
 // titleRoom is how many columns the origin can have without costing the label
@@ -887,9 +999,9 @@ func (f frame) drawn(beside string) bool {
 // last two.
 func (f frame) titleRoom(beside string) int {
 	if width := uv.NewStyledString(beside).UnicodeWidth(); width > 0 {
-		return f.box().Dx() - 1 - width - 1 - 2 - 2
+		return f.frameRect().Dx() - 1 - width - 1 - 2 - 2
 	}
-	return f.box().Dx() - 1 - 2 - 2
+	return f.frameRect().Dx() - 1 - 2 - 2
 }
 
 // ellipsis stands for the leading path segments an origin has given up.
@@ -1035,6 +1147,12 @@ func printable(r rune) rune {
 // which is what makes it worth showing — it is the address to send somebody
 // else, and for one origin among several it carries the routing parameter that
 // reaches this one.
+//
+// Embedded in the panel, the corner holds a chip instead: the panel's own
+// frames carry their controls there as chips, and the address in full is
+// the panel's to show, once, in its tab. The chip is the same hyperlink, so
+// a click on it opens the origin in a tab of its own — the panel's popout,
+// drawn by the terminal.
 func (f frame) where() string {
 	addr := f.sess.announced()
 	if addr == "" {
@@ -1045,6 +1163,9 @@ func (f frame) where() string {
 	// with exactly the text it would have had, which is why it costs nothing
 	// to send. It occupies no columns either, so the alignment either side of
 	// it is unaffected.
+	if f.embedded {
+		return " " + ansi.SetHyperlink(addr) + popoutStyle.Styled(" ↗ ") + ansi.ResetHyperlink() + " "
+	}
 	return addrStyle.Styled(" " + ansi.SetHyperlink(addr) + addr + ansi.ResetHyperlink() + " ")
 }
 

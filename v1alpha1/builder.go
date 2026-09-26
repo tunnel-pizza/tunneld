@@ -225,6 +225,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		}{
 			{"browser", b.display == nil},
 			{"binder", b.binder == nil},
+			{"motd", b.motd == nil},
 		} {
 			if c.missing {
 				err := fmt.Errorf("builder has no %s: construct it with New", c.name)
@@ -611,6 +612,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 		}
 	}
+
+	// What the provider said with the spec, learned here because Messages
+	// resolves the spec, which URL returning has already done. Every run,
+	// cached or fresh — the messages ride the envelope with the spec they
+	// came with. Nothing is printed for it: stderr is the map and the logs,
+	// and the frame and the panel are where the provider's word is read.
+	b.motd.Learn(tun.Messages(), log)
 
 	// Putting the tunnel in front of a person is the browser package's, both
 	// ways it can be done: a tab, or the console this was started from. What

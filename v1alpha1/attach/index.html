@@ -64,6 +64,19 @@
   body { display: flex; flex-direction: column; position: relative; }
   #term { flex: 1; min-height: 0; width: 100%; }
 
+  /* A hovered chip, in the panel's hover colours, laid over its cells. */
+  #hover {
+    position: fixed;
+    z-index: 3;
+    pointer-events: none;
+    background: #eeeeee;
+    color: #080808;
+    font: 700 13px monospace;
+    text-align: center;
+    white-space: pre;
+    text-underline-offset: 2px;
+  }
+
   /* The one thing worth framing it for: what the container cannot do. That is
      a fact about how it was started — settled before the socket opened, and
      unchanged by anything printed after — so it belongs to the page rather
@@ -130,6 +143,9 @@
 </style>
 </head>
 <body>
+<!-- xterm-underline-4 is xterm's own dotted underline, from its stylesheet:
+     the cue it draws under a hovered link, borrowed rather than redrawn. -->
+<div id="hover" class="xterm-underline-4" hidden></div>
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <div id="gone" hidden>
@@ -174,10 +190,46 @@
         event.preventDefault();
         window.open(uri, '_blank', 'noopener,noreferrer');
       },
+      hover(event, text, range) { chip(text, range); },
+      leave() { chip(); },
     },
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+
+  // A chip under the mouse goes white, the way the panel's chips do. xterm's
+  // own cue for a hovered link is a dotted underline beneath the cells, and
+  // there is no option to draw anything else; so for a link that is a chip —
+  // a single glyph, the popout in the frame's corner — the page lays the same
+  // cells over the canvas in the hover colours for as long as the mouse is on
+  // them, and takes them away when it leaves. The address in full and a
+  // message's link keep the underline: they are text, and text underlines.
+  //
+  // xterm hands hover the link's target, not its text, so a chip is known by
+  // its width — three cells, a glyph between two spaces — and the glyph is
+  // read back off the buffer to draw.
+  function chip(uri, range) {
+    const el = document.getElementById('hover');
+    const width = range ? range.end.x - range.start.x + 1 : 0;
+    if (!uri || !range || width < 1 || width > 3) { el.hidden = true; return; }
+    const screen = document.querySelector('.xterm-screen');
+    const line = term.buffer.active.getLine(range.start.y - 1);
+    if (!screen || !line || !term.cols || !term.rows) return;
+    let text = '';
+    for (let x = range.start.x - 1; x < range.end.x; x++) text += line.getCell(x)?.getChars() || ' ';
+    const r = screen.getBoundingClientRect();
+    const cellW = r.width / term.cols, cellH = r.height / term.rows;
+    const row = range.start.y - 1 - term.buffer.active.viewportY;
+    // The glyph alone, centred in the chip's cells: the underline is the
+    // glyph's width then, as it is on the panel's chips, not the chip's.
+    el.textContent = text.trim();
+    el.style.left = (r.left + (range.start.x - 1) * cellW) + 'px';
+    el.style.top = (r.top + row * cellH) + 'px';
+    el.style.width = ((range.end.x - range.start.x + 1) * cellW) + 'px';
+    el.style.height = cellH + 'px';
+    el.style.lineHeight = cellH + 'px';
+    el.hidden = false;
+  }
   // The terminal names the tab it is displayed in. The frame sets its window
   // title to the origin and whatever the container is calling itself, the
   // renderer emits that as an OSC, and xterm hands it over here.
@@ -216,7 +268,25 @@
     console.warn('attach: clipboard addon failed to load', e);
   }
 
-  fit.fit();
+  // What the fit settled on, said on the document element: the rows and
+  // columns, and the size of one cell. The multiview panel frames this page
+  // in a tile and draws frames of its own around the origins that have
+  // none; those are laid on this grid, read from here, so a border the
+  // panel draws and a border this terminal draws land on the same rows and
+  // columns. Same origin, so the panel can read it; nothing else does.
+  const publish = () => {
+    const screen = document.querySelector('.xterm-screen');
+    if (!screen || !term.rows || !term.cols) return;
+    const r = screen.getBoundingClientRect();
+    const d = document.documentElement.dataset;
+    d.rows = String(term.rows);
+    d.cols = String(term.cols);
+    d.cellW = (r.width / term.cols).toFixed(4);
+    d.cellH = (r.height / term.rows).toFixed(4);
+  };
+  const refit = () => { fit.fit(); publish(); };
+
+  refit();
 
   // Typing should work without clicking first. Nothing else on the page wants
   // the keyboard, and every arrival here is somebody who came to use a
@@ -230,7 +300,18 @@
   // would let a second tab's container steal this one's socket, and a
   // websocket handshake sends no Referer for the tunnel to route by.
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/attach' + location.search,
+  // Framed by the panel, the page says so on its socket's path: the panel
+  // already shows what the provider said, once, in its own bar, so the frame
+  // this viewer gets draws none — a page of terminals is not a page of the
+  // same warning repeated. Only the top document is a viewer in its own
+  // right. Comparing window.top is allowed across origins, which a tile is —
+  // the panel is served from its own hostname — so the catch is for a browser
+  // stricter than that, where a top that cannot even be looked at is still a
+  // page inside somebody else's.
+  let embedded = false;
+  try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+  const path = embedded ? '/attach/embedded' : '/attach';
+  const ws = new WebSocket(proto + '//' + location.host + path + location.search,
                            ['v4.channel.k8s.io']);
   ws.binaryType = 'arraybuffer';
 
@@ -343,7 +424,7 @@
     return false;
   });
 
-  new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
+  new ResizeObserver(() => { refit(); sendSize(); }).observe(document.body);
 
   // Cloudflare closes idle websockets and a page cannot send a websocket ping,
   // so the terminal's own size doubles as the heartbeat: resizing to the

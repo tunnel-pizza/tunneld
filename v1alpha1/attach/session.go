@@ -77,6 +77,11 @@ type session struct {
 	// Nil when nothing was configured, which a frame says rather than hides.
 	logs Logs
 
+	// motd is the provider's messages of the day, drawn on top of the box. Nil
+	// when nothing was configured, and then there is no banner and no row
+	// spent on one.
+	motd Motd
+
 	// sinks are told what the terminal says about itself, after the built-in
 	// routing. Empty unless a caller installed some with WithSinks.
 	sinks []Sink
@@ -176,6 +181,13 @@ type viewer struct {
 	said chan []byte
 }
 
+// embeddedKey marks an attach request's context as coming from a page framed
+// by the multiview panel, which dials /attach/embedded rather than /attach.
+// A context value rather than a parameter because the request reaches
+// AttachContainer through ServeAttach, whose signature is the streaming
+// library's and has no room for one.
+type embeddedKey struct{}
+
 // watch builds the scanner that reads what a program says about itself, ahead
 // of the emulator. Split out of newSession so a frame test can drive a session
 // the way a real stream does.
@@ -186,14 +198,14 @@ type viewer struct {
 // lock. The scanner owns every OSC and reports every private mode, and said
 // routes them.
 func (s *session) watch() {
-	s.scan = newScanner(s.em, s.said)
+	s.scan = newScanner(lockedScreen{s}, s.said)
 }
 
 // newSession opens the one attach and starts feeding the emulator from it. It
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -203,6 +215,7 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, si
 		log:     log,
 		banner:  banner,
 		logs:    logs,
+		motd:    motd,
 		sinks:   sinks,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
@@ -275,7 +288,7 @@ func (s *session) stream() {
 	// same size the session already settled on. Without this it draws into a
 	// size no one is looking at, which for a full-screen program means drawing
 	// nothing at all.
-	go s.apply(s.ctx, paneOf(s.size))
+	go s.apply(s.ctx, paneOf(s.size, s.bannerRows()))
 }
 
 // logLines are tunneld's own recent lines, oldest first, or nil when nothing
@@ -470,6 +483,20 @@ func (s *session) endRun() {
 // screen, and a nudge to everyone drawing it.
 type sink struct{ s *session }
 
+// lockedScreen is the emulator behind the session's screen lock. The scanner
+// writes what a program printed through it — every run of plain text, and
+// every sequence it holds back and then lets through — so a frame copying the
+// screen never reads a cell the stream is mid-way through writing. The few
+// sequences the session forwards to the emulator itself take the same lock at
+// their call sites; nothing reaches the emulator's Write without it.
+type lockedScreen struct{ s *session }
+
+func (w lockedScreen) Write(p []byte) (int, error) {
+	w.s.screen.Lock()
+	defer w.s.screen.Unlock()
+	return w.s.em.Write(p)
+}
+
 func (w *sink) Close() error { return nil }
 
 func (w *sink) Write(p []byte) (int, error) {
@@ -615,10 +642,11 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	s.revive()
 
 	width, height := s.window()
+	embedded, _ := ctx.Value(embeddedKey{}).(bool)
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height},
+		frame{sess: s, v: v, width: width, height: height, embedded: embedded},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
@@ -714,11 +742,16 @@ func (s *session) redraw(ctx context.Context, v *viewer) {
 			// the bytes a reader most wants: what the program said on its way
 			// out. A program that exits quickly is all last words.
 			v.prog.Send(paneMsg{})
+			done := s.ended()
 			select {
-			case <-s.ended():
+			case <-done:
 				// Unless the run is being started over: then the end is
 				// not this viewer's end, and the next wake is the new run.
-				if s.restartInFlight() != nil {
+				// Two signs of that, because the restart's flag is cleared
+				// the moment the new run is up: the flag still set, or the
+				// session already holding a newer done than the one read
+				// above — a restart that finished in between.
+				if s.restartInFlight() != nil || s.ended() != done {
 					continue
 				}
 				v.prog.Send(goneMsg{})
@@ -800,35 +833,58 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 			h = v.size.Height
 		}
 	}
-	if w == 0 || h == 0 || (w == s.size.Width && h == s.size.Height) {
+	if w == 0 || h == 0 {
 		return remotecommand.TerminalSize{} // nothing to apply
 	}
 	s.size = remotecommand.TerminalSize{Width: w, Height: h}
 
-	pane := paneOf(s.size)
+	// Decided by the pane, not the window. The banner can grow between the
+	// first stream and the first viewer — the messages come with the mint,
+	// after the session has started — so a window the session already
+	// settled on can still need a shorter pane, and a guard on the window
+	// alone would leave the screen taller than the box drawn around it.
+	pane := paneOf(s.size, s.bannerRows())
 	s.screen.Lock()
+	defer s.screen.Unlock()
+	if int(pane.Width) == s.em.Width() && int(pane.Height) == s.em.Height() {
+		return remotecommand.TerminalSize{} // nothing to apply
+	}
 	s.em.Resize(int(pane.Width), int(pane.Height))
-	s.screen.Unlock()
 	return pane
 }
 
 // paneOf is the screen inside a window: the window less the frame's own
-// border.
+// border and the banner rows above it.
 //
 // A window with no room for the pane still leaves a screen, because one
 // resized to nothing has nowhere to put what the target says next.
-func paneOf(window remotecommand.TerminalSize) remotecommand.TerminalSize {
+func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.TerminalSize {
 	pane := remotecommand.TerminalSize{
 		Width:  window.Width - chromeWidth,
-		Height: window.Height - chromeHeight,
+		Height: window.Height - chromeHeight - uint16(banner),
 	}
-	if window.Height <= chromeHeight {
+	if int(window.Height) <= chromeHeight+banner {
 		pane.Height = 1
 	}
 	if window.Width <= chromeWidth {
 		pane.Width = 1
 	}
 	return pane
+}
+
+// bannerRows is how many rows the messages of the day take on top of the box:
+// one each, since Lines returns one row per message whatever the width, and
+// the count is fixed once viewers are connected. That is what makes it the
+// same for every viewer, and what lets the pane's size stay one negotiation.
+//
+// The count is the session's, not any one frame's. A viewer embedded in the
+// panel draws no bar, and simply has this many spare rows around its box:
+// the screen stays one size for everybody rather than one per kind of viewer.
+func (s *session) bannerRows() int {
+	if s.motd == nil {
+		return 0
+	}
+	return len(s.motd.Lines(0))
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:

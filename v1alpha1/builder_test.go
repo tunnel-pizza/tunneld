@@ -338,6 +338,9 @@ type fakeTunnel struct {
 	order  *[]string
 	// token is what WithToken was handed; the run applies it on every path.
 	token string
+	// messages is what Messages hands back: what the provider said with the
+	// spec, as libtunnel would carry it.
+	messages []string
 }
 
 // live is a tunnel that comes up on public and stays up until the test says
@@ -430,6 +433,7 @@ func (f *fakeTunnel) WithInterceptor(ic libtunnel.Interceptor) libtunnel.TunnelV
 	f.ics = append(f.ics, ic)
 	return f
 }
+func (f *fakeTunnel) Messages() []string { return f.messages }
 
 // fakeCache answers Load with a fixed spec and records the rest. onSave is
 // how a case ends the run: cancelling the context, failing the tunnel, or
@@ -566,6 +570,15 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 	return f.token
 }
 
+// fakeMotd stands in for the motd package: it records what Learn was handed
+// and prints one line per message, so a case can see the run reach it and
+// where its output landed.
+type fakeMotd struct {
+	learned []string
+}
+
+func (f *fakeMotd) Learn(raw []string, _ v1.Logger) { f.learned = raw }
+
 // runHarness is run with every collaborator faked except the one that is
 // pure: the shown's panel half, because its URL and interceptor order are
 // what the assertions check. order records the effects that matter in the
@@ -579,6 +592,7 @@ type runHarness struct {
 	cache   *fakeCache
 	display *fakeDisplay
 	binder  *fakeBinder
+	motd    *fakeMotd
 	order   []string
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
@@ -600,6 +614,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
+	h.motd = &fakeMotd{}
 	tun.order = &h.order
 	h.b = New(
 		WithOrigin(urls...),
@@ -615,6 +630,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCache(h.cache),
 		WithDisplay(h.display),
 		WithBinder(h.binder),
+		WithMotd(h.motd),
 	)
 	return h
 }
@@ -735,6 +751,26 @@ func TestRun(t *testing.T) {
 		}
 		if !h.binder.closed {
 			t.Error("the binder's closer was never called; RunE's defer did not run")
+		}
+	})
+
+	t.Run("what the provider said is learned, and stderr stays the map", func(t *testing.T) {
+		tun := live(public)
+		tun.messages = []string{"data:text/markdown;base64,PiBbIXdhcm5pbmdd"} // "> [!warning]"
+		h := newRunHarness(t, tun, ":3000", ":4000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v, want nil after a signal", err)
+		}
+		if !slices.Equal(h.motd.learned, tun.messages) {
+			t.Errorf("Learn was handed %q, want the tunnel's %q", h.motd.learned, tun.messages)
+		}
+		// Nothing of it reaches stderr: the map and the logs are what that
+		// stream carries, and the message is read on the frame and the panel.
+		if out := h.stderr.String(); strings.Contains(out, "warning") || strings.Contains(out, "data:") {
+			t.Errorf("stderr = %q, want no trace of the message", out)
 		}
 	})
 

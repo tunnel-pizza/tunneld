@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
@@ -588,7 +589,7 @@ func roomFor(f frame) (all, withoutBuild int) {
 // follows the window. A test that wants the two to differ sets the fields.
 func (h *harness) window(width, height int) {
 	h.f.width, h.f.height = width, height
-	h.s.em.Resize(max(1, width-chromeWidth), max(1, height-chromeHeight))
+	h.s.em.Resize(max(1, width-chromeWidth), max(1, height-chromeHeight-h.s.bannerRows()))
 }
 
 // bottomOf is the frame's bottom border row as it renders now.
@@ -1736,5 +1737,254 @@ func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
 	h.press(t, commandKey)
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, " r ") || !strings.Contains(bottom, "restart") {
 		t.Errorf("bottom border = %q, want r restart offered for a program", bottom)
+	}
+}
+
+// TestBannerSitsAboveTheBox pins the messages of the day: one row per
+// message on top of the border, centred, in every view the frame has, with
+// the pane shorter by their count. The window here is the box's own size, so
+// the bar's rows are the window's first ones; TestBannerRidesOnTheBox covers
+// a window with room to spare.
+func TestBannerSitsAboveTheBox(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"WARNING public", "NOTE 日本語"}
+	h.window(defaultCols, defaultRows)
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if got := strings.TrimSpace(stripSGR(lines[0])); got != "WARNING public" {
+		t.Errorf("row 0 = %q, want the first message", got)
+	}
+	if got := strings.TrimSpace(stripSGR(lines[1])); got != "NOTE 日本語" {
+		t.Errorf("row 1 = %q, want the second message", got)
+	}
+	// Centred: as much space before as after, within a cell. The render
+	// trims a row's trailing blanks, so what is after is measured against
+	// the window rather than read off the row.
+	plain := strings.TrimRight(stripSGR(lines[0]), " ")
+	left := len(plain) - len(strings.TrimLeft(plain, " "))
+	right := defaultCols - uv.NewStyledString(plain).UnicodeWidth()
+	if d := left - right; d < -1 || d > 1 {
+		t.Errorf("row 0 has %d cells left and %d right, want centred", left, right)
+	}
+	if !strings.Contains(lines[2], "╭") {
+		t.Errorf("row 2 = %q, want the box's top border under the banner", stripSGR(lines[2]))
+	}
+	if pane := h.f.pane(); pane.Min.Y != 3 {
+		t.Errorf("pane starts at row %d, want 3 (two banner rows and the border)", pane.Min.Y)
+	}
+
+	for _, view := range []func(){
+		func() { h.press(t, commandKey) },
+		func() {
+			h.press(t, tea.Key{Code: tea.KeyEscape})
+			h.press(t, commandKey)
+			h.press(t, tea.Key{Code: 'l'})
+		},
+		// Scrolled back: enough lines to push most into the emulator's
+		// history, then one notch up. The banner is the frame's, not the
+		// screen's, so looking back through what scrolled off keeps it.
+		func() {
+			h.press(t, tea.Key{Code: tea.KeyEscape})
+			h.scrollOff(t, 1, 3*defaultRows)
+			h.wheel(t, tea.MouseWheelUp, 5, 5)
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "↑1") {
+				t.Fatalf("bottom border = %q, want the view scrolled back one line", bottom)
+			}
+		},
+		// The QR code, ^K q.
+		func() {
+			h.press(t, commandKey)
+			h.press(t, typing('q'))
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "back to the terminal") {
+				t.Fatalf("bottom border = %q, want the QR view", bottom)
+			}
+		},
+	} {
+		view()
+		if got := strings.TrimSpace(stripSGR(strings.Split(h.f.View().Content, "\n")[0])); got != "WARNING public" {
+			t.Errorf("a frame view lost the banner: row 0 = %q", got)
+		}
+	}
+}
+
+// TestBannerIsABar pins that a banner row fills the box edge to edge in the
+// severity's colour, the same bar the panel's own strip draws, rather than an
+// island of coloured text with the window's own background showing on either
+// side of it. The box fills the harness's window, so its edges are the
+// window's.
+func TestBannerIsABar(t *testing.T) {
+	styled := ansi.Style{}.BackgroundColor(ansi.IndexedColor(214)).ForegroundColor(ansi.IndexedColor(232)).Styled("WARNING public")
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{styled, "plain, no severity"}
+
+	buf := uv.NewScreenBuffer(h.f.width, h.f.height)
+	h.f.drawBanner(buf)
+
+	for _, x := range []int{0, h.f.width - 1} {
+		if cell := buf.CellAt(x, 0); cell == nil || cell.Style.Bg != ansi.IndexedColor(214) {
+			t.Errorf("row 0 col %d = %+v, want the fill colour 214 all the way to the edge", x, cell)
+		}
+	}
+	// A plain row carries no severity to read a fill colour off of, so
+	// nothing past its text is touched: the window's own background still
+	// shows at both ends, the way it always has.
+	for _, x := range []int{0, h.f.width - 1} {
+		if cell := buf.CellAt(x, 1); cell != nil && cell.Style.Bg != nil {
+			t.Errorf("plain row col %d background = %v, want none", x, cell.Style.Bg)
+		}
+	}
+}
+
+// TestBannerRidesOnTheBox pins where the bar goes when the box is smaller
+// than the window: on the box, as its title bar, box-wide and directly above
+// the border — not at the top of the window a screen-height away, and not
+// across columns the box does not have.
+func TestBannerRidesOnTheBox(t *testing.T) {
+	styled := ansi.Style{}.BackgroundColor(ansi.IndexedColor(214)).ForegroundColor(ansi.IndexedColor(232)).Styled("WARNING public")
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{styled}
+	h.window(160, 50)
+	// A smaller viewer has negotiated the screen down, so this window holds
+	// a box with margin on every side.
+	h.s.em.Resize(78, 22)
+
+	box := h.f.box()
+	if want := 22 + chromeHeight + 1; box.Dy() != want {
+		t.Errorf("box is %d rows, want %d (the screen, its border and the bar)", box.Dy(), want)
+	}
+
+	// Replayed into a screen of the window's size, so what is asserted is the
+	// cells a viewer's terminal ends up holding rather than the frame's own
+	// buffer.
+	screen := vt.NewEmulator(h.f.width, h.f.height)
+	if _, err := screen.WriteString(strings.ReplaceAll(h.f.View().Content, "\n", "\r\n")); err != nil {
+		t.Fatalf("replay the view: %v", err)
+	}
+	bg := func(x, y int) any {
+		if cell := screen.CellAt(x, y); cell != nil && cell.Style.Bg != nil {
+			return cell.Style.Bg
+		}
+		return nil
+	}
+
+	for _, x := range []int{box.Min.X, box.Max.X - 1} {
+		if got := bg(x, box.Min.Y); got != ansi.IndexedColor(214) {
+			t.Errorf("bar at col %d row %d background = %v, want 214 to the box's edge", x, box.Min.Y, got)
+		}
+	}
+	if got := bg(0, box.Min.Y); got != nil {
+		t.Errorf("col 0 on the bar's row background = %v, want none outside the box", got)
+	}
+	if box.Min.Y > 0 {
+		if got := bg(box.Min.X, 0); got != nil {
+			t.Errorf("window row 0 background = %v, want none: the bar is on the box, not the window", got)
+		}
+	} else {
+		t.Errorf("box starts at row 0, want it centred below the window's top")
+	}
+	if cell := screen.CellAt(box.Min.X, box.Min.Y+1); cell == nil || cell.Content != "╭" {
+		t.Errorf("cell under the bar = %+v, want the border's top-left corner", cell)
+	}
+	if got, want := h.f.pane().Min.Y, box.Min.Y+2; got != want {
+		t.Errorf("pane starts at row %d, want %d (the bar and the border)", got, want)
+	}
+}
+
+// TestBannerNeverEatsTheWholeWindow pins the short window: the banner rows
+// are drawn, the pane keeps its one-row floor, and nothing indexes past the
+// buffer.
+func TestBannerNeverEatsTheWholeWindow(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"a", "b", "c"}
+	h.window(40, 4)
+	_ = h.f.View() // must not panic
+}
+
+// TestAnEmbeddedViewerDrawsNoBar pins a viewer framed by the multiview panel:
+// the panel already shows what the provider said, once, above every tile, so
+// the frame inside a tile draws no bar of its own. The pane is still the
+// session's, shorter by the bar everyone else has, so the box has a spare row
+// in the window and the border is where the box starts.
+//
+// The same session with the flag down is the control: the bar is still there
+// for a viewer in its own right. TestBannerSitsAboveTheBox covers that viewer
+// whole.
+func TestAnEmbeddedViewerDrawsNoBar(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.motd = testMotd{"WARNING public"}
+	h.f.embedded = true
+	h.window(defaultCols, defaultRows)
+
+	lines := strings.Split(h.f.View().Content, "\n")
+	if !strings.Contains(lines[0], "╭") {
+		t.Errorf("row 0 = %q, want the box's top border", stripSGR(lines[0]))
+	}
+	for i, line := range lines {
+		if strings.Contains(stripSGR(line), "WARNING") {
+			t.Errorf("row %d = %q, want no bar in an embedded viewer", i, stripSGR(line))
+		}
+	}
+	if pane := h.f.pane(); pane.Min.Y != 1 {
+		t.Errorf("pane starts at row %d, want 1 (the border alone)", pane.Min.Y)
+	}
+
+	h.f.embedded = false
+	lines = strings.Split(h.f.View().Content, "\n")
+	if got := strings.TrimSpace(stripSGR(lines[0])); got != "WARNING public" {
+		t.Errorf("row 0 = %q, want the bar back for a viewer in its own right", got)
+	}
+}
+
+// TestAnEmbeddedBoxIsTheWindow pins the panel case: a viewer framed by the
+// panel draws its border at its window's edges whatever size the shared
+// screen settled on, so its frame fills its tile the way the panel's own
+// frames fill theirs. The screen stays where the border puts it, top left.
+func TestAnEmbeddedBoxIsTheWindow(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.embedded = true
+	h.window(160, 50)
+	h.s.em.Resize(78, 22) // the smallest viewer is much smaller than this one
+
+	if box := h.f.box(); box != uv.Rect(0, 0, 160, 50) {
+		t.Errorf("box = %v, want the whole 160x50 window", box)
+	}
+	lines := strings.Split(h.f.View().Content, "\n")
+	if !strings.Contains(lines[0], "╭") || !strings.Contains(stripSGR(lines[len(lines)-1]), "╰") {
+		t.Errorf("border is not at the window's top and bottom rows")
+	}
+	if pane := h.f.pane(); pane.Min.X != 1 || pane.Min.Y != 1 {
+		t.Errorf("pane starts at %v, want (1,1) inside the border", pane.Min)
+	}
+}
+
+// TestAnEmbeddedCornerIsAPopout pins the panel's corner: a viewer framed by
+// the panel gets a chip that opens the origin in a tab where a viewer of its
+// own gets the address in full. Both are the same hyperlink; only the text
+// under it changes, so a terminal that drops OSC 8 still shows a chip and a
+// panel's tab still says where.
+func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+
+	own := h.f.View().Content
+	if !strings.Contains(stripSGR(own), "striped-worm.tunneled.pizza/?0") {
+		t.Errorf("a viewer of its own does not see the address: %q", stripSGR(strings.Split(own, "\n")[0]))
+	}
+
+	h.f.embedded = true
+	top := strings.Split(h.f.View().Content, "\n")[0]
+	if strings.Contains(stripSGR(top), "striped-worm") {
+		t.Errorf("an embedded viewer still shows the address: %q", stripSGR(top))
+	}
+	if !strings.Contains(top, "↗") {
+		t.Errorf("an embedded viewer has no popout chip: %q", stripSGR(top))
+	}
+	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneled.pizza/?0") {
+		t.Errorf("the chip is not a hyperlink to the address")
+	}
+	// The link's underline is drawn in the chip's own orange (SGR 58), so
+	// xterm's dashed mark on a link cell disappears into the chip.
+	if !strings.Contains(top, "58;5;214") {
+		t.Errorf("the chip's underline is not coloured like its ground: %q", top)
 	}
 }

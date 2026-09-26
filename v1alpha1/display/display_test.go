@@ -19,6 +19,7 @@ import (
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -351,6 +352,56 @@ func TestServeShell(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page does not contain %q, so a clicked tile will not take focus", want)
 		}
+	}
+}
+
+// testMotd is a panel's messages, fixed.
+type testMotd []motd.Rendered
+
+func (m testMotd) HTML() []motd.Rendered { return []motd.Rendered(m) }
+
+// TestServeShellCarriesTheMessages pins the strip above the tiles: one
+// element per message, classed by severity, carrying the rendered HTML — and
+// no header at all when there is nothing to say.
+func TestServeShellCarriesTheMessages(t *testing.T) {
+	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
+	if err != nil {
+		t.Fatalf("origins: %v", err)
+	}
+	render := func(d *DisplayImpl) string {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "foo.tunneled.pizza"
+		ic := &fakeIC{}
+		d.Interceptors(true, shown, discard)[0].Handler(ic)
+		ic.installed(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		return rec.Body.String()
+	}
+
+	body := render(New(WithMotd(testMotd{
+		{Severity: motd.SeverityWarning, Label: "WARNING", HTML: "<p>This tunnel is <strong>public</strong>.</p>"},
+		{Severity: motd.SeverityNote, Label: "NOTE", HTML: "<p>Expires soon.</p>"},
+	})))
+	for _, want := range []string{`<header class="motd">`, `class="message message-warning"`, "<strong>public</strong>", `class="message message-note"`, "Expires soon.",
+		`<span class="label">WARNING</span>`,
+		// The strip's typeface, the one tunnel.pizza sets for everything.
+		"@xterm/xterm@6.0.0/css/xterm.css"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page does not contain %q", want)
+		}
+	}
+	if strings.Index(body, `<div class="message message-warning">`) > strings.Index(body, `<div class="message message-note">`) {
+		t.Error("messages rendered out of order")
+	}
+	if strings.Index(body, `<header class="motd">`) > strings.Index(body, `<main class="grid">`) {
+		t.Error("the strip is not above the tiles")
+	}
+
+	if body := render(New()); strings.Contains(body, `class="motd"`) {
+		t.Error("a panel with nothing to say still has a header")
 	}
 }
 
@@ -768,4 +819,32 @@ func mustOrigins(raw []string) (v1.Origins, error) {
 		urls = append(urls, u)
 	}
 	return origins.New(origins.WithURL(urls...)), nil
+}
+
+// TestATerminalTileIsBare pins that the panel adds no chrome around an origin
+// tunneld serves itself: its page is the frame the terminal draws, so a
+// second frame, second labels and a second bar around it read as a mistake.
+// An http origin keeps the panel's frame.
+func TestATerminalTileIsBare(t *testing.T) {
+	shown, err := mustOrigins([]string{"http://localhost:3000", "exec:///bin/bash"})
+	if err != nil {
+		t.Fatalf("origins: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Host = "foo.tunneled.pizza"
+	ic := &fakeIC{}
+	pageOf(t, shown).Handler(ic)
+	ic.installed(rec, r)
+	body := rec.Body.String()
+	if got := strings.Count(body, `class="tile bare"`); got != 1 {
+		t.Errorf("page has %d bare tiles, want 1 for the one terminal", got)
+	}
+	if got := strings.Count(body, `class="edge"`); got != 1 {
+		t.Errorf("page has %d framed tiles, want 1 for the one http origin", got)
+	}
+	// The markup, not the script's selectors, which name the attribute too.
+	if got := strings.Count(body, `type="button" data-reload`); got != 1 {
+		t.Errorf("page has %d reload controls, want 1 — a terminal has ^K", got)
+	}
 }

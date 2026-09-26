@@ -23,6 +23,7 @@ Deep-link by filename; line numbers will drift.
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -75,7 +76,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, implemented respectively by `cache`, `display`, `attach`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, `Console`, `Identity`, `Motd`, implemented respectively by `cache`,
+`display`, `attach`, `console`, `identity`, `motd`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
@@ -875,6 +877,9 @@ are easy to forget:
    tunable;
 3. the field on `BuilderImpl`, in the collaborators group;
 4. `With<Name>(x <Name>) Option` in `v1alpha1.go`, and the default in `New`;
+   a collaborator another package reads (the log ring, the motd board) is
+   built before the builder in `New` and shared into that package through its
+   own `With*` option;
 5. a line in the assertion block, one in the wiring check at the top of
    `Command`, and a row in `TestNewWiresEveryCollaborator`;
 6. a fake in `v1alpha1/builder_test.go` and a case in `TestRun` for what

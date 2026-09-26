@@ -113,6 +113,15 @@ type Logs interface {
 	Lines() []string
 }
 
+// Motd is where the provider's messages of the day come from, for a frame to
+// draw above the box. Read when the frame draws, like Logs; a frame with no
+// board draws no banner. Lines returns one row per message whatever the width
+// it is given, and the count is fixed once viewers are connected: the frame
+// sizes the pane from it, and every viewer has to agree on that size.
+type Motd interface {
+	Lines(width int) []string
+}
+
 // Sink is told what a program said about itself, as it said it — every OSC and
 // every private-mode CSI the scanner pulls out of the target's output.
 //
@@ -250,6 +259,7 @@ type BinderImpl struct {
 	targets map[string]Targets
 	banner  string
 	logs    Logs
+	motd    Motd
 	sinks   []Sink
 }
 
@@ -282,6 +292,12 @@ func WithTargets(targets ...Targets) Option {
 // log lines from. Unset, a frame has none to show and says so.
 func WithLogs(logs Logs) Option {
 	return func(b *BinderImpl) { b.logs = logs }
+}
+
+// WithMotd sets where the frames this binder serves read the provider's
+// messages of the day from. Unset, a frame has none to show and shows none.
+func WithMotd(motd Motd) Option {
+	return func(b *BinderImpl) { b.motd = motd }
 }
 
 // WithBanner sets the build line every terminal this binder serves shows along
@@ -356,7 +372,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, b.banner, b.logs, b.sinks, log)
+		server, err := Serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -544,7 +560,7 @@ func (s *Server) Done() <-chan struct{} { return s.quit }
 // covers that half, on the one route where it matters.
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks []Sink, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -599,7 +615,7 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks [
 	// The frame offers an exit, and this is what it reaches: closing quit says
 	// a viewer asked, and nothing here acts on it — ending the run is the
 	// command's to do, and it is watching.
-	s.session = newSession(sctx, target, banner, logs, sinks, func() {
+	s.session = newSession(sctx, target, banner, logs, motd, sinks, func() {
 		log.Info("a viewer asked the run to end", "target", target.Name())
 		s.quitOnce.Do(func() { close(s.quit) })
 	}, log)
@@ -682,7 +698,13 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks [
 
 	// The attach handler hands the request to ServeAttach, which owns the
 	// websocket upgrade and the v4.channel.k8s.io framing on it.
-	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) {
+	//
+	// embedded is the page being a tile in the multiview panel, which says so
+	// by the path it dials: the panel shows the provider's messages once, in
+	// its own bar, and a viewer drawing them again inside every tile repeats
+	// the same warning down the page. Both paths are the same socket in every
+	// other respect, the Origin check included.
+	attach := func(w http.ResponseWriter, r *http.Request, embedded bool) {
 		// Refuse a handshake that came from somewhere else. A websocket is exempt
 		// from the same-origin policy — new WebSocket() reaches any host the page
 		// can resolve, with no preflight in the way — and the Handshake wsstream
@@ -728,6 +750,9 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks [
 		// "simplify" this back to r.Context().
 		ctx, cancel := context.WithCancel(s.ctx)
 		defer cancel()
+		if embedded {
+			ctx = context.WithValue(ctx, embeddedKey{}, true)
+		}
 
 		r = r.WithContext(ctx)
 
@@ -744,7 +769,9 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, sinks [
 		remotecommand.ServeAttach(w, r, s.session, name, "", name, opts,
 			idleTimeout, remotecommand.DefaultStreamCreationTimeout,
 			remotecommand.SupportedStreamingProtocols)
-	})
+	}
+	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) { attach(w, r, false) })
+	mux.HandleFunc("GET /attach/embedded", func(w http.ResponseWriter, r *http.Request) { attach(w, r, true) })
 
 	s.srv = &http.Server{
 		Handler:           mux,

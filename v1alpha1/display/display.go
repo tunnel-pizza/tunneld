@@ -31,7 +31,15 @@ import (
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 )
+
+// Motd is where the panel reads the provider's messages of the day, rendered
+// for a page. Read per request, because the interceptors are registered
+// before the mint that carries them.
+type Motd interface {
+	HTML() []motd.Rendered
+}
 
 // Option configures a DisplayImpl at construction.
 type Option = v1.Option[*DisplayImpl]
@@ -68,6 +76,9 @@ type DisplayImpl struct {
 	// stderr is where a failed launch is reported, and where pkg/browser's
 	// own child output is pointed before it can write a word.
 	stderr io.Writer
+	// motd is where the panel reads the provider's messages of the day. Nil
+	// when nobody set one, which is a panel with no strip.
+	motd Motd
 }
 
 // New returns a DisplayImpl that launches the host's browser, then configured
@@ -137,6 +148,12 @@ func WithStderr(stderr io.Writer) Option {
 	return func(b *DisplayImpl) { b.stderr = stderr }
 }
 
+// WithMotd sets where the panel reads the provider's messages of the day.
+// Unset, the panel has no strip.
+func WithMotd(m Motd) Option {
+	return func(d *DisplayImpl) { d.motd = m }
+}
+
 // pageHTML is the panel page: a rack panel of iframes, one per origin.
 // Embedded rather than fetched, so the page is part of the binary and a
 // tunnel serves it with nothing else installed and no outbound request.
@@ -155,6 +172,18 @@ type pageData struct {
 	// tunnel, so the page names whatever address the visitor actually used.
 	Host    string
 	Origins []tile
+	// Messages is the provider's messages of the day, in order. Nil when
+	// there is nothing to say, which is a page with no strip.
+	Messages []motd.Rendered
+}
+
+// messages is what the panel's strip reads: nil when there is no board to
+// read, same as a board with nothing to say.
+func (d *DisplayImpl) messages() []motd.Rendered {
+	if d.motd == nil {
+		return nil
+	}
+	return d.motd.HTML()
 }
 
 // tile is one origin's tile in the panel: the index that routes to it, the
@@ -163,6 +192,11 @@ type tile struct {
 	Index int
 	Local string
 	Route string
+	// Terminal is an origin tunneld serves itself — a program or a container —
+	// whose page is the frame the terminal draws, chrome and all. The panel
+	// adds none of its own around one: a frame in a frame reads as a mistake,
+	// and the frame already says what the tile would have said.
+	Terminal bool
 }
 
 // Interceptors is what the tunnel registers when the panel is wanted: the
@@ -175,7 +209,7 @@ type tile struct {
 // flag and something to compare: one origin framed alone is a worse view of
 // it than the origin itself, so a lone origin keeps the bare address for
 // itself. URL answers "" over exactly the same condition.
-func (*DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logger) []libtunnel.Interceptor {
+func (d *DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logger) []libtunnel.Interceptor {
 	if !enabled || origins.Len() < 2 {
 		return nil
 	}
@@ -244,8 +278,9 @@ func (*DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logger
 					// buffered by the template only up to the first write, so a partial
 					// body is the one outcome worth avoiding.
 					data := pageData{
-						Host:    r.Host,
-						Origins: make([]tile, 0, origins.Len()),
+						Host:     r.Host,
+						Origins:  make([]tile, 0, origins.Len()),
+						Messages: d.messages(),
 					}
 					for i, origin := range origins.URLs() {
 						// How a tile names the origin behind it: an http origin is named
@@ -262,15 +297,17 @@ func (*DisplayImpl) Interceptors(enabled bool, origins v1.Origins, log v1.Logger
 						// sockets land on says nothing about that.
 						scheme, _, _ := strings.Cut(origin.Scheme, "+")
 						local := origin.Host
-						if scheme != "http" && scheme != "https" {
+						terminal := scheme != "http" && scheme != "https"
+						if terminal {
 							// A served origin is the verb, the provider that
 							// answers it and the reference — and the reference is
 							// always the path, so the three join in order.
 							local = origin.Scheme + "://" + origin.Host + origin.Path
 						}
 						data.Origins = append(data.Origins, tile{
-							Index: i,
-							Local: local,
+							Index:    i,
+							Local:    local,
+							Terminal: terminal,
 							// Relative, so the page works under whatever hostname served it.
 							Route: "/?" + strconv.Itoa(i),
 						})
