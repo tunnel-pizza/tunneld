@@ -339,6 +339,7 @@ func (b *BinderImpl) answered() []string {
 func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
 	dialable := make([]*url.URL, 0, shown.Len())
 	var servers bound
+	asked := newAsk()
 	for at, origin := range shown.URLs() {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
@@ -372,7 +373,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, log)
+		server, err := Serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, asked, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -450,34 +451,26 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // Done closes when a viewer of any of these origins asks the run to end. One
 // channel for all of them, because what they are asking for is the process,
-// which there is only one of.
+// which there is only one of — and literally one: every Server a Bind starts
+// shares the same ask, so this is that channel and not a relay of several.
 //
 // Named for what a caller does with it rather than what fills it, so the
 // select it belongs in reads the same way three times over: a context is
 // done, a tunnel is done, and so is this.
 //
-// The watchers live as long as the origins do, which is as long as the run: a
-// closer that has been closed has nothing left to watch for, and a run that is
-// over is not waiting on this.
-//
 // Callable more than once, and called that way: the run waits on this to know
 // it should stop, and a console waits on it to tell a detach from an exit.
-// Each call gets watchers and a channel of its own — every one of them closes
-// on the same ask, and they cost a goroutine per served origin, which is one
-// in the only case where two callers exist.
+// That second caller is why the channel is shared rather than relayed. The
+// console checks it the moment the frame has given the terminal back, in the
+// same breath as the frame's own ask; a relay goroutine would not have run
+// yet, and the console would leave "Press Ctrl+C to stop the tunnel..." on a
+// prompt the run is about to walk away from.
 func (b bound) Done() <-chan struct{} {
-	asked := make(chan struct{})
-	var once sync.Once
-	for _, o := range b {
-		go func(srv *Server) {
-			select {
-			case <-srv.Done():
-				once.Do(func() { close(asked) })
-			case <-srv.ctx.Done():
-			}
-		}(o.srv)
+	if len(b) == 0 {
+		// Nothing served, so nobody who could ask: a channel that never closes.
+		return make(chan struct{})
 	}
-	return asked
+	return b[0].srv.Done()
 }
 
 type boundOrigin struct {
@@ -530,12 +523,28 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// quit closes when a viewer asks the whole run to end. Not this origin's
+	// asked closes when a viewer asks the whole run to end. Not this origin's
 	// own shutdown — that is cancel — but the process's: the frame offers it,
-	// and what acts on it is the command, which is watching through Quit.
-	quitOnce sync.Once
-	quit     chan struct{}
+	// and what acts on it is the command, which is watching through Done.
+	// Shared with every other Server the same Bind started; see ask.
+	asked *ask
 }
+
+// ask is one channel for the process, closed the first time a viewer of any
+// served origin asks the run to end. Every Server a Bind starts is handed the
+// same one, so what a Bound's Done returns is the ask itself: closed on the
+// asking goroutine, and already closed by the time the frame that asked has
+// returned its terminal. bound.Done says why that timing is load-bearing.
+type ask struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func newAsk() *ask { return &ask{ch: make(chan struct{})} }
+
+// close records the ask. Idempotent: every viewer of every origin reaches the
+// same channel, and any of them may be the second to ask.
+func (a *ask) close() { a.once.Do(func() { close(a.ch) }) }
 
 // Show puts this origin's terminal on the given streams, as one more viewer
 // of the same session. It returns when that viewer leaves or the run ends.
@@ -543,9 +552,10 @@ func (s *Server) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.session.viewLocally(ctx, in, out)
 }
 
-// Quit closes when a viewer has asked the run to end. The channel is never
-// sent on and closes at most once, so a caller may select on it forever.
-func (s *Server) Done() <-chan struct{} { return s.quit }
+// Done closes when a viewer has asked the run to end — of this origin or of
+// any other the same Bind started, since the ask is shared. The channel is
+// never sent on and closes at most once, so a caller may select on it forever.
+func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 
 // Serve binds a loopback listener and starts serving the terminal on it,
 // returning as soon as the port is live so the tunnel never proxies to a
@@ -559,8 +569,12 @@ func (s *Server) Done() <-chan struct{} { return s.quit }
 // operator's own browser included. the attach handler's origin check is what
 // covers that half, on the one route where it matters.
 //
+// asked is where a viewer's request to end the run lands, shared by every
+// Server one Bind starts so that a Bound has one channel to offer; a caller
+// starting a Server on its own passes newAsk().
+//
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, asked *ask, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -605,19 +619,19 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 		log:      log,
 		ctx:      sctx,
 		cancel:   cancel,
-		quit:     make(chan struct{}),
+		asked:    asked,
 	}
 	// One attach for the life of the Server, shared by every page that opens
 	// it. Started here rather than on the first connection so a viewer never
 	// waits on the target, and so what happened before anybody looked is on
 	// the screen when they do.
 	//
-	// The frame offers an exit, and this is what it reaches: closing quit says
-	// a viewer asked, and nothing here acts on it — ending the run is the
+	// The frame offers an exit, and this is what it reaches: closing the ask
+	// says a viewer asked, and nothing here acts on it — ending the run is the
 	// command's to do, and it is watching.
 	s.session = newSession(sctx, target, banner, logs, motd, sinks, func() {
 		log.Info("a viewer asked the run to end", "target", target.Name())
-		s.quitOnce.Do(func() { close(s.quit) })
+		s.asked.close()
 	}, log)
 
 	mux := http.NewServeMux()

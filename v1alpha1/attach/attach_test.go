@@ -209,7 +209,7 @@ func serveFake(t *testing.T, target Target) *Server {
 // is how a test shuts the tunnel down rather than the test ending.
 func serveFakeOn(t *testing.T, ctx context.Context, target Target) *Server {
 	t.Helper()
-	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, nil, slog.New(slog.DiscardHandler))
+	s, err := Serve(ctx, target, testBanner, testLogs{}, nil, nil, newAsk(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestWithSinksStoresAndServeAccepts(t *testing.T) {
 		t.Fatalf("binder carries %d sinks, want 2", got)
 	}
 
-	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, nil, []Sink{&recorder{}}, slog.New(slog.DiscardHandler))
+	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, nil, []Sink{&recorder{}}, newAsk(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestWithSinksSeesWhatAnAppSays(t *testing.T) {
 	// A title, a mode, and a clipboard write — one of each shape.
 	target.out = "\x1b]0;hi\a\x1b[?25l\x1b]52;c;aGk=\a"
 
-	s, err := Serve(t.Context(), target, testBanner, testLogs{}, nil, []Sink{rec}, slog.New(slog.DiscardHandler))
+	s, err := Serve(t.Context(), target, testBanner, testLogs{}, nil, []Sink{rec}, newAsk(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestColourSurvivesTheFrame(t *testing.T) {
 // message is there to be drawn, and that WARNING arrives whole on the wire.
 func TestAnEmbeddedSocketDrawsNoBar(t *testing.T) {
 	serve := func(t *testing.T) *Server {
-		s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, testMotd{"WARNING public"}, nil, slog.New(slog.DiscardHandler))
+		s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, testMotd{"WARNING public"}, nil, newAsk(), slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("Serve: %v", err)
 		}
@@ -1446,10 +1446,15 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	}
 }
 
-// TestQuitReachesTheBinder pins the path from a viewer's keystroke to the
+// TestDoneReachesTheBinder pins the path from a viewer's keystroke to the
 // thing that can act on it. The frame asks its Server, the Server says so on
-// Quit, and the closer Bind handed back is where the command is listening —
+// Done, and the closer Bind handed back is where the command is listening —
 // which is the only reason a key inside a browser tab can end a process.
+//
+// Synchronously: the channel is closed before endRun returns, not relayed by
+// a goroutine that may not have run yet. The console checks Done the moment
+// the frame gives the terminal back, and a relay would have it print the
+// Ctrl+C line onto a prompt the run is about to leave.
 func TestDoneReachesTheBinder(t *testing.T) {
 	targets := &stubTargets{}
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
@@ -1477,8 +1482,8 @@ func TestDoneReachesTheBinder(t *testing.T) {
 
 	select {
 	case <-asked:
-	case <-time.After(5 * time.Second):
-		t.Error("a viewer asked and the closer never said so")
+	default:
+		t.Error("a viewer asked and the closer had not said so by the time the ask returned")
 	}
 }
 

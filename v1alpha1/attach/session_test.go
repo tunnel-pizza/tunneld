@@ -1,8 +1,12 @@
 package attach
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -387,4 +391,77 @@ func TestAFrameCopiesTheScreenWhileTheScannerWrites(t *testing.T) {
 		s.drawPane(buf, buf.Bounds())
 	}
 	<-done
+}
+
+// TestLeavingRestoresTheConsoleBeforeTheRunEnds pins the order in which a
+// console viewer leaves: the terminal first, the run second.
+//
+// The frame's program runs under the run's context. A frame that ended the
+// run from inside Update cancelled its own context and was killed mid-render:
+// the process was on its way out before Bubble Tea had left the alt screen or
+// turned the mouse off, and the prompt came back drawn inside the frame with
+// wheel reports landing on it as text. So the frame only records the ask, and
+// the session ends the run once Run has returned — by which point the restore
+// sequences are already on the wire. The quit hook here reads the output at
+// the moment it is called, and fails if the alt screen is still on.
+func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
+	h := newFrameHarness(t)
+
+	var out lockedBuffer
+	asked := make(chan string, 1)
+	h.s.quit = func() { asked <- out.String() }
+
+	in, keys := io.Pipe()
+	t.Cleanup(func() { _ = keys.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	left := make(chan error, 1)
+	go func() { left <- h.s.viewLocally(ctx, in, &out) }()
+
+	// ^K x: the command key, then the one that ends the run. Bubble Tea reads
+	// keys as soon as the program is up, whatever the size negotiation is
+	// still waiting on, so nothing has to settle first.
+	if _, err := keys.Write([]byte{0x0b, 'x'}); err != nil {
+		t.Fatalf("typing: %v", err)
+	}
+
+	select {
+	case err := <-left:
+		if err != nil {
+			t.Fatalf("viewLocally: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the console viewer did not leave on ^K x")
+	}
+	select {
+	case seen := <-asked:
+		if !strings.Contains(seen, "\x1b[?1049l") {
+			t.Errorf("the run was asked to end with the alt screen still on; output so far:\n%q", seen)
+		}
+		if !strings.Contains(seen, "\x1b[?1002l") {
+			t.Errorf("the run was asked to end with the mouse still reporting; output so far:\n%q", seen)
+		}
+	default:
+		t.Fatal("^K x on the console did not ask the run to end")
+	}
+}
+
+// lockedBuffer is a bytes.Buffer two goroutines may use: the renderer writes
+// it, and the quit hook reads it back from another.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

@@ -387,21 +387,26 @@ func TestOrdinaryKeysReachTheContainerUnchanged(t *testing.T) {
 // and the command is what stops. The keystroke reaches the target either way,
 // which is the point of asking rather than writing an end of file into a
 // shared stdin.
+//
+// The ask is recorded on the frame and carried out by the session after the
+// program has returned the terminal; a frame that ended the run from inside
+// Update would cancel its own context and be killed mid-render, leaving a
+// console in the alt screen with the mouse still reporting. See
+// TestLeavingRestoresTheConsoleBeforeTheRunEnds.
 func TestCommandModeEndsTheRun(t *testing.T) {
-	asked := make(chan struct{})
 	h := newFrameHarness(t)
-	h.s.quit = func() { close(asked) }
+	h.s.quit = func() { t.Error("x ended the run from inside Update; the program dies before the console is restored") }
 
 	h.press(t, commandKey)
 	h.silent(t)
 
 	if cmd := h.press(t, typing('x')); cmd == nil {
 		t.Error("x returned no command, want the frame to quit with it")
+	} else if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("x produced %T, want QuitMsg", cmd())
 	}
-	select {
-	case <-asked:
-	default:
-		t.Error("x did not ask the run to end")
+	if !h.f.exiting {
+		t.Error("x did not record the ask to end the run")
 	}
 	h.silent(t) // and nothing was typed at the target on the way
 }
@@ -1643,10 +1648,12 @@ func TestAClickIsStillAClick(t *testing.T) {
 
 // TestAConsoleFrameLingersAfterTheRunEnds pins #146's fix. A frame told to
 // linger keeps the last screen up when the run ends, says so in the border,
-// withholds the cursor, and leaves on the next key — which is what keeps the
-// terminal's answers to the renderer's startup queries from landing on the
-// prompt, and what lets the line saying why a program exited be read. A
-// frame not told to linger, the browser's, quits at once as before.
+// withholds the cursor, and on the next key ends the run and leaves — which is
+// what keeps the terminal's answers to the renderer's startup queries from
+// landing on the prompt, what lets the line saying why a program exited be
+// read, and what puts the reader back at a prompt with nothing still waiting
+// for Ctrl+C. A frame not told to linger, the browser's, quits at once as
+// before and ends nothing: the page offers a restart there.
 func TestAConsoleFrameLingersAfterTheRunEnds(t *testing.T) {
 	h := newFrameHarness(t)
 	if _, err := h.s.em.WriteString("bash: bash: No such file or directory"); err != nil {
@@ -1682,11 +1689,17 @@ func TestAConsoleFrameLingersAfterTheRunEnds(t *testing.T) {
 		t.Error("a cursor is drawn on a screen whose program is gone")
 	}
 
+	h.s.quit = func() {
+		t.Error("the key ended the run from inside Update; the program dies before the console is restored")
+	}
 	cmd = h.press(t, typing('x'))
 	if cmd == nil {
 		t.Fatal("a key on a lingering frame produced no command, want Quit")
 	} else if _, quit := cmd().(tea.QuitMsg); !quit {
 		t.Errorf("a key on a lingering frame produced %T, want QuitMsg", cmd())
+	}
+	if !h.f.exiting {
+		t.Error("the key that left an ended frame did not ask the run to end; the console would go on waiting for Ctrl+C")
 	}
 	h.silent(t) // the key was the reader leaving, not typing at a dead program
 }
