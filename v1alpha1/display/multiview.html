@@ -105,9 +105,9 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    /* One row above and below for the border and its labels, one column
-       either side: the frame's own chrome, in the frame's own units. */
-    padding: var(--row) 1ch;
+    /* One row above for the border and its labels; the screen inside sets
+       its own bottom and sides on the grid, below. */
+    padding: var(--row) 0 0;
   }
   /* An odd number of origins: the last tile takes the whole final row. */
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
@@ -135,7 +135,7 @@
   /* A terminal's tile is bare: the frame inside is its chrome. */
   .tile.bare { padding: 0; }
   .tile.bare::before { content: none; }
-  .tile.bare iframe { width: 100%; margin: 0; }
+  .tile.bare iframe { flex: 1; width: 100%; height: auto; min-height: 0; margin: 0; }
 
   /* A label on the border: black behind it breaks the line, as the frame's
      text does, and a column of space either side keeps the line off the
@@ -190,13 +190,17 @@
   .ctl.busy { animation: turn .8s linear infinite; }
   @media (prefers-reduced-motion: reduce) { .ctl.busy { animation: none; opacity: .5; } }
 
-  /* The screen inside the frame: one row and one column in from the border,
-     as the pane sits inside the frame's box. */
+  /* The screen inside the frame: one row and one column in from the border
+     on every side, as the pane sits inside the frame's box — and on the
+     same grid as the border, so the page never paints under it. The box
+     ends half a cell before the last whole row and column; the screen ends
+     a whole cell before, and the row and column between are the border's.
+     The width leaves xterm's scrollbar allowance the way the border does. */
   .tile iframe {
-    flex: 1;
-    width: calc(100% - 2ch);
-    min-height: 0;
-    margin: 0 1ch;
+    flex: none;
+    margin: 0 0 0 calc(var(--col) * 1.5);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col) * 3);
+    height: calc(round(down, 100%, var(--row)) - var(--row));
     border: 0;
     background: #000;
   }
