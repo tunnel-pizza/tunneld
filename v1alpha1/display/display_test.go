@@ -840,7 +840,7 @@ func TestATerminalTileIsBare(t *testing.T) {
 	if got := strings.Count(body, `class="tile bare"`); got != 1 {
 		t.Errorf("page has %d bare tiles, want 1 for the one terminal", got)
 	}
-	if got := strings.Count(body, `class="edge top"`); got != 1 {
+	if got := strings.Count(body, `class="edge"`); got != 1 {
 		t.Errorf("page has %d framed tiles, want 1 for the one http origin", got)
 	}
 	// The markup, not the script's selectors, which name the attribute too.
