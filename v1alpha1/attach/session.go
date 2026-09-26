@@ -673,9 +673,11 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	go s.follow(ctx, cancel, v, resize)
 	go s.redraw(ctx, v)
 
-	if _, err := v.prog.Run(); err != nil && ctx.Err() == nil {
+	final, err := v.prog.Run()
+	if err != nil && ctx.Err() == nil {
 		s.log.Debug("frame ended", "container", s.Name(), "error", err)
 	}
+	s.leave(final)
 	return nil
 }
 
@@ -725,8 +727,23 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 	go s.follow(ctx, func() {}, v, nil)
 	go s.redraw(ctx, v)
 
-	_, err := v.prog.Run()
+	final, err := v.prog.Run()
+	s.leave(final)
 	return err
+}
+
+// leave acts on what a frame asked for on its way out, once Run has returned.
+//
+// Once, and not before: ending the run cancels the context the program runs
+// under, and a program killed by its context is torn down rather than shut
+// down — the process is on its way out before the alt screen is left or the
+// mouse turned off, and a console is handed back with the frame still
+// painted and wheel reports landing on the prompt. So the frame only records
+// the ask and quits, and the run is ended here, with the terminal restored.
+func (s *session) leave(final tea.Model) {
+	if f, ok := final.(frame); ok && f.exiting {
+		s.endRun()
+	}
 }
 
 // redraw turns the wake channel into the message the frame updates on. It is a

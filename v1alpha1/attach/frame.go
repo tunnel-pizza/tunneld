@@ -129,6 +129,14 @@ type frame struct {
 	// belongs to the frame and the container will not see it.
 	command bool
 
+	// exiting is the viewer having asked the whole run to end. Recorded, not
+	// acted on: the program runs under the run's context, and ending the run
+	// from inside Update would kill the program before it had given the
+	// terminal back — alt screen still on, the mouse still reporting. The
+	// frame quits instead, and whoever ran it reads this once Run has
+	// returned. See session.leave.
+	exiting bool
+
 	// armed is a session-ending control key waiting to be asked for a second
 	// time — 'c' or 'd', or zero when none is. Only ever set for a target
 	// that cannot be started again; see the guard in Update.
@@ -314,7 +322,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ends when its shell does. The browser's story is different: there
 		// the page offers a restart, and the frame quit on the end already.
 		if f.ended {
-			f.sess.endRun()
+			f.exiting = true
 			return f, tea.Quit
 		}
 		// Typing is being present. The first keystroke returns a viewer who
@@ -550,8 +558,9 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// its context goes with it, and everything it started — the programs,
 		// the attach servers, the tunnel — comes down together. Somebody who
 		// opened a terminal from their own machine has no other way to close
-		// it from inside, which is the point.
-		f.sess.endRun()
+		// it from inside, which is the point. Asked for here, done once the
+		// program has returned the terminal; see exiting.
+		f.exiting = true
 		return f, tea.Quit
 	}
 	// Escape, or anything unbound: the mode closes and the keystroke is spent

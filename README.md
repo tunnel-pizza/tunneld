@@ -323,7 +323,10 @@ you can see — counted as another viewer, competing for the same keystrokes.
 Paste the URL somewhere if you want it there too.
 
 `^K d` gives the console back and leaves the tunnel up — the run says how to
-stop it once you are looking at a prompt again. `^K x` ends the run.
+stop it once you are looking at a prompt again. `^K x` ends the run. So does
+the program ending on its own: the frame stays up with its last screen and an
+`ended` chip in the border, and the next key gives the console back with the
+run already over, nothing left waiting for Ctrl+C.
 There is no `Ctrl-C` for tunneld while the frame is drawing: the console is in
 raw mode, so that keystroke belongs to the program, which is the same thing it
 means in the browser.
