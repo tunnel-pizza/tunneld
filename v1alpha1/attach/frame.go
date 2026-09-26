@@ -52,6 +52,13 @@ var (
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
+	// popoutStyle is the chip an embedded frame puts in its corner: the chip,
+	// with its underline coloured like its ground. xterm marks every link
+	// cell with a dashed underline in the cell's underline colour, and a
+	// chip the panel's neighbours draw without one would otherwise be the
+	// odd one out; drawn in the chip's own orange the mark is still there
+	// for a terminal that wants it and invisible on the one that shows it.
+	popoutStyle = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), UnderlineColor: ansi.IndexedColor(214), Attrs: uv.AttrBold}
 	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
 	copyStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(114), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
@@ -1157,7 +1164,7 @@ func (f frame) where() string {
 	// to send. It occupies no columns either, so the alignment either side of
 	// it is unaffected.
 	if f.embedded {
-		return " " + ansi.SetHyperlink(addr) + chipStyle.Styled(" ↗ ") + ansi.ResetHyperlink() + " "
+		return " " + ansi.SetHyperlink(addr) + popoutStyle.Styled(" ↗ ") + ansi.ResetHyperlink() + " "
 	}
 	return addrStyle.Styled(" " + ansi.SetHyperlink(addr) + addr + ansi.ResetHyperlink() + " ")
 }

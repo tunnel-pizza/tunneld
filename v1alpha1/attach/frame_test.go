@@ -1982,4 +1982,9 @@ func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneled.pizza/?0") {
 		t.Errorf("the chip is not a hyperlink to the address")
 	}
+	// The link's underline is drawn in the chip's own orange (SGR 58), so
+	// xterm's dashed mark on a link cell disappears into the chip.
+	if !strings.Contains(top, "58;5;214") {
+		t.Errorf("the chip's underline is not coloured like its ground: %q", top)
+	}
 }
