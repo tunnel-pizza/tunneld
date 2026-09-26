@@ -195,9 +195,9 @@ edge, and interrupts it — the one check that tunneld actually carries traffic
 rather than merely reporting that it opened something. A live row is expensive
 and can be rate limited by the provider, so it runs for whoever is developing
 and on a single CI cell. Two reasons not to mint belong to the machine and are
-applied to every live row: `-short`, which is how the race lane opts out, and
-Windows, which cannot deliver `os.Interrupt` to a child and so cannot assert
-the teardown. Anywhere else is the row's own `skip` function. Its
+applied to every live row: `-short`, which is how a run without the internet
+opts out (`go test -short ./e2e`), and Windows, which cannot deliver
+`os.Interrupt` to a child and so cannot assert the teardown. Anywhere else is the row's own `skip` function. Its
 assertions are a `[]func(t *testing.T, r *runner)` run in order, each reading
 what it needs out of the buffered streams, so one can be dropped or reordered
 without touching the others.
@@ -258,11 +258,14 @@ Or `make all`, which is all of the above plus the Windows cross-build.
 
 CI runs the same on every PR, and adds one lane `make all` leaves out:
 
-- `make race` — every package under the race detector. It sits outside `make
-  all` because it is the only target needing a C toolchain: the detector links
-  through cgo, so the target overrides the `CGO_ENABLED=0` the rest of the
-  Makefile exports. The workflow runs this exact target, so a race CI finds
-  reproduces locally with the same command.
+- `make race` — the unit packages under the race detector, the same list as
+  `make test`. It sits outside `make all` because it is the only target
+  needing a C toolchain: the detector links through cgo, so the target
+  overrides the `CGO_ENABLED=0` the rest of the Makefile exports. The
+  workflow runs this exact target, so a race CI finds reproduces locally with
+  the same command. The e2e package stays out: its harness builds the binaries
+  it drives with a plain `go build`, so the detector would instrument the
+  harness and never the code under test.
 
 ## Conventions that bite
 

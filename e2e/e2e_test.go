@@ -826,9 +826,9 @@ func TestExamples(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			// Only a live row is gated, and two of the reasons are about the
-			// machine rather than the row. -short is how the race lane opts
-			// out: the detector would mint a second tunnel per run to
-			// re-check what the e2e lane already did. Windows has no
+			// machine rather than the row. -short is how a run with no
+			// internet, or no wish to mint, opts out: the --help rows still
+			// prove every example builds and speaks. Windows has no
 			// os.Interrupt to deliver to a child, so the teardown a live row
 			// ends on cannot be asserted there at all. Whether minting is
 			// worth it anywhere else is the row's own business. A row that
