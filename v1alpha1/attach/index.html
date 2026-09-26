@@ -74,6 +74,7 @@
     font: 700 13px monospace;
     text-align: center;
     white-space: pre;
+    text-underline-offset: 2px;
   }
 
   /* The one thing worth framing it for: what the container cannot do. That is
@@ -142,7 +143,9 @@
 </style>
 </head>
 <body>
-<div id="hover" hidden></div>
+<!-- xterm-underline-4 is xterm's own dotted underline, from its stylesheet:
+     the cue it draws under a hovered link, borrowed rather than redrawn. -->
+<div id="hover" class="xterm-underline-4" hidden></div>
 {{with .Notice}}<div class="degraded">{{.}}</div>{{end}}
 <div id="term"></div>
 <div id="gone" hidden>

@@ -175,8 +175,11 @@
     line-height: var(--row);
     text-align: center;
     cursor: pointer;
-    text-decoration: none;
+    text-underline-offset: 2px;
   }
+  /* A link's own underline is off until xterm's class puts a dotted one on;
+     scoped so the borrowed rule, declared earlier, is the one that wins. */
+  .ctl:not(.xterm-underline-4) { text-decoration: none; }
   .ctl:hover, .ctl:focus-visible { background: var(--paper); }
   .ctl[hidden] { display: none; }
 
@@ -395,6 +398,13 @@
     show();
   };
   for (const frame of document.querySelectorAll('.tile:not(.bare) iframe')) back(frame);
+  // A hovered chip wears xterm's own dotted underline, the class its
+  // stylesheet draws a hovered link with, so the panel's chips and the
+  // terminal's answer the mouse the same way.
+  for (const ctl of document.querySelectorAll('.ctl')) {
+    ctl.addEventListener('pointerenter', () => ctl.classList.add('xterm-underline-4'));
+    ctl.addEventListener('pointerleave', () => ctl.classList.remove('xterm-underline-4'));
+  }
   for (const button of document.querySelectorAll('.tile [data-reload]')) {
     const frame = button.closest('.tile').querySelector('iframe');
     button.addEventListener('click', () => reload(frame));
