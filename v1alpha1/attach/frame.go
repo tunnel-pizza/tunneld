@@ -1140,6 +1140,12 @@ func printable(r rune) rune {
 // which is what makes it worth showing — it is the address to send somebody
 // else, and for one origin among several it carries the routing parameter that
 // reaches this one.
+//
+// Embedded in the panel, the corner holds a chip instead: the panel's own
+// frames carry their controls there as chips, and the address in full is
+// the panel's to show, once, in its tab. The chip is the same hyperlink, so
+// a click on it opens the origin in a tab of its own — the panel's popout,
+// drawn by the terminal.
 func (f frame) where() string {
 	addr := f.sess.announced()
 	if addr == "" {
@@ -1150,6 +1156,9 @@ func (f frame) where() string {
 	// with exactly the text it would have had, which is why it costs nothing
 	// to send. It occupies no columns either, so the alignment either side of
 	// it is unaffected.
+	if f.embedded {
+		return " " + ansi.SetHyperlink(addr) + chipStyle.Styled(" ↗ ") + ansi.ResetHyperlink() + " "
+	}
 	return addrStyle.Styled(" " + ansi.SetHyperlink(addr) + addr + ansi.ResetHyperlink() + " ")
 }
 

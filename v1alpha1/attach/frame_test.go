@@ -1956,3 +1956,30 @@ func TestAnEmbeddedBoxIsTheWindow(t *testing.T) {
 		t.Errorf("pane starts at %v, want (1,1) inside the border", pane.Min)
 	}
 }
+
+// TestAnEmbeddedCornerIsAPopout pins the panel's corner: a viewer framed by
+// the panel gets a chip that opens the origin in a tab where a viewer of its
+// own gets the address in full. Both are the same hyperlink; only the text
+// under it changes, so a terminal that drops OSC 8 still shows a chip and a
+// panel's tab still says where.
+func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
+	h := newFrameHarness(t)
+	h.s.announce("https://striped-worm.tunneled.pizza/?0")
+
+	own := h.f.View().Content
+	if !strings.Contains(stripSGR(own), "striped-worm.tunneled.pizza/?0") {
+		t.Errorf("a viewer of its own does not see the address: %q", stripSGR(strings.Split(own, "\n")[0]))
+	}
+
+	h.f.embedded = true
+	top := strings.Split(h.f.View().Content, "\n")[0]
+	if strings.Contains(stripSGR(top), "striped-worm") {
+		t.Errorf("an embedded viewer still shows the address: %q", stripSGR(top))
+	}
+	if !strings.Contains(top, "↗") {
+		t.Errorf("an embedded viewer has no popout chip: %q", stripSGR(top))
+	}
+	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneled.pizza/?0") {
+		t.Errorf("the chip is not a hyperlink to the address")
+	}
+}
