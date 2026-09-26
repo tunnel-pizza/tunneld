@@ -1934,3 +1934,25 @@ func TestAnEmbeddedViewerDrawsNoBar(t *testing.T) {
 		t.Errorf("row 0 = %q, want the bar back for a viewer in its own right", got)
 	}
 }
+
+// TestAnEmbeddedBoxIsTheWindow pins the panel case: a viewer framed by the
+// panel draws its border at its window's edges whatever size the shared
+// screen settled on, so its frame fills its tile the way the panel's own
+// frames fill theirs. The screen stays where the border puts it, top left.
+func TestAnEmbeddedBoxIsTheWindow(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.embedded = true
+	h.window(160, 50)
+	h.s.em.Resize(78, 22) // the smallest viewer is much smaller than this one
+
+	if box := h.f.box(); box != uv.Rect(0, 0, 160, 50) {
+		t.Errorf("box = %v, want the whole 160x50 window", box)
+	}
+	lines := strings.Split(h.f.View().Content, "\n")
+	if !strings.Contains(lines[0], "╭") || !strings.Contains(stripSGR(lines[len(lines)-1]), "╰") {
+		t.Errorf("border is not at the window's top and bottom rows")
+	}
+	if pane := h.f.pane(); pane.Min.X != 1 || pane.Min.Y != 1 {
+		t.Errorf("pane starts at %v, want (1,1) inside the border", pane.Min)
+	}
+}

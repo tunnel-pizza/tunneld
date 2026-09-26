@@ -567,7 +567,18 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // everywhere; putting them on the box is what puts the notice at the same
 // place relative to the screen everywhere too, instead of a screen-height
 // above it in a window much larger than the smallest.
+//
+// Embedded in the panel, the box is the window. The panel lays a frame of its
+// own around every origin that has none, on this terminal's own grid of rows
+// and columns, and those frames fill their tiles; a box the size of the
+// smallest viewer's screen would stop a row or two short of its neighbours
+// and read as the odd one out. So an embedded viewer's border runs to its
+// edges and the screen sits inside it, top left, with the room left over
+// dark — the corner chip still says whose size the screen is.
 func (f frame) box() uv.Rectangle {
+	if f.embedded {
+		return uv.Rect(0, 0, f.width, f.height)
+	}
 	banner := f.barRows()
 	w, h := f.sess.paneSize()
 	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight+banner)

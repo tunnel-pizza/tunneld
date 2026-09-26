@@ -35,7 +35,15 @@
     --note:    #00d7ff;  /* 45 */
     --warning: #ffaf00;  /* 214 */
     --caution: #ff0000;  /* 196 */
-    --row: 15.6px;
+    /* One cell of the terminal's grid. These are the panel's own guess for a
+       page with no terminal on it; when a tile holds one, the script below
+       reads the cell that terminal actually settled on and sets these, so a
+       frame the panel draws and a frame the terminal draws share their rows
+       and columns. --scrollbar is the width xterm's fit keeps for its bar. */
+    --row: 15.85px;
+    --col: 7.56px;
+    --scrollbar: 15px;
+    --font: courier-new, courier, monospace;
   }
 
   html, body { height: 100%; margin: 0; background: #000; }
@@ -44,7 +52,7 @@
     flex-direction: column;
     overflow: hidden;
     color: var(--paper);
-    font: 13px/var(--row) monospace;
+    font: 13px/var(--row) var(--font);
   }
   :focus-visible { outline: 1px solid var(--paper); outline-offset: 1px; }
 
@@ -105,14 +113,20 @@
   .tile:nth-child(odd):last-child { flex-basis: 100%; }
 
   /* The frame's rounded box, drawn as a border rather than as ╭─╮ cells so
-     it stays continuous at any width. It sits half a row in from the
-     tile's edge, which puts the labels on the line the way the frame puts
-     them on its top and bottom rows. The tile that has the keyboard wears
-     it in full white — a console's active pane. */
+     it stays continuous at any width. It is laid on the terminal's grid:
+     the terminal beside it fits whole rows and columns into the same tile
+     and draws its border in the last of each, so this one ends where that
+     one does — half a cell in from the first row and column, and half a
+     cell before the last whole one, with the remainder left dark below
+     and to the right exactly as xterm leaves it. The tile that has the
+     keyboard wears it in full white — a console's active pane. */
   .tile::before {
     content: "";
     position: absolute;
-    inset: calc(var(--row) / 2) .5ch;
+    top: calc(var(--row) / 2);
+    left: calc(var(--col) / 2);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col));
+    height: calc(round(down, 100%, var(--row)) - var(--row));
     border: 1px solid var(--border);
     border-radius: 6px;
     pointer-events: none;
@@ -129,8 +143,8 @@
      bottom left is what the page can do for it. */
   .edge {
     position: absolute;
-    left: 2.5ch;
-    right: 2.5ch;
+    left: calc(var(--col) * 2.5);
+    width: calc(round(down, calc(100% - var(--scrollbar)), var(--col)) - var(--col) * 5);
     height: var(--row);
     display: flex;
     justify-content: space-between;
@@ -141,7 +155,7 @@
   }
   .edge > * { pointer-events: auto; }
   .edge.top { top: 0; }
-  .edge.bottom { bottom: 0; }
+  .edge.bottom { top: calc(round(down, 100%, var(--row)) - var(--row)); }
   .edge span, .edge a, .edge .controls { background: #000; padding: 0 1ch; }
   .edge .local { color: var(--name); font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
   .edge .route { color: var(--addr); text-decoration: underline; text-underline-offset: 2px; }
@@ -226,7 +240,7 @@
     <div class="edge top">
       <span class="local">{{.Local}}</span>
       <a class="route" href="{{.Route}}" target="_blank" rel="noopener"
-         aria-label="Open {{.Local}} in a new tab">{{.Route}}</a>
+         aria-label="Open {{.Local}} in a new tab">https://{{$.Host}}{{.Route}}</a>
     </div>
     <iframe src="{{.Route}}" title="{{.Local}}"></iframe>
     <div class="edge bottom">
@@ -301,6 +315,30 @@
     frame.addEventListener('load', wire);
     wire(); // a frame that is already there when this runs
   }
+
+  // The grid. A terminal tile's page says what its fit settled on — rows,
+  // columns, the cell — on its document element; the panel takes the cell
+  // from the first tile that has one and lays its own frames on it, so the
+  // borders it draws and the borders the terminals draw share rows and
+  // columns. Read again whenever a terminal loads or the page resizes, since
+  // the fit runs then; a page with no terminal keeps the stylesheet's guess.
+  const grid = () => {
+    for (const frame of document.querySelectorAll('.tile.bare iframe')) {
+      try {
+        const d = frame.contentDocument.documentElement.dataset;
+        if (d.cellH && d.cellW) {
+          document.documentElement.style.setProperty('--row', d.cellH + 'px');
+          document.documentElement.style.setProperty('--col', d.cellW + 'px');
+          return;
+        }
+      } catch (e) { /* cross-origin, or not loaded yet */ }
+    }
+  };
+  for (const frame of document.querySelectorAll('.tile.bare iframe')) {
+    frame.addEventListener('load', () => { grid(); setTimeout(grid, 300); });
+  }
+  new ResizeObserver(() => setTimeout(grid, 100)).observe(document.body);
+  grid();
 
   // Reload one frame. It reloads where it is, not back at the route it began
   // on: a page that navigated somewhere and stayed is what the tile shows,

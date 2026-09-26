@@ -216,7 +216,25 @@
     console.warn('attach: clipboard addon failed to load', e);
   }
 
-  fit.fit();
+  // What the fit settled on, said on the document element: the rows and
+  // columns, and the size of one cell. The multiview panel frames this page
+  // in a tile and draws frames of its own around the origins that have
+  // none; those are laid on this grid, read from here, so a border the
+  // panel draws and a border this terminal draws land on the same rows and
+  // columns. Same origin, so the panel can read it; nothing else does.
+  const publish = () => {
+    const screen = document.querySelector('.xterm-screen');
+    if (!screen || !term.rows || !term.cols) return;
+    const r = screen.getBoundingClientRect();
+    const d = document.documentElement.dataset;
+    d.rows = String(term.rows);
+    d.cols = String(term.cols);
+    d.cellW = (r.width / term.cols).toFixed(4);
+    d.cellH = (r.height / term.rows).toFixed(4);
+  };
+  const refit = () => { fit.fit(); publish(); };
+
+  refit();
 
   // Typing should work without clicking first. Nothing else on the page wants
   // the keyboard, and every arrival here is somebody who came to use a
@@ -354,7 +372,7 @@
     return false;
   });
 
-  new ResizeObserver(() => { fit.fit(); sendSize(); }).observe(document.body);
+  new ResizeObserver(() => { refit(); sendSize(); }).observe(document.body);
 
   // Cloudflare closes idle websockets and a page cannot send a websocket ping,
   // so the terminal's own size doubles as the heartbeat: resizing to the
