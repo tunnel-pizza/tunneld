@@ -307,8 +307,14 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		// A frame that outlived its run is waiting for exactly this: any key
-		// is the reader saying they have seen the last screen.
+		// is the reader saying they have seen the last screen. Only the
+		// console's frame lingers, and the reader at the console started the
+		// program and watched it end, so the key ends the run with it — back
+		// to the prompt with nothing left waiting, the way a shell session
+		// ends when its shell does. The browser's story is different: there
+		// the page offers a restart, and the frame quit on the end already.
 		if f.ended {
+			f.sess.endRun()
 			return f, tea.Quit
 		}
 		// Typing is being present. The first keystroke returns a viewer who
@@ -1227,7 +1233,7 @@ func (f frame) copied() string {
 // the commands themselves once it has.
 func (f frame) hint() string {
 	if f.ended {
-		return chipStyle.Styled(" ended ") + hintStyle.Styled(" any key to leave ")
+		return chipStyle.Styled(" ended ") + hintStyle.Styled(" any key to exit ")
 	}
 	if f.armed != 0 {
 		// Which key, and what to do about it. Nothing about what it will do:
