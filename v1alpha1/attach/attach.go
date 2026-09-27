@@ -345,8 +345,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
 		// judgement. A +ws marker never reaches here: the parser takes it off
-		// the scheme and the list carries it as an index (#176), which is
-		// what let #173 happen when it rode the scheme instead.
+		// the scheme and keeps it as an index beside the list.
 		provider, served := b.targets[answers(origin.Scheme, origin.Host)]
 		if !served {
 			if origin.Scheme != "http" && origin.Scheme != "https" {
@@ -393,17 +392,10 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	// tiles. That run gets the report on the console and the panel in a tab.
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
-	//
-	// The origin that owns WebSockets is the same index in both lists, so it
-	// carries over as it is.
-	opts := []origins.Option{origins.WithURL(dialable...)}
-	if ws, ok := shown.WebSocket(); ok {
-		opts = append(opts, origins.WithWebSocket(ws))
-	}
 	if len(servers) == 1 && shown.Len() == 1 {
-		return origins.New(opts...), sole{servers}, nil
+		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
 	}
-	return origins.New(opts...), servers, nil
+	return origins.New(origins.WithURL(dialable...)), servers, nil
 }
 
 // sole is a bound list of exactly one, from a run of exactly one origin, which

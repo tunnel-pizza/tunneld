@@ -426,8 +426,8 @@ func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.Tunne
 	f.listen = fn
 	return f
 }
-func (f *fakeTunnel) WithLocalURL(u ...*url.URL) libtunnel.TunnelV1 {
-	f.locals = append(f.locals, u...)
+func (f *fakeTunnel) WithLocalURL(u *url.URL) libtunnel.TunnelV1 {
+	f.locals = append(f.locals, u)
 	return f
 }
 func (f *fakeTunnel) Messages() []string { return f.messages }
@@ -559,11 +559,15 @@ var routed = &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 type fakeRouter struct {
 	err      error
 	dialable Origins
+	ws       int
 	front    func(http.Handler) http.Handler
+	// ctx is the lifetime the run gave the router: what the real one
+	// serves until.
+	ctx context.Context
 }
 
-func (f *fakeRouter) Route(_ context.Context, dialable Origins, front func(http.Handler) http.Handler, _ v1.Logger) (*url.URL, error) {
-	f.dialable, f.front = dialable, front
+func (f *fakeRouter) Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, _ v1.Logger) (*url.URL, error) {
+	f.ctx, f.dialable, f.ws, f.front = ctx, dialable, ws, front
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -835,6 +839,45 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("the +ws origin reaches the router as its index", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", "http+ws://:5173")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if h.router.ws != 1 {
+			t.Errorf("router was given ws = %d, want 1", h.router.ws)
+		}
+		if got := urlStrings(h.router.dialable.URLs()); got[1] != "http://localhost:5173" {
+			t.Errorf("router was given %q, want the marker off the scheme", got)
+		}
+	})
+
+	// The tunnel drains what the edge already sent it for a grace period
+	// after the run ends, and every one of those requests goes through the
+	// router, so the router is down with the tunnel rather than the run.
+	t.Run("the router outlives the run until the tunnel ends", func(t *testing.T) {
+		tun := live(public)
+		h := newRunHarness(t, tun, ":3000", ":4000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if err := h.router.ctx.Err(); err != nil {
+			t.Fatalf("router's context ended with the run (%v), want it serving until the tunnel ends", err)
+		}
+		tun.end()
+		select {
+		case <-h.router.ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("router's context outlived the tunnel")
+		}
+	})
+
 	t.Run("a cached spec is what the engine replays", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		h.cache.cached = "cached-spec"
@@ -1022,13 +1065,16 @@ func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
 		// typed: a dropped origin before it moves it up.
 		{"counted after a drop", []string{"ftp://localhost:21", "http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
 		{"a second claim keeps the first", []string{"http+ws://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 0},
+		// A marked origin dropped for want of a host never held the claim, so
+		// the next marked origin gets it rather than losing its marker.
+		{"a dropped origin claims nothing", []string{"http+ws://", "http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := New(WithOrigin(tc.in...), WithStderr(io.Discard)).Origins()
 			if urls := originStrings(got); !slices.Equal(urls, tc.want) {
 				t.Errorf("Origins(%q) = %q, want %q", tc.in, urls, tc.want)
 			}
-			ws, ok := got.WebSocket()
+			ws, ok := got.(interface{ WebSocket() (int, bool) }).WebSocket()
 			if !ok {
 				ws = -1
 			}

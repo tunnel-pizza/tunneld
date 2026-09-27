@@ -301,9 +301,13 @@ Easy to get wrong from the diff alone:
   the router's loopback address, or the lone origin's own when there is
   nothing to route — and every rule that picks an origin lives in
   [`v1alpha1/router`](./v1alpha1/router), with the panel in front of it
-  (#176). The `+ws` marker comes off the scheme in the parser and rides
-  `Origins.WebSocket` as an index, so no URL downstream carries it; a check
-  that needs to know about it is a check reading the wrong thing (#173).
+  (#176). The `+ws` marker comes off the scheme in the parser and is kept
+  as an index on the `origins` type (not on `v1.Origins`, which embedders
+  implement), handed to `Router.Route`; no URL downstream carries it, and a
+  check that needs to know about it is a check reading the wrong thing
+  (#173). The router lives until the tunnel's `Done`, not the run's
+  context: the tunnel drains what the edge sent it for a grace period, and
+  each of those requests comes through the router.
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the

@@ -356,12 +356,6 @@ type Origins interface {
 	// URLs is every origin, in order, as a copy — sorting or reordering what
 	// comes back cannot reorder the run.
 	URLs() []*url.URL
-	// WebSocket is the index of the origin that owns WebSockets — the one an
-	// operator marked +ws — and false when none is marked. The marker is
-	// routing configuration rather than part of any address, so it is taken
-	// off the scheme where it is parsed and kept here, and every URL this
-	// list hands out is the bare address it dials.
-	WebSocket() (int, bool)
 	// Key identifies the tunnel these origins are: the working directory they
 	// were settled in and the origins themselves, sorted so the order they
 	// were typed does not make a second tunnel, deduplicated so a repeat does

@@ -48,19 +48,23 @@ func New(opts ...Option) *RouterImpl {
 }
 
 // Route stands a loopback server up in front of dialable and returns the one
-// address the tunnel should forward to. front, when not nil, wraps the
-// routing handler — the panel and the scrub, which answer or reshape a
-// request before any origin is chosen.
+// address the tunnel should forward to. ws is the index of the origin that
+// owns WebSockets, -1 for none. front, when not nil, wraps the routing
+// handler — the panel and the scrub, which answer or reshape a request before
+// any origin is chosen.
 //
 // One origin with nothing in front of it needs no router: its own address is
 // returned and nothing is served, which is the tunnel exactly as it was
 // before there was routing to do.
 //
-// The server lives as long as ctx. Upgraded connections — a WebSocket through
-// the proxy — are not ended by closing the server, so the requests are based
-// on ctx as well, and the proxy drops the origin side of a socket when its
-// request's context ends.
-func (*RouterImpl) Route(ctx context.Context, dialable v1.Origins, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error) {
+// The server lives as long as ctx, which is the caller's to make as long as
+// the tunnel that forwards here: a tunnel drains in-flight requests for a
+// grace period after it is told to stop, and a router closed before then
+// answers them with a refused dial. Upgraded connections — a WebSocket
+// through the proxy — are not ended by closing the server, so the requests
+// are based on ctx as well, and the proxy drops the origin side of a socket
+// when its request's context ends.
+func (*RouterImpl) Route(ctx context.Context, dialable v1.Origins, ws int, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error) {
 	if dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
 	}
@@ -71,10 +75,6 @@ func (*RouterImpl) Route(ctx context.Context, dialable v1.Origins, front func(ht
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("router: listen: %w", err)
-	}
-	ws, ok := dialable.WebSocket()
-	if !ok {
-		ws = -1
 	}
 	var h http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log))
 	if front != nil {
@@ -186,6 +186,25 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			r.SetURL(&url.URL{Scheme: origin.Scheme, Host: origin.Host})
 			r.Out.Host = r.In.Host
 		},
+		// An origin that cannot be reached is the one failure here an
+		// operator can act on, and the edge shows it as a bare 502 with no
+		// word of which origin or why: tunneld :3000 :4000 with :4000 not up
+		// yet, and /?1 is a blank page. So it is said at warn, naming the
+		// origin. A visitor who went away first is not a failure of anything.
+		// The dial error is what is logged, not the url.Error around it,
+		// which carries the request's own path and query.
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.Canceled) {
+				log.Debug("request ended before the origin answered", "origin", r.URL.Host)
+			} else {
+				var ue *url.Error
+				if errors.As(err, &ue) {
+					err = ue.Err
+				}
+				log.Warn("origin did not answer", "origin", r.URL.Scheme+"://"+r.URL.Host, "err", err)
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		},
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
 	if len(origins) > 1 {
@@ -285,10 +304,17 @@ type stickyKey struct{}
 // origin is https — an origin on this machine presents whatever certificate
 // its dev server made up, and the tunnel engine never verified one either.
 // The TLS config only engages on https dials, so http origins share it.
+//
+// A clone of the default rather than a bare Transport, which would have no
+// dial or handshake timeout and never reap an idle connection: one https dev
+// server that hangs on accept would then hold requests to every origin behind
+// this router.
 func transport(origins []*url.URL) http.RoundTripper {
 	for _, u := range origins {
 		if u.Scheme == "https" {
-			return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+			t := http.DefaultTransport.(*http.Transport).Clone()
+			t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			return t
 		}
 	}
 	return http.DefaultTransport

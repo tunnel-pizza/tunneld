@@ -160,10 +160,11 @@ func WithDisplay(display Display) Option {
 // of origins (#176).
 //
 // Route answers with that URL: the router's own while ctx lives, or the one
-// origin's when there is one and nothing to put in front of it. front wraps
-// the routing, and is what the display's Panel answered — nil for none.
+// origin's when there is one and nothing to put in front of it. ws is the
+// index of the origin marked +ws, -1 for none. front wraps the routing, and
+// is what the display's Panel answered — nil for none.
 type Router interface {
-	Route(ctx context.Context, dialable Origins, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error)
+	Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error)
 }
 
 // WithRouter replaces what stands between the tunnel and the origins. The

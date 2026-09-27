@@ -1617,38 +1617,6 @@ func TestBindWithoutContainers(t *testing.T) {
 	}
 }
 
-// TestBindCarriesTheWebSocketOrigin pins that the origin owning WebSockets
-// comes out of Bind at the index it went in at, beside a served origin that
-// was swapped for its loopback address. The marker used to ride the scheme
-// and the binder had to know to let "http+ws" through (#173); it is an index
-// on the list now (#176), and an index is only right if the lists agree.
-func TestBindCarriesTheWebSocketOrigin(t *testing.T) {
-	targets := &stubTargets{}
-	display := origins.New(origins.WithURL(mustURLs(t, "attach://dockerd/api", "http://localhost:5173")...), origins.WithWebSocket(1))
-
-	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("Bind: %v", err)
-	}
-	defer closer.Close()
-
-	if ws, ok := dialable.WebSocket(); !ok || ws != 1 {
-		t.Errorf("WebSocket() = %d, %v, want 1, true", ws, ok)
-	}
-	if got := dialable.At(1); got != display.At(1) {
-		t.Errorf("dialable[1] = %q, want the http origin as it was", got)
-	}
-
-	plain, closer2, err := New(WithTargets(targets)).Bind(t.Context(), shown(t, "http://localhost:3000"), slog.New(slog.DiscardHandler))
-	if err != nil {
-		t.Fatalf("Bind: %v", err)
-	}
-	defer closer2.Close()
-	if ws, ok := plain.WebSocket(); ok {
-		t.Errorf("WebSocket() = %d, true for a list that marks none", ws)
-	}
-}
-
 // TestBindUnwindsOnFailure pins that a later container failing does not leave
 // an earlier one's server listening. The command is about to return an error
 // and exit; a leaked goroutine holding a port would outlive it in an

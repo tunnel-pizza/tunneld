@@ -473,12 +473,35 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// origin, the Referer and the cookie on a loopback address, with the
 	// panel in front of it when there is one, and the tunnel forwards to that
 	// one address. A lone origin with no panel is its own address. Stood up
-	// before the tunnel for the same reason the binding is — it is what the
-	// tunnel is handed — and down with ctx.
-	local, err := b.router.Route(ctx, dialable, b.display.Panel(b.multiview, origins, log), log)
+	// before the tunnel for the same reason the binding is: it is what the
+	// tunnel is handed.
+	//
+	// The +ws origin is read off the parsed list, which is the origins
+	// package's own type; the dialable list has the same indexes.
+	ws := -1
+	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
+		if i, ok := marked.WebSocket(); ok {
+			ws = i
+		}
+	}
+	// Down with the tunnel rather than with ctx. A tunnel told to stop keeps
+	// answering what the edge already sent it for a grace period, and every
+	// one of those requests comes here; a router closed with ctx would turn
+	// them into refused dials in a program that embeds this and outlives Run.
+	// Until the tunnel exists nothing forwards here, so a return before then
+	// takes the router with it.
+	routing, unroute := context.WithCancel(context.WithoutCancel(ctx))
+	local, err := b.router.Route(routing, dialable, ws, b.display.Panel(b.multiview, origins, log), log)
 	if err != nil {
+		unroute()
 		return err
 	}
+	routed := false
+	defer func() {
+		if !routed {
+			unroute()
+		}
+	}()
 
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
@@ -540,6 +563,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, above.
 		WithLocalURL(local)
+	routed = true
+	go func() {
+		<-tun.Done()
+		unroute()
+	}()
 
 	// Something turning, because the wait below is the long one: minting,
 	// dialing the edge, and the public URL answering from here, which is
@@ -1247,7 +1275,7 @@ func (b *BuilderImpl) Origins() Origins {
 		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
 		// handshake the page did not build with a routing index goes here
 		// rather than following the sticky cookie. The marker comes off here
-		// and rides the list as an index (Origins.WebSocket), so every URL
+		// and rides the list as an index (origins.WithWebSocket), so every URL
 		// downstream — the binder's, the panel's, the one the router dials —
 		// is the bare address and nothing has to know to leave it alone
 		// (#173, #176). The key follows: an origin marked and unmarked is one
@@ -1269,18 +1297,6 @@ func (b *BuilderImpl) Origins() Origins {
 			continue
 		}
 		u.Scheme = base
-		if marked {
-			if wsOrigin != "" {
-				// Two origins cannot both own the websockets. The marker goes
-				// and the origin stays: it is a perfectly good origin that
-				// asked for something already taken, and a handshake has
-				// only one place to go.
-				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
-				marked = false
-			} else {
-				wsOrigin = s
-			}
-		}
 		// A port with no host in front of it — ":8000", or the "http://:8000"
 		// the scheme default above makes of it — means the local machine, the
 		// way every dev server reads that shorthand. The test is Hostname, not
@@ -1294,8 +1310,19 @@ func (b *BuilderImpl) Origins() Origins {
 			}
 			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
+		// Claimed only here, once the origin is certain to be kept: an origin
+		// dropped above for want of a host would otherwise hold the claim and
+		// strip the marker from the one that should have had it.
 		if marked {
-			ws = len(urls)
+			if wsOrigin != "" {
+				// Two origins cannot both own the websockets. The marker goes
+				// and the origin stays: it is a perfectly good origin that
+				// asked for something already taken, and a handshake has
+				// only one place to go.
+				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
+			} else {
+				wsOrigin, ws = s, len(urls)
+			}
 		}
 		add(word, u)
 	}

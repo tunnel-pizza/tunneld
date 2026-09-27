@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -37,7 +39,7 @@ func echo(t *testing.T, name string) *httptest.Server {
 }
 
 // listOf is the servers as an origin list, the way the binder hands one over.
-func listOf(t *testing.T, ws int, srvs ...*httptest.Server) v1.Origins {
+func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 	t.Helper()
 	urls := make([]*url.URL, len(srvs))
 	for i, srv := range srvs {
@@ -47,14 +49,15 @@ func listOf(t *testing.T, ws int, srvs ...*httptest.Server) v1.Origins {
 		}
 		urls[i] = u
 	}
-	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
+	return origins.New(origins.WithURL(urls...))
 }
 
 // route stands the router up over list for the life of the test and returns
-// the base URL a client dials.
-func route(t *testing.T, list v1.Origins, front func(http.Handler) http.Handler, log *slog.Logger) string {
+// the base URL a client dials. ws is the origin that owns WebSockets, -1 for
+// none.
+func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
-	u, err := New().Route(t.Context(), list, front, log)
+	u, err := New().Route(t.Context(), list, ws, front, log)
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -81,8 +84,8 @@ func get(t *testing.T, client *http.Client, req *http.Request) (*http.Response, 
 // exactly as before there was routing to do, and a bare numeric parameter is
 // the application's own.
 func TestRouteALoneOriginIsItsOwnAddress(t *testing.T) {
-	list := listOf(t, -1, echo(t, "solo"))
-	got, err := New().Route(t.Context(), list, nil, discard)
+	list := listOf(t, echo(t, "solo"))
+	got, err := New().Route(t.Context(), list, -1, nil, discard)
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -94,7 +97,7 @@ func TestRouteALoneOriginIsItsOwnAddress(t *testing.T) {
 // TestRouteNothingIsAnError pins that an empty list is refused rather than
 // served: there is nothing a request could reach.
 func TestRouteNothingIsAnError(t *testing.T) {
-	if _, err := New().Route(t.Context(), origins.New(), nil, discard); err == nil {
+	if _, err := New().Route(t.Context(), origins.New(), -1, nil, discard); err == nil {
 		t.Error("Route() over no origins succeeded, want an error")
 	}
 }
@@ -112,7 +115,7 @@ func TestRouteAppliesTheFront(t *testing.T) {
 			next.ServeHTTP(w, r)
 		})
 	}
-	base := route(t, listOf(t, -1, echo(t, "solo")), front, discard)
+	base := route(t, listOf(t, echo(t, "solo")), -1, front, discard)
 	for path, want := range map[string]string{"/front": "front", "/?x": "solo|x"} {
 		req, _ := http.NewRequest("GET", base+path, nil)
 		if _, body := get(t, http.DefaultClient, req); body != want {
@@ -121,26 +124,62 @@ func TestRouteAppliesTheFront(t *testing.T) {
 	}
 }
 
-// TestRouteEndsWithTheContext pins the router's lifetime: it serves while the
-// run does and stops answering once the run's context ends.
+// TestRouteEndsWithTheContext pins the router's lifetime: it serves while its
+// context lives and stops accepting once it ends. Watched on the listener
+// itself, polled to a deadline, since the close runs on a goroutine of its own
+// and a busy runner may take a while to schedule it.
 func TestRouteEndsWithTheContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	u, err := New().Route(ctx, listOf(t, -1, echo(t, "A"), echo(t, "B")), nil, discard)
+	u, err := New().Route(ctx, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	if _, err := http.Get(u.String()); err != nil {
+	resp, err := http.Get(u.String())
+	if err != nil {
 		t.Fatalf("GET while live: %v", err)
 	}
+	resp.Body.Close()
+
 	cancel()
-	// Close runs on the AfterFunc goroutine, so give it the one round trip it
-	// needs rather than a sleep.
-	for range 100 {
-		if _, err := http.Get(u.String()); err != nil {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", u.Host, time.Second)
+		if err != nil {
 			return
 		}
+		conn.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("the router still accepts connections after its context ended")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	t.Error("the router still answers after its context ended")
+}
+
+// TestRouteWarnsOfAnOriginItCannotReach pins that an origin that is down is
+// said at warn, naming the origin, rather than only at the edge as a bare 502:
+// tunneld :3000 :4000 with :4000 not up yet, and /?1 used to be a blank page
+// with no line anywhere. The request's own path stays out of the line.
+func TestRouteWarnsOfAnOriginItCannotReach(t *testing.T) {
+	down := echo(t, "B")
+	list := listOf(t, echo(t, "A"), down)
+	down.Close()
+
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	base := route(t, list, -1, nil, logger)
+
+	req, _ := http.NewRequest("GET", base+"/secret-path?1", nil)
+	resp, _ := get(t, http.DefaultClient, req)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, list.At(1).Host) {
+		t.Errorf("log = %q, want a warning naming %s", got, list.At(1).Host)
+	}
+	if strings.Contains(got, "secret-path") {
+		t.Errorf("log = %q, want the request path left out", got)
+	}
 }
 
 // TestRoutePreservesTheHost pins that the Host a request arrived with is the
@@ -154,7 +193,7 @@ func TestRoutePreservesTheHost(t *testing.T) {
 		t.Cleanup(srv.Close)
 		return srv
 	}
-	base := route(t, listOf(t, -1, host("A"), host("B")), nil, discard)
+	base := route(t, listOf(t, host("A"), host("B")), -1, nil, discard)
 	req, _ := http.NewRequest("GET", base+"/?1", nil)
 	req.Host = "foo.tunneled.pizza"
 	if _, body := get(t, http.DefaultClient, req); body != "B|foo.tunneled.pizza" {
@@ -170,7 +209,7 @@ func TestRouteDialsHTTPSUnverified(t *testing.T) {
 		fmt.Fprint(w, "tls")
 	}))
 	t.Cleanup(tlsOrigin.Close)
-	base := route(t, listOf(t, -1, echo(t, "A"), tlsOrigin), nil, discard)
+	base := route(t, listOf(t, echo(t, "A"), tlsOrigin), -1, nil, discard)
 	req, _ := http.NewRequest("GET", base+"/?1", nil)
 	if _, body := get(t, http.DefaultClient, req); body != "tls" {
 		t.Errorf("body = %q, want the https origin's answer", body)
@@ -183,7 +222,7 @@ func TestRouteDialsHTTPSUnverified(t *testing.T) {
 // param never reaches the origin; anything out of range, non-numeric, or
 // carrying a value falls through to origins[0].
 func TestMultiOriginRouting(t *testing.T) {
-	base := route(t, listOf(t, -1, echo(t, "A"), echo(t, "B")), nil, discard)
+	base := route(t, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
 
 	for name, tc := range map[string]struct {
 		path     string
@@ -273,7 +312,7 @@ func TestMultiOriginRouting(t *testing.T) {
 // re-pins the origin, so its own subresources keep routing. Everything else
 // passes through to the proxy.
 func TestMultiOriginRedirect(t *testing.T) {
-	base := route(t, listOf(t, -1, echo(t, "A"), echo(t, "B")), nil, discard)
+	base := route(t, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
 	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
@@ -300,6 +339,14 @@ func TestMultiOriginRedirect(t *testing.T) {
 		// open redirect. Those navigations proxy un-canonicalized instead.
 		"schemeRelativeNoRedirect": {method: "GET", path: "//evil.example/x", referer: "/?1", dest: "document", wantStatus: 200, wantBody: "B|"},
 		"backslashNoRedirect":      {method: "GET", path: "/\\evil.example/x", referer: "/?1", dest: "document", wantStatus: 200, wantBody: "B|"},
+		// The same two spelled percent-encoded decode to the same path, which
+		// is what the guard reads, so they are refused the same way.
+		"encodedSlashNoRedirect":     {method: "GET", path: "/%2Fevil.example/x", referer: "/?1", dest: "document", wantStatus: 200, wantBody: "B|"},
+		"encodedBackslashNoRedirect": {method: "GET", path: "/%5Cevil.example/x", referer: "/?1", dest: "document", wantStatus: 200, wantBody: "B|"},
+		// A control character browsers would strip arrives encoded, and the
+		// Location it is echoed into keeps it encoded, so nothing collapses
+		// into a scheme-relative URL.
+		"encodedTabStaysEncoded": {method: "GET", path: "/%09/evil.example/x", referer: "/?1", dest: "document", wantStatus: 307, wantLocation: "/%09/evil.example/x?1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req, err := http.NewRequest(tc.method, base+tc.path, nil)
@@ -337,7 +384,7 @@ func TestMultiOriginRedirect(t *testing.T) {
 // multiview panel) is unaffected. Non-upgrade traffic ignores it entirely.
 func TestWebSocketOriginRouting(t *testing.T) {
 	// origins[1] owns WebSockets.
-	base := route(t, listOf(t, 1, echo(t, "A"), echo(t, "B")), nil, discard)
+	base := route(t, listOf(t, echo(t, "A"), echo(t, "B")), 1, nil, discard)
 
 	for name, tc := range map[string]struct {
 		path     string
@@ -378,7 +425,7 @@ func TestWebSocketOriginRouting(t *testing.T) {
 func TestUnroutableWebSocketWarns(t *testing.T) {
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	base := route(t, listOf(t, -1, echo(t, "A"), echo(t, "B")), nil, logger)
+	base := route(t, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, logger)
 
 	req, err := http.NewRequest("GET", base+"/hmr", nil)
 	if err != nil {

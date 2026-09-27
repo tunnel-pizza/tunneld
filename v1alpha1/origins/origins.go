@@ -86,8 +86,15 @@ func (o *OriginsImpl) At(i int) *url.URL { return o.urls[i] }
 // effect of asking what they are.
 func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
 
-// WebSocket implements v1.Origins. An index outside the list — a stale one
-// handed over with a shorter list — is no index at all.
+// WebSocket is the index of the origin that owns WebSockets — the one an
+// operator marked +ws — and false when none is marked. The marker is routing
+// configuration rather than part of any address, so the parser takes it off
+// the scheme and keeps it here, and every URL the list hands out is the bare
+// address it dials. An index outside the list names none.
+//
+// A method of this type and not of v1.Origins: the router is its only reader,
+// and a method on the public interface is one every implementation outside
+// this module would have to grow.
 func (o *OriginsImpl) WebSocket() (int, bool) {
 	if o.ws < 0 || o.ws >= len(o.urls) {
 		return -1, false
