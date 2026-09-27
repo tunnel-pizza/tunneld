@@ -1047,8 +1047,9 @@ func isOrigin(word string) bool {
 // The arguments ride the origin as a query because that is how they travel —
 // argv, the environment and a seed all spell them the same way — but a query
 // is a carrier, not a label. What the map says a tunnel reaches is the
-// program; how it was started this time is in the cache file beside the spec.
-// An http origin's query is part of its address and stays.
+// program; how it was started is in the cache file beside the spec, and in
+// the key that names the file. An http origin's query is part of its address
+// and stays.
 func label(u *url.URL) string {
 	if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
 		bare := *u

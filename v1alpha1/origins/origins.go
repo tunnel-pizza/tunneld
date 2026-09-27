@@ -77,24 +77,25 @@ func (o *OriginsImpl) At(i int) *url.URL { return o.urls[i] }
 func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
 
 // Key implements v1.Origins: the directory and the origins, sorted and
-// deduplicated, hashed together.
+// deduplicated, hashed together — each origin whole, a program's arguments
+// included.
 //
 // Sorted because the order is the run's business and not the tunnel's — ?0 and
 // ?1 index the list, but serving the same two things in the other order is the
 // same tunnel. Deduplicated for the same reason. Newline-joined so the parts
 // cannot run together: a directory and an origin concatenated raw could be
 // split two ways and collide.
+//
+// A program's arguments used to be set aside here, on the reading that claude
+// and claude --resume are one tunnel started two ways. They are not once the
+// arguments say which thing is running: claude --resume ABC and claude
+// --resume DEF are two sessions, and one key put them on one hostname — two
+// connectors on one tunnel when run together, a link that quietly changed
+// what it opened when run apart (#182). The arguments ride the origin as a
+// query, in order, so the whole URL is the whole invocation.
 func (o *OriginsImpl) Key() string {
 	parts := make([]string, 0, len(o.urls))
 	for _, u := range o.urls {
-		// A program's arguments are how it was started this time, not which
-		// program it is: claude and claude --resume are one tunnel.
-		if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
-			bare := *u
-			bare.RawQuery = ""
-			parts = append(parts, bare.String())
-			continue
-		}
 		parts = append(parts, u.String())
 	}
 	slices.Sort(parts)

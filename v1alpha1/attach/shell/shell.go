@@ -170,7 +170,8 @@ func (a *TargetImpl) Name() string { return a.ref }
 //
 // Not its arguments. They reached this target as a query on the origin, but a
 // query is how they travel and not what a person is shown: the frame's corner
-// names the program, and how it was started this time is in the cache file.
+// names the program, and how it was started is in the cache file, whose key
+// the arguments are part of.
 func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 
 // TTY is always true. A program run here is given a pseudo-terminal whether or
