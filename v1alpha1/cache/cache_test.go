@@ -164,6 +164,13 @@ func TestSave(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("directory permissions are not enforceable on Windows")
 		}
+		// Root is not stopped by a mode bit either: it writes into a 0500
+		// directory as readily as any other, so the condition cannot be staged
+		// there — a container running the suite as root failed this on every
+		// run while the cache behaved exactly as it should.
+		if os.Geteuid() == 0 {
+			t.Skip("directory permissions do not bind root")
+		}
 		unwritable := t.TempDir()
 		if err := os.Chmod(unwritable, 0o500); err != nil {
 			t.Fatalf("chmod: %v", err)
