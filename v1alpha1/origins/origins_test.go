@@ -97,20 +97,30 @@ func TestURLsCannotBeUsedToReorderTheRun(t *testing.T) {
 	}
 }
 
-// TestKeyIgnoresAProgramsArguments pins that claude and claude --resume are one
-// tunnel: the program is which tunnel this is, and its arguments are how it
-// was started this time. A URL origin's query is part of the origin, and so of
-// the key — only a program's arguments are set aside.
-func TestKeyIgnoresAProgramsArguments(t *testing.T) {
+// TestKeyIncludesAProgramsArguments pins #182: claude --resume ABC and claude
+// --resume DEF are two sessions, so they are two tunnels. The arguments ride
+// the origin as a query, in order, and the whole of it is in the key — the
+// same as an http origin's query, which was never set aside.
+func TestKeyIncludesAProgramsArguments(t *testing.T) {
 	const dir = "/work/project"
-	bare := New(WithDir(dir), WithURL(must(t, "exec:///usr/bin/claude"))).Key()
-	withArgs := New(WithDir(dir), WithURL(must(t, "exec:///usr/bin/claude?arg=--resume"))).Key()
-	if bare != withArgs {
-		t.Errorf("Key() = %q with arguments and %q without, want one tunnel", withArgs, bare)
+	key := func(raw string) string { return New(WithDir(dir), WithURL(must(t, raw))).Key() }
+
+	bare := key("exec:///usr/bin/claude")
+	resume := key("exec:///usr/bin/claude?arg=--resume")
+	abc := key("exec:///usr/bin/claude?arg=--resume&arg=ABC")
+	def := key("exec:///usr/bin/claude?arg=--resume&arg=DEF")
+	if bare == resume {
+		t.Errorf("Key() = %q with and without --resume, want two tunnels", bare)
+	}
+	if abc == def {
+		t.Errorf("Key() = %q for --resume ABC and --resume DEF, want two tunnels", abc)
+	}
+	if again := key("exec:///usr/bin/claude?arg=--resume&arg=ABC"); again != abc {
+		t.Errorf("Key() = %q then %q for the same invocation", abc, again)
 	}
 
-	plain := New(WithDir(dir), WithURL(must(t, "http://localhost:3000"))).Key()
-	queried := New(WithDir(dir), WithURL(must(t, "http://localhost:3000?arg=x"))).Key()
+	plain := key("http://localhost:3000")
+	queried := key("http://localhost:3000?arg=x")
 	if plain == queried {
 		t.Errorf("Key() = %q for an http origin with and without a query, want two", plain)
 	}

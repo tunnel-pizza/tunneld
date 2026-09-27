@@ -178,8 +178,9 @@ program:
 TUNNELD_ORIGINS='exec:///usr/bin/claude?arg=--resume&arg=--model&arg=opus'
 ```
 
-`claude` and `claude --resume` are one tunnel: the program is which tunnel this
-is, and its arguments are how it was started this time.
+The arguments are part of what names the tunnel: `claude --resume ABC` and
+`claude --resume DEF` are two sessions, so they get two hostnames, and running
+the same invocation again from the same directory gets the same one back.
 
 `exec://htop` — the word with its scheme on and nothing after it — is looked up
 the same way, because an authority with nothing after it cannot be a provider
