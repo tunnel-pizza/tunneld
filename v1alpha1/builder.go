@@ -225,6 +225,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		}{
 			{"browser", b.display == nil},
 			{"binder", b.binder == nil},
+			{"router", b.router == nil},
 			{"motd", b.motd == nil},
 		} {
 			if c.missing {
@@ -467,6 +468,41 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
+	// Several origins share one hostname, and which one a request reaches is
+	// decided here rather than in the tunnel: the router serves ?n, the +ws
+	// origin, the Referer and the cookie on a loopback address, with the
+	// panel in front of it when there is one, and the tunnel forwards to that
+	// one address. A lone origin with no panel is its own address. Stood up
+	// before the tunnel for the same reason the binding is: it is what the
+	// tunnel is handed.
+	//
+	// The +ws origin is read off the parsed list, which is the origins
+	// package's own type; the dialable list has the same indexes.
+	ws := -1
+	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
+		if i, ok := marked.WebSocket(); ok {
+			ws = i
+		}
+	}
+	// Down with the tunnel rather than with ctx. A tunnel told to stop keeps
+	// answering what the edge already sent it for a grace period, and every
+	// one of those requests comes here; a router closed with ctx would turn
+	// them into refused dials in a program that embeds this and outlives Run.
+	// Until the tunnel exists nothing forwards here, so a return before then
+	// takes the router with it.
+	routing, unroute := context.WithCancel(context.WithoutCancel(ctx))
+	local, err := b.router.Route(routing, dialable, ws, b.display.Panel(b.multiview, origins, log), log)
+	if err != nil {
+		unroute()
+		return err
+	}
+	routed := false
+	defer func() {
+		if !routed {
+			unroute()
+		}
+	}()
+
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -524,15 +560,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		WithLogger(log).
 		WithContext(ctx).
 		WithEventListener(listen).
-		// libtunnel takes the addresses themselves: the list's identity is
-		// this run's business, and what it proxies to is a slice.
-		WithLocalURL(dialable.URLs()...)
-	// Served in front of the origin proxy, so the panel needs no port of its
-	// own and no origin ever sees the request. The list is empty when there
-	// is no panel to serve, which is the only place that decision is made.
-	for _, ic := range b.display.Interceptors(b.multiview, origins, log) {
-		tun.WithInterceptor(ic)
-	}
+		// One address, whatever the run exposes: which origin a request
+		// reaches is decided in front of them, above.
+		WithLocalURL(local)
+	routed = true
+	go func() {
+		<-tun.Done()
+		unroute()
+	}()
 
 	// Something turning, because the wait below is the long one: minting,
 	// dialing the edge, and the public URL answering from here, which is
@@ -1134,8 +1169,10 @@ func (b *BuilderImpl) Origins() Origins {
 		log.Info(fmt.Sprintf("%q interpolated into %s", word, u))
 		urls = append(urls, u)
 	}
-	// The first origin seen carrying a +ws marker, kept to strip a second.
-	wsOrigin := ""
+	// The first origin seen carrying a +ws marker, kept to strip a second, and
+	// its index in the list, which is where the marker goes once it is off the
+	// scheme.
+	wsOrigin, ws := "", -1
 	for i := 0; i < len(settled); i++ {
 		s := strings.TrimSpace(settled[i])
 		word := s // as typed, for the log; s is rewritten on the way to a URL
@@ -1237,9 +1274,12 @@ func (b *BuilderImpl) Origins() Origins {
 		}
 		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
 		// handshake the page did not build with a routing index goes here
-		// rather than following the sticky cookie. The marker is stripped and
-		// consumed by the tunnel engine; everything below treats the origin by
-		// its base scheme, which is also how it is dialed.
+		// rather than following the sticky cookie. The marker comes off here
+		// and rides the list as an index (origins.WithWebSocket), so every URL
+		// downstream — the binder's, the panel's, the one the router dials —
+		// is the bare address and nothing has to know to leave it alone
+		// (#173, #176). The key follows: an origin marked and unmarked is one
+		// tunnel.
 		//
 		// The two spellings (+ws and +wss) mean the same thing: the suffix
 		// induces the designation rather than describing a transport — the
@@ -1256,18 +1296,7 @@ func (b *BuilderImpl) Origins() Origins {
 			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https, "+v1.AttachScheme+" or "+v1.ExecScheme, "scheme", u.Scheme)
 			continue
 		}
-		if marked {
-			if wsOrigin != "" {
-				// Two origins cannot both own the websockets. The marker goes
-				// and the origin stays: it is a perfectly good origin that
-				// asked for something already taken, and the tunnel engine
-				// would refuse the pair outright.
-				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
-				u.Scheme = base
-			} else {
-				wsOrigin = s
-			}
-		}
+		u.Scheme = base
 		// A port with no host in front of it — ":8000", or the "http://:8000"
 		// the scheme default above makes of it — means the local machine, the
 		// way every dev server reads that shorthand. The test is Hostname, not
@@ -1281,9 +1310,23 @@ func (b *BuilderImpl) Origins() Origins {
 			}
 			u.Host = net.JoinHostPort("localhost", u.Port())
 		}
+		// Claimed only here, once the origin is certain to be kept: an origin
+		// dropped above for want of a host would otherwise hold the claim and
+		// strip the marker from the one that should have had it.
+		if marked {
+			if wsOrigin != "" {
+				// Two origins cannot both own the websockets. The marker goes
+				// and the origin stays: it is a perfectly good origin that
+				// asked for something already taken, and a handshake has
+				// only one place to go.
+				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
+			} else {
+				wsOrigin, ws = s, len(urls)
+			}
+		}
 		add(word, u)
 	}
-	return origins.New(origins.WithURL(urls...))
+	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

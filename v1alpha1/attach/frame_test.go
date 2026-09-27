@@ -484,6 +484,7 @@ func TestViewIsBordered(t *testing.T) {
 	// when they differ.
 	h.s.setTitle("sleep 2")
 	h.s.setSubtitle("sleep")
+	h.window(max(wide, topRoomFor(h.f)), h.f.height)
 	titled := stripSGR(strings.Split(h.f.View().Content, "\n")[0])
 	at := strings.Index(titled, "sleep 2 · sleep")
 	if at < 0 {
@@ -587,6 +588,25 @@ func roomFor(f frame) (all, withoutBuild int) {
 	counts := uv.NewStyledString(f.meta()).UnicodeWidth()
 
 	return build + 2*max(keys, counts) + 10, keys + counts + 10
+}
+
+// topRoomFor is a window width that holds all three of the top row's labels:
+// the origin, the terminal's titles centred, and the address.
+//
+// roomFor's twin, for the other border, and needed for the same reason: the
+// bottom row's width carries os.Hostname and the top row's does not, so a
+// window sized for the bottom only fits the top on a machine whose name is
+// long enough. A two-letter hostname left the centred titles no room beside
+// a long address, and the frame — correctly — dropped them.
+//
+// Centred like the build, so the same doubling: the titles' half-width has
+// to clear the wider of the two corners.
+func topRoomFor(f frame) int {
+	origin := uv.NewStyledString(" " + f.title() + " ").UnicodeWidth()
+	titles := uv.NewStyledString(" " + f.subtitle() + " ").UnicodeWidth()
+	addr := uv.NewStyledString(" " + f.sess.announced() + " ").UnicodeWidth()
+
+	return titles + 2*max(origin, addr) + 10
 }
 
 // window is the viewer's window being reported at a new size, the way a lone

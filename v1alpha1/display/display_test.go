@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cnuss/libtunnel"
 	"github.com/creack/pty"
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -23,47 +22,48 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
-// discard is the logger every test hands to Interceptors: nothing under test
+// discard is the logger every test hands to Panel: nothing under test
 // asserts on log output, so it stays quiet.
 var discard = slog.New(slog.DiscardHandler)
 
-// fakeIC is the interceptor context the tests hand to a Handler: it records
-// the handler installed with WithHandler and answers Handler with whatever
-// the test says the proxy would have done. The other four methods are never
-// reached and panic through the nil embed if they are.
-type fakeIC struct {
-	libtunnel.InterceptCtx
-	next      http.HandlerFunc
-	installed http.HandlerFunc
-}
-
-func (f *fakeIC) Handler() http.HandlerFunc { return f.next }
-func (f *fakeIC) WithHandler(h http.HandlerFunc) libtunnel.InterceptCtx {
-	f.installed = h
-	return f
-}
-
-// framed is the origin list the helpers below hand to Interceptors when the
-// test does not care which origins they are: two, because a lone origin is
-// not framed at all and Interceptors would answer with nothing to return.
+// framed is the origin list the helpers below hand to Panel when the test
+// does not care which origins they are: two, because a lone origin is not
+// framed at all and Panel would answer with nothing to put in front.
 var framed = origins.New(origins.WithURL(
 	&url.URL{Scheme: "http", Host: "localhost:3000"},
 	&url.URL{Scheme: "http", Host: "localhost:4000"},
 ))
 
-// pageOf returns the panel's own interceptor: the one that answers the bare
-// tunnel address with the page of frames.
-func pageOf(t *testing.T, shown v1.Origins) libtunnel.Interceptor {
+// panelOf returns the panel in front of next, which stands in for the
+// router: what the origins would have answered.
+func panelOf(t *testing.T, d *DisplayImpl, shown v1.Origins, next http.HandlerFunc) http.Handler {
 	t.Helper()
-	return New().Interceptors(true, shown, discard)[0]
+	panel := d.Panel(true, shown, discard)
+	if panel == nil {
+		t.Fatal("Panel() = nil for a list the panel frames")
+	}
+	return panel(next)
 }
 
-// unframeOf returns the interceptor that strips framing headers from the
-// panel's own frames. Which origins are framed is nothing to it, so it takes
-// the fixture.
-func unframeOf(t *testing.T) libtunnel.Interceptor {
+// pageOf returns the panel in front of an origin that must never be reached:
+// what a test asking for the page renders through.
+func pageOf(t *testing.T, shown v1.Origins) http.Handler {
 	t.Helper()
-	return New().Interceptors(true, framed, discard)[1]
+	return panelOf(t, New(), shown, func(http.ResponseWriter, *http.Request) {
+		t.Error("the page request reached an origin")
+	})
+}
+
+// passed reports where the panel sent r: whether it reached the origin at
+// all, and whether it did so as one of the panel's own tiles, with the
+// framing headers scrubbed on the way back.
+func passed(t *testing.T, r *http.Request) (reached, tiled bool) {
+	t.Helper()
+	panelOf(t, New(), framed, func(w http.ResponseWriter, _ *http.Request) {
+		_, tiled = w.(*asTile)
+		reached = true
+	}).ServeHTTP(httptest.NewRecorder(), r)
+	return reached, tiled
 }
 
 // TestIsPanelRequest pins which requests reach the panel. The narrowing is
@@ -222,16 +222,16 @@ func TestIsPanelRequest(t *testing.T) {
 				r.Header.Set("Connection", "Upgrade")
 				r.Header.Set("Upgrade", tc.upgrade)
 			}
-			if got := pageOf(t, framed).Match(r); got != tc.want {
-				t.Errorf("Match(%q dest=%q referer=%q) = %v, want %v",
-					tc.target, tc.dest, tc.referer, got, tc.want)
+			if reached, _ := passed(t, r); !reached != tc.want {
+				t.Errorf("page for (%q dest=%q referer=%q) = %v, want %v",
+					tc.target, tc.dest, tc.referer, !reached, tc.want)
 			}
 		})
 	}
 }
 
 // TestNoPanel pins that the panel needs both the flag and something to
-// compare, and that URL and Interceptors agree about it. One origin framed
+// compare, and that URL and Panel agree about it. One origin framed
 // alone is a worse view of it than the origin itself, so a lone origin keeps
 // being opened directly.
 func TestNoPanel(t *testing.T) {
@@ -266,9 +266,8 @@ func TestNoPanel(t *testing.T) {
 			if wanted := got != ""; wanted != tc.wanted {
 				t.Errorf("URL() = %q, want a panel address: %v", got, tc.wanted)
 			}
-			ics := New().Interceptors(tc.enabled, tc.origins, discard)
-			if wanted := len(ics) > 0; wanted != tc.wanted {
-				t.Errorf("Interceptors() returned %d, want any: %v", len(ics), tc.wanted)
+			if wanted := New().Panel(tc.enabled, tc.origins, discard) != nil; wanted != tc.wanted {
+				t.Errorf("Panel() != nil is %v, want %v", wanted, tc.wanted)
 			}
 		})
 	}
@@ -303,9 +302,7 @@ func TestServeShell(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneled.pizza"
 
-	ic := &fakeIC{}
-	pageOf(t, shown).Handler(ic)
-	ic.installed(rec, r)
+	pageOf(t, shown).ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -372,9 +369,9 @@ func TestServeShellCarriesTheMessages(t *testing.T) {
 		rec := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.Host = "foo.tunneled.pizza"
-		ic := &fakeIC{}
-		d.Interceptors(true, shown, discard)[0].Handler(ic)
-		ic.installed(rec, r)
+		panelOf(t, d, shown, func(http.ResponseWriter, *http.Request) {
+			t.Error("the page request reached an origin")
+		}).ServeHTTP(rec, r)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
 		}
@@ -419,9 +416,7 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = `evil"><script>alert(1)</script>`
 
-	ic := &fakeIC{}
-	pageOf(t, shown).Handler(ic)
-	ic.installed(rec, r)
+	pageOf(t, shown).ServeHTTP(rec, r)
 
 	if strings.Contains(rec.Body.String(), "<script>alert(1)</script>") {
 		t.Error("the Host header reached the page as markup, want it escaped")
@@ -436,8 +431,6 @@ func TestLabel(t *testing.T) {
 		{"http://localhost:3000", "localhost:3000"},
 		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
 		{"attach://dockerd/api", "attach://dockerd/api"},
-		{"http+ws://localhost:5173", "localhost:5173"},
-		{"https+wss://localhost:5173", "localhost:5173"},
 	}
 
 	urls := make([]*url.URL, len(cases))
@@ -453,9 +446,7 @@ func TestLabel(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneled.pizza"
 
-	ic := &fakeIC{}
-	pageOf(t, origins.New(origins.WithURL(urls...))).Handler(ic)
-	ic.installed(rec, r)
+	pageOf(t, origins.New(origins.WithURL(urls...))).ServeHTTP(rec, r)
 
 	body := rec.Body.String()
 	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "attach://dockerd/api"} {
@@ -463,31 +454,21 @@ func TestLabel(t *testing.T) {
 			t.Errorf("rendered page does not contain label %q", want)
 		}
 	}
-	// http+ws and https+wss both name the tile by host alone, so each gets
-	// its own iframe with that exact title: "localhost:5173" twice over.
-	if got := strings.Count(body, `title="localhost:5173"`); got != 2 {
-		t.Errorf("rendered page has %d iframes titled %q, want 2 (one per +ws/+wss origin)", got, "localhost:5173")
-	}
 }
 
-// TestPanelInterceptorServesTheShell pins the wiring: the interceptor
-// matches the panel's parameter and replaces the handler that would otherwise
-// proxy the request to an origin.
-func TestPanelInterceptorServesTheShell(t *testing.T) {
-	shown, err := mustOrigins([]string{"http://localhost:3000", "http://localhost:4000"})
-	if err != nil {
-		t.Fatalf("origins: %v", err)
+// TestPanelServesThePage pins the wiring: the bare address is answered with
+// the page and never reaches an origin, and a routing index — which belongs
+// to an origin — passes through untouched, not as a tile.
+func TestPanelServesThePage(t *testing.T) {
+	rec := httptest.NewRecorder()
+	pageOf(t, framed).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("Content-Type = %q, want the page", got)
 	}
 
-	interceptor := pageOf(t, shown)
-	if interceptor.Priority != 1 {
-		t.Errorf("Priority = %d, want 1 so nothing later can shadow the panel", interceptor.Priority)
-	}
-	if !interceptor.Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
-		t.Error("interceptor does not match the tunnel's own address")
-	}
-	if interceptor.Match(httptest.NewRequest(http.MethodGet, "/?1", nil)) {
-		t.Error("interceptor matches a routing index, which belongs to an origin")
+	reached, tiled := passed(t, httptest.NewRequest(http.MethodGet, "/?1", nil))
+	if !reached || tiled {
+		t.Errorf("a routing index reached the origin %v, as a tile %v; want reached, untouched", reached, tiled)
 	}
 }
 
@@ -520,8 +501,8 @@ func TestIsPanelFrame(t *testing.T) {
 			if tc.site != "" {
 				r.Header.Set("Sec-Fetch-Site", tc.site)
 			}
-			if got := unframeOf(t).Match(r); got != tc.want {
-				t.Errorf("Match(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
+			if _, got := passed(t, r); got != tc.want {
+				t.Errorf("tiled(dest=%q site=%q) = %v, want %v", tc.dest, tc.site, got, tc.want)
 			}
 		})
 	}
@@ -558,9 +539,7 @@ func TestWithoutFrameAncestors(t *testing.T) {
 			req.Header.Set("Sec-Fetch-Dest", "iframe")
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 
-			ic := &fakeIC{next: next}
-			unframeOf(t).Handler(ic)
-			ic.installed(rec, req)
+			panelOf(t, New(), framed, next).ServeHTTP(rec, req)
 
 			if got := rec.Header().Get("Content-Security-Policy"); got != tc.want {
 				t.Errorf("asTile(%q) = %q, want %q", tc.policy, got, tc.want)
@@ -587,9 +566,7 @@ func TestStripFraming(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Dest", "iframe")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
-	ic := &fakeIC{next: next}
-	unframeOf(t).Handler(ic)
-	ic.installed(rec, req)
+	panelOf(t, New(), framed, next).ServeHTTP(rec, req)
 
 	if got := rec.Header().Get("X-Frame-Options"); got != "" {
 		t.Errorf("X-Frame-Options = %q, want it removed", got)
@@ -620,9 +597,8 @@ func TestStripFraming(t *testing.T) {
 //
 // Dropping the header rather than rewriting it is deliberate: the browser
 // default already sends the full URL for the same-origin requests this is
-// about. The narrowing to the panel's own frames is the interceptor's Match,
-// covered by TestIsPanelFrame — a top-level visit keeps whatever the origin
-// sent.
+// about. The narrowing to the panel's own frames is the panel's, covered by
+// TestIsPanelFrame — a top-level visit keeps whatever the origin sent.
 func TestTileRestoresTheReferer(t *testing.T) {
 	for _, policy := range []string{"no-referrer", "origin", "same-origin"} {
 		t.Run(policy, func(t *testing.T) {
@@ -681,37 +657,6 @@ func TestUnframerScrubsBeforeTheWrite(t *testing.T) {
 			t.Error("Unwrap did not return the wrapped writer, so flush and hijack would break")
 		}
 	})
-}
-
-// TestUnframeIsBehindThePanel pins the ordering: the panel is served before
-// anything considers framing, and the unframer never matches the panel's own
-// request.
-func TestUnframeIsBehindThePanel(t *testing.T) {
-	pagePriority := pageOf(t, framed).Priority
-	if got := unframeOf(t).Priority; got <= pagePriority {
-		t.Errorf("unframe Priority = %d, want it behind the page's %d", got, pagePriority)
-	}
-
-	panelReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	if unframeOf(t).Match(panelReq) {
-		t.Error("the unframer matched the panel request, which it does not serve")
-	}
-}
-
-// TestInterceptorsOrder pins what run relies on: the page comes first and
-// outranks the unframer, so the one request that must never reach an origin
-// is answered before anything looks at framing. Swapping the two fails this.
-func TestInterceptorsOrder(t *testing.T) {
-	got := New().Interceptors(true, framed, discard)
-	if len(got) != 2 {
-		t.Fatalf("Interceptors() returned %d, want 2", len(got))
-	}
-	if !got[0].Match(httptest.NewRequest(http.MethodGet, "/", nil)) {
-		t.Error("Interceptors()[0] does not match the panel request, want the page first")
-	}
-	if got[0].Priority >= got[1].Priority {
-		t.Errorf("page Priority = %d, unframe = %d; want the page ahead", got[0].Priority, got[1].Priority)
-	}
 }
 
 // TestOpen pins the launch and the two promises around it: it never writes to
@@ -833,9 +778,7 @@ func TestATerminalTileIsBare(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneled.pizza"
-	ic := &fakeIC{}
-	pageOf(t, shown).Handler(ic)
-	ic.installed(rec, r)
+	pageOf(t, shown).ServeHTTP(rec, r)
 	body := rec.Body.String()
 	if got := strings.Count(body, `class="tile bare"`); got != 1 {
 		t.Errorf("page has %d bare tiles, want 1 for the one terminal", got)

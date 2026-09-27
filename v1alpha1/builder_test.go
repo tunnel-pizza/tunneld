@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/user"
@@ -333,7 +335,6 @@ type fakeTunnel struct {
 	err    error
 	done   chan libtunnel.TunnelV1
 	locals []*url.URL
-	ics    []libtunnel.Interceptor
 	listen func(libtunnel.Event)
 	order  *[]string
 	// token is what WithToken was handed; the run applies it on every path.
@@ -425,12 +426,8 @@ func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.Tunne
 	f.listen = fn
 	return f
 }
-func (f *fakeTunnel) WithLocalURL(u ...*url.URL) libtunnel.TunnelV1 {
-	f.locals = append(f.locals, u...)
-	return f
-}
-func (f *fakeTunnel) WithInterceptor(ic libtunnel.Interceptor) libtunnel.TunnelV1 {
-	f.ics = append(f.ics, ic)
+func (f *fakeTunnel) WithLocalURL(u *url.URL) libtunnel.TunnelV1 {
+	f.locals = append(f.locals, u)
 	return f
 }
 func (f *fakeTunnel) Messages() []string { return f.messages }
@@ -550,6 +547,36 @@ func (f *fakeBinder) Announce(public []string) {
 	}
 }
 
+// routed is the address fakeRouter answers with: nothing listens there, and a
+// tunnel handed it is a run that asked the router rather than dialing an
+// origin itself.
+var routed = &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
+
+// fakeRouter stands in for the router package: it records what it was asked
+// to put behind the tunnel and answers with routed, so TestRun never stands
+// up a listener. A lone origin with nothing in front is answered with itself,
+// as the real one does, since that is a run where there is nothing to route.
+type fakeRouter struct {
+	err      error
+	dialable Origins
+	ws       int
+	front    func(http.Handler) http.Handler
+	// ctx is the lifetime the run gave the router: what the real one
+	// serves until.
+	ctx context.Context
+}
+
+func (f *fakeRouter) Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, _ v1.Logger) (*url.URL, error) {
+	f.ctx, f.dialable, f.ws, f.front = ctx, dialable, ws, front
+	if f.err != nil {
+		return nil, f.err
+	}
+	if dialable.Len() == 1 && front == nil {
+		return dialable.At(0), nil
+	}
+	return routed, nil
+}
+
 // fakeIdentity stands in for the identity package: it answers what it was
 // built with and records what the builder asked it, which is how a case pins
 // the list that settled.
@@ -580,7 +607,7 @@ type fakeMotd struct {
 func (f *fakeMotd) Learn(raw []string, _ v1.Logger) { f.learned = raw }
 
 // runHarness is run with every collaborator faked except the one that is
-// pure: the shown's panel half, because its URL and interceptor order are
+// pure: the shown's panel half, because its URL and the page it serves are
 // what the assertions check. order records the effects that matter in the
 // sequence they landed.
 type runHarness struct {
@@ -592,6 +619,7 @@ type runHarness struct {
 	cache   *fakeCache
 	display *fakeDisplay
 	binder  *fakeBinder
+	router  *fakeRouter
 	motd    *fakeMotd
 	order   []string
 	stdout  bytes.Buffer
@@ -614,6 +642,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
+	h.router = &fakeRouter{}
 	h.motd = &fakeMotd{}
 	tun.order = &h.order
 	h.b = New(
@@ -630,6 +659,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithCache(h.cache),
 		WithDisplay(h.display),
 		WithBinder(h.binder),
+		WithRouter(h.router),
 		WithMotd(h.motd),
 	)
 	return h
@@ -742,12 +772,21 @@ func TestRun(t *testing.T) {
 				t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 			}
 		}
-		tun := h.tunnels[0]
-		if len(tun.ics) != 2 || tun.ics[0].Priority >= tun.ics[1].Priority {
-			t.Errorf("registered %d interceptors, want the page then the unframer", len(tun.ics))
+		// The panel goes in front of the routing, and the tunnel is handed
+		// the router's one address rather than the origins.
+		if h.router.front == nil {
+			t.Fatal("the router was given nothing to put in front, want the panel")
 		}
-		if len(tun.locals) != 2 {
-			t.Errorf("tunnel was given %d origins, want 2", len(tun.locals))
+		rec := httptest.NewRecorder()
+		h.router.front(http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+			t.Errorf("the bare address through the router's front = %q, want the page", got)
+		}
+		if got := h.router.dialable.Len(); got != 2 {
+			t.Errorf("router was given %d origins, want 2", got)
+		}
+		if tun := h.tunnels[0]; len(tun.locals) != 1 || tun.locals[0] != routed {
+			t.Errorf("tunnel was given %v, want the router's address alone", tun.locals)
 		}
 		if !h.binder.closed {
 			t.Error("the binder's closer was never called; RunE's defer did not run")
@@ -784,6 +823,58 @@ func TestRun(t *testing.T) {
 		}
 		if len(h.specs) != 0 {
 			t.Errorf("engine was asked for %d specs, want none", len(h.specs))
+		}
+	})
+
+	t.Run("a router failure is returned before the engine is asked for anything", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		h.router.err = errors.New("no loopback")
+
+		err := h.run(t, t.Context())
+		if !errors.Is(err, h.router.err) {
+			t.Errorf("run() = %v, want the router's own error", err)
+		}
+		if len(h.specs) != 0 {
+			t.Errorf("engine was asked for %d specs, want none", len(h.specs))
+		}
+	})
+
+	t.Run("the +ws origin reaches the router as its index", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", "http+ws://:5173")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if h.router.ws != 1 {
+			t.Errorf("router was given ws = %d, want 1", h.router.ws)
+		}
+		if got := urlStrings(h.router.dialable.URLs()); got[1] != "http://localhost:5173" {
+			t.Errorf("router was given %q, want the marker off the scheme", got)
+		}
+	})
+
+	// The tunnel drains what the edge already sent it for a grace period
+	// after the run ends, and every one of those requests goes through the
+	// router, so the router is down with the tunnel rather than the run.
+	t.Run("the router outlives the run until the tunnel ends", func(t *testing.T) {
+		tun := live(public)
+		h := newRunHarness(t, tun, ":3000", ":4000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if err := h.router.ctx.Err(); err != nil {
+			t.Fatalf("router's context ended with the run (%v), want it serving until the tunnel ends", err)
+		}
+		tun.end()
+		select {
+		case <-h.router.ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatal("router's context outlived the tunnel")
 		}
 	})
 
@@ -843,8 +934,8 @@ func TestRun(t *testing.T) {
 		if want := []string{public}; !slices.Equal(h.display.opened, want) {
 			t.Errorf("opened %q, want the plain URL %q", h.display.opened, want)
 		}
-		if n := len(h.tunnels[0].ics); n != 0 {
-			t.Errorf("registered %d interceptors for one origin, want none", n)
+		if h.router.front != nil {
+			t.Error("the router was given a panel to put in front of one origin, want none")
 		}
 		if want := public + "\n"; h.stdout.String() != want {
 			t.Errorf("stdout = %q, want the bare address %q", h.stdout.String(), want)
@@ -891,7 +982,7 @@ func TestRun(t *testing.T) {
 // including the bare host:port that implies http — the affordance that lets
 // `tunneld localhost:3000` work the way people expect. Driven through the
 // whole run (the origin parsing has no seam of its own to call directly), so
-// what is pinned is what the tunnel is actually given: tun.locals, in order.
+// what is pinned is what is actually routed to: the router's list, in order.
 func TestParseOriginsAccepts(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	cases := []struct {
@@ -924,10 +1015,6 @@ func TestParseOriginsAccepts(t *testing.T) {
 		// A provider is free to read a reference with a separator in it however
 		// it likes; the parser's business ends at "there is one".
 		{"a reference may carry a separator", []string{"attach://dockerd/api/sh"}, []string{"attach://dockerd/api/sh"}},
-		{"a websocket-owning origin keeps its marker", []string{"http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http+ws://localhost:5173"}},
-		{"the marker on https", []string{"http://localhost:4000", "https+wss://localhost:5173"}, []string{"http://localhost:4000", "https+wss://localhost:5173"}},
-		{"ws and wss are interchangeable", []string{"http://localhost:4000", "http+wss://localhost:5173"}, []string{"http://localhost:4000", "http+wss://localhost:5173"}},
-		{"a marked origin keeps the bare-port shorthand", []string{"http://localhost:4000", "http+ws://:5173"}, []string{"http://localhost:4000", "http+ws://localhost:5173"}},
 		{
 			"a container beside an http origin, in order",
 			[]string{"http://localhost:3000", "attach://dockerd/api"},
@@ -944,14 +1031,55 @@ func TestParseOriginsAccepts(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run(%q) = %v, want ok", tc.in, err)
 			}
-			got := h.tunnels[0].locals
+			got := h.router.dialable.URLs()
 			if len(got) != len(tc.want) {
-				t.Fatalf("run(%q) gave the tunnel %d origins, want %d", tc.in, len(got), len(tc.want))
+				t.Fatalf("run(%q) routed %d origins, want %d", tc.in, len(got), len(tc.want))
 			}
 			for i, u := range got {
 				if u.String() != tc.want[i] {
 					t.Errorf("origin %d = %q, want %q", i, u, tc.want[i])
 				}
+			}
+		})
+	}
+}
+
+// TestOriginsTakesTheMarkerOffTheScheme pins where the +ws marker goes: off
+// the scheme and onto the list as an index, so every URL downstream is the
+// bare address it dials. It used to ride the scheme through three packages to
+// the tunnel engine, and the binder dropping it was #173; there is nothing
+// left to drop now (#176).
+func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   []string
+		want []string
+		ws   int // -1 for none
+	}{
+		{"no marker", []string{"http://localhost:4000", "http://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, -1},
+		{"the second owns websockets", []string{"http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
+		{"the marker on https", []string{"https+wss://localhost:5173", "http://localhost:4000"}, []string{"https://localhost:5173", "http://localhost:4000"}, 0},
+		{"ws and wss are interchangeable", []string{"http://localhost:4000", "http+wss://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
+		{"a marked origin keeps the bare-port shorthand", []string{"http://localhost:4000", "http+ws://:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
+		// The index is the origin's place in what survived, not in what was
+		// typed: a dropped origin before it moves it up.
+		{"counted after a drop", []string{"ftp://localhost:21", "http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
+		{"a second claim keeps the first", []string{"http+ws://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 0},
+		// A marked origin dropped for want of a host never held the claim, so
+		// the next marked origin gets it rather than losing its marker.
+		{"a dropped origin claims nothing", []string{"http+ws://", "http://localhost:4000", "http+ws://localhost:5173"}, []string{"http://localhost:4000", "http://localhost:5173"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := New(WithOrigin(tc.in...), WithStderr(io.Discard)).Origins()
+			if urls := originStrings(got); !slices.Equal(urls, tc.want) {
+				t.Errorf("Origins(%q) = %q, want %q", tc.in, urls, tc.want)
+			}
+			ws, ok := got.(interface{ WebSocket() (int, bool) }).WebSocket()
+			if !ok {
+				ws = -1
+			}
+			if ws != tc.ws {
+				t.Errorf("WebSocket() = %d, want %d", ws, tc.ws)
 			}
 		})
 	}
@@ -1099,7 +1227,7 @@ func TestOriginsDropsTheUnusable(t *testing.T) {
 			// that asked for something already taken.
 			"a second origin claiming the websockets",
 			[]string{"http+ws://localhost:4000", "http+ws://localhost:5173"},
-			[]string{"http+ws://localhost:4000", "http://localhost:5173"},
+			[]string{"http://localhost:4000", "http://localhost:5173"},
 			"already claimed",
 		},
 		{"the marker on a container", []string{"attach+ws://dockerd/api"}, nil, "attach+ws"},

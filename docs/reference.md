@@ -72,8 +72,9 @@ https://0t8qsb6pq3.tunneled.pizza/?1
   -> http://localhost:4000
 ```
 
-The parameter is a routing directive the tunnel's proxy consumes — it never
-reaches the origin, and a *valued* parameter (`?1=x`) stays ordinary
+The parameter is a routing directive tunneld's router consumes — a loopback
+server in front of the origins, which is what the tunnel forwards to — so it
+never reaches the origin, and a *valued* parameter (`?1=x`) stays ordinary
 application data. A browser then sticks to whichever origin it landed on:
 subresources follow their document's URL via `Referer`, and a top-level visit
 to `?n` is remembered with a cookie. So a frontend on `:3000` and an API on
@@ -114,12 +115,15 @@ tunneld :4000 http+ws://localhost:5173
 `http+ws`, `http+wss`, `https+ws` and `https+wss` all work and mean the same
 thing — the suffix names the origin, it does not describe a transport, and the
 origin is dialed by its base scheme either way. It is inert with a single
-origin, which has nothing to route between.
+origin, which has nothing to route between. It is routing configuration, not
+part of the address: marking an origin, or unmarking it, keeps the tunnel's
+hostname.
 
 **Only one origin may be marked**, and that is the shape of the problem rather
 than a limit of the flag: two services opening their own sockets behind one
-hostname cannot be told apart, however they are spelled. Marking two is an
-error before the tunnel is minted.
+hostname cannot be told apart, however they are spelled. Mark two and the
+first keeps the claim: the second origin is still served, its marker dropped
+with a warning that names both.
 
 An explicit index still wins over the marker, so a page carrying its own — a
 terminal's page, and every tile of the multiview panel — is unaffected.
