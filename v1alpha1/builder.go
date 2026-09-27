@@ -241,47 +241,53 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			}
 		}
 
-		// An embedder that seeded origins made them this command's default, so
-		// help says which — otherwise the one thing a seeded build does
-		// differently from a bare one is the one thing --help does not
-		// mention. Origins have no flag any more, and a flag's default is
-		// where this used to be visible.
-		var seeded string
-		if len(b.origins) > 0 {
-			seeded = "\n\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ")
+		// Help is for the person about to run this, so it opens with what the
+		// command is for and three lines worth pasting, and stops. The routing
+		// contract, the served schemes and the +ws marker are in the README
+		// and docs/reference.md, where there is room to say why.
+		long := name + ` puts what is running on this machine on a public URL:
+a port, a program, or a container. No account, no daemon.
+
+`
+		examples := [][2]string{
+			{":3000", "localhost:3000, on a public URL"},
+			{"claude", "a terminal running claude, in a browser tab"},
+			{":3000 bash", "a dev server and a shell, side by side on one URL"},
+		}
+		width := 0
+		for _, e := range examples {
+			width = max(width, len(name)+1+len(e[0]))
+		}
+		for _, e := range examples {
+			long += fmt.Sprintf("  %-*s  %s\n", width, name+" "+e[0], e[1])
 		}
 
+		// What a bare run exposes. An embedder that seeded origins made them
+		// this command's default, so help says which — otherwise the one
+		// thing a seeded build does differently from a bare one is the one
+		// thing --help does not mention. Unseeded, it is the shell, unless
+		// the embedder turned that off.
+		switch {
+		case len(b.origins) > 0:
+			long += "\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ") + "\n"
+		case b.shellFallback:
+			long += "\nWith no arguments at all, it shares your $SHELL.\n"
+		}
+
+		long += `
+In a terminal's frame, Ctrl+K then q shows a QR code for a phone,
+d detaches, and x ends the run.
+
+Flags go before the origins. Addresses go to stdout, everything else
+to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
+
 		cmd := &cobra.Command{
-			Use:   name + " [origin ...]",
-			Short: "Expose local origins to the public internet through a quick tunnel",
-			Long: name + ` exposes already-running local services to the public internet
-through an in-process quick tunnel — no cloudflared binary, no account, no DNS.
-
-Pass an origin per argument. They share one hostname: the first is the default,
-each later one answers on a bare ?n parameter (n is that argument's position).
-
-  ` + name + ` http://localhost:3000 http://localhost:4000
-
-    https://<host>/?0   -> http://localhost:3000
-    https://<host>/?1   -> http://localhost:4000
-
-An origin can also be a running container, which is served as a terminal in
-the browser rather than proxied:
-
-  ` + name + ` attach://dockerd/my-container
-
-Mark one origin http+ws (or https+ws) when a service opens its own WebSocket —
-a dev server's live reload, say. A handshake carries nothing that says which
-origin it belongs to, so without the marker it goes to the first one:
-
-  ` + name + ` :4000 http+ws://localhost:5173
-
-With no arguments at all — and nothing in the environment or seeded by an
-embedding program — it exposes this machine's own shell, $SHELL, the same way:
-
-  ` + name + `
-
-The public URLs go to stdout, the origin map and every log line to stderr.` + seeded,
+			// [flags] spelled first, because that is where they go: flag
+			// parsing stops at the first origin. Left out, cobra appends it
+			// at the end, which is the one place a flag is not read.
+			Use:   name + " [flags] [origin ...]",
+			Short: "Put a local port, program, or container on a public URL",
+			Long:  long,
 			// Origins are the arguments, so any number is accepted here and
 			// the count is judged in RunE, where a value from the environment
 			// or a seed counts as well as one from argv.

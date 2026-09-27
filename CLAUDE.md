@@ -6,7 +6,9 @@ agent-specific framing.
 
 ## Read first, in order
 
-1. [README.md](./README.md) — what the command does + public surface
+1. [README.md](./README.md) — what the command does, for the person running it;
+   [docs/reference.md](./docs/reference.md) has every behaviour in full and
+   [docs/embedding.md](./docs/embedding.md) the public Go surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
 3. [`v1/v1.go`](./v1/v1.go) — public `Builder` interface (`Command() *cobra.Command`)
 4. [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go) — `New`, the six internal
@@ -25,13 +27,15 @@ agent-specific framing.
   diff.
 - **Tests go beside their source**: `something.go` → `something_test.go`, one
   file per source file, never a file named after a scenario. New cases join the
-  table in the existing file. Two exceptions only — `v1alpha1/example_test.go` and
+  table in the existing file. `README.md` counts as a source file: its test is
+  `readme_test.go`, which holds the Acknowledgements to `go.mod`, so a new direct
+  dependency needs a line there. Two exceptions only — `v1alpha1/example_test.go` and
   `e2e/`. See
   [CONTRIBUTING.md → One test file per source file](./CONTRIBUTING.md#one-test-file-per-source-file).
 - **Examples are real programs** that open a tunnel and block, so e2e drives
   most of them with `--help`; the `basic` row runs live and fetches back
   through the edge. A new example needs a row in `e2e/e2e_test.go` and in the
-  README table. See
+  examples table in `docs/embedding.md`. See
   [CONTRIBUTING.md → Adding an example](./CONTRIBUTING.md#adding-an-example).
 - **`main.go` stays thin.** Flags, help, validation, and the tunnel belong to
   the builder in `v1alpha1`, so tunneld embeds as another program's subcommand.

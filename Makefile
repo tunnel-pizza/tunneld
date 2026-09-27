@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries licenses image windows test race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -67,6 +67,50 @@ $(BINARIES): dist/tunneld-%:
 	go build -trimpath \
 	  -ldflags="-s -w -X github.com/tunnel-pizza/tunneld/v1alpha1.version=$(VERSION)" \
 	  -o $@ .
+
+# The license notices of everything a release binary links, in one file beside
+# the binaries: the Go standard library's, then every module's, each as its
+# authors wrote it. Most of what tunneld links is MIT, BSD or Apache-2.0, and
+# those ask for their notices to travel with a redistributed binary, which
+# every release is — cloudflared (Apache-2.0) and libtunnel (MIT) among them.
+#
+# The modules come from the source through go list rather than from built
+# binaries, so this runs anywhere without building six of them, and they are
+# the union over PLATFORMS, since one file covers all six: a module only the
+# Windows build links still ships. Only a module's root is read, which is what
+# its zip carries, and a module with no notice there fails the target — a new
+# dependency cannot reach a release without one. Each go list sits in an
+# assignment rather than a pipe, because sh has no pipefail and a failure
+# inside one would leave a file that is quietly short. Not wiped by `binaries`
+# because it is not one of them; run both for a hand publish.
+GOPLATFORMS := $(foreach p,$(PLATFORMS),$(subst win32,windows,$(word 1,$(subst -, ,$(p))))/$(subst x64,amd64,$(word 2,$(subst -, ,$(p)))))
+NOTICES := -iname 'LICEN[CS]E*' -o -iname 'COPYING*' -o -iname 'NOTICE*'
+RULE := ================================================================================
+
+licenses:
+	@mkdir -p dist
+	@set -eu; \
+	mods=; \
+	for p in $(GOPLATFORMS); do \
+	  mods="$$mods $$(GOOS=$${p%/*} GOARCH=$${p#*/} go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}}{{end}}{{end}}' .)"; \
+	done; \
+	listed=$$(go list -m -f '{{.Path}} {{.Version}} {{.Dir}}' $$(printf '%s\n' $$mods | sort -u)); \
+	{ \
+	  echo "tunneld is licensed under FSL-1.1-MIT; see LICENSE.md in its source."; \
+	  echo "Its binaries also carry the Go standard library and the modules below,"; \
+	  echo "whose license notices follow, each as its authors wrote it."; \
+	  printf '\n%s\nGo %s: the standard library and runtime\n\n' '$(RULE)' "$$(go env GOVERSION)"; \
+	  cat "$$(go env GOROOT)/LICENSE"; \
+	  echo "$$listed" | while read -r path version dir; do \
+	    files=$$(find "$$dir" -maxdepth 1 -type f \( $(NOTICES) \) | sort); \
+	    if [ -z "$$files" ]; then echo "licenses: $$path $$version carries no license notice" >&2; exit 1; fi; \
+	    for f in $$files; do \
+	      printf '\n%s\n%s %s: %s\n\n' '$(RULE)' "$$path" "$$version" "$${f##*/}"; \
+	      cat "$$f"; \
+	    done; \
+	  done; \
+	} > dist/THIRD_PARTY_LICENSES.tmp; \
+	mv dist/THIRD_PARTY_LICENSES.tmp dist/THIRD_PARTY_LICENSES
 
 # Cross-compile + vet for Windows. A build-only smoke so the binary doesn't
 # quietly stop building on the other major target.
