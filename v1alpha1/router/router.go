@@ -191,17 +191,29 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 		// word of which origin or why: tunneld :3000 :4000 with :4000 not up
 		// yet, and /?1 is a blank page. So it is said at warn, naming the
 		// origin. A visitor who went away first is not a failure of anything.
-		// The dial error is what is logged, not the url.Error around it,
-		// which carries the request's own path and query.
+		//
+		// Nothing the visitor sent reaches the line. The origin is named from
+		// the list, found by the host the request was routed to rather than
+		// read off it, and the error is the dial's, not the url.Error around
+		// it that carries the request's path and query, with any line break
+		// taken out besides.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			origin := "unknown"
+			for _, o := range origins {
+				if o.Host == r.URL.Host {
+					origin = o.Redacted()
+					break
+				}
+			}
 			if errors.Is(err, context.Canceled) {
-				log.Debug("request ended before the origin answered", "origin", r.URL.Host)
+				log.Debug("request ended before the origin answered", "origin", origin)
 			} else {
 				var ue *url.Error
 				if errors.As(err, &ue) {
 					err = ue.Err
 				}
-				log.Warn("origin did not answer", "origin", r.URL.Scheme+"://"+r.URL.Host, "err", err)
+				reason := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\n", " "), "\r", " ")
+				log.Warn("origin did not answer", "origin", origin, "err", reason)
 			}
 			w.WriteHeader(http.StatusBadGateway)
 		},
