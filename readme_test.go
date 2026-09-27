@@ -142,11 +142,13 @@ func matches(re *regexp.Regexp, s string) []string {
 	return out
 }
 
+// read is a file's text with its line endings made \n. A Windows checkout
+// converts them to \r\n, and the section's heading would not be found.
 func read(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
 	}
-	return string(data)
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
 }
