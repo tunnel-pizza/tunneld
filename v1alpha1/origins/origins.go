@@ -33,6 +33,8 @@ type OriginsImpl struct {
 	// projects serving :3000 are two tunnels rather than one.
 	dir  string
 	urls []*url.URL
+	// ws is the index of the origin that owns WebSockets, or -1 for none.
+	ws int
 }
 
 // New returns an OriginsImpl configured by opts, with the process's working
@@ -42,7 +44,7 @@ type OriginsImpl struct {
 // is then the origins alone, which is a weaker identity and not a broken one —
 // the same judgement the cache makes about a machine with no cache directory.
 func New(opts ...Option) *OriginsImpl {
-	o := &OriginsImpl{}
+	o := &OriginsImpl{ws: -1}
 	if wd, err := os.Getwd(); err == nil {
 		o.dir = wd
 	}
@@ -55,6 +57,14 @@ func New(opts ...Option) *OriginsImpl {
 // given.
 func WithURL(url ...*url.URL) Option {
 	return func(o *OriginsImpl) { o.urls = append(o.urls, url...) }
+}
+
+// WithWebSocket names the origin at index i as the one that owns WebSockets:
+// a handshake that carries no index of its own is routed there rather than
+// guessed at. A later call replaces an earlier one, since two origins cannot
+// both own the sockets; an index outside the list names none.
+func WithWebSocket(i int) Option {
+	return func(o *OriginsImpl) { o.ws = i }
 }
 
 // WithDir replaces the working directory the key is scoped to. What a test
@@ -75,6 +85,15 @@ func (o *OriginsImpl) At(i int) *url.URL { return o.urls[i] }
 // what it was handed would reorder the run's routing parameters as a side
 // effect of asking what they are.
 func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
+
+// WebSocket implements v1.Origins. An index outside the list — a stale one
+// handed over with a shorter list — is no index at all.
+func (o *OriginsImpl) WebSocket() (int, bool) {
+	if o.ws < 0 || o.ws >= len(o.urls) {
+		return -1, false
+	}
+	return o.ws, true
+}
 
 // Key implements v1.Origins: the directory and the origins, sorted and
 // deduplicated, hashed together — each origin whole, a program's arguments

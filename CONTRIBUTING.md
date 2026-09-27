@@ -19,6 +19,7 @@ Deep-link by filename; line numbers will drift.
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
+| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
@@ -80,8 +81,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, `Console`, `Identity`, `Motd`, implemented respectively by `cache`,
-`display`, `attach`, `console`, `identity`, `motd`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, `Router`, `Console`, `Identity`, `Motd`, implemented respectively by
+`cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
@@ -294,19 +295,26 @@ Easy to get wrong from the diff alone:
   variable alone can satisfy a required flag. Marking `f.Changed` there is the
   other half.
 - **The `?n` routing parameter must stay bare.** `https://host/?1` routes to
-  origin 1; `?1=x` is application data the proxy forwards untouched. See
+  origin 1; `?1=x` is application data the router forwards untouched. See
   `publicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
+- **Routing is tunneld's, not the tunnel's.** The tunnel is handed one URL —
+  the router's loopback address, or the lone origin's own when there is
+  nothing to route — and every rule that picks an origin lives in
+  [`v1alpha1/router`](./v1alpha1/router), with the panel in front of it
+  (#176). The `+ws` marker comes off the scheme in the parser and rides
+  `Origins.WebSocket` as an index, so no URL downstream carries it; a check
+  that needs to know about it is a check reading the wrong thing (#173).
 - **The panel answers the tunnel's bare address, and every condition narrowing
-  that is load-bearing.** The panel interceptor's `Match` requires path `/`,
+  that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the
   path check and the panel swallows every `/app.js` an origin serves; loosen
   the query check to "no routing index" and an OAuth callback at `/?code=…`
   lands on a page of frames; drop the Sec-Fetch check and it draws itself
   inside its own tiles; drop the referer check and a `fetch` from an origin
-  page gets HTML. See [`v1alpha1/panel`](./v1alpha1/panel).
+  page gets HTML. See [`v1alpha1/display`](./v1alpha1/display).
 - **The framing-header removal must stay narrowed to the panel's own frames.**
   The unframer drops `X-Frame-Options` and CSP's `frame-ancestors` so a tile
-  is not blank, and it runs only behind the second interceptor's `Match`,
+  is not blank, and it runs only on a request the panel reads as a tile,
   gated on `Sec-Fetch-Dest` being a frame *and* `Sec-Fetch-Site` being
   `same-origin`. Widening either condition would strip a real protection from
   top-level visits or hand another site the ability to frame somebody's
@@ -440,8 +448,8 @@ naming one from there is an import cycle.
 Two things there will bite if you change them without knowing why:
 
 - **The page builds its socket URL as `"/attach" + location.search`.** A
-  websocket handshake carries no `Referer`, so libtunnel cannot route it as a
-  subresource and would fall back to the sticky `libtunnel-origin` cookie,
+  websocket handshake carries no `Referer`, so the router cannot route it as a
+  subresource and would fall back to the sticky `tunneld-origin` cookie,
   which is last-write-wins across tabs. Drop the suffix and two container tiles
   fight over one socket.
 - **`attach.BinderImpl.Bind` keeps the dialable list the same length and order

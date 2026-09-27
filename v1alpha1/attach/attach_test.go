@@ -1617,32 +1617,35 @@ func TestBindWithoutContainers(t *testing.T) {
 	}
 }
 
-// TestBindPassesTheWebSocketMarkerThrough pins #173: an origin marked +ws or
-// +wss is an http origin the tunnel dials itself, and the marker has to reach
-// the tunnel engine, which is what strips and acts on it. The binder used to
-// test the scheme literally, refuse "http+ws" as one nobody answers, and
-// take the documented way of routing WebSockets down with it — before the
-// engine, and so before anything could have routed them.
-func TestBindPassesTheWebSocketMarkerThrough(t *testing.T) {
+// TestBindCarriesTheWebSocketOrigin pins that the origin owning WebSockets
+// comes out of Bind at the index it went in at, beside a served origin that
+// was swapped for its loopback address. The marker used to ride the scheme
+// and the binder had to know to let "http+ws" through (#173); it is an index
+// on the list now (#176), and an index is only right if the lists agree.
+func TestBindCarriesTheWebSocketOrigin(t *testing.T) {
 	targets := &stubTargets{}
-	display := shown(t, "http+ws://localhost:3000", "https+wss://localhost:4000", "http://localhost:5000")
+	display := origins.New(origins.WithURL(mustURLs(t, "attach://dockerd/api", "http://localhost:5173")...), origins.WithWebSocket(1))
 
 	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind refused a marked origin: %v", err)
+		t.Fatalf("Bind: %v", err)
 	}
 	defer closer.Close()
 
-	if len(targets.asked) != 0 {
-		t.Errorf("opened %q, want nothing — a marked origin is dialed, not served", targets.asked)
+	if ws, ok := dialable.WebSocket(); !ok || ws != 1 {
+		t.Errorf("WebSocket() = %d, %v, want 1, true", ws, ok)
 	}
-	for i, u := range dialable.URLs() {
-		if u != display.At(i) {
-			t.Errorf("dialable[%d] = %q, want the original origin, marker intact", i, u)
-		}
+	if got := dialable.At(1); got != display.At(1) {
+		t.Errorf("dialable[1] = %q, want the http origin as it was", got)
 	}
-	if got := dialable.At(0).Scheme; got != "http+ws" {
-		t.Errorf("dialable[0].Scheme = %q, want the marker kept for the engine", got)
+
+	plain, closer2, err := New(WithTargets(targets)).Bind(t.Context(), shown(t, "http://localhost:3000"), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer2.Close()
+	if ws, ok := plain.WebSocket(); ok {
+		t.Errorf("WebSocket() = %d, true for a list that marks none", ws)
 	}
 }
 

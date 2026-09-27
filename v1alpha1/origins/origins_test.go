@@ -125,3 +125,37 @@ func TestKeyIncludesAProgramsArguments(t *testing.T) {
 		t.Errorf("Key() = %q for an http origin with and without a query, want two", plain)
 	}
 }
+
+// TestWebSocket pins the index that says which origin owns WebSockets: none
+// until one is named, the one named, and none for an index the list does not
+// reach — a list rebuilt shorter must not route sockets past its end. The
+// marker is routing configuration and not part of an address, so naming it
+// leaves the key alone.
+func TestWebSocket(t *testing.T) {
+	a, b := must(t, "http://localhost:3000"), must(t, "http://localhost:5173")
+	for _, tc := range []struct {
+		name   string
+		opts   []Option
+		want   int
+		wantOK bool
+	}{
+		{"none named", []Option{WithURL(a, b)}, -1, false},
+		{"the second", []Option{WithURL(a, b), WithWebSocket(1)}, 1, true},
+		{"the first", []Option{WithURL(a, b), WithWebSocket(0)}, 0, true},
+		{"a later call replaces", []Option{WithURL(a, b), WithWebSocket(0), WithWebSocket(1)}, 1, true},
+		{"past the end", []Option{WithURL(a), WithWebSocket(1)}, -1, false},
+		{"negative", []Option{WithURL(a, b), WithWebSocket(-3)}, -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := New(tc.opts...).WebSocket()
+			if got != tc.want || ok != tc.wantOK {
+				t.Errorf("WebSocket() = %d, %v, want %d, %v", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+
+	plain := New(WithDir("/work"), WithURL(a, b)).Key()
+	if marked := New(WithDir("/work"), WithURL(a, b), WithWebSocket(1)).Key(); marked != plain {
+		t.Errorf("Key() = %q marked and %q not, want one tunnel", marked, plain)
+	}
+}

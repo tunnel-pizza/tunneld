@@ -9,6 +9,7 @@ package v1alpha1
 import (
 	"context"
 	"io"
+	"net/http"
 	"net/url"
 	"sync"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -125,9 +127,10 @@ type Console interface {
 // address when several origins have to share it, and it opens that address
 // once the edge serves it.
 //
-// URL and Interceptors are two halves of one decision and answer over the
-// same condition — "" and no interceptors when there is no panel to serve —
-// so the caller reads an answer rather than asking whether to ask.
+// URL and Panel are two halves of one decision and answer over the same
+// condition — "" and a nil wrapper when there is no panel to serve — so the
+// caller reads an answer rather than asking whether to ask. Panel is handed
+// to the Router, which puts it in front of the origins.
 //
 // Open reads the same way. It is told what the run is doing, in the options it
 // takes, and decides for itself whether that means a browser — there is no
@@ -135,7 +138,7 @@ type Console interface {
 // decided.
 type Display interface {
 	URL(enabled bool, public *url.URL, origins Origins) string
-	Interceptors(enabled bool, origins Origins, log v1.Logger) []libtunnel.Interceptor
+	Panel(enabled bool, origins Origins, log v1.Logger) func(next http.Handler) http.Handler
 	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
 }
 
@@ -147,6 +150,26 @@ type Display interface {
 // built with that same board.
 func WithDisplay(display Display) Option {
 	return func(b *BuilderImpl) { b.display = display }
+}
+
+// Router puts several origins behind the one address a tunnel forwards to.
+// Every rule that picks an origin for a request — the bare ?n parameter, the
+// +ws origin for a handshake, a same-host Referer, the sticky cookie — is
+// tunneld's convention, so it is served here on a loopback listener rather
+// than asked of the tunnel engine, which is handed one URL and knows nothing
+// of origins (#176).
+//
+// Route answers with that URL: the router's own while ctx lives, or the one
+// origin's when there is one and nothing to put in front of it. front wraps
+// the routing, and is what the display's Panel answered — nil for none.
+type Router interface {
+	Route(ctx context.Context, dialable Origins, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error)
+}
+
+// WithRouter replaces what stands between the tunnel and the origins. The
+// default is router.New().
+func WithRouter(r Router) Option {
+	return func(b *BuilderImpl) { b.router = r }
 }
 
 // Binder turns the origins the operator typed into the origins the tunnel
@@ -233,6 +256,7 @@ var (
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Display    = (*display.DisplayImpl)(nil)
 	_ Binder     = (*attach.BinderImpl)(nil)
+	_ Router     = (*router.RouterImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 	_ Motd       = (*motd.MotdImpl)(nil)
 )
@@ -271,6 +295,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
 		WithDisplay(display.New(display.WithMotd(board))),
+		WithRouter(router.New()),
 		WithConsole(console.New(
 			console.WithLogs(recent),
 			console.WithHint(stopHint),
@@ -324,6 +349,7 @@ type BuilderImpl struct {
 	// its With* option.
 	display  Display
 	binder   Binder
+	router   Router
 	identity Identity
 	// cache is the one collaborator allowed to be nil: that is what caching
 	// turned off looks like, and --no-cache is how a run asks for it.

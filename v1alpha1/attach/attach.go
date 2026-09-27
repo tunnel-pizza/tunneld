@@ -344,15 +344,12 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
-		// judgement — with one exception it has to know about. The parser
-		// lets a +ws / +wss suffix through on purpose: the marker names the
-		// origin that owns WebSockets, and the tunnel engine is what strips
-		// and consumes it (#173). So the test here is on the base scheme, and
-		// the URL goes through untouched, marker and all, or the engine never
-		// sees the one thing the operator typed it for.
+		// judgement. A +ws marker never reaches here: the parser takes it off
+		// the scheme and the list carries it as an index (#176), which is
+		// what let #173 happen when it rode the scheme instead.
 		provider, served := b.targets[answers(origin.Scheme, origin.Host)]
 		if !served {
-			if base, _, _ := strings.Cut(origin.Scheme, "+"); base != "http" && base != "https" {
+			if origin.Scheme != "http" && origin.Scheme != "https" {
 				_ = servers.Close()
 				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
 					origin.Scheme, origin.Host, strings.Join(b.answered(), ", "))
@@ -396,10 +393,17 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	// tiles. That run gets the report on the console and the panel in a tab.
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
-	if len(servers) == 1 && shown.Len() == 1 {
-		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
+	//
+	// The origin that owns WebSockets is the same index in both lists, so it
+	// carries over as it is.
+	opts := []origins.Option{origins.WithURL(dialable...)}
+	if ws, ok := shown.WebSocket(); ok {
+		opts = append(opts, origins.WithWebSocket(ws))
 	}
-	return origins.New(origins.WithURL(dialable...)), servers, nil
+	if len(servers) == 1 && shown.Len() == 1 {
+		return origins.New(opts...), sole{servers}, nil
+	}
+	return origins.New(opts...), servers, nil
 }
 
 // sole is a bound list of exactly one, from a run of exactly one origin, which
