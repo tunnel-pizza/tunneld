@@ -139,6 +139,7 @@ type Origins interface {
     Len() int
     At(i int) *url.URL
     URLs() []*url.URL
+    WebSocket() (int, bool) // the origin marked +ws, which the URLs no longer carry
     Key() string
 }
 
