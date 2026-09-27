@@ -218,7 +218,7 @@ func TestHelpNamesTheCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	if !strings.Contains(stdout, "expose [origin ...]") {
+	if !strings.Contains(stdout, "expose [flags] [origin ...]") {
 		t.Errorf("help %q does not use the configured command name", stdout)
 	}
 }

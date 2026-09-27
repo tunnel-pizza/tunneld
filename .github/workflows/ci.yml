@@ -289,6 +289,32 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # The license notices every release carries beside its binaries, gathered by
+  # the Makefile's own target: the Go standard library's and every linked
+  # module's. Its own job, run on pull requests too, so a dependency that
+  # arrives with no notice fails here under this name before a merge rather
+  # than in the release that needed it. The artifact is named dist-* so
+  # release's download merges it into the same dist/ as the binaries.
+  licenses:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gather
+        run: make licenses
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-licenses
+          path: dist/
+          if-no-files-found: error
+
   # One image per architecture, pushed by digest only — no tag, not even a
   # temporary one — and signed by that digest, all before any release tag
   # exists. The version is still stamped inside, so `tunneld version` in the
@@ -414,7 +440,7 @@ jobs:
   # before it ran regardless. Everything here is publishing: the bytes and
   # their signatures already exist, and this job is what gives them a name.
   release:
-    needs: [prepare, build-test, race, binaries, image]
+    needs: [prepare, build-test, race, binaries, licenses, image]
     if: >-
       needs.prepare.outputs.release == 'true'
       && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))
@@ -430,8 +456,9 @@ jobs:
           fetch-depth: 0
 
       # The six binaries and their bundles, one artifact per cell, merged back
-      # into the dist/ the npm package packs. Everything below uploads and
-      # publishes these exact bytes.
+      # into the dist/ the npm package packs, with THIRD_PARTY_LICENSES from
+      # the licenses job beside them. Everything below uploads and publishes
+      # these exact bytes.
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: dist-*
@@ -514,6 +541,7 @@ jobs:
           # The source archives themselves are not uploaded: GitHub serves those.
           gh release upload "${tag}" \
             dist/tunneld-* \
+            dist/THIRD_PARTY_LICENSES \
             dist/checksums.txt dist/checksums.txt.sigstore \
             "dist/${tag}.tar.gz.sigstore" \
             "dist/${tag}.zip.sigstore"

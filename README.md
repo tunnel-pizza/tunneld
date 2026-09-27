@@ -1,668 +1,209 @@
 # tunneld
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/tunnel-pizza/tunneld.svg)](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
+**A public URL for what's running on your machine.** A port, a shell, a coding
+agent, a container: one command, no account, no daemon.
+
+[![npm](https://img.shields.io/npm/v/tunneld)](https://www.npmjs.com/package/tunneld)
 [![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/codeql.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/tunnel-pizza/tunneld.svg)](https://pkg.go.dev/github.com/tunnel-pizza/tunneld)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tunnel-pizza/tunneld/badge)](https://scorecard.dev/viewer/?uri=github.com/tunnel-pizza/tunneld)
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](./LICENSE.md)
-
-`tunneld` exposes already-running local services to the public internet through
-a quick tunnel — a lite `cloudflared tunnel --url` that needs no `cloudflared`
-binary, no account, and no DNS. The tunnel is driven in-process by
-[`libtunnel`](https://github.com/cnuss/libtunnel), which speaks to Cloudflare's
-edge directly and mints against [tunnel.pizza](https://tunnel.pizza).
-
-The bell on top: **one tunnel, many origins.**
-
-## Quick Start
-
-```sh
-go install github.com/tunnel-pizza/tunneld@latest
-```
-
-Or without a Go toolchain, from npm. The package wraps the same binary, one
-build per platform, and hands it the process:
 
 ```sh
 npx tunneld :3000
 ```
 
-Or neither: every [release](https://github.com/tunnel-pizza/tunneld/releases)
-carries a signed binary per platform, and [SECURITY.md](./SECURITY.md) has
-the recipe to verify one.
+<!-- TODO(#180): a screen recording goes here: the frame coming up in a tab,
+     the wheel, ^K q and a phone reading it, a panel with two tiles. -->
+
+## Try it
+
+All you need is Node 20 or later. `npx` fetches tunneld and runs it:
 
 ```sh
-tunneld http://localhost:3000   # or just: tunneld :3000
+npx tunneld :3000
 ```
 
 ```
-tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/
-    -> http://localhost:3000
-```
-
-### Container image
-
-`ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
-root. Every flag has an environment mirror, which is what a container is
-configured with:
-
-```sh
-docker run --rm -e TUNNELD_ORIGINS=http://host.docker.internal:8080 \
-  ghcr.io/tunnel-pizza/tunneld
-```
-
-An `attach://dockerd/` origin needs the daemon socket, which is root-equivalent on the
-host — a container holding it can start a privileged container and own the
-machine:
-
-```sh
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  -e TUNNELD_ORIGINS=attach://dockerd/my-container ghcr.io/tunnel-pizza/tunneld
-```
-
-Images are signed by digest, so a moved tag cannot inherit a signature:
-
-```sh
-cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
-  --certificate-identity-regexp '^https://github.com/tunnel-pizza/tunneld/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
-
-## Multiple origins
-
-Pass one argument per local service. They share one public hostname: the first
-is the default, and each later one answers on a **bare `?n`** parameter, `n`
-being that argument's 0-based position.
-
-```sh
-tunneld http://localhost:3000 http://localhost:4000
-```
-
-```
-tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/
-    -> http://localhost:3000
-    -> http://localhost:4000
-```
-
-With `--multiview=false` the panel goes away and each origin is named by its
-own address instead:
-
-```
-tunneld v0.0.3 (libtunnel v0.0.50, built go1.26.5)
-  https://amber-forest-9021.tunneled.pizza/?0
-    -> http://localhost:3000
-  https://amber-forest-9021.tunneled.pizza/?1
-    -> http://localhost:4000
-```
-
-The parameter is a routing directive the tunnel's proxy consumes — it never
-reaches the origin, and a *valued* parameter (`?1=x`) stays ordinary
-application data. A browser then sticks to whichever origin it landed on:
-subresources follow their document's URL via `Referer`, and a top-level visit
-to `?n` is remembered with a cookie. So a frontend on `:3000` and an API on
-`:4000` both work behind a single hostname, without one tunnel per port.
-
-**Getting back to the default origin takes `?0`, not a bare `/`.** Stickiness
-cuts both ways: once a browser has visited `?1`, a link to `/` carries no index
-of its own, so it routes by the referring page's — and the cookie still names
-origin 1 besides. Only an explicit index clears a previous choice, routing and
-rewriting the cookie in one move.
-
-That is why the map above prints `?0` for the default origin rather than a bare
-URL: every address stays correct however much you have clicked around. A single
-origin has nothing to route between and prints the plain URL.
-
-### WebSockets
-
-A WebSocket handshake carries nothing that says which origin it belongs to. It
-has no `Referer` — that header is not part of the handshake — so the routing
-that works for ordinary subresources cannot work for a socket, and one that
-arrives without an index falls back to a per-browser cookie or to the first
-origin.
-
-An app you control can carry the index itself, by building the socket URL from
-the page's own:
-
-```js
-new WebSocket("wss://" + location.host + "/socket" + location.search)
-```
-
-A third-party dev server cannot be told to. Mark its origin instead, and every
-otherwise-unroutable handshake goes there:
-
-```sh
-tunneld :4000 http+ws://localhost:5173
-```
-
-`http+ws`, `http+wss`, `https+ws` and `https+wss` all work and mean the same
-thing — the suffix names the origin, it does not describe a transport, and the
-origin is dialed by its base scheme either way. It is inert with a single
-origin, which has nothing to route between.
-
-**Only one origin may be marked**, and that is the shape of the problem rather
-than a limit of the flag: two services opening their own sockets behind one
-hostname cannot be told apart, however they are spelled. Marking two is an
-error before the tunnel is minted.
-
-An explicit index still wins over the marker, so a page carrying its own — the
-container terminal below, and every tile of the multiview panel — is unaffected.
-
-### Containers
-
-An `attach://dockerd/<container>` origin exposes a terminal attached to a
-running container instead of an HTTP service:
-
-```sh
-tunneld attach://dockerd/my-container
-```
-
-The scheme is the verb and the authority is where it happens: `attach` is what
-tunneld does, `dockerd` is the daemon it does it to. That is what leaves room
-for a second way into the same container to sit beside the first — the day
-there is one it is `exec://dockerd/<container>`, differing in the word that
-says what, not in the word that says to what.
-
-`<container>` is a container name or id, or — when neither matches — a Compose
-service name. Compose calls a service `web` in project `proj` by the container
-name `proj-web-1`, so the name you wrote in the compose file is never the name
-the daemon knows; tunneld looks it up by the labels Compose already wrote:
-
-```sh
-tunneld attach://dockerd/web
-```
-
-A container literally named `web` still wins. The lookup is scoped to tunneld's
-own Compose project when it is running inside one; otherwise it spans the host,
-and a service name matching more than one container is an error listing them
-rather than a guess.
-
-It is an origin like any other, so it takes an index, gets a multiview tile,
-and mixes freely with HTTP origins:
-
-```sh
-tunneld :3000 attach://dockerd/my-container
-```
-
-The semantics are `docker attach`'s, which means most of the behaviour was
-decided when the container was started. Without `-t` there is no TTY, so no
-line editing and no resize; without `-i` keystrokes reach nothing. The page
-shows a small notice bar naming which of those applies — e.g. `no TTY and no
-stdin (started without -it) — output only` — rather than leaving you guessing.
-With a TTY, Ctrl-C reaches PID 1 and stops the container — that is what
-`docker attach` does, not something tunneld adds.
-
-The container's existing output replays when the page opens, so a quiet
-container still looks alive.
-
-The terminal sits inside a frame, with what the session is written into the
-border itself: the origin and the address it answers on along the top, and
-along the bottom the keys, the build, the machine serving it, how many people
-are watching, and the size everyone has settled on.
-
-```
-╭─ attach://dockerd/tunneld-example ──────────────────── https://striped-worm.tunneled.pizza/ ╮
-│➜  ~ ls                                                                                      │
-│                                                                                             │
-╰─ ^K  commands ───── tunneld v0.0.26 (libtunnel v0.0.72, built go1.26.5) ── my-laptop (2 viewers) [93×3] ╯
-```
-
-The origin is written the way you typed it, so the same string pasted back into
-a command line still works, and the name inside it is the reference you gave
-rather than the id the daemon resolved it to — a Compose service stays the name
-you wrote in the compose file. Opposite it is the tunnel's own address for this
-origin, which with several origins carries the `?n` that reaches this one, so it
-is the address to send somebody else — and it is a hyperlink, so a terminal
-that understands OSC 8 opens it in a tab of its own. The frame has nothing to
-show there until the tunnel is up, because a container is bound before the
-tunnel exists.
-
-Centred along the top is whatever the terminal calls itself. A terminal carries
-a title and a subtitle and they are not the same thing — a prompt framework
-sets the title to the running command's whole line and the subtitle to its name
-— so they are joined when they differ and said once when they do not. The same
-pair names the browser tab, ahead of the origin — a tab loses its end when the
-row gets crowded, and a row all beginning `attach://dockerd/` would say nothing. That is the shell talking, not tunneld guessing: a prompt framework
-like Oh My Zsh sets the terminal's tab title from its `preexec` hook, which is
-the same thing your terminal reads to name a tab. A shell that sets none leaves
-the space empty, and one that has not spoken since you connected shows whatever
-it last said.
-
-A narrow window drops what it cannot hold, in order: the build first, then the
-counts, and the keys last. Above the frame, centred and one row each, sit the
-messages the provider sent with the mint, as text with their links by name.
-
-Every key reaches the container except one:
-
-| Key | |
-| --- | --- |
-| `Ctrl+K` | Opens the frame's commands. The container never sees it. |
-| wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
-| then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
-| then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
-| then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
-| then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
-| then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
-| then `esc` | Cancel, and the keystroke is spent on cancelling. |
-| — | Messages from the provider sit above the frame in every view. No key moves them. |
-
-### No arguments at all
-
-```sh
-tunneld
-```
-
-exposes `$SHELL` — the one origin every machine has, needing no port to be
-listening. It is the ordinary program path, so the terminal is drawn on your
-console as well:
-
-```
-https://thick-firefly.tunneled.pizza/
-  -> exec:///bin/zsh
-```
-
-An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
-it. A `$SHELL` naming a program that is not there is dropped rather than read
-as an address, so what you get is the message about passing an origin and not a
-tunnel to nothing.
-
-`--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
-`WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
-did before. That is the setting for a script, and for a program that embeds
-tunneld under its own verb: it inherits the default along with everything else,
-and somebody who typed that verb meaning to name an origin should be told they
-forgot one rather than handed a public terminal onto the machine.
-
-### Identity
-
-The mint request can carry a credential, so a provider that gates minting can
-tell who is asking. tunneld does not create one — it looks where this machine
-already keeps one, and sends what it finds:
-
-```sh
-tunneld :3000                               # the default, github
-tunneld --identity-providers= :3000         # send nothing
-```
-
-`github` asks `gh auth token` first, since a logged-in `gh` is the identity the
-machine is actually using, and falls back to `GITHUB_TOKEN`, `GH_TOKEN`,
-`GITHUB_PERSONAL_ACCESS_TOKEN` and `ACTIONS_RUNTIME_TOKEN`, in that order. The
-last of those is the Actions runner's own token, scoped to the runner's
-services rather than the GitHub API; it is sent because it is the only
-credential a default Actions job has, and what it is worth is the mint
-provider's call.
-
-Finding nothing is ordinary: the tunnel mints anonymously, as every tunnel did
-before this. A name the list carries that tunneld has no provider for is an
-error before anything is minted, so a typo does not quietly send nothing.
-
-`LIBTUNNEL_TOKEN` is the operator's own override and outranks all of it — set
-it and no provider is consulted at all.
-
-The credential never appears in a log line, an error, the origin map or the
-cached spec. `--log-level=debug` says which provider answered, never what it
-answered with.
-
-### The console you started it from
-
-With exactly one `attach://` or `exec://` origin, the terminal is drawn on
-your own console too:
-
-```sh
-tunneld zsh
-```
-
-The URL is printed first, then the frame takes the screen — the same frame a
-browser gets, joined to the same session. Both ends see one terminal, count
-each other in the viewer count, and interleave what they type.
-
-No browser opens for it, `--open` or not: the terminal is already on a screen
-you are looking at, and a tab on top of it is a second copy of the one thing
-you can see — counted as another viewer, competing for the same keystrokes.
-Paste the URL somewhere if you want it there too.
-
-`^K d` gives the console back and leaves the tunnel up — the run says how to
-stop it once you are looking at a prompt again. `^K x` ends the run. So does
-the program ending on its own: the frame stays up with its last screen and an
-`ended` chip in the border, and the next key gives the console back with the
-run already over, nothing left waiting for Ctrl+C.
-There is no `Ctrl-C` for tunneld while the frame is drawing: the console is in
-raw mode, so that keystroke belongs to the program, which is the same thing it
-means in the browser.
-
-Without a terminal to draw — several origins, an `http://` one, or a console
-that is not a terminal — the run says what to press instead:
-
-```
-https://thick-firefly.tunneled.pizza/
+tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
+https://0t8qsb6pq3.tunneled.pizza/
   -> http://localhost:3000
 Press Ctrl+C to stop the tunnel...
 ```
 
-It goes to stderr, like the origin lines above it: stdout is the machine
-interface and carries addresses alone.
+That address works for anyone, anywhere, over HTTPS. On a desktop a browser tab
+opens on it too. Press Ctrl+C and it's gone. Run the same command from the
+same directory later and you usually get the same address back.
 
-Nothing happens unless both of the command's own streams are terminals. stdout
-is a machine interface — one public URL per origin — and a frame drawn into a
-pipe is a wall of escapes where a script expected an address.
+<details>
+<summary>Other ways to install</summary>
 
-While the console is drawing, tunneld's own log lines stop going to it. They
-are still kept, and `^K l` is where to read them.
+- **npm, for good:** `npm install -g tunneld`, then drop the `npx` from
+  everything below.
+- **Go:** `go install github.com/tunnel-pizza/tunneld@latest`
+- **A binary:** every [release](https://github.com/tunnel-pizza/tunneld/releases)
+  carries a signed one per platform, and [SECURITY.md](./SECURITY.md) has the
+  recipe to verify it.
+- **A container:** `ghcr.io/tunnel-pizza/tunneld`. See
+  [Running in a container](./docs/reference.md#running-in-a-container).
 
-`l` is the only way to see what tunneld is saying about itself. Those lines go
-to the console it was started on, which is not where a viewer is — so a
-reconnect, a restart, or the edge disowning the hostname would otherwise
-explain nothing to the person actually looking at the terminal.
+</details>
 
-`x` is the one way out of a terminal you opened from your own machine: the
-command ends, and its context takes the tunnel and everything under it. A
-container is not tunneld's to stop and keeps running; a program is, and does
-not.
+## What you can share
 
-Pasting works as it does in any terminal, and an app that asked to be told
-the difference between pasted and typed text still is.
+| | Command | What you get |
+| --- | --- | --- |
+| 🔌 | `npx tunneld :3000` | Whatever is listening on port 3000, on a public URL. |
+| 🐚 | `npx tunneld` | Your `$SHELL`, as a terminal in a browser tab. |
+| 🤖 | `npx tunneld claude --resume` | A coding agent you can keep working with from your phone or another computer. |
+| ✏️ | `npx tunneld nvim` | Your editor, config and plugins included, in a browser tab. |
+| 🪟 | `npx tunneld :3000 :4000` | Two apps on one hostname, side by side in one window. |
+| 🍕 | `npx tunneld :3000 "next dev" claude` | `next dev`, the app it serves, and a Claude session beside it. |
+| 🐳 | `npx tunneld attach://dockerd/web` | A running container's terminal. Compose service names work too. |
 
-### Programs
+Anything that runs in a terminal works: htop, a REPL, Codex, Gemini CLI,
+OpenCode. The words after a program are the program's own, up to the next
+`:port` or URL.
 
-An `exec:///<path>` origin runs a program on this machine and exposes its
-terminal, the same way a container's is exposed:
+## What you see
+
+**One program** (`npx tunneld claude`): the address is printed, then the
+terminal takes over your console inside a frame. The same terminal is on the
+web, so you, your phone, and anyone you send the address to type into one
+session.
+
+```
+╭─ exec:///usr/local/bin/claude ─────────────────────────────────── https://0t8qsb6pq3.tunneled.pizza/ ╮
+│ >                                                                                                    │
+│                                                                                                      │
+╰─ ^K  commands ─ tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5) ── my-laptop (2 viewers) [102×2] ╯
+```
+
+**Several origins** (`npx tunneld :3000 bash`): the address opens a panel with
+one tile per origin, the app in one and the shell's terminal in the other. Each
+tile also has an address of its own, `?0`, `?1` and so on, for sending just
+that one.
+
+**A phone:** press <kbd>Ctrl</kbd>+<kbd>K</kbd> then <kbd>q</kbd> in any frame
+and the address shows up as a QR code. Point the camera at it.
+
+## Keys
+
+Inside a frame, on your console or in a tab, every key goes to the program
+except one.
+
+| Key | |
+| --- | --- |
+| <kbd>Ctrl</kbd>+<kbd>K</kbd> | Opens the frame's commands. The program never sees it. |
+| then <kbd>q</kbd> | Shows the address as a QR code, for a phone. |
+| then <kbd>d</kbd> | Detach. This screen lets go and the session carries on. |
+| then <kbd>x</kbd> | Exit. Ends the run: the tunnel, every origin, and every program it started. |
+| then <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
+| then <kbd>l</kbd> | Shows tunneld's own recent log lines. |
+| then <kbd>esc</kbd> | Never mind. |
+| wheel | Scrolls back through what went past. Any key returns to the live screen. |
+| drag | Selects, and copies to your clipboard. |
+
+On a container, Ctrl+C and Ctrl+D ask to be pressed twice, because once its
+main process exits there's nothing to come back to. On a program they go
+straight through, since a program can always be started again.
+
+## Several things on one address
+
+Every argument is an origin, and they all share one hostname. The first is the
+default. Each one after it answers on a bare `?n`, where `n` is its position:
 
 ```sh
-tunneld exec:///usr/bin/htop
+npx tunneld :3000 :4000
 ```
 
-The empty authority is this machine — that is the whole of what `exec://` with
-no provider says, and why the path is absolute.
+A browser sticks with the origin it landed on, so a frontend on `:3000` and
+its API on `:4000` both work behind a single address. To get back to the first
+one, use `?0` rather than a bare `/`.
 
-A bare argument that names a program on `$PATH` is that origin written short,
-since a word that resolves to a program is not a hostname anybody meant:
+A dev server that opens its own WebSocket (live reload, say) needs one more
+character. Mark its origin `+ws` and every unrouted handshake goes there:
 
 ```sh
-tunneld htop
+npx tunneld :4000 http+ws://localhost:5173
 ```
 
-What it becomes is the resolved path — `exec:///usr/bin/htop` — which is what
-the frame shows, what the origin map prints, and what somebody pastes back to
-reach the same program rather than whatever their own `$PATH` finds. A bare
-name says which program only on the machine that looked it up.
+The details, and why they are the way they are, are in
+[the reference](./docs/reference.md#several-origins-on-one-address).
 
-The words after a program are the program's, the way the words after
-`docker run`'s image are the container's:
+## Programs and containers
+
+A bare word that names a program on your `$PATH` runs that program on a real
+pseudo-terminal, and the page shows its screen. The program starts when
+someone first looks at it, on your console or in a tab. When it ends, the page
+offers to start it again.
 
 ```sh
-tunneld claude --resume
-tunneld :3000 htop -d 5
+npx tunneld htop
+npx tunneld :3000 htop -d 5     # a service, then htop with its own arguments
+npx tunneld 'next dev' bash     # quote a program together with its arguments
 ```
 
-Origins are read left to right, and a word that names a program takes the
-words after it as its arguments — up to the first word that can only be an
-origin: a bare port like `:3000`, a URL with a scheme, or the program's own
-word again. That word starts the next origin, so `tunneld bash :8000` is a
-shell beside a service, `tunneld bash bash` is two shells, and
-`tunneld htop -d 5 :3000` is the same run as the second line above. A flag, a
-path, any other bare word or a `host:port` after a program is the program's. A
-program can also be quoted together with its arguments, which every shell hands
-over as one word — `tunneld :8000 "python3 -m http.server 8000"`. A quoted
-group is complete: the words after it are origins again, so
-`tunneld 'next dev' bash :3000` is three origins, where `tunneld bash 'next dev'
-:3000` is two — a bare program is greedy, so put it last or follow it with a
-port or URL. Quoting is also how a program with arguments reads inside a
-comma-separated `TUNNELD_ORIGINS`, beside the `?arg=` form below. The
-arguments ride the origin as a query, in order, which is how the frame shows
-them and how the same run is spelled from the environment or an embedding
-program:
+`attach://dockerd/<name>` attaches to a running container the way
+`docker attach` does. `<name>` can be a container name, an id, or a Compose
+service name:
 
 ```sh
-TUNNELD_ORIGINS='exec:///usr/bin/claude?arg=--resume&arg=--model&arg=opus'
+npx tunneld attach://dockerd/web
 ```
 
-`claude` and `claude --resume` are one tunnel: the program is which tunnel this
-is, and its arguments are how it was started this time.
+More in the reference: [programs](./docs/reference.md#programs),
+[containers](./docs/reference.md#containers),
+[the frame](./docs/reference.md#the-frame).
 
-`exec://htop` — the word with its scheme on and nothing after it — is looked up
-the same way, because an authority with nothing after it cannot be a provider
-being asked for something; it resolves to the same `exec:///usr/bin/htop`.
+## Before you share
 
-The lookup is this machine's own — `$PATH` and the executable bit on Unix,
-`PATHEXT` on Windows — so the same argument names a program here and a host
-somewhere else, and an explicit scheme always wins. A word that resolves only
-through the working directory is left alone: a file that happens to sit where
-you started tunneld does not become a public origin because you typed its name.
+**The address is the only key.** Anyone who has it reaches what's behind it,
+and for a terminal that means a shell on your machine. Hostnames are random
+and hard to guess, but send one the way you'd send a password, and press
+Ctrl+C when you're done.
 
-The program starts when the first viewer opens the page and ends with the
-session. It gets a real pseudo-terminal, so a full-screen program draws,
-keystrokes reach it, and resizing the browser resizes it. Nothing replays when
-the page opens — unlike a container, it has not been running since before you
-looked.
+If you're signed in to the GitHub CLI, the mint says who's asking, and you can
+see your tunnels at `https://tunnel.pizza/<your-login>` once you sign in there.
+`--identity-providers=` sends nothing. See
+[Identity](./docs/reference.md#identity).
 
-**A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
-key the program quits on, or simply finishing — the origin stays up, the page
-offers a **restart** where a container's offers only a reconnect, and the next
-visit runs it once more on a clean screen. That is a new program and not a
-resumed one: nothing it had open before is still open. A container cannot be
-offered this, since once its PID 1 has exited there is nothing left to attach
-to.
+## Configuration
 
-You do not have to wait for it to end. `Ctrl+K` then `r` ends the program and
-starts it again, for everyone watching, with the address unchanged — the same
-argv, working directory and environment it had the first time. The program is
-asked first (`SIGTERM` to it and everything it started) and killed if it has
-not left after five seconds.
+Flags go before the origins, the way `docker run`'s go before the image. Every
+flag has a `TUNNELD_*` environment variable, and the flag wins.
 
-It is an origin like any other, so it takes an index, gets a multiview tile,
-frames itself as `exec:///usr/bin/htop`, and mixes freely with the rest:
+| Flag | Variable | |
+| --- | --- | --- |
+| `--no-cache` | `TUNNELD_NO_CACHE` | A fresh address every run. |
+| `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
+| `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
+| `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
+| `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
+| `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
+| *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
 
-```sh
-tunneld :3000 attach://dockerd/my-container htop
-```
+stdout carries the public addresses and nothing else, one per line, so they're
+easy to pipe. Everything meant for a person goes to stderr. `tunneld version`
+prints the build.
 
-A machine with no pseudo-terminals refuses at startup, with the reason, rather
-than minting a hostname in front of a page that cannot work.
+Every flag and variable in full: [docs/reference.md](./docs/reference.md#flags).
 
+## How it works
 
-`Ctrl+K` is the frame's, and it does cost you a key — kill-to-end-of-line — but
-it is the cheaper of the two on offer. The other candidate, `Ctrl-D`, ends a
-shared session for everybody watching.
+tunneld is the command-line client for [tunnel.pizza](https://tunnel.pizza).
+It asks tunnel.pizza for a Cloudflare Tunnel and a hostname, then runs the
+tunnel in-process through [libtunnel](https://github.com/cnuss/libtunnel), so
+there is no `cloudflared` to install. Your traffic goes between Cloudflare's
+edge and your machine, not through tunnel.pizza, which is only the control
+plane. The one exception is a network that blocks the edge's port 7844: there
+the connection goes through tunnel.pizza's relay, which forwards the encrypted
+bytes without reading them.
 
-The wheel is decided per notch. A program that asked for the mouse gets it as a
-mouse event; a full-screen program gets it as arrow keys, the way a terminal
-with alternate scroll would send it; otherwise it is the frame's, and scrolls
-back through what the terminal kept — up to ten thousand lines. Scrolling is
-per viewer, so two people can be reading different places in one terminal. The
-bottom border says how far back you are, output arriving while you read stays
-below you rather than pulling you down to it, and the first key you press puts
-you back on the live screen and still reaches the program.
+## Use it from Go
 
-The frame asks whatever it is drawn on for the mouse — your terminal on the
-console, xterm in the tab — which is what makes the wheel reach it, and what
-stops either from doing its own drag-select. So the frame does that too, the
-same way in both places: drag across the pane and the stretch is highlighted
-and copied to your clipboard on release, with `copied` in the bottom border to
-say so. In the tab the copy goes through the browser's clipboard API; on the
-console it goes through OSC 52, which iTerm2 honours once "Applications in
-terminal may access clipboard" is on, VS Code's terminal honours as is, and
-Terminal.app does not — there the highlight shows and nothing is copied.
-
-When a terminal goes, the page says so — and offers a way back only when there
-is one. Your own connection dropping leaves the terminal running, so it offers
-to reconnect; a container whose shell has exited leaves nothing, so it offers
-nothing.
-
-`Ctrl-C` and `Ctrl-D` end the program, and what that costs depends on what is
-behind the origin. A program can be started again, so they go straight through
-— the worst a mistake does is send you back to the page. A container cannot:
-once its PID 1 has exited the container is gone and the terminal is over for
-everybody watching. So on a container the frame asks a second time, and says
-in its border which key is waiting. Typing anything else answers it, and so
-does waiting a couple of seconds — a press long after the first is a new
-intention rather than the other half of a pair.
-
-**The page is unauthenticated.** The tunnel hostname is the only secret, the
-same as every other origin tunneld exposes — but here the thing behind it is a
-shell. Anyone with the link has it.
-
-## Multiview
-
-Several origins behind one hostname are also served as one page, at the
-tunnel's own address:
-
-```
-tunneld :3000 :4000 :5000
-```
-```
-tunneld v0.0.4 (libtunnel v0.0.50, built go1.26.5)
-  https://cruel-donkey.tunneled.pizza/
-    -> http://localhost:3000
-    -> http://localhost:4000
-    -> http://localhost:5000
-```
-
-One iframe per origin, two columns, and an odd count gives the last tile the
-full width of the final row. Each tile is drawn the way the terminal frame
-draws itself — xterm's own stylesheet and the frame's palette — with the local
-address on the top border, the route that reaches it at the other corner as a
-link into a tab of its own, and chips on the bottom border for what the page
-can do for the frame: reload it where it is, and once it has gone somewhere,
-step it back. The border goes white on the tile that has the keyboard, the way
-a console marks its active pane, so a keystroke's destination is never a
-guess. Anything the provider said with the mint sits in a bar above the
-tiles, the same bar the frame draws, in the colour of how loudly it was said.
-When a browser is opened at all, this is the page it lands on.
-
-The panel is served in front of the origin proxy, so it needs no port and no
-origin ever sees the request. It answers **only** the tunnel's own address:
-path `/`, an empty query, and a top-level navigation that did not come from a
-page already on this host. Everything else belongs to an origin — a subresource
-at `/app.js`, a page at `/dashboard`, a frame, a `fetch`, and anything carrying
-a query at all. Without that narrowing the panel would swallow every asset an
-origin serves, or draw itself inside one of its own tiles.
-
-The query has to be *empty*, not merely free of a routing index, because an
-app's root legitimately takes parameters that the caller does not choose. An
-OAuth provider redirecting to `https://<host>/?code=…&state=…` reaches the
-default origin, as it must. The panel takes no parameters of its own, so it
-gives up nothing by answering exactly one address.
-
-Two things worth knowing:
-
-- The page pulls [Basecoat](https://basecoatui.com) (shadcn/ui's components as
-  plain CSS) from jsDelivr, pinned by version and checked with subresource
-  integrity. That is the one outbound request tunneld makes on your behalf;
-  `--multiview=false` removes it.
-- **Origins that refuse framing are un-refused, narrowly.** An app sending
-  `X-Frame-Options: DENY` or a CSP `frame-ancestors` directive would otherwise
-  render as a blank tile, so those two headers are dropped — but only on
-  requests the panel itself makes, identified by `Sec-Fetch-Dest` being a frame
-  and `Sec-Fetch-Site` being `same-origin`.
-
-  A top-level visit keeps everything the origin sent, and so does another
-  site's attempt to frame your tunnel: that arrives cross-site and is left
-  alone. Nothing else in the policy is touched — `script-src`, `connect-src`
-  and the rest survive directive by directive — and a browser too old to send
-  `Sec-Fetch` headers strips nothing, so the failure mode is a blank tile
-  rather than a quietly weakened origin. `--multiview=false` turns the whole
-  thing off.
-
-## Output contract
-
-**stdout** carries the public addresses, one per line and nothing else, so
-`tunneld > addresses` is a machine interface and `| head -1` is the default
-origin. It carries the help text and `tunneld version` too, which is what keeps
-those pipeable.
-
-**stderr** carries everything human: the build banner, the origin each address
-reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
-one address, and every origin it serves is listed beneath it. Whatever the
-provider said with the mint — a note, a warning or a caution — is not printed
-here: it is shown on every terminal frame and above the panel's tiles, where
-the reader is, every run, cached spec or fresh.
-
-On a terminal holding both, that reads as a map:
-
-```
-tunneld v0.0.21 (libtunnel v0.0.66, built go1.26.5)
-https://striped-worm.tunneled.pizza/?0
-  -> http://localhost:3000
-https://striped-worm.tunneled.pizza/?1
-  -> http://localhost:4000
-```
-
-An address reaches exactly one of the two streams. stdout did carry bare URLs
-once while stderr carried a full map, and every address then printed twice
-wherever both streams landed together; the de-duplication meant to hide that
-could only recognise one file descriptor being literally the other, which a
-container's two pipes are not, so it never fired where it was needed most.
-Splitting each address from the origin it reaches is not that duplication: the
-map still says which origin an address serves, and a script still gets the
-addresses without a parser.
-
-The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
-fails first.
-
-## Flags
-
-The surface is deliberately small. Everything else the engine can do — origin
-TLS, spec replay, edge pinning, the cache directory — is reachable through
-`libtunnel`'s own `LIBTUNNEL_*` variables, which pass straight through; see
-[its README](https://github.com/cnuss/libtunnel#environment-variables).
-
-Flags go before the origins, docker's rule: parsing stops at the first origin,
-and every word after it is positional — an origin, or a program's argument. So
-`tunneld --log-level debug :3000`, not `tunneld :3000 --log-level debug`; the
-environment variables are not argv and work regardless.
-
-The origins are the arguments. One per local service, in order: the first is the
-default and each later one answers on `?n`. A missing scheme implies `http` and
-a missing host implies `localhost`, so `:8000`, `localhost:8000` and
-`http://localhost:8000` are one origin. At least one is required, from argv,
-from `TUNNELD_ORIGINS`, or seeded in code — and argv beats the variable, which
-beats the seed, each replacing the one under it rather than adding to it.
-
-```sh
-tunneld :3000 :4000 attach://dockerd/my-container
-```
-
-A served origin is spelled by the verb, with the provider that answers it in
-the authority and the reference after: `attach://dockerd/<container>` is not
-proxied but served, and tunneld answers it with a browser terminal attached to
-the container, the way `docker attach` attaches — `<container>` is a name, an
-id, or a Compose service name. See [Containers](#containers). An
-`exec:///<path>` origin is served the same way,
-by running the program on a pseudo-terminal — and a bare argument this machine
-can run is that origin written short, so `tunneld htop` exposes htop rather
-than a hostname that resolves nowhere. See [Programs](#programs). Marking one
-origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
-[WebSockets](#websockets).
-
-Every flag has an environment mirror, and the flag wins: **flag > environment >
-default.**
-
-| Flag | Variable | Effect |
-| ---- | -------- | ------ |
-| `--no-cache` | `TUNNELD_NO_CACHE` | Don't cache the tunnel spec: mint a fresh hostname every run. Cached, it goes to `<user cache dir>/tunneld/<key>.env` — one file per working directory and set of origins, where the key names that pairing and the banner prints it. Never the working directory: a spec is credentials, and a checkout is the one place they must not land. Where it goes is not configurable from a flag; an embedding program passes `v1alpha1.WithCacheDir`. |
-| `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
-| `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
-| `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
-| `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
-| `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, in order — the first to find one wins. **Default `github`**, which asks `gh auth token` and then the GitHub environment variables. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
-
-So the whole thing runs from a container with no command line at all:
-
-```sh
-docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docker.internal:4000 \
-           -e TUNNELD_LOG=info \
-           tunneld
-```
-
-| Command | Effect |
-| ------- | ------ |
-| `tunneld version` | Print the build identifier — tunneld's, libtunnel's, and the Go toolchain's — and exit. |
-
-## Embedding
-
-`tunneld` is a thin shell around a builder, so another program can mount the
-same command under its own verb — identical flags, help, and behaviour:
+The command is a builder, so another Go program can mount it under a verb of
+its own, with the same flags, help, and behaviour:
 
 ```go
 package main
@@ -676,7 +217,7 @@ import (
 
 func main() {
 	cmd := v1alpha1.New(
-		v1alpha1.WithName("expose"),               // mount under your own verb
+		v1alpha1.WithName("expose"),                  // mount under your own verb
 		v1alpha1.WithOrigin("http://localhost:3000"), // a default the user can override
 	).Command()
 
@@ -686,263 +227,62 @@ func main() {
 }
 ```
 
-Every option's value is a *default*, not a fixed setting: the command's flags
-bind over the same fields, so an argv value wins. Seeding an origin therefore
-lets the command run with no arguments at all.
+The options, `Run` for a tunnel without a CLI, and runnable examples are in
+[docs/embedding.md](./docs/embedding.md).
 
-## Layout
+## Acknowledgements
 
-The module root is the command; the library tiers sit under it.
+tunneld is a thin layer over other people's work. Thank you to:
 
-```
-github.com/tunnel-pizza/tunneld           — package main. Signals → context →
-                                            Execute, and nothing else.
-github.com/tunnel-pizza/tunneld/v1        — stable Builder contract, the Err*
-                                            sentinels, the env/default constants.
-github.com/tunnel-pizza/tunneld/v1alpha1  — current implementation: command
-                                            assembly, the tunnel it runs, the
-                                            version resolution. May change
-                                            between alpha revisions.
-github.com/tunnel-pizza/tunneld/v1alpha1/<name>  — one implementation each:
-                                            origins, cache, panel,
-                                            browser and attach sit
-                                            behind the contracts in v1alpha1;
-                                            attach declares its own Target and
-                                            Targets, and attach/docker
-                                            implements both. See CONTRIBUTING.
-```
+- **[libtunnel](https://github.com/cnuss/libtunnel)** (`github.com/cnuss/libtunnel`):
+  the tunnel engine, behind every mint and every connection to the edge.
+- **[cloudflared](https://github.com/cloudflare/cloudflared)**
+  (`github.com/cloudflare/cloudflared`): Cloudflare's tunnel protocol and edge
+  client, linked in through libtunnel.
+- **[cri-streaming](https://github.com/kubernetes/cri-streaming)**
+  (`k8s.io/cri-streaming`): Kubernetes' streaming library, which every terminal
+  tunneld serves, a container's or a program's, is attached through.
+- **[coder/websocket](https://github.com/coder/websocket)**
+  (`nhooyr.io/websocket`, its former name) and
+  **[gorilla/websocket](https://github.com/gorilla/websocket)**
+  (`github.com/gorilla/websocket`): the WebSockets. coder's arrives through
+  cloudflared. gorilla's is tunneld's own direct dependency, which its tests
+  dial a terminal with, and cloudflared links it too.
+- **[Charm](https://charm.land)**: [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+  (`charm.land/bubbletea/v2`), [Ultraviolet](https://github.com/charmbracelet/ultraviolet)
+  (`github.com/charmbracelet/ultraviolet`), [x/ansi](https://github.com/charmbracelet/x/tree/main/ansi)
+  (`github.com/charmbracelet/x/ansi`), [x/vt](https://github.com/charmbracelet/x/tree/main/vt)
+  (`github.com/charmbracelet/x/vt`) and [colorprofile](https://github.com/charmbracelet/colorprofile)
+  (`github.com/charmbracelet/colorprofile`). The whole frame is built on them,
+  on your console and in a tab.
+- **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
+  `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
+  `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded
+  from jsDelivr when the page opens.
 
-Application code calls `v1alpha1.New()` and matches errors against `v1`.
-There is no façade package re-exporting both, and there cannot be one: a
-constructor has to import what it constructs, `v1alpha1` already imports `v1`
-for the sentinels, and Go does not allow the cycle.
+And the rest of what tunneld requires directly:
 
-For the file-by-file map, see
-[CONTRIBUTING.md → Where to find things](./CONTRIBUTING.md#where-to-find-things).
-
-## API at a glance
-
-What an embedding program calls, in `v1alpha1`:
-
-```go
-func New(opts ...Option) *BuilderImpl // defaults, then opts; satisfies v1.Builder
-func Version() string                 // the release this build is
-func VersionLine() string             // the human-facing build banner
-
-// The builder's options. Each seeds a flag's default, so argv still wins.
-func WithName(name string) Option                 // command name; default "tunneld"
-func WithOrigin(origins ...string) Option         // origins, in order; appends across options
-func WithProvider(host string) Option             // quick-tunnel host; default tunnel.pizza
-func WithCacheDir(dir string) Option              // cache specs here instead of the user's cache directory
-func WithLogLevel(level string) Option            // debug|info|warn|error on stderr
-func WithOpen(open bool) Option                   // force the browser decision; unset means derived
-func WithMultiview(mv bool) Option                // frame the origins together; default true
-func WithShellFallback(fb bool) Option            // no origin at all means $SHELL; default true
-func WithStdout(w io.Writer) Option               // help text, the version command, public addresses
-func WithStderr(w io.Writer) Option               // banner, the origin each address reaches, logs
-```
-
-There are no fluent setters: every knob is an option passed to `New`, and
-`v1.Builder` is only `Command` and `Name`. An embedder on the old shape
-changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
-
-`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithBinder`,
-`WithConsole`, `WithIdentity` and `WithMotd`, which swap the collaborators the
-tunnel run composes, and `WithTunnelFactory`, which replaces `libtunnel.From`
-as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
-caching off, and what `--no-cache` leaves a run in. They are a contributor's
-and a test's concern, not an embedder's — see
-[CONTRIBUTING.md → Design conventions](./CONTRIBUTING.md#design-conventions).
-The motd board and the log ring are built once in `New` and shared through
-their own options — the board into the display and the binder, the ring into
-the console and the binder — so an embedder replacing one of those passes the
-same instance.
-
-What `v1` declares — the contract it satisfies, and the option type every
-`New` takes:
-
-```go
-// Option configures a value while it is constructed; Apply runs a list of
-// them in order, so a later one wins.
-type Option[T any] func(T)
-func Apply[T any](t T, opts ...Option[T]) T
-
-// Builder assembles the tunneld command: what a caller calls once New has
-// configured it.
-type Builder interface {
-    Command() *cobra.Command      // terminal: assembles and returns
-    Origins() []*url.URL          // the origins exposed: argv > env > seed
-    Name() string                 // configured command name
-    Run(ctx context.Context) error // the command's body, without the command
-}
-
-// match with errors.Is
-var ErrInvalidEnv      = errors.New("invalid environment value")
-var ErrNoOrigin        = errors.New("no origin")
-var ErrInvalidOrigin   = errors.New("invalid origin")
-var ErrInvalidLogLevel = errors.New("invalid log level")
-var ErrNotReady        = errors.New("tunnel did not become ready")
-
-const LogEnv          = "TUNNELD_LOG"
-const OriginsEnv      = "TUNNELD_ORIGINS"
-const ProviderEnv     = "TUNNELD_PROVIDER"
-const NoCacheEnv      = "TUNNELD_NO_CACHE"
-const MultiviewEnv    = "TUNNELD_MULTIVIEW"
-const ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
-const CommandName     = "tunneld"
-const DefaultProvider = "tunnel.pizza"
-const DefaultMultiview = true
-const DefaultShellFallback = true
-```
-
-### The browser
-
-Nothing configures this. Once the tunnel is live, tunneld works out whether
-anybody is there to look at it:
-
-| It opens a page when | It stays quiet when |
+| Module | For |
 | --- | --- |
-| a terminal is on one of its own streams | none of stdin, stdout or stderr is a terminal — a pipeline, a service manager, a CI step, a container |
-| the machine has a display | `$CI` is set to anything truthy |
-| an ssh session forwarded one (`ssh -X`) | an ssh session did not, so the tab would open where nobody is sitting |
-| | the console is already drawing the terminal, which would make the tab a second copy competing for the same keystrokes |
+| [`github.com/creack/pty`](https://github.com/creack/pty) | The pseudo-terminal behind every program and the shell fallback. |
+| [`github.com/moby/moby/client`](https://github.com/moby/moby), [`github.com/moby/moby/api`](https://github.com/moby/moby), [`github.com/containerd/errdefs`](https://github.com/containerd/errdefs) | `attach://dockerd`. |
+| [`github.com/spf13/cobra`](https://github.com/spf13/cobra), [`github.com/spf13/pflag`](https://github.com/spf13/pflag), [`github.com/spf13/viper`](https://github.com/spf13/viper) | The command line and its environment. |
+| [`github.com/yuin/goldmark`](https://github.com/yuin/goldmark) | Messages of the day. |
+| [`rsc.io/qr`](https://github.com/rsc/qr) | The QR code a phone reads. |
+| [`github.com/pkg/browser`](https://github.com/pkg/browser) | Opening the tab. |
+| [`github.com/go-logr/logr`](https://github.com/go-logr/logr), [`k8s.io/klog/v2`](https://github.com/kubernetes/klog) | cri-streaming's logs, routed into tunneld's own. |
+| [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys), [`golang.org/x/term`](https://pkg.go.dev/golang.org/x/term) | The system calls under a program's terminal, and raw mode on your console. |
 
-The decision lives in `Browser.Open`, which is told what the run is doing and
-works out what that means — there is no "should I" for a caller to answer.
-Every branch says on `--log-level=debug` why it went the way it did, which is
-the only account of a decision nobody typed:
-
-```
-DEBUG not opening a browser reason="an ssh session with no display to open on"
-```
-
-`WithOpen` is the override, and the only one — there is no flag and no
-environment variable:
-
-```go
-v1alpha1.New(v1alpha1.WithOpen(false))  // never
-v1alpha1.New(v1alpha1.WithOpen(true))   // always, unless the console is drawing it
-```
-
-A service embedding tunneld wants that: it knows nobody is watching however
-interactive its own streams happen to look.
-
-### A tunnel without a CLI
-
-`Run` is the command's body, so executing the command and calling this do the
-same work:
-
-```go
-b := v1alpha1.New(
-	v1alpha1.WithOrigin("http://localhost:3000"),
-	v1alpha1.WithShellFallback(false),
-)
-if err := b.Run(ctx); err != nil { ... }
-```
-
-`ctx` is the shutdown handle either way — cancel it and the tunnel comes down,
-during startup as well as after. Nothing parses `os.Args`, and there is no
-command to assemble that nobody will ever see; the configuration stays the
-options it was built with. A process shell wants the other door, which is what
-`main.go` is: signals into a context, then `Command().ExecuteContext(ctx)`.
-
-The environment is bound on both paths, so `TUNNELD_*` still beats code here.
-What differs is argv: with no command line parsed, the origins are whatever the
-environment and the seeds settle on.
-
-## Environment
-
-Every knob with an env-expressible value has a mirror constant in `v1`, and
-**env beats code** — an operator reconfigures a deployed binary without a
-rebuild. Variables are read lazily, where the knob takes effect, so a value set
-after construction still lands.
-
-| Variable | Mirrors | Effect |
-| -------- | ------- | ------ |
-| `TUNNELD_ORIGINS` | the arguments | Local origins, comma-separated in the order argv would take them. An origin URL containing a literal comma has to arrive as an argument, which is parsed for no separator. |
-| `TUNNELD_NO_CACHE` | `--no-cache` | Whether to skip the spec cache, so every run mints a fresh hostname. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
-| `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
-| `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
-
-Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
-built command rather than the package global, with each variable bound
-explicitly to the constant naming it in `v1` — so the operator-facing strings
-live in one registry instead of being derived from flag names.
-
-Names follow `TUNNELD_<KNOB>` for core knobs and `TUNNELD__<IMPL>_<KNOB>` —
-double underscore — for implementation-scoped ones, so two implementations can
-each expose a `TIMEOUT` without colliding.
-
-An override that is set but unparsable is reported, never silently ignored — a
-typo'd knob that quietly did nothing would be indistinguishable from one that
-worked. That holds for the flag mirrors (`TUNNELD_LOG=loud` is an error, the
-same as `--log-level loud`), which return an error wrapping `v1.ErrInvalidEnv`
-naming the variable and the bad value.
-
-The tunnel engine carries its own `LIBTUNNEL_*` surface for everything this one
-doesn't expose. Those variables pass straight through and are documented in
-[libtunnel](https://github.com/cnuss/libtunnel#environment-variables), not
-mirrored here.
-
-## Examples
-
-Self-contained programs in [`./examples`](./examples):
-
-| Example | Demonstrates |
-| ------- | ------------ |
-| `basic` | Smallest complete wiring — serve on `:3000`, expose it, open a browser. |
-| `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
-| `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
-| `shell` | A local program's terminal on the public hostname. Runs `zsh`. |
-
-Each starts the origins it exposes, so nothing else needs to be running —
-`attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not
-already local, and `shell` runs its program when the first viewer opens the
-page. All four block until interrupted:
-
-```sh
-make run basic
-make run multi-origin
-make run attach
-make run shell
-```
-
-`multi-origin` is the one to try in a browser — it serves a different page on
-`:3000` and `:4000`, so switching between `/` and `/?1` shows the routing.
-
-The seeded origins are only defaults, so every tunneld flag still works — but
-pass them through `go run`, since make would read a leading `--` as one of its
-own options:
-
-```sh
-go run ./examples/basic http://localhost:8080
-```
-
-## Testing
-
-```sh
-make test   # unit tests (fast, in-package)
-make e2e    # builds the binary and every example, drives their offline paths
-make race   # every package under the race detector — the lane CI gates on
-```
-
-Neither tier mints a real tunnel — that needs the public internet and a live
-provider, which would make CI flaky. Everything up to the mint is covered here;
-the tunnel itself is covered by libtunnel's own live tier. That is also why the
-harness drives each example with `--help`: it exercises the whole assembly path
-and exits without a packet.
-
-`make e2e` runs `go test -count=1 -v ./e2e`. The `-count=1` defeats the test
-cache, since the harness builds the binaries at runtime and the cache key
-wouldn't otherwise pick up source changes.
+And Go itself. The license notices for the Go standard library and for every
+module a release binary links are in `THIRD_PARTY_LICENSES`, attached to each
+[release](https://github.com/tunnel-pizza/tunneld/releases) and shipped in the
+npm package.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local dev loop, the test-file
-convention, what makes a good example, and the release process.
+[CONTRIBUTING.md](./CONTRIBUTING.md) has the layout, the dev loop, the
+conventions, and how a change gets from an issue to a release. Security
+reports go through [SECURITY.md](./SECURITY.md).
 
 ## License
 

@@ -26,10 +26,14 @@ Deep-link by filename; line numbers will drift.
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
+| What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
+| The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins | [`readme_test.go`](./readme_test.go) |
+| Every origin form, the frame, flags and environment in full | [`docs/reference.md`](./docs/reference.md)          |
+| Embedding: the options, `Run`, the `v1` surface, the examples table | [`docs/embedding.md`](./docs/embedding.md)  |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
-| Build / lint / test commands                   | [`Makefile`](./Makefile)                                         |
+| Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
 | npm launcher: finds the platform binary, hands it the process | [`v1/v1.cjs`](./v1/v1.cjs)                            |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
@@ -232,6 +236,12 @@ When a bug sends you looking for somewhere to put its test, the answer is
 always the `_test.go` beside the file that had the bug, as another case in the
 table that already covers that function. Use cases are what table rows are for;
 files are for code.
+
+`readme_test.go` at the root follows the same rule rather than breaking it:
+`README.md` is a source file too, and its test sits beside it. What it holds
+is the Acknowledgements section against `go.mod` and against the versions the
+pages load from jsDelivr, so a new dependency fails `make test` until the
+README says what it is for.
 
 Two deliberate exceptions:
 
@@ -827,7 +837,7 @@ Every example opens a tunnel and then blocks, so most are checked through their
 own `--help`. Give each a configuration that shows up there — a seeded origin
 list, a flag default it flips — then add a row to the `cases` table in
 `e2e/e2e_test.go` (name + a substring unique to that example's help) and to the
-README's example table. A substring that would also match another example is a
+examples table in [`docs/embedding.md`](./docs/embedding.md#examples). A substring that would also match another example is a
 case that can pass against the wrong binary.
 
 A row can instead carry `assert`, a list of checks run in order against the
@@ -858,7 +868,10 @@ When a flag really is warranted, five things move together:
    the constant;
 4. a case in the table in `v1alpha1/builder_test.go`, plus a row in
    `e2e/e2e_test.go` if the flag has a refusable value; and
-5. the **Flags** and **Environment** tables in the README.
+5. the **Flags** and **Environment** tables in
+   [`docs/reference.md`](./docs/reference.md#flags), and a row in the README's
+   **Configuration** table when it is something a person running tunneld will
+   reach for.
 
 Step 3's `flagEnv` row is the one that is easy to forget, and
 `TestFlagEnvRegistryIsComplete` in `v1alpha1/builder_test.go` fails without it: a
@@ -927,15 +940,18 @@ directory, along with the compose example's volume and the local image.
 - Include test coverage for behavior changes — unit tests beside the code
   (`something.go` → `something_test.go`) for library changes, e2e tests
   (`e2e/e2e_test.go`) for anything visible at the command line.
-- **Keep the README in sync with the surface.** The README mirrors both the
-  flag surface and the public API, so any change to either must update it in
-  the same PR:
-  - a new/changed/removed flag → update the **Flags** table and, if it is
-    user-facing enough, the **Quick Start**;
-  - a new/changed/removed method on `Builder` (or the `v1` surface) → update
-    the **API at a glance** block;
-  - a renamed package/version tier → update the **Layout** tree.
-  Treat the README's code blocks as documentation that must compile against the
+- **Keep the docs in sync with the surface.** The README is for the person
+  running tunneld; [`docs/reference.md`](./docs/reference.md) carries the
+  flag surface in full and [`docs/embedding.md`](./docs/embedding.md) the
+  public API. Any change to either updates them in the same PR:
+  - a new/changed/removed flag → the **Flags** table in the reference and,
+    if it is user-facing enough, the README's **Configuration** table;
+  - a new/changed/removed method on `Builder` (or the `v1` surface) → the
+    **API at a glance** block in the embedding doc;
+  - a renamed package/version tier → its **Packages** tree;
+  - a new direct dependency → the README's **Acknowledgements**, which
+    `readme_test.go` will not let you forget.
+  Treat their code blocks as documentation that must compile against the
   current API — stale snippets are a review blocker.
 - Signed commits preferred. The repo enables commit signing locally; CI does
   not enforce signatures.
@@ -949,7 +965,7 @@ Wrap body at ~72 cols. Explain the *why*; the diff covers the *what*.
 
 Patch releases are automatic. Every push to `main` runs the jobs in
 [`ci.yml`](./.github/workflows/ci.yml): `prepare` first, then the
-`build-test` matrix, `race`, `binaries` and `image` all needing it, and
+`build-test` matrix, `race`, `binaries`, `licenses` and `image` all needing it, and
 `release` needing all of those:
 
 - **`prepare`** resolves the version — the patch bump of the latest `v*` tag, or
@@ -985,14 +1001,23 @@ Patch releases are automatic. Every push to `main` runs the jobs in
   untagged manifest in ghcr that nothing will ever tag, invisible to a pull,
   which is the price of every PR exercising exactly what a release runs. A
   fork's or dependabot's PR builds into the layer cache and stops there.
-- **`release`** downloads the six binaries and their bundles and the two
-  digests, restores the binaries' executable bit — `upload-artifact` zips its
+- **`licenses`** runs `make licenses`: the license notices of the Go standard
+  library and of every module any of the six platforms links, in one
+  `THIRD_PARTY_LICENSES` file, uploaded as the `dist-licenses` artifact. It
+  runs on pull requests too, and a module with no notice at its root fails it,
+  so a dependency cannot reach a release without one. The notices go wherever
+  the binaries do, because most of what tunneld links (cloudflared and
+  libtunnel among it) asks for its notice to travel with a redistributed
+  binary.
+- **`release`** downloads the six binaries and their bundles, the notices, and
+  the two digests, restores the binaries' executable bit — `upload-artifact` zips its
   input and that zip carries no mode bits, so they arrive `0644`, and npm
   packs a file with the mode it finds — and then, in order: pushes the tag;
   creates a GitHub Release with auto-generated notes; signs the two things
   that could not be signed earlier — the source archives, which GitHub
   generates once the tag exists, and `checksums.txt`, which covers all six
-  binaries — and uploads binaries, checksums and every bundle; tags the image
+  binaries — and uploads binaries, `THIRD_PARTY_LICENSES`, checksums and every
+  bundle; tags the image
   with `docker buildx imagetools create`, writing a manifest list over the two
   digests already in the registry under the release tag and `latest` (nothing
   is rebuilt), and signs the list's own digest; warms `proxy.golang.org` so
@@ -1003,8 +1028,9 @@ Patch releases are automatic. Every push to `main` runs the jobs in
   package packs the same bytes the cells signed; `package.json` is rewritten
   to the tag for that publish only. By then `dist/` also holds the cosign
   bundles, `checksums.txt` and the source archives, so `files` names the
-  binaries and excludes the bundles rather than globbing the directory — npm
-  ships the six binaries and the launcher, nothing else. A release publishes
+  binaries and the notices and excludes the bundles rather than globbing the
+  directory — npm ships the six binaries, `THIRD_PARTY_LICENSES` and the
+  launcher, nothing else. A release publishes
   to `latest`. For a `beta` instead, merge with `[skip release]`, then run the
   CI workflow by hand from `main` with the dist-tag input set to `beta`; that
   cuts the release and publishes it there. Promote later without rebuilding:

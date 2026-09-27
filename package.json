@@ -1,14 +1,29 @@
 {
   "name": "tunneld",
   "version": "0.0.0",
-  "description": "The CLI for tunnel.pizza",
+  "description": "A public URL for what's running on your machine: a port, a shell, a coding agent, a container. No account, no daemon.",
   "engines": {
     "node": ">=20"
   },
   "keywords": [
+    "tunnel",
+    "localhost",
+    "expose",
+    "share",
+    "public-url",
+    "cloudflare-tunnel",
+    "web-terminal",
+    "terminal",
+    "shell",
+    "tty",
+    "docker",
+    "coding-agent",
+    "claude-code",
+    "dev-server",
+    "tunnel-pizza",
     "tunneld"
   ],
-  "homepage": "https://github.com/tunnel-pizza/tunneld#readme",
+  "homepage": "https://tunnel.pizza",
   "bugs": {
     "url": "https://github.com/tunnel-pizza/tunneld/issues"
   },
@@ -27,9 +42,10 @@
   "files": [
     "v1/v1.cjs",
     "dist/tunneld-*",
+    "dist/THIRD_PARTY_LICENSES",
     "!dist/*.sigstore"
   ],
   "scripts": {
-    "prepublishOnly": "make binaries"
+    "prepublishOnly": "make binaries licenses"
   }
 }
