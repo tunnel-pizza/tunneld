@@ -671,9 +671,9 @@ said as a sentence, and each address and what it reaches:
 ```
 🍕 tunneld is now running in the background
 
-  cwd  ~/project
-  pid  73146
-  log  ~/Library/Caches/tunneld/894bb9b319b7b699.log
+    cwd  ~/project
+    pid  73146
+    log  ~/Library/Caches/tunneld/894bb9b319b7b699.log
 
   Your applications (http://localhost:3000, /bin/bash) are now available,
   tunneled through https://0tc62f7m9b.tunneled.pizza/, at the following

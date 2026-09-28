@@ -514,7 +514,7 @@ function summary(pid) {
   const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
 
   const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
-  const row = (name, value) => lines.push(`  ${dim(name)}  ${value}`);
+  const row = (name, value) => lines.push(`    ${dim(name)}  ${value}`);
   if (env.PWD) {
     row("cwd", home(env.PWD));
   }
