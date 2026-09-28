@@ -164,13 +164,23 @@ func TestTokenCancelsTheRest(t *testing.T) {
 // TestTokenFindsNothing pins that a machine with no identity is an ordinary
 // run and not an error: it mints anonymously, as every run did before.
 func TestTokenFindsNothing(t *testing.T) {
-	log, _ := quiet()
+	log, buf := quiet()
 	i := New(WithProviders(&stub{name: "empty"}))
 	if got := i.Token(t.Context(), []string{"empty"}, log); got != "" {
 		t.Errorf("Token() = %q, want empty", got)
 	}
 	if got := i.Token(t.Context(), nil, log); got != "" {
 		t.Errorf("Token(nil) = %q, want empty", got)
+	}
+	for _, want := range []string{
+		"looking for a mint credential",
+		"identity provider found nothing",
+		"found no mint credential; minting anonymously",
+		"no identity providers listed",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log %q does not say %q", buf.String(), want)
+		}
 	}
 }
 

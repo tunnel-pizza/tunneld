@@ -7,6 +7,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -89,6 +90,7 @@ func (p *ProviderImpl) Token(ctx context.Context, log v1.Logger) (string, bool) 
 			return token, true
 		}
 	}
+	log.Debug("found no github credential", "tried", append([]string{"gh auth token"}, envs...))
 	return "", false
 }
 
@@ -103,7 +105,9 @@ func (p *ProviderImpl) Token(ctx context.Context, log v1.Logger) (string, bool) 
 // whose stdout is a secret, and keeping the two apart is cheaper than deciding
 // case by case which is safe to keep.
 func (p *ProviderImpl) fromGH(ctx context.Context, log v1.Logger) (string, bool) {
-	if _, err := exec.LookPath("gh"); err != nil {
+	path, err := exec.LookPath("gh")
+	if err != nil {
+		log.Debug("gh is not installed", "error", err)
 		return "", false
 	}
 
@@ -114,17 +118,29 @@ func (p *ProviderImpl) fromGH(ctx context.Context, log v1.Logger) (string, bool)
 	// See waitDelay: without this the deadline kills gh and then waits on a
 	// pipe a grandchild is still holding.
 	cmd.WaitDelay = waitDelay
+	began := time.Now()
 	out, err := cmd.Output()
-	if err != nil {
+	took := time.Since(began)
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		log.Debug("gh auth token took too long", "gh", path, "timeout", p.timeout)
+		return "", false
+	case errors.Is(ctx.Err(), context.Canceled):
+		// Another provider earlier in the list answered: this lookup was
+		// stopped, not refused.
+		log.Debug("gh auth token was stopped", "gh", path, "took", took)
+		return "", false
+	case err != nil:
 		// An *exec.ExitError prints its status and not its stderr, so this
 		// says what happened without saying what gh wrote.
-		log.Debug("gh has no credential to give", "error", err)
+		log.Debug("gh has no credential to give", "gh", path, "error", err, "took", took)
 		return "", false
 	}
 	token := strings.TrimSpace(string(out))
 	if token == "" {
+		log.Debug("gh auth token printed nothing", "gh", path, "took", took)
 		return "", false
 	}
-	log.Debug("found a github credential", "source", "gh auth token")
+	log.Debug("found a github credential", "source", "gh auth token", "gh", path, "took", took)
 	return token, true
 }

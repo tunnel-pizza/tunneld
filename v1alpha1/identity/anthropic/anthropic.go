@@ -44,19 +44,22 @@ func (*ProviderImpl) Name() string { return "anthropic" }
 // Token is the workspace's OAuth token, trimmed, or false when there is none.
 //
 // Best effort, like every provider: no file is the ordinary answer off a
-// workspace and is not logged; a file that cannot be read, or holds nothing,
-// is logged at debug and found nothing all the same. The error names the
-// path, never what was in it.
+// workspace, and a file that cannot be read, or holds nothing, has found
+// nothing all the same. Each says which at debug. The lines name the path,
+// never what was in it.
 func (p *ProviderImpl) Token(_ context.Context, log v1.Logger) (string, bool) {
 	body, err := os.ReadFile(p.path)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			log.Debug("cannot read the workspace's credential", "path", p.path, "error", err)
-		}
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		log.Debug("no workspace credential here", "path", p.path)
+		return "", false
+	case err != nil:
+		log.Debug("cannot read the workspace's credential", "path", p.path, "error", err)
 		return "", false
 	}
 	token := strings.TrimSpace(string(body))
 	if token == "" {
+		log.Debug("the workspace's credential file is empty", "path", p.path)
 		return "", false
 	}
 	log.Debug("found an anthropic credential", "source", p.path)

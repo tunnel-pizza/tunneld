@@ -33,9 +33,9 @@ func TestTokenReadsTheWorkspaceFile(t *testing.T) {
 	}
 }
 
-// TestTokenFindsNothing pins the answers that are not a credential: no file,
-// which is every machine but a workspace and says nothing; an empty file; and
-// a file that cannot be read, which says so at debug without failing.
+// TestTokenFindsNothing pins the answers that are not a credential — no file,
+// which is every machine but a workspace; an empty file; and a file that
+// cannot be read — and that each says which at debug.
 func TestTokenFindsNothing(t *testing.T) {
 	dir := t.TempDir()
 	empty := filepath.Join(dir, "empty")
@@ -43,20 +43,19 @@ func TestTokenFindsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name, path string
-		logs       bool
+		name, path, logs string
 	}{
-		{"no file", filepath.Join(dir, "missing"), false},
-		{"empty", empty, false},
-		{"a directory", dir, true},
+		{"no file", filepath.Join(dir, "missing"), "no workspace credential here"},
+		{"empty", empty, "credential file is empty"},
+		{"a directory", dir, "cannot read the workspace's credential"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log, buf := quiet()
 			if got, ok := New(WithPath(tc.path)).Token(t.Context(), log); ok || got != "" {
 				t.Errorf("Token() = %q, %v, want nothing", got, ok)
 			}
-			if logged := buf.Len() > 0; logged != tc.logs {
-				t.Errorf("logged %q, want a line: %v", buf.String(), tc.logs)
+			if !strings.Contains(buf.String(), tc.logs) {
+				t.Errorf("logged %q, want a line saying %q", buf.String(), tc.logs)
 			}
 		})
 	}

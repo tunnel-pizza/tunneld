@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -123,12 +124,20 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 		log.Debug("not looking for a mint credential", "reason", "$"+ltv1.TokenEnv+" is set")
 		return ""
 	}
+	if len(names) == 0 {
+		log.Debug("not looking for a mint credential", "reason", "no identity providers listed")
+		return ""
+	}
+	log.Debug("looking for a mint credential", "providers", names)
+	start := time.Now()
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	type answer struct {
 		token string
 		found bool
+		took  time.Duration
 	}
 	answers := make([]chan answer, len(names))
 	for n, name := range names {
@@ -137,19 +146,30 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 		if !ok {
 			// Known refuses this before a run gets here. A caller that skipped
 			// it gets the same answer as a provider that found nothing.
+			log.Debug("no identity provider by that name", "provider", name)
 			answers[n] <- answer{}
 			continue
 		}
 		go func() {
+			began := time.Now()
 			token, found := provider.Token(ctx, log)
-			answers[n] <- answer{token, found}
+			answers[n] <- answer{token, found, time.Since(began)}
 		}()
 	}
 	for n, name := range names {
-		if a := <-answers[n]; a.found {
-			log.Debug("found a mint credential", "provider", name)
-			return a.token
+		a := <-answers[n]
+		if !a.found {
+			log.Debug("identity provider found nothing", "provider", name, "took", a.took)
+			continue
 		}
+		if rest := names[n+1:]; len(rest) > 0 {
+			// Whether these had answered yet or not, the list is decided:
+			// any still looking are cancelled as this returns.
+			log.Debug("the rest of the list is not needed", "providers", rest)
+		}
+		log.Debug("found a mint credential", "provider", name, "took", a.took, "total", time.Since(start))
+		return a.token
 	}
+	log.Debug("found no mint credential; minting anonymously", "providers", names, "total", time.Since(start))
 	return ""
 }
