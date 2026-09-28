@@ -100,7 +100,8 @@ function binaryPath() {
 
   fail(
     `no binary for ${key}: ${pkg} is not installed and ${local} does not exist.\n` +
-      "  Reinstall without --omit=optional, or in a checkout run: make binaries",
+      "  Reinstall without --omit=optional. In a checkout, npm run dev -- <args> builds it and runs,\n" +
+      "  or make host builds it for npx .",
   );
 }
 
