@@ -554,7 +554,7 @@ function summary(pid) {
     if (origins.length > 1) {
       const width = `${base}?${origins.length - 1}`.length;
       if (env.TUNNELD_MULTIVIEW === "true") {
-        lines.push(`  ${cyan(base.padEnd(width))}  ${dim("→")} all ${origins.length}, side by side`);
+        lines.push(`  ${cyan(base.padEnd(width))}  ${dim("→")} multiview`);
       }
       origins.forEach((o, i) => lines.push(`  ${cyan(`${base}?${i}`.padEnd(width))}  ${dim("→")} ${label(o)}`));
       lines.push("");

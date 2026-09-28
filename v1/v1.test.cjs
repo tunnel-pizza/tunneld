@@ -298,7 +298,7 @@ test("-d names every origin's address, and says less with no cached settings", p
   assert.equal(up.status, 0, up.stderr);
   assert.match(
     up.stderr,
-    /\n  What's serving on localhost:3000 and a terminal running \/usr\/bin\/claude\n  --resume are now available side by side at https:\/\/t\.example\/, in any web\n  browser, and each at an address of its own below\.\n\n  https:\/\/t\.example\/    → all 2, side by side\n  https:\/\/t\.example\/\?0  → http:\/\/localhost:3000\n  https:\/\/t\.example\/\?1  → \/usr\/bin\/claude --resume\n/,
+    /\n  What's serving on localhost:3000 and a terminal running \/usr\/bin\/claude\n  --resume are now available side by side at https:\/\/t\.example\/, in any web\n  browser, and each at an address of its own below\.\n\n  https:\/\/t\.example\/    → multiview\n  https:\/\/t\.example\/\?0  → http:\/\/localhost:3000\n  https:\/\/t\.example\/\?1  → \/usr\/bin\/claude --resume\n/,
   );
   assert.equal(launch("-k").status, 0);
 

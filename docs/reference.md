@@ -675,7 +675,7 @@ what it reaches, the directory, the pid and the log:
   available side by side at https://0tc62f7m9b.tunneled.pizza/, in any web
   browser, and each at an address of its own below.
 
-  https://0tc62f7m9b.tunneled.pizza/    → all 2, side by side
+  https://0tc62f7m9b.tunneled.pizza/    → multiview
   https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
   https://0tc62f7m9b.tunneled.pizza/?1  → /bin/bash
 
