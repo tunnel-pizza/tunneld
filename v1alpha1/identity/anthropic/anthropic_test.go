@@ -2,11 +2,13 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
 )
@@ -28,7 +30,7 @@ func TestTokenReadsTheWorkspaceFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	log, _ := quiet()
-	if got, ok := New(WithPath(path)).Token(t.Context(), log); !ok || got != "sk-ant-oat01-secret" {
+	if got, ok := New(WithPath(path), WithHome("")).Token(t.Context(), log); !ok || got != "sk-ant-oat01-secret" {
 		t.Errorf("Token() = %q, %v, want the file's token", got, ok)
 	}
 }
@@ -51,7 +53,7 @@ func TestTokenFindsNothing(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log, buf := quiet()
-			if got, ok := New(WithPath(tc.path)).Token(t.Context(), log); ok || got != "" {
+			if got, ok := New(WithPath(tc.path), WithHome("")).Token(t.Context(), log); ok || got != "" {
 				t.Errorf("Token() = %q, %v, want nothing", got, ok)
 			}
 			if !strings.Contains(buf.String(), tc.logs) {
@@ -69,7 +71,7 @@ func TestTokenIsNeverLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	log, buf := quiet()
-	New(WithPath(path)).Token(t.Context(), log)
+	New(WithPath(path), WithHome("")).Token(t.Context(), log)
 	if strings.Contains(buf.String(), "secret") {
 		t.Errorf("the log carried the credential: %q", buf.String())
 	}
@@ -80,6 +82,83 @@ func TestTokenIsNeverLogged(t *testing.T) {
 func TestDefaultPath(t *testing.T) {
 	if got := New().path; got != "/home/claude/.claude/remote/.oauth_token" {
 		t.Errorf("default path = %q", got)
+	}
+}
+
+// TestTokenWaitsInAWorkspace pins the wait: on a workspace, a token the
+// environment writes a moment after the run starts — first as an empty file,
+// the way a writer that creates then fills it looks — is still found.
+func TestTokenWaitsInAWorkspace(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".oauth_token")
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(path, nil, 0o600)
+		time.Sleep(150 * time.Millisecond)
+		os.WriteFile(path, []byte("sk-ant-oat01-late\n"), 0o600)
+	}()
+	log, buf := quiet()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	got, ok := New(WithPath(path), WithHome(home)).Token(ctx, log)
+	if !ok || got != "sk-ant-oat01-late" {
+		t.Fatalf("Token() = %q, %v, want the token that arrived late", got, ok)
+	}
+	for _, want := range []string{"waiting for the workspace credential", "after="} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log %q does not say %q", buf.String(), want)
+		}
+	}
+	if strings.Contains(buf.String(), "late") {
+		t.Errorf("the log carried the credential: %q", buf.String())
+	}
+}
+
+// TestTokenDoesNotWaitOffAWorkspace pins that a machine without the
+// workspace's home looks once and is done, however long the lookup allows.
+func TestTokenDoesNotWaitOffAWorkspace(t *testing.T) {
+	log, _ := quiet()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	p := New(WithPath(filepath.Join(t.TempDir(), "missing")), WithHome(filepath.Join(t.TempDir(), "nobody")))
+	if _, ok := p.Token(ctx, log); ok {
+		t.Fatal("Token() found something")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("Token() took %s off a workspace, want it immediate", took)
+	}
+}
+
+// TestTokenGivesUpWaiting pins the two ends of a wait that finds nothing: the
+// lookup's deadline passing, and the lookup cancelling it because a provider
+// earlier in the list answered.
+func TestTokenGivesUpWaiting(t *testing.T) {
+	home := t.TempDir()
+	missing := filepath.Join(home, "missing")
+
+	log, buf := quiet()
+	deadline, stop := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer stop()
+	if _, ok := New(WithPath(missing), WithHome(home)).Token(deadline, log); ok {
+		t.Fatal("Token() found something")
+	}
+	if !strings.Contains(buf.String(), "never arrived") {
+		t.Errorf("log %q does not say the credential never arrived", buf.String())
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	time.AfterFunc(150*time.Millisecond, cancel)
+	log, buf = quiet()
+	start := time.Now()
+	if _, ok := New(WithPath(missing), WithHome(home)).Token(ctx, log); ok {
+		t.Fatal("Token() found something")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("Token() took %s after its lookup was cancelled", took)
+	}
+	if !strings.Contains(buf.String(), "stopped waiting") {
+		t.Errorf("log %q does not say it stopped waiting", buf.String())
 	}
 }
 

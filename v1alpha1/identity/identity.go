@@ -44,6 +44,16 @@ type Provider interface {
 	Token(ctx context.Context, log v1.Logger) (string, bool)
 }
 
+// DefaultTimeout bounds a whole lookup: every provider looks under one
+// deadline, and whatever has not answered by then has found nothing.
+//
+// A provider may be waiting on something that never comes — gh reaching a
+// keyring that puts a dialog up, a workspace that has not written its token —
+// and a tunnel held behind either is worse than an anonymous mint. Two seconds
+// is far longer than reading a file or asking gh takes, and far shorter than a
+// person notices.
+const DefaultTimeout = 2 * time.Second
+
 // Option configures an IdentityImpl at construction.
 type Option = v1.Option[*IdentityImpl]
 
@@ -53,10 +63,22 @@ type Option = v1.Option[*IdentityImpl]
 // does not have is refused by Known rather than skipped.
 type IdentityImpl struct {
 	providers map[string]Provider
+	// timeout bounds a lookup. Seeded by New; a test shortens it to make the
+	// bound observable rather than slow.
+	timeout time.Duration
 }
 
 // New returns an IdentityImpl configured by opts.
-func New(opts ...Option) *IdentityImpl { return v1.Apply(&IdentityImpl{}, opts...) }
+func New(opts ...Option) *IdentityImpl {
+	return v1.Apply(&IdentityImpl{timeout: DefaultTimeout}, opts...)
+}
+
+// WithTimeout bounds a lookup. Zero or negative is not special-cased: a
+// lookup given no time finds what a provider can hand back at once, which is
+// nothing that has to be waited for.
+func WithTimeout(d time.Duration) Option {
+	return func(i *IdentityImpl) { i.timeout = d }
+}
 
 // WithProviders adds the providers a list may name. Each names itself, so
 // there are no keys to keep in step with the values. Repeating the option
@@ -131,7 +153,9 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 	log.Debug("looking for a mint credential", "providers", names)
 	start := time.Now()
 
-	ctx, cancel := context.WithCancel(ctx)
+	// One deadline for every provider, and cancelled as soon as the answer
+	// is decided, so the ones still looking stop either way.
+	ctx, cancel := context.WithTimeout(ctx, i.timeout)
 	defer cancel()
 
 	type answer struct {

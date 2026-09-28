@@ -126,6 +126,31 @@ func TestTokenAsksAtOnceAndKeepsTheOrder(t *testing.T) {
 	}
 }
 
+// TestTokenIsBoundedByOneDeadline pins the lookup's own bound: a provider that
+// never answers holds the run no longer than the timeout, and is told to stop
+// when it passes.
+func TestTokenIsBoundedByOneDeadline(t *testing.T) {
+	log, _ := quiet()
+	stuck := newGated("stuck", "never")
+	i := New(WithProviders(stuck), WithTimeout(150*time.Millisecond))
+
+	start := time.Now()
+	if got := i.Token(t.Context(), []string{"stuck"}, log); got != "" {
+		t.Errorf("Token() = %q, want nothing from a provider that never answered", got)
+	}
+	if took := time.Since(start); took < 150*time.Millisecond || took > 2*time.Second {
+		t.Errorf("Token() took %s, want it bounded at the 150ms timeout", took)
+	}
+	select {
+	case <-stuck.canceled:
+	default:
+		t.Error("the provider was not told to stop when the deadline passed")
+	}
+	if DefaultTimeout != 2*time.Second {
+		t.Errorf("DefaultTimeout = %s, want 2s", DefaultTimeout)
+	}
+}
+
 // TestTokenFallsThroughAnEmptyProvider pins that a provider finding nothing is
 // not a failure: the next one in the list answers.
 func TestTokenFallsThroughAnEmptyProvider(t *testing.T) {

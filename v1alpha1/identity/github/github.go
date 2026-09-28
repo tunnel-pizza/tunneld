@@ -16,17 +16,9 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// defaultTimeout bounds `gh auth token`.
-//
-// The command prints a stored credential and does not prompt for a login, but
-// it may reach a keyring that does — macOS Keychain will put a dialog up — and
-// a tunnel held behind a dialog nobody is looking at is worse than an
-// anonymous mint. Two seconds is far longer than reading a file takes and far
-// shorter than a person notices.
-const defaultTimeout = 2 * time.Second
-
-// waitDelay is how long the subprocess is given to die after the deadline
-// passes, before its pipes are closed out from under it.
+// waitDelay is how long the subprocess is given to die after the lookup's
+// deadline passes (identity.DefaultTimeout), before its pipes are closed out
+// from under it.
 //
 // It is not belt and braces. Killing the context kills gh, but gh's own
 // children inherit the pipe this reads, and Output blocks until every writer
@@ -55,22 +47,16 @@ var envs = []string{
 type Option = v1.Option[*ProviderImpl]
 
 // ProviderImpl is the default GitHub identity: gh's credential, or CI's.
-type ProviderImpl struct {
-	// timeout bounds the gh subprocess. Seeded by New; a test shortens it to
-	// make the bound observable rather than slow.
-	timeout time.Duration
-}
+//
+// gh is bounded by the context it is handed — the lookup's one deadline, not
+// a timeout of its own: `gh auth token` prints a stored credential, but it may
+// reach a keyring that puts a dialog up, and the lookup is what decides how
+// long anything may wait.
+type ProviderImpl struct{}
 
 // New returns a ProviderImpl configured by opts.
 func New(opts ...Option) *ProviderImpl {
-	return v1.Apply(&ProviderImpl{timeout: defaultTimeout}, opts...)
-}
-
-// WithTimeout bounds the gh subprocess. Zero or negative is not special-cased:
-// a caller that asks for no time gets no credential from gh, which is the same
-// answer as a machine without it.
-func WithTimeout(d time.Duration) Option {
-	return func(p *ProviderImpl) { p.timeout = d }
+	return v1.Apply(&ProviderImpl{}, opts...)
 }
 
 // Name is "github": the word --identity-providers names this provider by.
@@ -111,9 +97,6 @@ func (p *ProviderImpl) fromGH(ctx context.Context, log v1.Logger) (string, bool)
 		return "", false
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
 	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
 	// See waitDelay: without this the deadline kills gh and then waits on a
 	// pipe a grandchild is still holding.
@@ -123,7 +106,7 @@ func (p *ProviderImpl) fromGH(ctx context.Context, log v1.Logger) (string, bool)
 	took := time.Since(began)
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		log.Debug("gh auth token took too long", "gh", path, "timeout", p.timeout)
+		log.Debug("gh auth token took too long", "gh", path, "took", took)
 		return "", false
 	case errors.Is(ctx.Err(), context.Canceled):
 		// Another provider earlier in the list answered: this lookup was

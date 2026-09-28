@@ -2,6 +2,7 @@ package github
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -126,7 +127,9 @@ func TestTokenBoundsGH(t *testing.T) {
 	log, buf := quiet()
 
 	start := time.Now()
-	got, ok := New(WithTimeout(timeout)).Token(t.Context(), log)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	got, ok := New().Token(ctx, log)
 	elapsed := time.Since(start)
 
 	if !ok || got != "from-the-environment" {
