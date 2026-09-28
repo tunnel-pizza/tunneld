@@ -340,6 +340,8 @@ type fakeTunnel struct {
 	order  *[]string
 	// token is what WithToken was handed; the run applies it on every path.
 	token string
+	// headers is what WithHeader was handed, as "key: value", in order.
+	headers []string
 	// messages is what Messages hands back: what the provider said with the
 	// spec, as libtunnel would carry it.
 	messages []string
@@ -407,6 +409,11 @@ func (f *fakeTunnel) Serialize() string {
 
 func (f *fakeTunnel) WithToken(token string) libtunnel.TunnelV1 {
 	f.token = token
+	return f
+}
+
+func (f *fakeTunnel) WithHeader(key, value string) libtunnel.TunnelV1 {
+	f.headers = append(f.headers, key+": "+value)
 	return f
 }
 
@@ -817,6 +824,18 @@ func TestRun(t *testing.T) {
 		}
 		if !h.binder.closed {
 			t.Error("the binder's closer was never called; RunE's defer did not run")
+		}
+	})
+
+	t.Run("the mint says which tunneld is asking", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if got, want := h.tunnels[0].headers, []string{"User-Agent: " + UserAgent()}; !slices.Equal(got, want) {
+			t.Errorf("headers = %q, want %q", got, want)
 		}
 	})
 

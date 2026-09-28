@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"github.com/cnuss/libtunnel"
 )
@@ -68,6 +69,15 @@ func Version() string {
 		return "devel"
 	}
 	return "unknown"
+}
+
+// UserAgent is the product token a run's mint request carries: tunneld and
+// the release this build is, as Version names it. libtunnel puts its own
+// comment after it — the library's version and the platform — so the mint
+// provider sees which tunneld is asking and what it is built on, where it
+// otherwise sees only libtunnel.
+func UserAgent() string {
+	return modulePath[strings.LastIndex(modulePath, "/")+1:] + "/" + Version()
 }
 
 // VersionLine is the human-facing build banner printed by `tunneld version`
