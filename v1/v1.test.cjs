@@ -71,15 +71,20 @@ test("describe names an origin by what opening it gives", () => {
   }
 });
 
-test("prose wraps without breaking a word, and keeps the address whole", () => {
-  const lines = prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash"], true);
+test("prose wraps to the width it is given, never inside a word", () => {
+  const lines = prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash"], true, 78);
   assert.deepEqual(lines, [
     "  A terminal running /bin/bash is now available at",
     "  https://0t09ndffmw.tunneled.pizza/. Open it in any web browser.",
   ]);
-  for (const line of prose("h.example", ["http://localhost:3000", "exec:///usr/bin/claude?arg=--resume", "attach://dockerd/web"], true)) {
-    assert.ok(line.length <= 78, line);
+  const many = ["http://localhost:3000", "exec:///usr/bin/claude?arg=--resume", "attach://dockerd/web"];
+  for (const columns of [78, 60, 40]) {
+    for (const line of prose("h.example", many, true, columns)) {
+      assert.ok(line.length <= columns, `${columns}: ${line}`);
+    }
   }
+  // An address longer than the line gets a line of its own, whole.
+  assert.ok(prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash"], true, 30).includes("  https://0t09ndffmw.tunneled.pizza/."));
 });
 
 test("quote spells a word that pastes back as itself", { skip: win && "cmd.exe quoting" }, () => {

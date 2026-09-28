@@ -498,8 +498,8 @@ function wrap(words, width, indent) {
 }
 
 // prose is what the run shares, said as a sentence: each origin by what it
-// gives, and where to open it.
-function prose(host, origins, multiview) {
+// gives, and where to open it, in lines of at most columns, indent included.
+function prose(host, origins, multiview, columns) {
   const plain = (s) => s.split(" ").map((w) => [w, (x) => x]);
   const link = (url, tail = "") => [[url + tail, (x) => cyan(url) + tail]];
   const up = (s) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -517,7 +517,7 @@ function prose(host, origins, multiview) {
   } else {
     words = plain(`${names} are now available in any web browser, each at an address of its own below.`);
   }
-  return wrap(words, 76, "  ");
+  return wrap(words, Math.max(columns, 24) - 2, "  ");
 }
 
 // summary is what a detached run is handed back with, once it has signalled:
@@ -550,7 +550,10 @@ function summary(pid) {
   } else {
     const base = `https://${host}/`;
     const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
-    lines.push(...prose(host, origins, env.TUNNELD_MULTIVIEW === "true"), "");
+    // The terminal's width where there is one, so a narrow window does not
+    // wrap every line a second time; 78 at most, and 78 into a file.
+    const columns = Math.min(process.stderr.columns || 78, 78);
+    lines.push(...prose(host, origins, env.TUNNELD_MULTIVIEW === "true", columns), "");
     if (origins.length > 1) {
       const width = `${base}?${origins.length - 1}`.length;
       if (env.TUNNELD_MULTIVIEW === "true") {
