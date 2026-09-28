@@ -14,7 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { misread, isOrigin, quote } = require("./v1.cjs");
+const { ambiguous, misread, isOrigin, quote } = require("./v1.cjs");
 
 const win = process.platform === "win32";
 const posixOnly = { skip: win && "-d and -k are refused on Windows" };
@@ -67,37 +67,68 @@ test("quote spells a word that pastes back as itself", { skip: win && "cmd.exe q
 
 test("misread", async (t) => {
   withPath(t, ["claude", "next", "sh", "bash"]);
-  const prefix = "npx tunneld";
   const cases = [
     {
       name: "a bare program swallowing a quoted program",
       words: ["claude", "next dev"],
-      want: "npx tunneld 'next dev' claude",
+      two: ["next dev", "claude"],
+      one: ['claude "next dev"'],
     },
     {
       name: "flags stay first, the program's own arguments move with it",
       words: ["--no-cache", "claude", "--resume", "abc", "next dev", ":3000"],
-      want: "npx tunneld --no-cache 'next dev' :3000 claude --resume abc",
+      two: ["--no-cache", "next dev", ":3000", "claude", "--resume", "abc"],
+      one: ["--no-cache", 'claude --resume abc "next dev"', ":3000"],
+    },
+    {
+      name: "the program again starts the next origin",
+      words: ["bash", "bash", "next dev"],
+      two: ["next dev", "bash", "bash"],
+      one: ['bash "next dev"', "bash"],
+    },
+    {
+      name: "args after the quoted word stay the program's",
+      words: ["--no-cache", "claude", "next dev", "--resume"],
+      two: ["--no-cache", "next dev", "claude", "--resume"],
+      one: ["--no-cache", 'claude "next dev" --resume'],
     },
     { name: "a prompt is an argument", words: ["claude", "fix the bug"] },
     { name: "a flag's value is an argument", words: ["sh", "-c", "next dev"] },
     { name: "quoted first is already two origins", words: ["next dev", "claude"] },
     { name: "after a port the run has ended", words: ["claude", ":3000", "next dev"] },
     { name: "a word that is no program is not a program", words: ["nope", "next dev"] },
-    { name: "the program again starts the next origin", words: ["bash", "bash", "next dev"],
-      want: "npx tunneld bash 'next dev' bash" },
   ];
   for (const c of cases) {
     await t.test(c.name, () => {
-      const got = misread(c.words, prefix);
-      if (!c.want) {
+      const got = misread(c.words);
+      if (!c.two) {
         assert.equal(got, null);
         return;
       }
-      assert.ok(got, "want a warning");
-      assert.ok(got.endsWith(`\n    ${win ? c.want.replace(/'/g, '"') : c.want}`), got);
+      assert.ok(got, "want the line refused");
+      assert.deepEqual(got.two, c.two);
+      if (!win) {
+        assert.deepEqual(got.one, c.one);
+      }
+      // Each reading is what somebody pastes back, so neither may be refused.
+      assert.equal(misread(got.two), null, "two origins, misread again");
+      assert.equal(misread(got.one), null, "one origin, misread again");
     });
   }
+});
+
+test("ambiguous names both readings, ready to paste", { skip: win && "cmd.exe quoting" }, () => {
+  const got = ambiguous(
+    { program: "claude", arg: "next dev", two: ["next dev", "claude"], one: ['claude "next dev"'] },
+    "npx tunneld",
+  );
+  assert.equal(
+    got,
+    "ambiguous: 'next dev' could be claude's argument or an origin of its own.\n" +
+      "  Say which with quotes:\n" +
+      "    npx tunneld 'next dev' claude    two origins\n" +
+      "    npx tunneld 'claude \"next dev\"'  one origin",
+  );
 });
 
 // A stand-in for the binary: it writes its argv to stderr, two addresses to
@@ -229,6 +260,21 @@ test("-k clears a record whose run is gone", posixOnly, (t) => {
   assert.equal(got.status, 0, got.stderr);
   assert.match(got.stderr, /no detached runs/);
   assert.deepEqual(fs.readdirSync(detached), []);
+});
+
+test("an ambiguous line is refused before the binary runs", posixOnly, (t) => {
+  const { launch, env } = pkg(t);
+  const bin = tempDir(t);
+  for (const name of ["claude", "next"]) {
+    fs.writeFileSync(path.join(bin, name), "", { mode: 0o755 });
+  }
+  env.PATH = `${bin}${path.delimiter}${env.PATH}`;
+  for (const args of [["claude", "next dev"], ["-d", "claude", "next dev"]]) {
+    const got = launch(...args);
+    assert.equal(got.status, 1);
+    assert.match(got.stderr, /^tunneld: ambiguous: 'next dev' could be claude's argument/);
+    assert.doesNotMatch(got.stderr, /argv:/, "the binary ran");
+  }
 });
 
 test("-k takes no arguments", posixOnly, (t) => {

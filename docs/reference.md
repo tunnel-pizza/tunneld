@@ -690,30 +690,34 @@ Neither flag is offered on Windows yet. Node there can only terminate another
 process, which would skip the teardown `-k` exists to run, and a run nothing
 can end cleanly is not one to leave behind.
 
-**A likely misread is named.** A bare program takes every word after it, up
-to a port or a URL, so
+**An ambiguous line is refused.** A bare program takes every word after it,
+up to a port or a URL, so
 
 ```sh
 npx tunneld claude "next dev"
 ```
 
-is one program, `claude`, with `next dev` as its argument. The shell has
-removed the quotes before anything runs, but a word with whitespace in it,
-whose first word is a program on `$PATH`, is almost certainly a quoted group
-meant as an origin of its own. When one sits among a bare program's arguments,
-and is not the value of a flag in front of it (`sh -c "npm run dev"` is one
-program on purpose), the launcher warns on stderr and names the line that
-gives two origins, which is the bare program last:
+is, as written, one program, `claude`, with `next dev` as its argument. The
+shell has removed the quotes before anything runs, but a word with whitespace
+in it, whose first word is a program on `$PATH`, is most likely a quoted group
+meant as an origin of its own. When one sits among a bare program's
+arguments, and is not the value of a flag in front of it (`sh -c "npm run
+dev"` is one program on purpose), the launcher stops before the run starts
+and exits 1, naming both readings, each ready to paste back:
 
 ```
-tunneld: warning: 'next dev' is an argument to claude, not an origin of its own:
-  a bare program takes the words after it, up to a port or a URL.
-  Running it as written. For two origins, put the bare program last:
-    npx tunneld 'next dev' claude
+tunneld: ambiguous: 'next dev' could be claude's argument or an origin of its own.
+  Say which with quotes:
+    npx tunneld 'next dev' claude    two origins
+    npx tunneld 'claude "next dev"'  one origin
 ```
 
-The run goes ahead as written either way: `npx tunneld claude "fix the bug"` is
-a prompt, and a warning is the most a guess should do.
+Two origins is the bare program moved last. One origin is the program quoted
+together with its arguments, which is a single word with whitespace in it and
+so never a bare program; the binary splits it back into the program and its
+arguments. Neither line is refused in turn. A prompt,
+`npx tunneld claude "fix the bug"`, is not refused at all, because `fix` is
+not a program.
 
 ## Environment
 

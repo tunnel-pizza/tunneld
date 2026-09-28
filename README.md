@@ -201,10 +201,11 @@ npx tunneld -d :3000 claude
 npx tunneld -k
 ```
 
-The launcher also warns when a line likely doesn't say what you meant:
-`npx tunneld claude "next dev"` is one program, `claude` with `next dev` as its
-argument, because a bare program takes the words after it. Put it last for
-two. See [The npm launcher](./docs/reference.md#the-npm-launcher).
+The launcher also refuses a line that could mean two things:
+`npx tunneld claude "next dev"` is, as written, one program, `claude` with
+`next dev` as its argument, since a bare program takes the words after it. It
+stops and shows the quoting for each reading: `'next dev' claude` for two
+origins, `'claude "next dev"'` for one. See [The npm launcher](./docs/reference.md#the-npm-launcher).
 
 ## How it works
 

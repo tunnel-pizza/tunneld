@@ -27,9 +27,8 @@
 //
 // Beyond that, the launcher does three things the binary does not:
 //
-//   - It warns about a command line that likely does not say what was meant
-//     (misread, below), before the run starts. The words go to the binary
-//     unchanged either way.
+//   - It refuses a command line that could mean two things (misread, below),
+//     before the run starts, and names the quoting for each.
 //   - `-d`, as the first word, detaches: the run goes on in the background,
 //     and the launcher prints its addresses and hands the console back.
 //   - `-k`, as the only word, ends every run `-d` left behind, the way Ctrl-C
@@ -166,33 +165,70 @@ function quote(word) {
   return `'${word.replace(/'/g, "'\\''")}'`;
 }
 
-// misread looks for the command line that says one thing and runs another:
+// misread looks for the command line that could mean two things:
 //
 //   npx tunneld claude "next dev"
 //
 // A bare program is greedy: it takes every word after it up to one that can
-// only be an origin, so that is one program, claude, with "next dev" as its
-// argument. Whoever typed it almost certainly meant two, and quoted "next
-// dev" because a quoted group is complete. The quotes are gone before
+// only be an origin, so as written that is one program, claude, with "next
+// dev" as its argument. Whoever typed it more likely meant two, and quoted
+// "next dev" because a quoted group is complete. The quotes are gone before
 // anything here runs, but what they left is visible: a word with whitespace
 // inside it, whose first word is itself a program. That word, in a bare
 // program's arguments and not the value of a flag before it (`sh -c "npm run
 // dev"` is one program on purpose), is the case.
 //
-// It returns the warning to print, or null. The run goes ahead as written
-// either way: `claude "fix the bug"` is a program with an argument, and so is
-// the rare line this guesses wrong about. The warning names the reordering
-// that gives two origins, which is the bare program last.
+// The launcher refuses such a line rather than guessing, since a guess either
+// way starts somebody a program they did not ask for, in public. It returns
+// null, or the two lines that each say one thing: `two`, the bare program
+// moved last so the quoted word is an origin of its own, and `one`, the
+// program quoted together with its arguments, which is a word with
+// whitespace in it and so never a bare program. Neither is itself misread,
+// so whichever gets pasted back runs. A prompt (`claude "fix the bug"`) is
+// not refused, because fix is not a program.
 //
 // Words starting with - before the first origin are the binary's flags and
 // are skipped; the value of one given as a separate word is looked at like
 // any other, which only matters if it names a program.
-function misread(words, prefix) {
-  let i = 0;
-  while (i < words.length && words[i].startsWith("-")) {
-    i++;
+function misread(words) {
+  const found = locate(words);
+  if (!found) {
+    return null;
   }
-  for (; i < words.length; i++) {
+  const { first, i, j, end } = found;
+  const word = words[i];
+  const arg = words[j];
+
+  // Each reading goes where the program stood. If what comes before it is a
+  // run of the same program — `bash bash "next dev"` — that run would swallow
+  // the reading in turn, so there it goes ahead of every origin instead: a
+  // quoted group is complete, so nothing it precedes is affected. Only there,
+  // since this cannot tell `--log-level debug`'s value from an origin, and
+  // moving ahead of one would split a flag.
+  const place = (reading, rest) => {
+    const here = [...words.slice(0, i), ...reading, ...words.slice(end), ...rest];
+    if (locate(here) === null) {
+      return here;
+    }
+    return [...words.slice(0, first), ...reading, ...words.slice(first, i), ...words.slice(end), ...rest];
+  };
+  return {
+    program: word,
+    arg,
+    two: place([arg], [word, ...words.slice(i + 1, j), ...words.slice(j + 1, end)]),
+    one: place([group(words.slice(i, end))], []),
+  };
+}
+
+// locate finds what misread describes: the first positional word, the bare
+// program at i, the argument at j that could be an origin, and the end of the
+// program's run. Null when there is none.
+function locate(words) {
+  let first = 0;
+  while (first < words.length && words[first].startsWith("-")) {
+    first++;
+  }
+  for (let i = first; i < words.length; i++) {
     const word = words[i];
     if (isOrigin(word) || /\s/.test(word) || !onPath(word)) {
       continue;
@@ -206,26 +242,45 @@ function misread(words, prefix) {
       if (!/\s/.test(arg) || words[j - 1].startsWith("-")) {
         continue;
       }
-      if (!onPath(arg.trim().split(/\s+/)[0])) {
-        continue;
+      if (onPath(arg.trim().split(/\s+/)[0])) {
+        return { first, i, j, end };
       }
-      const program = words.slice(i, j);
-      const line = [
-        ...words.slice(0, i),
-        ...words.slice(j, end),
-        ...words.slice(end),
-        ...program,
-      ];
-      return (
-        `warning: ${quote(arg)} is an argument to ${word}, not an origin of its own:\n` +
-        `  a bare program takes the words after it, up to a port or a URL.\n` +
-        `  Running it as written. For two origins, put the bare program last:\n` +
-        `    ${[prefix, ...line.map(quote)].join(" ")}`
-      );
     }
     i = end - 1;
   }
   return null;
+}
+
+// group spells a program and its arguments as the one word the Go parser
+// splits back into them: each word with anything special in it quoted with
+// the quote quote() will not wrap the whole in, so the two nest.
+function group(words) {
+  return words
+    .map((w) => {
+      if (/^[\w@%+=:,./-]+$/.test(w)) {
+        return w;
+      }
+      if (process.platform === "win32") {
+        return `'${w}'`;
+      }
+      return `"${w.replace(/["\\$`]/g, "\\$&")}"`;
+    })
+    .join(" ");
+}
+
+// ambiguous is the refusal for a line misread found: both readings, each
+// ready to paste back.
+function ambiguous(reading, prefix) {
+  const line = (words) => [prefix, ...words.map(quote)].join(" ");
+  const two = line(reading.two);
+  const one = line(reading.one);
+  const width = Math.max(two.length, one.length);
+  return (
+    `ambiguous: ${quote(reading.arg)} could be ${reading.program}'s argument or an origin of its own.\n` +
+    `  Say which with quotes:\n` +
+    `    ${two.padEnd(width)}  two origins\n` +
+    `    ${one.padEnd(width)}  one origin`
+  );
 }
 
 // cacheDir is Go's os.UserCacheDir, so detached runs sit beside the tunnel
@@ -516,9 +571,9 @@ function main() {
     refuseOnWindows("-d");
   }
 
-  const warning = misread(args, detaching ? `npx ${WRAPPER_NAME} -d` : `npx ${WRAPPER_NAME}`);
-  if (warning) {
-    console.error(`${WRAPPER_NAME}: ${warning}`);
+  const reading = misread(args);
+  if (reading) {
+    fail(ambiguous(reading, detaching ? `npx ${WRAPPER_NAME} -d` : `npx ${WRAPPER_NAME}`));
   }
 
   const bin = binaryPath();
@@ -533,4 +588,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { isOrigin, misread, onPath, quote };
+module.exports = { ambiguous, isOrigin, misread, onPath, quote };
