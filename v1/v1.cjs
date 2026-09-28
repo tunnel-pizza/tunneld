@@ -326,51 +326,35 @@ function signum(signal) {
   return 128 + (constants.signals[signal] ?? 0);
 }
 
-// run is the plain launch: the binary in the foreground, on this terminal.
-function run(bin, args) {
-  const child = spawn(bin, args, { stdio: "inherit" });
-
-  // Listening keeps this process alive until the child is done. On POSIX the
-  // signal is also forwarded, for the case where only this pid was targeted.
-  // On Windows the console has already delivered Ctrl-C to the child, and
-  // child.kill() there is TerminateProcess, which would cut teardown short,
-  // so it only waits.
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(signal, () => {
-      if (process.platform !== "win32") {
-        child.kill(signal);
-      }
-    });
-  }
-
-  child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
-  child.on("exit", (code, signal) => {
-    // Node ignores some signals itself (SIGPIPE), so re-raising is
-    // unreliable; report a signal death the way a shell does, 128+signum.
-    process.exit(signal ? signum(signal) : (code ?? 1));
-  });
-}
-
-// detach starts the binary in a session of its own, on this process's own
-// streams, and waits to be told it is up. The banner, the addresses and the
-// origin each reaches go straight to the caller, the same two streams a
-// foreground run uses.
+// start runs the binary on this process's own streams, in the foreground or,
+// detaching, in a session of its own.
 //
-// The telling is a signal. The binary is given this process's pid in
-// NOTIFY_ENV, and once its addresses are out it points its stdout and stderr
-// at its log, <key>.log beside its spec, and sends SIGUSR2 to its
-// parent when that is the pid it was given — and to nobody otherwise, since
-// SIGUSR2 ends a process that has not asked for it. Moving the streams first
-// is what lets the caller go: once this exits, nothing holds them, so
-// `$(npx tunneld -d …)` returns, and nothing lands on a prompt later.
-// SIGUSR2 rather than SIGUSR1, which Node keeps for its debugger.
+// In the foreground this process waits for it and passes on its exit status.
+// Listening keeps this process alive until the child is done. On POSIX a
+// signal is also forwarded, for the case where only this pid was targeted. On
+// Windows the console has already delivered Ctrl-C to the child, and
+// child.kill() there is TerminateProcess, which would cut teardown short, so
+// it only waits.
 //
-// A run that ends first — a bad origin, --help, a mint that fails — has
-// already said so on the caller's streams, and its exit status is passed on,
-// so a detached run that could not start fails like a foreground one. Ctrl-C
-// while waiting ends the run: it is in a session of its own, where the
-// terminal's Ctrl-C does not reach, and nothing has been handed back yet.
-function detach(bin, args) {
+// Detaching, it waits instead to be told the run is up. stdin is /dev/null —
+// a background run has nothing to read, and must not hold the terminal's. The
+// banner, the addresses and the origin each reaches go straight to the
+// caller, the same two streams a foreground run uses. The telling is a
+// signal: the binary is given this process's pid in NOTIFY_ENV, and once its
+// addresses are out it points its stdout and stderr at its log, <key>.log
+// beside its spec, and sends SIGUSR2 to its parent when that is the pid it was
+// given — and to nobody otherwise, since SIGUSR2 ends a process that has not
+// asked for it. Moving the streams first is what lets the caller go: once this
+// exits, nothing holds them, so `$(npx tunneld -d …)` returns, and nothing
+// lands on a prompt later. SIGUSR2 rather than SIGUSR1, which Node keeps for
+// its debugger.
+//
+// A detached run that ends first — a bad origin, --help, a mint that fails —
+// has already said so on the caller's streams, and its exit status is passed
+// on, so it fails like a foreground one. Ctrl-C while waiting ends the run: it
+// is in a session of its own, where the terminal's Ctrl-C does not reach, and
+// nothing has been handed back yet.
+function start(bin, args, detaching) {
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
   let interrupted = null;
   let child = null;
@@ -384,27 +368,41 @@ function detach(bin, args) {
     process.exitCode = status;
   };
 
-  // Listening before the spawn: unheard, SIGUSR2 would end this process.
-  process.on("SIGUSR2", () => {
-    child.removeAllListeners("exit");
-    child.unref();
-    finish(0);
-    process.stderr.write(summary(child.pid));
-  });
+  if (detaching) {
+    // Listening before the spawn: unheard, SIGUSR2 would end this process.
+    process.on("SIGUSR2", () => {
+      child.removeAllListeners("exit");
+      child.unref();
+      finish(0);
+      process.stderr.write(summary(child.pid));
+    });
+  }
   for (const signal of signals) {
     process.on(signal, () => {
-      interrupted = signal;
-      child.kill("SIGINT");
+      if (detaching) {
+        interrupted = signal;
+        child.kill("SIGINT");
+      } else if (process.platform !== "win32") {
+        child.kill(signal);
+      }
     });
   }
 
-  child = spawn(bin, args, {
-    detached: true,
-    stdio: ["ignore", "inherit", "inherit"],
-    env: { ...process.env, [NOTIFY_ENV]: String(process.pid) },
-  });
+  child = spawn(
+    bin,
+    args,
+    detaching
+      ? {
+          detached: true,
+          stdio: ["ignore", "inherit", "inherit"],
+          env: { ...process.env, [NOTIFY_ENV]: String(process.pid) },
+        }
+      : { stdio: "inherit" },
+  );
   child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
   child.on("exit", (code, signal) => {
+    // Node ignores some signals itself (SIGPIPE), so re-raising is
+    // unreliable; report a signal death the way a shell does, 128+signum.
     finish(interrupted ? signum(interrupted) : signal ? signum(signal) : (code ?? 1));
   });
 }
@@ -706,11 +704,9 @@ function main() {
 
   const bin = binaryPath();
   if (killing) {
-    kill(() => detach(bin, args));
-  } else if (detaching) {
-    detach(bin, args);
+    kill(() => start(bin, args, true));
   } else {
-    run(bin, args);
+    start(bin, args, detaching);
   }
 }
 
