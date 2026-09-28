@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Host}} multiview</title>
+
+<!-- EXPERIMENT: the panel as a Trellis workspace. Every origin is a view
+     whose content is an iframe; Trellis docks, tabs, floats and zooms the
+     container around it without ever moving it in the DOM, so a frame keeps
+     its page, its scroll and its session through every rearrangement.
+     Pinned, with integrity, like the xterm the attach page loads. -->
+<link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/style.css"
+      integrity="sha384-qMmdHdhfNA4PNPX2ZiioZRN3zfWCmAT/PPjXjNaMaNDNHbMw5wNf4JyX7CLZQDj2"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer">
+<script type="importmap">
+{
+  "imports": {
+    "trellis": "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/index.js"
+  },
+  "integrity": {
+    "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/index.js": "sha384-CWXttq8gmZ0ZGdjOw3ZQkCGlm/CMKqkNkNeqHvSplrqGIESnymhYaJ5wCc5t/oY0"
+  }
+}
+</script>
+
+<style>
+  /* The workspace is the page. */
+  html, body, #workspace { height: 100%; margin: 0; }
+</style>
+</head>
+<body>
+<main id="workspace"></main>
+
+<script type="module">
+  import { createWorkspace, layout } from "trellis";
+
+  // The origins, as display.go hands them to the template: what each one is
+  // called, the route that reaches it, and whether tunneld draws it itself.
+  const origins = {{.Origins}};
+
+  const view = (o, i) => layout.view(o.Terminal ? "terminal" : "origin", {
+    id: `o${i}`,
+    title: o.Local,
+    params: { route: o.Route, local: o.Local },
+  });
+
+  // Two across, as the grid was: a row per pair, the rows stacked.
+  const rows = [];
+  for (let i = 0; i < origins.length; i += 2) {
+    rows.push(layout.row(origins.slice(i, i + 2).map((o, j) => layout.panel(view(o, i + j)))));
+  }
+  const root = rows.length === 1 ? rows[0] : layout.column(rows);
+
+  // Per view: its frame and what the menu can do with it.
+  const frames = new Map();
+
+  const frameOf = (v) => ({ src: v.params.route, title: v.params.local });
+  const ws = createWorkspace(document.getElementById("workspace"), {
+    label: `${location.host} multiview`,
+    theme: "dark",
+    types: {
+      origin: {
+        title: (v) => v.params.local,
+        iframe: frameOf,
+        closable: false,
+        // Back only within the frame's own history, reload where it is now,
+        // its route in a tab of its own — what the grid carried as chips.
+        menu: (v) => {
+          const f = frames.get(v.id);
+          return [
+            { id: "back", label: "Back", disabled: !f?.canGoBack(), run: () => f?.back() },
+            { id: "reload", label: "Reload", run: () => f?.reload() },
+            { id: "open", label: "Open in new tab", run: () => window.open(v.params.route, "_blank", "noopener") },
+          ];
+        },
+      },
+      // A terminal draws its own frame, labels and bar.
+      terminal: {
+        title: (v) => v.params.local,
+        iframe: frameOf,
+        closable: false,
+      },
+    },
+    defaultLayout: layout.stage(root),
+    // The arrangement is remembered per tunnel, per set of origins: a reload
+    // puts the tiles back where they were left.
+    persist: {
+      key: "tunneld.multiview:" + origins.map((o) => o.Route + "=" + o.Local).join("|"),
+      version: 1,
+    },
+  });
+  window.ws = ws; // EXPERIMENT: poke at it from the console
+
+  // Wire each frame once: focus on press (in the capture phase, ahead of an
+  // origin that cancels mousedown) and dark defaults for a page with no styles.
+  const wire = ({ view: v, content }) => {
+    const frame = content.querySelector("iframe");
+    if (!frame || frames.get(v.id)?.frame === frame) return;
+    const attach = () => {
+      try {
+        frame.contentWindow.addEventListener("pointerdown", () => {
+          frame.contentWindow.focus();
+          ws.focus(v.id);
+        }, true);
+      } catch (e) { /* cross-origin: leave the browser's default alone */ }
+      paint(frame);
+    };
+    frame.addEventListener("load", attach);
+    attach();
+    frames.set(v.id, history(frame, v.params.route));
+  };
+
+  const paint = (frame) => {
+    try {
+      const doc = frame.contentDocument;
+      if (!doc || !doc.documentElement) return;
+      if (doc.querySelector('meta[name="color-scheme"], style, link[rel~="stylesheet"], [style]')) return;
+      doc.documentElement.style.colorScheme = "dark";
+    } catch (e) { /* cross-origin: its colours are its own */ }
+  };
+
+  // A frame's own history. history.back() on a frame walks the page's joint
+  // history and leaves the panel when the frame has nothing behind it, so
+  // Back is only offered when it does: the Navigation API knows, and where
+  // it is missing the frame's loads are counted instead.
+  const history = (frame, route) => {
+    let depth = 0, expected = false, first = true;
+    try {
+      const doc = frame.contentDocument;
+      first = !(doc && doc.readyState === "complete" && frame.contentWindow.location.href !== "about:blank");
+    } catch (e) { first = false; }
+    frame.addEventListener("load", () => {
+      if (first) first = false;
+      else if (expected) expected = false;
+      else depth++;
+    });
+    const canGoBack = () => {
+      try {
+        const nav = frame.contentWindow.navigation;
+        return nav ? nav.canGoBack : depth > 0;
+      } catch (e) { return false; }
+    };
+    return {
+      frame,
+      canGoBack,
+      back() {
+        if (!canGoBack()) return;
+        expected = true;
+        depth = Math.max(0, depth - 1);
+        try { frame.contentWindow.history.back(); } catch (e) { expected = false; }
+      },
+      reload() {
+        expected = true;
+        let win, href;
+        try { win = frame.contentWindow; href = win.location.href; } catch (e) { win = null; }
+        if (!win || href === "about:blank") { frame.src = route; return; }
+        try { win.location.reload(); } catch (e) { frame.src = route; }
+      },
+    };
+  };
+
+  ws.surfaces().forEach(wire);
+  ws.on("surfaces", (surfaces) => surfaces.forEach(wire));
+</script>
+
+</body>
+</html>
