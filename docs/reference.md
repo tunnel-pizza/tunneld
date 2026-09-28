@@ -665,11 +665,16 @@ say it is up. The banner, the addresses and the origin each reaches arrive
 exactly as a foreground run's would. Then the run caches its settings, moves
 its stdout and stderr to `<key>.log` in the cache directory, and signals the
 launcher, which gives the prompt back with a summary read from the files
-beside it — each address and what it reaches, the directory, the pid, the
-log, and the lines that stop and restart it:
+beside it — what the run shares, said as a sentence, then each address and
+what it reaches, the directory, the pid, the log, and the lines that stop and
+restart it:
 
 ```
-🍕 tunneld is up, in the background
+🍕 tunneld is now running in the background
+
+  What's serving on localhost:3000 and a terminal running /bin/bash are now
+  available side by side at https://0tc62f7m9b.tunneled.pizza/, in any web
+  browser, and each at an address of its own below.
 
   https://0tc62f7m9b.tunneled.pizza/    → all 2, side by side
   https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
@@ -682,9 +687,11 @@ log, and the lines that stop and restart it:
   restart  npx tunneld -kd :3000 bash
 ```
 
-In colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache` there
-are no cached settings to read, so it says less: the pid, the log and the two
-lines. The addresses are on stdout either way. The tunnel stays up.
+One origin is a sentence alone — "A terminal running /bin/bash is now
+available at https://…/. Open it in any web browser." — with no list after
+it. In colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache`
+there are no cached settings to read, so it says less: the pid, the log and
+the two lines. The addresses are on stdout either way. The tunnel stays up.
 Nothing of the caller's is held after that, so
 `addr=$(npx tunneld -d :3000)` returns with the address, and nothing lands on
 a prompt later. `-d` is stripped before the binary sees the line, so

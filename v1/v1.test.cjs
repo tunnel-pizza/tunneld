@@ -14,7 +14,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { ambiguous, misread, isOrigin, quote } = require("./v1.cjs");
+const { ambiguous, describe, misread, isOrigin, prose, quote } = require("./v1.cjs");
 
 const win = process.platform === "win32";
 const posixOnly = { skip: win && "-d and -k are refused on Windows" };
@@ -56,6 +56,29 @@ test("isOrigin matches the Go parser's", () => {
     ["next dev", false],
   ]) {
     assert.equal(isOrigin(word), want, word);
+  }
+});
+
+test("describe names an origin by what opening it gives", () => {
+  for (const [origin, want] of [
+    ["exec:///bin/bash?arg=-l", "a terminal running /bin/bash -l"],
+    ["http://localhost:3000", "what's serving on localhost:3000"],
+    ["http+ws://localhost:3000/socket", "what's serving on localhost:3000/socket"],
+    ["attach://dockerd/web", "the terminal of the web container"],
+    ["nonsense", "nonsense"],
+  ]) {
+    assert.equal(describe(origin), want, origin);
+  }
+});
+
+test("prose wraps without breaking a word, and keeps the address whole", () => {
+  const lines = prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash"], true);
+  assert.deepEqual(lines, [
+    "  A terminal running /bin/bash is now available at",
+    "  https://0t09ndffmw.tunneled.pizza/. Open it in any web browser.",
+  ]);
+  for (const line of prose("h.example", ["http://localhost:3000", "exec:///usr/bin/claude?arg=--resume", "attach://dockerd/web"], true)) {
+    assert.ok(line.length <= 78, line);
   }
 });
 
@@ -239,9 +262,10 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
       "  -> :3000",
       "  -> bash",
       "",
-      "🍕 tunneld is up, in the background",
+      "🍕 tunneld is now running in the background",
       "",
-      "  https://t.example/  → /bin/bash -l",
+      "  A terminal running /bin/bash -l is now available at https://t.example/. Open",
+      "  it in any web browser.",
       "",
       "  from     ~/project",
       `  pid      ${pid}`,
@@ -276,7 +300,7 @@ test("-d names every origin's address, and says less with no cached settings", p
   assert.equal(up.status, 0, up.stderr);
   assert.match(
     up.stderr,
-    /\n  https:\/\/t\.example\/    → all 2, side by side\n  https:\/\/t\.example\/\?0  → http:\/\/localhost:3000\n  https:\/\/t\.example\/\?1  → \/usr\/bin\/claude --resume\n/,
+    /\n  What's serving on localhost:3000 and a terminal running \/usr\/bin\/claude\n  --resume are now available side by side at https:\/\/t\.example\/, in any web\n  browser, and each at an address of its own below\.\n\n  https:\/\/t\.example\/    → all 2, side by side\n  https:\/\/t\.example\/\?0  → http:\/\/localhost:3000\n  https:\/\/t\.example\/\?1  → \/usr\/bin\/claude --resume\n/,
   );
   assert.equal(launch("-k").status, 0);
 
@@ -284,7 +308,8 @@ test("-d names every origin's address, and says less with no cached settings", p
   // and levers still.
   const bare = launch("-d", "--no-cache", ":3000");
   assert.equal(bare.status, 0, bare.stderr);
-  assert.doesNotMatch(bare.stderr, /t\.example|from/);
+  assert.doesNotMatch(bare.stderr, /t\.example\/\?|from/);
+  assert.match(bare.stderr, /What it shares is available in any web browser, at the address above\./);
   assert.match(bare.stderr, /  pid      \d+\n  log      .*__no_cache__3000\.log\n  stop     npx tunneld -k\n  restart  npx tunneld -kd --no-cache :3000\n/);
   assert.equal(launch("-k").status, 0);
 });

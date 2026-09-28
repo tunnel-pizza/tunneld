@@ -450,6 +450,76 @@ function label(origin) {
   return origin;
 }
 
+// describe names an origin by what somebody opening it gets: a terminal for
+// a program or a container, and for a service, what is serving where.
+function describe(origin) {
+  try {
+    const u = new URL(origin);
+    if (u.protocol === "exec:") {
+      return `a terminal running ${label(origin)}`;
+    }
+    if (u.protocol === "attach:") {
+      return `the terminal of the ${decodeURIComponent(u.pathname.slice(1))} container`;
+    }
+    if (/^(http|ws)/.test(u.protocol)) {
+      return `what's serving on ${u.host}${u.pathname === "/" ? "" : u.pathname}`;
+    }
+  } catch {
+    // Not a URL this can read; named as it is.
+  }
+  return origin;
+}
+
+// and joins names the way a sentence does: a, b and c.
+function and(names) {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+// wrap breaks prose into lines of at most width visible columns, indented,
+// never inside a word, so a URL stays whole to be clicked. Styling is applied
+// by the caller's style function to each word, after measuring.
+function wrap(words, width, indent) {
+  const lines = [];
+  let line = [];
+  let used = 0;
+  for (const [text, style] of words) {
+    if (line.length > 0 && used + 1 + text.length > width) {
+      lines.push(indent + line.join(" "));
+      line = [];
+      used = 0;
+    }
+    used += (line.length > 0 ? 1 : 0) + text.length;
+    line.push(style(text));
+  }
+  if (line.length > 0) {
+    lines.push(indent + line.join(" "));
+  }
+  return lines;
+}
+
+// prose is what the run shares, said as a sentence: each origin by what it
+// gives, and where to open it.
+function prose(host, origins, multiview) {
+  const plain = (s) => s.split(" ").map((w) => [w, (x) => x]);
+  const link = (url, tail = "") => [[url + tail, (x) => cyan(url) + tail]];
+  const up = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  const names = up(and(origins.map(describe)));
+  const base = `https://${host}/`;
+  let words;
+  if (origins.length <= 1) {
+    words = [...plain(`${names} is now available at`), ...link(base, "."), ...plain("Open it in any web browser.")];
+  } else if (multiview) {
+    words = [
+      ...plain(`${names} are now available side by side at`),
+      ...link(base, ","),
+      ...plain("in any web browser, and each at an address of its own below."),
+    ];
+  } else {
+    words = plain(`${names} are now available in any web browser, each at an address of its own below.`);
+  }
+  return wrap(words, 76, "  ");
+}
+
 // summary is what a detached run is handed back with, once it has signalled:
 // where it answers and what each address reaches, where it runs from, its
 // pid and log, and how to end or restart it.
@@ -473,21 +543,22 @@ function summary(pid, args) {
   }
   const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
 
-  const lines = ["", `${bold("🍕 tunneld is up, in the background")}`, ""];
+  const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
   const host = env.LIBTUNNEL_HOSTNAME;
-  if (host) {
+  if (!host) {
+    lines.push("  What it shares is available in any web browser, at the address above.", "");
+  } else {
     const base = `https://${host}/`;
     const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
-    if (origins.length <= 1) {
-      lines.push(`  ${cyan(base)}  ${dim("→")} ${label(origins[0] || "")}`);
-    } else {
+    lines.push(...prose(host, origins, env.TUNNELD_MULTIVIEW === "true"), "");
+    if (origins.length > 1) {
       const width = `${base}?${origins.length - 1}`.length;
       if (env.TUNNELD_MULTIVIEW === "true") {
         lines.push(`  ${cyan(base.padEnd(width))}  ${dim("→")} all ${origins.length}, side by side`);
       }
       origins.forEach((o, i) => lines.push(`  ${cyan(`${base}?${i}`.padEnd(width))}  ${dim("→")} ${label(o)}`));
+      lines.push("");
     }
-    lines.push("");
   }
 
   const row = (name, value) => lines.push(`  ${dim(name.padEnd(8))} ${value}`);
@@ -673,4 +744,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { ambiguous, isOrigin, misread, onPath, quote };
+module.exports = { ambiguous, describe, isOrigin, misread, onPath, prose, quote };
