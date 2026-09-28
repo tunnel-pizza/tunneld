@@ -453,14 +453,19 @@ type fakePid struct {
 	order      *[]string
 	onRegister func()
 	waiting    bool
+	// running is what Register refuses with: the same run already going.
+	running error
 }
 
-func (f *fakePid) Register(Origins, v1.Logger) func() {
+func (f *fakePid) Register(Origins, v1.Logger) (func(), error) {
 	*f.order = append(*f.order, "register")
+	if f.running != nil {
+		return nil, f.running
+	}
 	if f.onRegister != nil {
 		f.onRegister()
 	}
-	return func() { *f.order = append(*f.order, "release") }
+	return func() { *f.order = append(*f.order, "release") }, nil
 }
 
 func (f *fakePid) Detach(Origins, io.Writer, v1.Logger) bool {
@@ -843,6 +848,18 @@ func TestRun(t *testing.T) {
 		_ = h.run(t, ctx, "--no-cache", ":3000")
 		if !slices.Contains(h.order, "register") || h.cache.saved {
 			t.Errorf("effects %v, saved = %v, want a registration and no spec", h.order, h.cache.saved)
+		}
+	})
+
+	t.Run("the same run already going is refused before the mint", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		refusal := fmt.Errorf("%w as pid 42", v1.ErrRunning)
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, running: refusal}))
+		if err := h.run(t, t.Context()); !errors.Is(err, v1.ErrRunning) {
+			t.Fatalf("run() = %v, want ErrRunning", err)
+		}
+		if len(h.specs) != 0 || !slices.Equal(h.order, []string{"register"}) {
+			t.Errorf("specs %q, effects %v, want nothing after the refusal", h.specs, h.order)
 		}
 	})
 

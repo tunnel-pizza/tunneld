@@ -8,11 +8,13 @@
 package pid
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -21,6 +23,9 @@ import (
 // spec cache files into, so a run's three files — spec, pid, log — sit
 // together under one name.
 const dirName = "tunneld"
+
+// errLocked is what lock returns when another process holds the lock.
+var errLocked = errors.New("locked by another process")
 
 // Option configures a PidImpl at construction.
 type Option = v1.Option[*PidImpl]
@@ -81,9 +86,9 @@ func (p *PidImpl) file(origins v1.Origins, ext string) string {
 }
 
 // Register marks this run as running, as <key>.pid: the file names the pid,
-// and this process holds it open until release is called, which closes it and
-// removes it. The npm launcher's -k ends every process holding one with
-// SIGINT.
+// and this process holds it open, and locked, until release is called, which
+// removes it and closes it. The npm launcher's -k ends every process holding
+// one with SIGINT.
 //
 // Held open is the fingerprint. A pid on its own names whatever the system has
 // since handed that number to; a file a process holds open is closed by the
@@ -92,42 +97,80 @@ func (p *PidImpl) file(origins v1.Origins, ext string) string {
 // the file rather than trusting what it says. Go opens files close-on-exec, so
 // a program an origin starts does not inherit it.
 //
-// Two runs of the same thing at once share the file, and -k ends every process
-// holding it; release removes it only while it still names this pid, so the
-// first of the two to finish does not unregister the other. Only when the
-// later one finishes first is the earlier left unfindable.
+// Locked is what keeps it one run to a file. The same run started again — the
+// same directory, origins and arguments, so the same key — finds the lock
+// taken and is refused with v1.ErrRunning, naming the pid it read, before it
+// mints anything: two of them would answer on one hostname, and one could end
+// and take the registration of the other with it. The lock is released by the
+// kernel as the file is closed, however that happens, so a run that died
+// leaves nothing to refuse the next. The file is opened without truncating and
+// only written once the lock is held, so a refused run never erases the pid
+// of the one it was refused for.
 //
-// A run that cannot register still runs: the file is how another command
-// finds it, not something the tunnel needs. The failure is logged and release
-// is then a no-op.
-func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func()) {
+// A run that cannot register for any other reason still runs: the file is how
+// another command finds it, not something the tunnel needs. The failure is
+// logged and release is then a no-op.
+func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), err error) {
 	release = func() {}
 	path := p.file(origins, ".pid")
 	if path == "" {
-		return release
+		return release, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		log.Warn("not registering this run", "error", err)
-		return release
+		return release, nil
 	}
-	pid := strconv.Itoa(os.Getpid()) + "\n"
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		log.Warn("not registering this run", "error", err)
-		return release
-	}
-	if _, err := f.WriteString(pid); err != nil {
-		log.Warn("not registering this run", "error", err)
-		f.Close()
-		return release
-	}
-	log.Debug("registered this run", "path", path)
-	return func() {
-		if body, err := os.ReadFile(path); err == nil && string(body) == pid {
-			os.Remove(path)
+	// Twice at most: the run that held the file can remove it between this
+	// opening it and locking it, and then what is locked is a file nobody can
+	// find. Once more opens the one that is there now.
+	for range 2 {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			log.Warn("not registering this run", "error", err)
+			return release, nil
 		}
-		f.Close()
+		if err := lock(f); err != nil {
+			f.Close()
+			if errors.Is(err, errLocked) {
+				body, _ := os.ReadFile(path)
+				return nil, fmt.Errorf("%w as pid %s, in the background or another terminal: npx %s -k ends it, and npx %s -kd starts it again",
+					v1.ErrRunning, strings.TrimSpace(string(body)), v1.CommandName, v1.CommandName)
+			}
+			log.Warn("not registering this run", "error", err)
+			return release, nil
+		}
+		if !same(f, path) {
+			f.Close()
+			continue
+		}
+		pid := strconv.Itoa(os.Getpid()) + "\n"
+		if err := f.Truncate(0); err == nil {
+			_, err = f.WriteAt([]byte(pid), 0)
+		}
+		if err != nil {
+			log.Warn("not registering this run", "error", err)
+			os.Remove(path)
+			f.Close()
+			return release, nil
+		}
+		log.Debug("registered this run", "path", path)
+		return func() {
+			os.Remove(path)
+			f.Close()
+		}, nil
 	}
+	log.Warn("not registering this run: its file kept changing underneath it", "path", path)
+	return release, nil
+}
+
+// same reports whether path still names the file f has open.
+func same(f *os.File, path string) bool {
+	held, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	named, err := os.Stat(path)
+	return err == nil && os.SameFile(held, named)
 }
 
 // Detach hands a run back from the launcher waiting on it, and reports

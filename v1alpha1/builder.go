@@ -484,9 +484,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// -k can end a run that is still coming up. Released last, after
 	// everything below has torn down: the file is gone only once the run is.
 	// Whether or not the spec is cached: --no-cache is about the hostname,
-	// and a run that mints a fresh one is still a run -k should find.
+	// and a run that mints a fresh one is still a run -k should find. The
+	// same run already going is refused here, before anything is minted.
 	if b.pid != nil {
-		defer b.pid.Register(origins, log)()
+		release, err := b.pid.Register(origins, log)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 
 	// Everything below opens something — the attach servers, the tunnel,

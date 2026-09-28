@@ -3,6 +3,7 @@
 package pid
 
 import (
+	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -24,4 +25,15 @@ func redirect(f *os.File) error {
 // which Node keeps for its debugger.
 func notify(pid int) error {
 	return unix.Kill(pid, unix.SIGUSR2)
+}
+
+// lock takes an exclusive lock on f without waiting, or returns errLocked when
+// another open file holds it. flock's lock belongs to the open file, so the
+// kernel drops it as the file is closed, however the process ends.
+func lock(f *os.File) error {
+	err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return errLocked
+	}
+	return err
 }

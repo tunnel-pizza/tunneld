@@ -4,12 +4,14 @@ package pid_test
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -71,7 +73,10 @@ func TestRegister(t *testing.T) {
 	path := stem + ".pid"
 	want := strconv.Itoa(os.Getpid()) + "\n"
 
-	release := p.Register(o, discard())
+	release, err := p.Register(o, discard())
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != want {
 		t.Fatalf("%s = %q (%v), want %q", path, got, err, want)
 	}
@@ -87,20 +92,39 @@ func TestRegister(t *testing.T) {
 	}
 }
 
-// TestRegisterLeavesAnotherRunsFile pins two runs of the same thing at once:
-// they share the file, it names the later one, and the earlier finishing must
-// not unregister the one still running.
-func TestRegisterLeavesAnotherRunsFile(t *testing.T) {
+// TestRegisterRefusesTheSameRun pins one run to a key: the same run started
+// again while the first is going is refused with ErrRunning, naming the
+// first's pid, and leaves the first's registration as it was. Once the first
+// has gone, the next registers. The lock is the open file's, so two
+// registrations in one process contend the way two processes do.
+func TestRegisterRefusesTheSameRun(t *testing.T) {
 	p, o, stem := fixed(t)
 	path := stem + ".pid"
-	release := p.Register(o, discard())
-	if err := os.WriteFile(path, []byte("99999\n"), 0o600); err != nil { // the other run, registering after
-		t.Fatal(err)
+	first, err := p.Register(o, discard())
+	if err != nil {
+		t.Fatalf("first Register() error = %v", err)
 	}
-	release()
-	if got, err := os.ReadFile(path); err != nil || string(got) != "99999\n" {
-		t.Errorf("%s after release = %q (%v), want the other run's registration kept", path, got, err)
+	mine := strconv.Itoa(os.Getpid())
+
+	release, err := p.Register(o, discard())
+	if !errors.Is(err, v1.ErrRunning) || release != nil {
+		t.Fatalf("second Register() = %v, want ErrRunning and no release", err)
 	}
+	for _, want := range []string{"as pid " + mine, "npx tunneld -k ends it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+	if got, _ := os.ReadFile(path); string(got) != mine+"\n" {
+		t.Errorf("%s after the refusal = %q, want the first run's pid untouched", path, got)
+	}
+
+	first()
+	again, err := p.Register(o, discard())
+	if err != nil {
+		t.Fatalf("Register() after the first ended = %v, want it registered", err)
+	}
+	again()
 }
 
 // TestNothingToDo pins the quiet cases: no directory registers nothing and
@@ -108,7 +132,11 @@ func TestRegisterLeavesAnotherRunsFile(t *testing.T) {
 // nothing — no log, no line on stderr.
 func TestNothingToDo(t *testing.T) {
 	_, o, _ := fixed(t)
-	pid.New(pid.WithDir("")).Register(o, discard())()
+	release, err := pid.New(pid.WithDir("")).Register(o, discard())
+	if err != nil {
+		t.Fatalf("Register() with no directory = %v, want nothing", err)
+	}
+	release()
 
 	p, o, stem := fixed(t, pid.WithParent(0))
 	var stderr bytes.Buffer

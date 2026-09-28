@@ -705,9 +705,19 @@ pid in it has since been handed to another program, and `-k` clears it
 without signalling anything. Linux answers who holds it from `/proc`, other
 systems through `lsof`.
 
-Two runs of the same thing at once — the same directory and origins, in two
-terminals — share one file, and `-k` ends both. If the later one ends first,
-though, the file goes with it and the earlier run can no longer be found.
+**The same run twice is refused.** The file is locked as well as held, so a
+second run of the same thing — the same directory, origins and arguments,
+which is the same key — finds the lock taken and stops before it mints
+anything, with `ErrRunning`:
+
+```
+tunneld: already running as pid 43697, in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
+```
+
+Two of them would answer on one hostname, and one ending would take the
+other's registration with it. The kernel drops the lock with the file,
+however the process ends, so a run that died leaves nothing to refuse the
+next one.
 
 Registering is the binary's, not the builder's by default: a program that
 mounts tunneld as a subcommand is a process `-k` would end whole, so it opts in

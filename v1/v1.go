@@ -159,6 +159,13 @@ var ErrNotReady = errors.New("tunnel did not become ready")
 // $DOCKER_HOST at the socket that has it.
 var ErrNoDocker = errors.New("docker daemon unreachable")
 
+// ErrRunning reports a run refused because the same run — the same working
+// directory, origins and arguments — is already going on this machine, in the
+// background or another terminal. Two of them would answer on one hostname
+// and share one registration, so the second is refused before it mints
+// anything; the message names the first one's pid.
+var ErrRunning = errors.New("already running")
+
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read

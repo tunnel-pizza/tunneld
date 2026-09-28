@@ -156,6 +156,7 @@ var ErrInvalidOrigin   = errors.New("invalid origin")
 var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")
 var ErrNoDocker        = errors.New("docker daemon unreachable")
+var ErrRunning         = errors.New("already running")
 var ErrUnknownIdentity = errors.New("unknown identity provider")
 
 const LogEnv               = "TUNNELD_LOG"

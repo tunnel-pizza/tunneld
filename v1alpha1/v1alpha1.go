@@ -75,11 +75,12 @@ type Cache interface {
 // launcher.
 //
 // Register marks the run as running, for the launcher's -k to find and end,
-// until release is called. Detach, once the addresses are out, hands the run
+// until release is called, and refuses with v1.ErrRunning when the same run
+// is already going. Detach, once the addresses are out, hands the run
 // back from a launcher waiting on it — moving its output off the caller's
 // streams and telling the launcher — and reports whether one was waiting.
 type Pid interface {
-	Register(origins Origins, log v1.Logger) (release func())
+	Register(origins Origins, log v1.Logger) (release func(), err error)
 	Detach(origins Origins, stderr io.Writer, log v1.Logger) bool
 }
 
