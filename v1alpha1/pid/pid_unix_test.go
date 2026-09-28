@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,25 +15,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 )
 
 // TestDetach pins what a detached run does once its addresses are out: the
-// run's stdout and stderr stop being the caller's — so a caller reading them to the end gets there while
-// the run goes on — the launcher gets SIGUSR2, and what the run says
-// afterwards lands in <key>.log.
+// run's stdout and stderr stop being the caller's — so a caller reading them
+// to the end gets there while the run goes on — the launcher gets SIGUSR2, and
+// what the run says afterwards lands in the file it was given.
 //
 // Detach moves this process's own descriptors, so it runs in a child: this
 // test binary again, told by the environment to be the run, with this
 // process as the launcher.
 func TestDetach(t *testing.T) {
 	if dir := os.Getenv("TUNNELD_TEST_DETACH"); dir != "" {
-		u, _ := url.Parse("http://localhost:3000")
-		o := origins.New(origins.WithDir("/work/project"), origins.WithURL(u))
+		// The log file, opened the way the log opens it: appended to, so the
+		// detached streams and the logger's own writes share it.
+		out, err := os.OpenFile(filepath.Join(dir, "run.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			os.Exit(3)
+		}
 		p := pid.New(pid.WithDir(dir), pid.WithParent(os.Getppid()))
 		fmt.Println("https://t.example/")
-		if !p.Detach(o, slog.New(slog.NewTextHandler(os.Stderr, nil))) {
+		if !p.Detach(out, slog.New(slog.NewTextHandler(os.Stderr, nil))) {
 			os.Exit(2)
 		}
 		fmt.Println("after, on stdout")

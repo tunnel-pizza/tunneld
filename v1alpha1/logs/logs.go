@@ -1,22 +1,40 @@
-// Package logs keeps tunneld's own recent log lines so a terminal can show
-// them.
+// Package logs is a run's own logging: one logger, built before anything else
+// in the process needs one, and the three places its lines go.
 //
-// The lines go to stderr as they always have. They are also kept here, because
-// stderr is not where they can be read from: a viewer watching a terminal
-// through the tunnel is not looking at the console tunneld runs on, and a
-// mirrored console is drawing a full-screen frame over it. Neither can see a
-// reconnect, a restart, or the edge disowning the hostname, all of which are
-// logged and all of which explain what they are looking at.
+// The ring keeps the recent lines so a terminal can show them. stderr is not
+// where they can be read from: a viewer watching a terminal through the tunnel
+// is not looking at the console tunneld runs on, and a mirrored console is
+// drawing a full-screen frame over it. Neither can see a reconnect, a restart,
+// or the edge disowning the hostname, all of which are logged and all of which
+// explain what they are looking at.
 //
-// What is kept is the formatted line rather than the record, because the only
-// consumer renders it as text and a record kept whole would hold onto every
-// value it names for as long as the ring does.
+// The file keeps the whole run, <key>.log beside its cached spec, from the
+// moment the run knows its key — and what came before that too, held in a
+// buffer until then. Appended to, one separator line per run, so a restart
+// keeps the tail of the run it replaced. It is this package's alone: the npm
+// launcher only ever reads it.
+//
+// stderr shows what --log-level asks for, and nothing by default: a library
+// that logs uninvited pollutes its importer's output.
+//
+// Each of the three is an ordinary slog handler — Pretty for the ring and for
+// a terminal, slog's own text handler for the file and for a stderr that is
+// not one — multiplexed by slog.NewMultiHandler, so With and WithGroup mean
+// exactly what slog says they mean.
+//
+// What the ring and the file record is not what stderr shows. They record
+// info and above always, and debug too when the level asks for it: debug is
+// per request and per keystroke, which a file kept by default would grow by
+// with every visitor.
 package logs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,145 +42,283 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
-// DefaultLines is how many lines New keeps. Enough to cover a tunnel coming up
-// and misbehaving for a while, and small enough that a process logging at
-// debug for a week cannot grow without bound.
+// DefaultLines is how many lines the ring keeps. Enough to cover a tunnel
+// coming up and misbehaving for a while, and small enough that a process
+// logging at debug for a week cannot grow without bound.
 const DefaultLines = 500
 
-// Option configures a RingImpl at construction.
-type Option = v1.Option[*RingImpl]
+// maxFile is the size past which a run's log is started over rather than
+// appended to. The history a separator keeps is for the run before, not for
+// every run there ever was.
+const maxFile = 16 << 20
 
-// WithLines sets how many lines are kept. Zero or less keeps DefaultLines.
+// maxPending bounds what is held for the file before it is opened: the run's
+// first moments, not a process that never names a key.
+const maxPending = 1 << 20
+
+// dirName is the directory under the user's cache directory, the one the spec
+// cache files into, so a run's spec, pid and log sit together under one name.
+const dirName = "tunneld"
+
+// Option configures a LogImpl at construction.
+type Option = v1.Option[*LogImpl]
+
+// WithLines sets how many lines the ring keeps. Zero or less keeps
+// DefaultLines.
 func WithLines(lines int) Option {
-	return func(r *RingImpl) {
+	return func(l *LogImpl) {
 		if lines > 0 {
-			r.max = lines
+			l.ring.max = lines
 		}
 	}
 }
 
-// RingImpl keeps the last lines written through it, and hands them back in the
-// order they arrived.
-//
-// It is an slog.Handler that wraps another: every record is formatted and kept
-// here and then passed on, so what stderr shows and what a terminal shows are
-// the same lines and neither is a copy that can drift.
-type RingImpl struct {
-	next slog.Handler
-	max  int
+// WithDir replaces the directory a run's log file goes in — a temporary
+// directory in a test. Empty keeps no file.
+func WithDir(dir string) Option {
+	return func(l *LogImpl) { l.dir = dir }
+}
 
+// LogImpl is a run's logging. Logger is the one logger, from New on; what
+// changes over a run is where its lines go, never which logger writes them.
+type LogImpl struct {
+	dir    string
+	ring   *ring
+	file   *file
+	logger *slog.Logger
+
+	// recording is the least level the ring and the file keep; shown, the
+	// least stderr shows. Level vars, so the handlers built in New read the
+	// level To sets later.
+	recording, shown slog.LevelVar
+
+	mu sync.Mutex
+	// stderr is where --log-level's lines go; nil is silent, the default.
+	stderr slog.Handler
+	// muted is a console a frame is drawing on; detached is a run that has
+	// let go of its caller's streams. Either keeps lines off stderr.
+	muted, detached bool
+}
+
+// New returns a LogImpl configured by opts: a ring of DefaultLines, a log
+// file under the user's cache directory once Open names it, and stderr silent
+// until To says otherwise.
+func New(opts ...Option) *LogImpl {
+	l := &LogImpl{ring: &ring{max: DefaultLines}, file: &file{}}
+	if base, err := os.UserCacheDir(); err == nil {
+		l.dir = filepath.Join(base, dirName)
+	}
+	v1.Apply(l, opts...)
+	l.logger = slog.New(slog.NewMultiHandler(
+		plain(l.ring, &l.recording),
+		slog.NewTextHandler(l.file, &slog.HandlerOptions{Level: &l.recording}),
+		&slot{l: l},
+	))
+	return l
+}
+
+// Logger is the run's logger. The same one every time it is asked for, so a
+// component handed it early writes into wherever the lines go later.
+func (l *LogImpl) Logger() *slog.Logger { return l.logger }
+
+// To sets where the lines --log-level asks for go: h, showing level and above,
+// or nowhere when h is nil. Called again, it replaces the last — which is how
+// a command whose writer or level changed between calls still has one logger.
+// A level below info makes the ring and the file keep those lines too.
+func (l *LogImpl) To(h slog.Handler, level slog.Level) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stderr = h
+	l.shown.Set(level)
+	if h != nil && level < slog.LevelInfo {
+		l.recording.Set(level)
+	} else {
+		l.recording.Set(slog.LevelInfo)
+	}
+}
+
+// Lines are the ring's lines, oldest first. A copy, because a caller renders
+// it while the process goes on logging.
+func (l *LogImpl) Lines() []string { return l.ring.copy() }
+
+// Mute keeps lines off stderr while a console's frame has the screen, and
+// lets them through again. stderr writes straight through a full-screen
+// frame, and the frame repaints over them, and neither is readable. The ring
+// and the file still get every line: the frame's own log view is where they
+// are read instead.
+func (l *LogImpl) Mute(muted bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.muted = muted
+}
+
+// Detach keeps lines off stderr for the rest of the run: its caller's streams
+// are no longer its own. The file goes on, since it never depended on them.
+func (l *LogImpl) Detach() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.detached = true
+}
+
+// Open starts the run's log file: <key>.log in the directory, appended to,
+// behind a separator naming the time and the pid, and then everything logged
+// before this was called. Started over rather than appended to once it has
+// grown past maxFile. A second Open — an embedding program running again —
+// closes the first.
+//
+// Best effort: a run that cannot keep a file still runs, and says why on the
+// logger it would have kept.
+func (l *LogImpl) Open(origins v1.Origins) {
+	if l.dir == "" || origins == nil {
+		return
+	}
+	path := filepath.Join(l.dir, origins.Key()+".log")
+	if err := os.MkdirAll(l.dir, 0o700); err != nil {
+		l.logger.Warn("no log file for this run", "path", path, "error", err)
+		return
+	}
+	if info, err := os.Stat(path); err == nil && info.Size() > maxFile {
+		_ = os.Truncate(path, 0)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		l.logger.Warn("no log file for this run", "path", path, "error", err)
+		return
+	}
+	l.file.open(f)
+}
+
+// File is the run's log file, or nil before Open or without one. What a
+// detached run points its own stdout and stderr at, so what bypasses the
+// logger — a panic's trace — lands there too. Opened for appending, so those
+// writes and the logger's share it a line at a time.
+func (l *LogImpl) File() *os.File { return l.file.current() }
+
+// Close ends the run's log file. Lines after it are held again, for the next
+// Open.
+func (l *LogImpl) Close() { l.file.close() }
+
+// stderrHandler is where a record shown now goes, or nil.
+func (l *LogImpl) stderrHandler() slog.Handler {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stderr == nil || l.muted || l.detached {
+		return nil
+	}
+	return l.stderr
+}
+
+// slot is stderr's place among the logger's handlers. What goes there is set
+// by To, possibly after a logger was derived from this one with With or
+// WithGroup, so the derivations are kept as steps and taken on whichever
+// handler is current when a record arrives. Muted or detached, it takes
+// nothing.
+type slot struct {
+	l     *LogImpl
+	steps []func(slog.Handler) slog.Handler
+}
+
+func (s *slot) Enabled(ctx context.Context, level slog.Level) bool {
+	h := s.l.stderrHandler()
+	return h != nil && level >= s.l.shown.Level() && h.Enabled(ctx, level)
+}
+
+func (s *slot) Handle(ctx context.Context, rec slog.Record) error {
+	h := s.l.stderrHandler()
+	if h == nil || rec.Level < s.l.shown.Level() {
+		return nil
+	}
+	for _, step := range s.steps {
+		h = step(h)
+	}
+	return h.Handle(ctx, rec)
+}
+
+func (s *slot) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return s.derive(func(h slog.Handler) slog.Handler { return h.WithAttrs(attrs) })
+}
+
+func (s *slot) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return s
+	}
+	return s.derive(func(h slog.Handler) slog.Handler { return h.WithGroup(name) })
+}
+
+func (s *slot) derive(step func(slog.Handler) slog.Handler) *slot {
+	return &slot{l: s.l, steps: append(append([]func(slog.Handler) slog.Handler(nil), s.steps...), step)}
+}
+
+// ring is the writer the ring's handler renders into: one line per record,
+// the last max of them kept.
+type ring struct {
+	max   int
 	mu    sync.Mutex
 	lines []string
-	muted bool
 }
 
-// New returns a ring that keeps DefaultLines, configured by opts. It handles
-// nothing until Wrap gives it something to pass records on to.
-func New(opts ...Option) *RingImpl {
-	return v1.Apply(&RingImpl{max: DefaultLines}, opts...)
+func (r *ring) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
+		r.lines = append(r.lines, line)
+	}
+	if len(r.lines) > r.max {
+		r.lines = r.lines[len(r.lines)-r.max:]
+	}
+	return len(p), nil
 }
 
-// Wrap returns a handler that keeps what it formats and passes every record on
-// to next.
-//
-// Separate from New because the ring outlives the handler's destination: the
-// command builds one before it knows where logs go or at what level, and hands
-// it to the terminal at the same time — see the builder's New.
-func (r *RingImpl) Wrap(next slog.Handler) slog.Handler {
-	r.next = next
-	return r
-}
-
-// Lines are the lines kept, oldest first. A copy, because a caller renders it
-// while the process goes on logging.
-func (r *RingImpl) Lines() []string {
+func (r *ring) copy() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.lines...)
 }
 
-// Enabled asks whatever this wraps. A ring that kept what its destination
-// discards would show a viewer lines that nobody asked for.
-func (r *RingImpl) Enabled(ctx context.Context, level slog.Level) bool {
-	if r.next == nil {
-		return false
+// file is the writer the file's handler renders into: a buffer until the run
+// opens its log, and the log after.
+type file struct {
+	mu      sync.Mutex
+	pending bytes.Buffer
+	f       *os.File
+}
+
+func (w *file) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f != nil {
+		return w.f.Write(p)
 	}
-	return r.next.Enabled(ctx, level)
-}
-
-// Handle keeps the record as a line and passes it on.
-func (r *RingImpl) Handle(ctx context.Context, rec slog.Record) error {
-	r.keep(line(rec))
-	if r.next == nil || r.silent() {
-		return nil
+	w.pending.Write(p)
+	if over := w.pending.Len() - maxPending; over > 0 {
+		w.pending.Next(over)
 	}
-	return r.next.Handle(ctx, rec)
+	return len(p), nil
 }
 
-// Mute stops records reaching what this wraps, and unmutes again.
-//
-// For a console a terminal is drawing on: stderr writes straight through a
-// full-screen frame, and the frame repaints over them, and neither is
-// readable. The lines are still kept — that is the point of muting rather
-// than dropping the handler — so nothing is lost and the frame's own log view
-// is where they are read instead.
-func (r *RingImpl) Mute(muted bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.muted = muted
-}
-
-func (r *RingImpl) silent() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.muted
-}
-
-// WithAttrs and WithGroup delegate, and return the ring rather than a copy of
-// it: the lines are the process's and not one logger's, so a component that
-// narrows its own logger still writes into the same ring.
-func (r *RingImpl) WithAttrs(attrs []slog.Attr) slog.Handler {
-	if r.next != nil {
-		r.next = r.next.WithAttrs(attrs)
+// open switches to f: a separator for this run, then what was held.
+func (w *file) open(f *os.File) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f != nil {
+		w.f.Close()
 	}
-	return r
+	w.f = f
+	fmt.Fprintf(f, "--- %s pid %d\n", time.Now().Format(time.RFC3339), os.Getpid())
+	_, _ = w.pending.WriteTo(f)
 }
 
-func (r *RingImpl) WithGroup(name string) slog.Handler {
-	if r.next != nil {
-		r.next = r.next.WithGroup(name)
+func (w *file) current() *os.File {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.f
+}
+
+func (w *file) close() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f != nil {
+		w.f.Close()
+		w.f = nil
 	}
-	return r
-}
-
-// keep appends, dropping the oldest once the ring is full.
-func (r *RingImpl) keep(l string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lines = append(r.lines, l)
-	if len(r.lines) > r.max {
-		r.lines = r.lines[len(r.lines)-r.max:]
-	}
-}
-
-// line renders a record for somebody reading it on a screen: the time to the
-// second, the level, the message, and the attributes after it.
-//
-// Not slog's own text format, which spells the time to the nanosecond with a
-// zone and quotes anything with a space in it. That is right for a log a
-// machine will parse and wrong for a row in a terminal, where the width is
-// somebody's window and every character spent on precision is one not spent on
-// what happened.
-func line(rec slog.Record) string {
-	var b strings.Builder
-	b.WriteString(rec.Time.Format(time.TimeOnly))
-	b.WriteByte(' ')
-	b.WriteString(rec.Level.String())
-	b.WriteByte(' ')
-	b.WriteString(rec.Message)
-	rec.Attrs(func(a slog.Attr) bool {
-		fmt.Fprintf(&b, " %s=%v", a.Key, a.Value)
-		return true
-	})
-	return b.String()
 }

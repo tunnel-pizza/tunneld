@@ -11,7 +11,7 @@ agent-specific framing.
    [docs/embedding.md](./docs/embedding.md) the public Go surface
 2. [CONTRIBUTING.md](./CONTRIBUTING.md) — layout, dev loop, conventions, PR flow
 3. [`v1/v1.go`](./v1/v1.go) — public `Builder` interface (`Command() *cobra.Command`)
-4. [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go) — `New`, the eight internal
+4. [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go) — `New`, the nine internal
    contracts, and their options
 5. [`v1alpha1/builder.go`](./v1alpha1/builder.go) — `Command`: flags, the
    environment, and the tunnel run

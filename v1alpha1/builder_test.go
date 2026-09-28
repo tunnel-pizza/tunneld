@@ -31,6 +31,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -462,6 +463,10 @@ type fakePid struct {
 	waiting    bool
 	// running is what Register refuses with: the same run already going.
 	running error
+	// out is the file Detach was handed to point the run's streams at, and
+	// onDetach runs when it is.
+	out      *os.File
+	onDetach func()
 }
 
 func (f *fakePid) Register(Origins, v1.Logger) (func(), error) {
@@ -475,8 +480,12 @@ func (f *fakePid) Register(Origins, v1.Logger) (func(), error) {
 	return func() { *f.order = append(*f.order, "release") }, nil
 }
 
-func (f *fakePid) Detach(Origins, v1.Logger) bool {
+func (f *fakePid) Detach(out *os.File, _ v1.Logger) bool {
 	*f.order = append(*f.order, "detach")
+	f.out = out
+	if f.onDetach != nil {
+		f.onDetach()
+	}
 	return f.waiting
 }
 
@@ -691,6 +700,9 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 			return tun
 		}),
 		WithCache(h.cache),
+		// A log file in a directory only this case sees: a unit test never
+		// writes into the machine's own cache directory.
+		WithLog(logs.New(logs.WithDir(t.TempDir()))),
 		WithDisplay(h.display),
 		WithBinder(h.binder),
 		WithRouter(h.router),
@@ -879,6 +891,30 @@ func TestRun(t *testing.T) {
 		}
 		if len(h.specs) != 0 || !slices.Equal(h.order, []string{"register"}) {
 			t.Errorf("specs %q, effects %v, want nothing after the refusal", h.specs, h.order)
+		}
+	})
+
+	t.Run("a detached run's streams go to its log file, and its logger leaves stderr", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		fake := &fakePid{order: &h.order, waiting: true, onDetach: func() {
+			// Once Run has taken the logger off stderr, which it does as
+			// Detach returns: a line logged then must not reach stderr.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				h.b.log.Logger().Info("after the detach")
+				cancel()
+			}()
+		}}
+		v1.Apply(h.b, WithPid(fake), WithLogLevel("info"))
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if fake.out == nil || !strings.HasSuffix(fake.out.Name(), h.b.Origins().Key()+".log") {
+			t.Errorf("Detach was handed %v, want the run's <key>.log", fake.out)
+		}
+		if strings.Contains(h.stderr.String(), "after the detach") {
+			t.Errorf("stderr carried a line logged after the detach:\n%s", h.stderr.String())
 		}
 	})
 

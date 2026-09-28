@@ -283,7 +283,8 @@ function ambiguous(reading, prefix) {
 
 // cacheDir is <user cache dir>/tunneld, the binary's own: Go's
 // os.UserCacheDir, spelled out. Each run registers there as <key>.pid, beside
-// its spec, and a detached one logs to <key>.log.
+// its spec, and logs to <key>.log, which the binary writes and this only
+// names.
 function cacheDir() {
   const env = process.env;
   let base;
@@ -356,8 +357,8 @@ function run(bin, args) {
 // foreground run uses.
 //
 // The telling is a signal. The binary is given this process's pid in
-// NOTIFY_ENV, and once its addresses are out it moves its stdout and stderr
-// to <key>.log beside its spec, says so on stderr, and sends SIGUSR2 to its
+// NOTIFY_ENV, and once its addresses are out it points its stdout and stderr
+// at its log, <key>.log beside its spec, and sends SIGUSR2 to its
 // parent when that is the pid it was given — and to nobody otherwise, since
 // SIGUSR2 ends a process that has not asked for it. Moving the streams first
 // is what lets the caller go: once this exits, nothing holds them, so

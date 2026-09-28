@@ -228,6 +228,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			{"binder", b.binder == nil},
 			{"router", b.router == nil},
 			{"motd", b.motd == nil},
+			{"log", b.log == nil},
 		} {
 			if c.missing {
 				err := fmt.Errorf("builder has no %s: construct it with New", c.name)
@@ -472,6 +473,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	if origins.Len() == 0 {
 		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
 	}
+
+	// The run's log file, as soon as the run has a key to name it by: what
+	// was logged settling the origins is written in first, and everything
+	// after lands in it as it happens — a run that fails from here on leaves
+	// a record of why. Closed last, after the teardown has logged.
+	b.log.Open(origins)
+	defer b.log.Close()
 
 	// A misspelled provider is an error, and it is worth finding out now:
 	// everything below this opens something — a daemon connection, a
@@ -748,7 +756,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C
 	// there will not reach this run, so it gets no hint saying so.
-	detached := b.pid != nil && b.pid.Detach(origins, log)
+	// Its stdout and stderr go to the run's log file, so what bypasses the
+	// logger — a panic's trace — is still somewhere; the logger itself stops
+	// showing lines there, since the file already keeps them.
+	detached := b.pid != nil && b.pid.Detach(b.log.File(), log)
+	if detached {
+		b.log.Detach()
+	}
 	if screen == nil && !detached {
 		// Nothing is going to be drawn here. The addresses are up, the run
 		// blocks from now on, and the signal is the only thing left on this
@@ -842,43 +856,43 @@ func (b *BuilderImpl) environment() *viper.Viper {
 	return b.env
 }
 
-// logger resolves the tunnel's log sink from the level the command settled on
-// — the --log-level flag, or v1.LogEnv bound onto it by PersistentPreRunE. An
-// unrecognized level is an error: somebody typed it, and a silent downgrade to
-// info would hide the typo. Unset is silence, since a library that logs
-// uninvited pollutes its importer's output.
+// logger is the run's one logger, with what --log-level shows pointed at the
+// level the command settled on — the flag, or v1.LogEnv bound onto it by
+// PersistentPreRunE. An unrecognized level is an error: somebody typed it, and
+// a silent downgrade to info would hide the typo. Unset shows nothing, since a
+// library that logs uninvited pollutes its importer's output; the log's ring
+// and file keep the run's lines either way.
 //
-// The sink is the built command's own stderr, so logs never pollute the
-// machine-readable URLs on stdout and an embedding program that called SetErr
-// sees them where it is looking. Never os.Stderr directly — that is only where
-// cobra falls back to when nothing was set.
+// What it shows goes to the built command's own stderr, so logs never pollute
+// the machine-readable URLs on stdout and an embedding program that called
+// SetErr sees them where it is looking. Never os.Stderr directly — that is only
+// where cobra falls back to when nothing was set.
 //
-// A logger comes back either way. The error says the level was refused, which
-// is RunE's to report; a caller that only wants somewhere to warn (Origins)
-// takes the silent one and leaves the report to the run.
+// Called as often as anything needs the logger, and it is the same logger
+// every time: what a call changes is where the shown lines go, which is
+// whatever the command's stderr and level are now. The error says the level
+// was refused, which is RunE's to report; a caller that only wants somewhere
+// to warn (Origins) takes the logger and leaves the report to the run.
 func (b *BuilderImpl) logger() (*slog.Logger, error) {
-	if b.logLevel == "" {
+	if b.log == nil {
 		return slog.New(slog.DiscardHandler), nil
+	}
+	if b.logLevel == "" {
+		b.log.To(nil, 0)
+		return b.log.Logger(), nil
 	}
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(b.logLevel)); err != nil {
-		return slog.New(slog.DiscardHandler), fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
+		b.log.To(nil, 0)
+		return b.log.Logger(), fmt.Errorf("%w: %q, want debug, info, warn or error (--log-level or $%s)", v1.ErrInvalidLogLevel, b.logLevel, v1.LogEnv)
 	}
-	// For a person at a terminal, one readable line per record; for anything
-	// else reading stderr — a file, a supervisor, grep — logfmt, where the
-	// fields are the point. Then through the ring, so the same lines stderr
-	// shows are the ones a terminal can show. A builder assembled as a bare
-	// struct rather than through New has no ring, and logs the way it
-	// always did.
 	stderr := b.Command().ErrOrStderr()
 	var handler slog.Handler = slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})
 	if console.IsTerminal(stderr) {
 		handler = logs.Pretty(stderr, level)
 	}
-	if b.recent != nil {
-		handler = b.recent.Wrap(handler)
-	}
-	return slog.New(handler), nil
+	b.log.To(handler, level)
+	return b.log.Logger(), nil
 }
 
 // Origins reports the local origins this command exposes, in order: the first

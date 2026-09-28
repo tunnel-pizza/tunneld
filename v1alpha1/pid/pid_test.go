@@ -127,7 +127,7 @@ func TestRegisterRefusesTheSameRun(t *testing.T) {
 }
 
 // TestNothingToDo pins the quiet cases: no directory registers nothing and
-// fails nothing, and with no launcher waiting Detach says so and touches
+// fails nothing, and with no launcher waiting Detach says so and moves
 // nothing.
 func TestNothingToDo(t *testing.T) {
 	_, o, _ := fixed(t)
@@ -137,12 +137,9 @@ func TestNothingToDo(t *testing.T) {
 	}
 	release()
 
-	p, o, stem := fixed(t, pid.WithParent(0))
-	if p.Detach(o, discard()) {
+	p, _, _ := fixed(t, pid.WithParent(0))
+	if p.Detach(nil, discard()) {
 		t.Error("Detach() = true with no launcher waiting")
-	}
-	if _, err := os.Stat(stem + ".log"); !os.IsNotExist(err) {
-		t.Errorf("log: %v, want none", err)
 	}
 }
 

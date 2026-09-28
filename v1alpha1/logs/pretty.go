@@ -22,6 +22,13 @@ import (
 // where the fields are the point; this is for the eyes that read a run as it
 // happens, where the message is.
 func Pretty(w io.Writer, level slog.Leveler) slog.Handler {
+	return &pretty{mu: &sync.Mutex{}, w: w, level: level, color: true}
+}
+
+// plain is Pretty without the colour: the same line, for somewhere that
+// draws it rather than a terminal that interprets it — the ring a frame's
+// log view renders.
+func plain(w io.Writer, level slog.Leveler) slog.Handler {
 	return &pretty{mu: &sync.Mutex{}, w: w, level: level}
 }
 
@@ -29,6 +36,7 @@ type pretty struct {
 	mu    *sync.Mutex // shared by every handler derived from this one: one writer, one lock
 	w     io.Writer
 	level slog.Leveler
+	color bool
 	attrs []slog.Attr // from WithAttrs, in order
 	group string      // from WithGroup, as a dotted prefix
 }
@@ -64,23 +72,27 @@ func (p *pretty) Enabled(_ context.Context, l slog.Level) bool {
 
 func (p *pretty) Handle(_ context.Context, r slog.Record) error {
 	label, sgr := levelStyle(r.Level)
+	dim, reset := sgrDim, sgrReset
+	if !p.color {
+		sgr, dim, reset = "", "", ""
+	}
 	var b strings.Builder
 	if !r.Time.IsZero() {
-		b.WriteString(sgrDim)
+		b.WriteString(dim)
 		b.WriteString(r.Time.Format(time.TimeOnly))
-		b.WriteString(sgrReset)
+		b.WriteString(reset)
 		b.WriteByte(' ')
 	}
 	b.WriteString(sgr)
 	b.WriteString(label)
-	b.WriteString(sgrReset)
+	b.WriteString(reset)
 	b.WriteByte(' ')
 	b.WriteString(r.Message)
 	for _, a := range p.attrs {
-		attr(&b, "", a) // qualified when they were added
+		attr(&b, "", a, dim, reset) // qualified when they were added
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		attr(&b, p.group, a)
+		attr(&b, p.group, a, dim, reset)
 		return true
 	})
 	b.WriteByte('\n')
@@ -95,7 +107,7 @@ func (p *pretty) Handle(_ context.Context, r slog.Record) error {
 
 // attr appends one key=value under prefix, the key dim and the value quoted
 // only when it would otherwise not read as one word.
-func attr(b *strings.Builder, prefix string, a slog.Attr) {
+func attr(b *strings.Builder, prefix string, a slog.Attr, dim, reset string) {
 	a.Value = a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
 		return
@@ -106,7 +118,7 @@ func attr(b *strings.Builder, prefix string, a slog.Attr) {
 	}
 	if a.Value.Kind() == slog.KindGroup {
 		for _, g := range a.Value.Group() {
-			attr(b, key, g)
+			attr(b, key, g, dim, reset)
 		}
 		return
 	}
@@ -115,10 +127,10 @@ func attr(b *strings.Builder, prefix string, a slog.Attr) {
 		v = strconv.Quote(v)
 	}
 	b.WriteByte(' ')
-	b.WriteString(sgrDim)
+	b.WriteString(dim)
 	b.WriteString(key)
 	b.WriteByte('=')
-	b.WriteString(sgrReset)
+	b.WriteString(reset)
 	b.WriteString(v)
 }
 
