@@ -388,7 +388,7 @@ function detach(bin, args) {
     child.removeAllListeners("exit");
     child.unref();
     finish(0);
-    process.stderr.write(summary(child.pid, args));
+    process.stderr.write(summary(child.pid));
   });
   for (const signal of signals) {
     process.on(signal, () => {
@@ -522,14 +522,14 @@ function prose(host, origins, multiview) {
 
 // summary is what a detached run is handed back with, once it has signalled:
 // where it answers and what each address reaches, where it runs from, its
-// pid and log, and how to end or restart it.
+// pid and its log.
 //
 // Read from the files the run keeps beside its spec, which it wrote before
 // signalling: <key>.pid, to find the key by the pid, and <key>.env, the
 // settings the run settled on and the hostname it got. A run under
 // --no-cache writes no .env, and gets what the pid file alone can say; its
 // addresses are on stdout above either way.
-function summary(pid, args) {
+function summary(pid) {
   const dir = cacheDir();
   let key = null;
   try {
@@ -569,8 +569,6 @@ function summary(pid, args) {
   if (key) {
     row("log", home(path.join(dir, `${key}.log`)));
   }
-  row("stop", `npx ${WRAPPER_NAME} -k`);
-  row("restart", [`npx ${WRAPPER_NAME} -kd`, ...args.map(quote)].join(" "));
   lines.push("");
   return lines.join("\n") + "\n";
 }

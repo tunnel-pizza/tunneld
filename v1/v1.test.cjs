@@ -270,8 +270,6 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
       "  from     ~/project",
       `  pid      ${pid}`,
       "  log      <cache>/_3000_bash.log",
-      "  stop     npx tunneld -k",
-      "  restart  npx tunneld -kd :3000 bash",
       "",
       "",
     ].join("\n"),
@@ -304,13 +302,13 @@ test("-d names every origin's address, and says less with no cached settings", p
   );
   assert.equal(launch("-k").status, 0);
 
-  // --no-cache: no .env, so no hostname or directory to name — the pid, log
-  // and levers still.
+  // --no-cache: no .env, so no hostname or directory to name — the pid and
+  // log still.
   const bare = launch("-d", "--no-cache", ":3000");
   assert.equal(bare.status, 0, bare.stderr);
   assert.doesNotMatch(bare.stderr, /t\.example\/\?|from/);
   assert.match(bare.stderr, /What it shares is available in any web browser, at the address above\./);
-  assert.match(bare.stderr, /  pid      \d+\n  log      .*__no_cache__3000\.log\n  stop     npx tunneld -k\n  restart  npx tunneld -kd --no-cache :3000\n/);
+  assert.match(bare.stderr, /  pid      \d+\n  log      .*__no_cache__3000\.log\n\n$/);
   assert.equal(launch("-k").status, 0);
 });
 
