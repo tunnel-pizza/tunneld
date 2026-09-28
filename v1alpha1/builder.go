@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -354,6 +355,33 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 		// first, and `tunneld :3000 --log-level debug` is `tunneld --log-level
 		// debug :3000`. The environment is not argv and works anywhere.
 		cmd.Flags().SetInterspersed(false)
+		// -d and -k are the npm launcher's: as the first word, -d detaches the
+		// run, -k ends every run on the machine, and -kd or -dk does both, and
+		// the launcher strips them before this command sees the line. Neither
+		// can ever be a flag here, or `npx tunneld -d` and `tunneld -d` would
+		// mean two things.
+		// One that reaches this command anyway was typed to the wrong program
+		// or in the wrong place, and the error says where it goes. Any other
+		// flag error is handed to whatever the command this one is mounted
+		// under would have done with it — its parent's, not c's, since c is
+		// this command or one of its own subcommands, which inherit this.
+		cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+			var unknown *pflag.NotExistError
+			if errors.As(err, &unknown) {
+				switch s := unknown.GetSpecifiedShortnames(); s {
+				case "d":
+					return errors.New("-d is not a " + name + " flag: the tunneld npm launcher detaches a run with it, as the first word — npx tunneld -d …")
+				case "k":
+					return errors.New("-k is not a " + name + " flag: the tunneld npm launcher ends every run with it, as the only word — npx tunneld -k")
+				case "kd", "dk":
+					return errors.New("-" + s + " is not a " + name + " flag: the tunneld npm launcher ends every run and detaches a new one with it, as the first word — npx tunneld -" + s + " …")
+				}
+			}
+			if parent := cmd.Parent(); parent != nil {
+				return parent.FlagErrorFunc()(c, err)
+			}
+			return err
+		})
 		// The version subcommand prints the build banner and exits — the
 		// build id of the binary plus the tunnel library it links against,
 		// since that library is what actually speaks to the edge and a bug
@@ -450,6 +478,20 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// listener, a tunnel — and a typo should cost none of it.
 	if err := b.identity.Known(b.identityProviders); err != nil {
 		return err
+	}
+
+	// Registered once the run is known to be one, and before the mint, so
+	// -k can end a run that is still coming up. Released last, after
+	// everything below has torn down: the file is gone only once the run is.
+	// Whether or not the spec is cached: --no-cache is about the hostname,
+	// and a run that mints a fresh one is still a run -k should find. The
+	// same run already going is refused here, before anything is minted.
+	if b.pid != nil {
+		release, err := b.pid.Register(origins, log)
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
 
 	// Everything below opens something — the attach servers, the tunnel,
@@ -691,13 +733,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		display.WithInteractive(display.IsInteractive(cmd)),
 		display.WithScreen(screen),
 	)
-	if screen == nil {
-		// Nothing is going to be drawn here. The addresses are up, the run
-		// blocks from now on, and the signal is the only thing left on this
-		// side of it.
-		fmt.Fprintln(stderr, stopHint)
-	}
-
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	// The hostname beside the rest of what the run settled on: never read
@@ -705,6 +740,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	tracking := b.tracking(origins)
 	tracking[ltv1.HostnameEnv] = public.Hostname()
 	spec.Save(origins, tun.Serialize(), tracking, log)
+
+	// A launcher waiting to hand the console back gets it now, after the
+	// save, so the file it reads to say what is running is there. Ctrl-C
+	// there will not reach this run, so it gets no hint saying so.
+	detached := b.pid != nil && b.pid.Detach(origins, log)
+	if screen == nil && !detached {
+		// Nothing is going to be drawn here. The addresses are up, the run
+		// blocks from now on, and the signal is the only thing left on this
+		// side of it.
+		fmt.Fprintln(stderr, stopHint)
+	}
 
 	// A viewer asking to end the run is the third way this stops, beside a
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it

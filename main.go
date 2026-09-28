@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 )
 
 func main() {
@@ -32,8 +33,10 @@ func main() {
 	defer stop()
 
 	// SilenceErrors is set on the built command, so the error surfaces here
-	// exactly once, prefixed with the program name.
-	if err := v1alpha1.New().Command().ExecuteContext(ctx); err != nil {
+	// exactly once, prefixed with the program name. Being found and handed
+	// back by the npm launcher is this binary's, not every program's that
+	// embeds the builder: it is how npx tunneld -k and -d reach a run.
+	if err := v1alpha1.New(v1alpha1.WithPid(pid.New())).Command().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
 		os.Exit(1)
 	}

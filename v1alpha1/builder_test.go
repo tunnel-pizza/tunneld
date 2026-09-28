@@ -24,6 +24,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/creack/pty"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -446,6 +447,32 @@ type fakeCache struct {
 	order    *[]string
 }
 
+// fakePid records a run's registration in the order of effects, and says a
+// launcher was waiting when waiting is set.
+type fakePid struct {
+	order      *[]string
+	onRegister func()
+	waiting    bool
+	// running is what Register refuses with: the same run already going.
+	running error
+}
+
+func (f *fakePid) Register(Origins, v1.Logger) (func(), error) {
+	*f.order = append(*f.order, "register")
+	if f.running != nil {
+		return nil, f.running
+	}
+	if f.onRegister != nil {
+		f.onRegister()
+	}
+	return func() { *f.order = append(*f.order, "release") }, nil
+}
+
+func (f *fakePid) Detach(Origins, v1.Logger) bool {
+	*f.order = append(*f.order, "detach")
+	return f.waiting
+}
+
 func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
 func (f *fakeCache) Save(_ Origins, spec string, tracking map[string]string, _ v1.Logger) {
 	f.saved, f.spec, f.tracking = true, spec, tracking
@@ -790,6 +817,64 @@ func TestRun(t *testing.T) {
 		}
 		if !h.binder.closed {
 			t.Error("the binder's closer was never called; RunE's defer did not run")
+		}
+	})
+
+	t.Run("a run is registered while it runs, and only when asked", func(t *testing.T) {
+		for _, on := range []bool{true, false} {
+			h := newRunHarness(t, live(public), ":3000")
+			if on {
+				v1.Apply(h.b, WithPid(&fakePid{order: &h.order}))
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v, want nil after a signal", err)
+			}
+			want := []string{"url", "save"}
+			if on {
+				want = []string{"register", "url", "save", "detach", "release"}
+			}
+			if !slices.Equal(h.order, want) {
+				t.Errorf("WithPid set = %v: effects in order %v, want %v", on, h.order, want)
+			}
+		}
+	})
+
+	t.Run("--no-cache keeps the spec, not the registration", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+		_ = h.run(t, ctx, "--no-cache", ":3000")
+		if !slices.Contains(h.order, "register") || h.cache.saved {
+			t.Errorf("effects %v, saved = %v, want a registration and no spec", h.order, h.cache.saved)
+		}
+	})
+
+	t.Run("the same run already going is refused before the mint", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		refusal := fmt.Errorf("%w as pid 42", v1.ErrRunning)
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, running: refusal}))
+		if err := h.run(t, t.Context()); !errors.Is(err, v1.ErrRunning) {
+			t.Fatalf("run() = %v, want ErrRunning", err)
+		}
+		if len(h.specs) != 0 || !slices.Equal(h.order, []string{"register"}) {
+			t.Errorf("specs %q, effects %v, want nothing after the refusal", h.specs, h.order)
+		}
+	})
+
+	t.Run("a detached run says nothing about Ctrl+C", func(t *testing.T) {
+		for _, waiting := range []bool{true, false} {
+			h := newRunHarness(t, live(public), ":3000")
+			v1.Apply(h.b, WithPid(&fakePid{order: &h.order, waiting: waiting}))
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if got := strings.Contains(h.stderr.String(), stopHint); got == waiting {
+				t.Errorf("launcher waiting = %v: stop hint printed = %v", waiting, got)
+			}
 		}
 	})
 
@@ -1480,6 +1565,58 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 	if got.Len() != 1 || !slices.Equal(got.At(0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
 		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
+}
+
+// TestLauncherFlagsAreNotTunnelds pins that -d and -k stay the npm
+// launcher's. Neither is defined here, so `npx tunneld -d` and `tunneld -d`
+// cannot come to mean two things; one that reaches the command anyway, first
+// or after another flag, is refused with where it belongs. Any other unknown
+// flag is still cobra's error, or the error of the command this one is
+// mounted under, which is what an embedding program's own handler expects.
+func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
+	for _, s := range []string{"d", "k"} {
+		if f := New().Command().Flags().ShorthandLookup(s); f != nil {
+			t.Errorf("-%s is defined as --%s: it is the npm launcher's", s, f.Name)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-d first", []string{"-d", ":3000"}, "-d is not a tunneld flag: the tunneld npm launcher detaches"},
+		{"-d after a flag", []string{"--log-level", "debug", "-d", ":3000"}, "-d is not a tunneld flag"},
+		{"-k", []string{"-k"}, "-k is not a tunneld flag: the tunneld npm launcher ends every run"},
+		{"-kd", []string{"-kd", ":3000"}, "-kd is not a tunneld flag: the tunneld npm launcher ends every run and detaches"},
+		{"-dk", []string{"-dk", ":3000"}, "-dk is not a tunneld flag"},
+		{"another", []string{"-z"}, "unknown shorthand flag: 'z' in -z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := execute(t, New(), tc.args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("mounted", func(t *testing.T) {
+		parent := &cobra.Command{Use: "host", SilenceErrors: true, SilenceUsage: true}
+		parent.SetFlagErrorFunc(func(*cobra.Command, error) error { return errors.New("the host's") })
+		parent.AddCommand(New().Command())
+		parent.SetOut(io.Discard)
+		parent.SetErr(io.Discard)
+		for args, want := range map[string]string{
+			"tunneld -z":         "the host's",
+			"tunneld version -z": "the host's",
+			"tunneld -d":         "-d is not a tunneld flag",
+		} {
+			parent.SetArgs(strings.Fields(args))
+			if err := parent.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: error = %v, want it to contain %q", args, err, want)
+			}
+		}
+	})
 }
 
 // TestOriginsWarnsAtTheTunnelsLevel pins that a dropped origin is reported at

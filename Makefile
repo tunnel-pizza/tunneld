@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries licenses image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -59,6 +59,13 @@ BINARIES := $(foreach p,$(PLATFORMS),dist/tunneld-$(p)$(if $(findstring win32,$(
 binaries:
 	rm -rf dist
 	$(MAKE) $(BINARIES)
+
+# Just this machine's, by the same name, and without wiping the others: what
+# `npm run dev` builds before handing the launcher its arguments. The host is
+# go env's, mapped to node's names the other way round.
+HOST := $(subst windows,win32,$(shell go env GOOS))-$(subst amd64,x64,$(shell go env GOARCH))
+
+host: dist/tunneld-$(HOST)$(if $(findstring win32,$(HOST)),.exe)
 
 .PHONY: $(BINARIES)
 $(BINARIES): dist/tunneld-%:
@@ -122,8 +129,14 @@ windows:
 # Not ./... — that reaches e2e/, whose live row mints a real tunnel, and the
 # examples are programs the e2e harness drives, not packages with tests. The
 # unit lane stays offline; `make e2e` is the target that goes out.
+#
+# Then the npm launcher's, under node's own runner: v1/v1.cjs is a source
+# file like any other, so its tests are unit tests like any other. Every case
+# builds its own package tree in a temporary directory with a stand-in
+# binary, so none needs a Go build or touches the real cache directory.
 test:
 	go test . ./v1/... ./v1alpha1/...
+	node --test v1/v1.test.cjs
 
 # The unit packages under the race detector — the same lane CI runs, runnable
 # locally to reproduce a CI race find. The recipe-line CGO_ENABLED=1 overrides

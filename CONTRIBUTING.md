@@ -35,7 +35,9 @@ Deep-link by filename; line numbers will drift.
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
-| npm launcher: finds the platform binary, hands it the process | [`v1/v1.cjs`](./v1/v1.cjs)                            |
+| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, `-kd`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
+| How a run is found and handed back: `<key>.pid` for `npx tunneld -k`, and `-d`'s signal | [`v1alpha1/pid/pid.go`](./v1alpha1/pid/pid.go) |
+| The launcher's tests, under `node --test` (part of `make test`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -81,15 +83,17 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, `Router`, `Console`, `Identity`, `Motd`, implemented respectively by
-`cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, `Router`, `Console`, `Identity`, `Motd`, `Pid`, implemented respectively by
+`cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`, `pid`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
 a value, so it is a type in [`v1/v1.go`](./v1/v1.go) with one implementation in
 `v1alpha1/origins` and no option to swap it. Each
 has one implementation, named `XImpl`, in its own `v1alpha1/<name>`
-subpackage, seeded by `New` and replaceable with the matching `With*` option.
+subpackage, seeded by `New` and replaceable with the matching `With*` option —
+except `Pid`, which `New` leaves nil: being found and ended by `npx tunneld -k`
+is the binary's, so `main.go` passes `pid.New()` and an embedder opts in.
 A function that maps a value to a value (`publicURL`, `Version`) gets no
 interface — origin parsing, for instance, sits at the top of `Command`'s
 `RunE` rather than behind a contract of its own. The assertion block in
@@ -146,10 +150,15 @@ Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engin
 ```sh
 git clone https://github.com/tunnel-pizza/tunneld.git
 cd tunneld
-make test     # unit tests (fast, in-package, never opens a tunnel)
+make test     # unit tests, Go and the npm launcher's (needs Node 20+); never opens a tunnel
 make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
+npm run dev -- -d :3000   # the launcher against dist/'s binary for the host, built first
 ```
+
+`npm run dev` builds only this machine's `dist/` binary (`make host`) and runs
+the launcher on it, so trying a launcher change is one line rather than a
+publish.
 
 The container tests under [`v1alpha1/attach/`](./v1alpha1/attach) skip
 themselves unless a Docker daemon answers *and* the `alpine` image is already
@@ -243,6 +252,10 @@ files are for code.
 is the Acknowledgements section against `go.mod` and against the versions the
 pages load from jsDelivr, so a new dependency fails `make test` until the
 README says what it is for.
+
+`v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
+source file that is not Go, so its tests sit beside it under the name
+`node --test` looks for, and run with the rest under `make test`.
 
 Two deliberate exceptions:
 

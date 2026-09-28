@@ -110,6 +110,13 @@ as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
 caching off, and what `--no-cache` leaves a run in. They are a contributor's
 and a test's concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](../CONTRIBUTING.md#design-conventions).
+
+`WithPid` is the one of them an embedder may want. It is how a run is found
+and handed back by the npm launcher: `npx tunneld -k` ends every run
+registered through it, and `-d` waits on it to hand the console back. Unset,
+the default, a run is neither — a program that mounts tunneld under its own
+name is a process `-k` would end whole, so it stays out of reach unless it
+passes `WithPid(pid.New())`, which is what the tunneld binary does.
 The motd board and the log ring are built once in `New` and shared through
 their own options — the board into the display and the binder, the ring into
 the console and the binder — so an embedder replacing one of those passes the
@@ -149,6 +156,7 @@ var ErrInvalidOrigin   = errors.New("invalid origin")
 var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")
 var ErrNoDocker        = errors.New("docker daemon unreachable")
+var ErrRunning         = errors.New("already running")
 var ErrUnknownIdentity = errors.New("unknown identity provider")
 
 const LogEnv               = "TUNNELD_LOG"

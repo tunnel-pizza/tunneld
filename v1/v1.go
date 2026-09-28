@@ -159,6 +159,13 @@ var ErrNotReady = errors.New("tunnel did not become ready")
 // $DOCKER_HOST at the socket that has it.
 var ErrNoDocker = errors.New("docker daemon unreachable")
 
+// ErrRunning reports a run refused because the same run — the same working
+// directory, origins and arguments — is already going on this machine, in the
+// background or another terminal. Two of them would answer on one hostname
+// and share one registration, so the second is refused before it mints
+// anything; the message names the first one's pid.
+var ErrRunning = errors.New("already running")
+
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read
@@ -238,6 +245,18 @@ const (
 	// credential with, comma-separated and in order — the mirror of
 	// --identity-providers, which beats it. Empty turns the lookup off.
 	IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
+
+	// NotifyPidEnv is how the npm launcher asks a detached run to say when it
+	// is up. It carries the launcher's pid, and a run whose parent has that
+	// pid sends it SIGUSR2 once its addresses are out, having first moved its
+	// stdout and stderr to a log beside its spec, so the launcher can exit and
+	// hand the console back. A value naming any other process is ignored:
+	// SIGUSR2 ends a process that has not asked for it, and whatever started a
+	// run is not always a launcher.
+	//
+	// Not a knob. Nothing mirrors it and nobody sets it by hand; it is the one
+	// line of protocol between the launcher and the binary it ships with.
+	NotifyPidEnv = "TUNNELD_NOTIFY_PID"
 
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.

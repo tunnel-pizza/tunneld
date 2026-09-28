@@ -15,7 +15,7 @@ For embedding tunneld in a Go program, see [embedding.md](./embedding.md).
 - [Multiview](#multiview)
 - [Output contract](#output-contract)
 - [The browser](#the-browser)
-- [Flags](#flags) and [Environment](#environment)
+- [Flags](#flags), [The npm launcher](#the-npm-launcher) and [Environment](#environment)
 - [Running in a container](#running-in-a-container)
 
 ## Origins
@@ -646,6 +646,143 @@ docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docke
 
 A subcommand's name is read as the subcommand, not as a program: to expose a
 program called `version`, spell it `exec:///path/to/version`.
+
+`-d`, `-k`, `-kd` and `-dk` are not tunneld's and never will be: they are the
+npm launcher's, below, and the binary refuses them by name, so `tunneld -d` and
+`npx tunneld -d` cannot come to mean two things. An embedding program mounting
+the command under its own name inherits the refusal; any other flag error goes
+to the parent command's own handler.
+
+## The npm launcher
+
+`npx tunneld` runs a small Node launcher, `v1/v1.cjs`, that finds the binary
+for the machine and hands it the command line. Everything above is the
+binary's. The launcher adds a few things of its own.
+
+**`-d` detaches.** As the first word, and only there, it starts the run in the
+background, on the caller's own stdout and stderr, and waits for the run to
+say it is up. The banner, the addresses and the origin each reaches arrive
+exactly as a foreground run's would. Then the run caches its settings, moves
+its stdout and stderr to `<key>.log` in the cache directory, and signals the
+launcher, which gives the prompt back with a summary read from the files
+beside it — the directory, the pid and the log, then what the run shares,
+said as a sentence, and each address and what it reaches:
+
+```
+🍕 tunneld is now running in the background
+
+    cwd  ~/project
+    pid  73146
+    log  ~/Library/Caches/tunneld/894bb9b319b7b699.log
+
+  Your applications (http://localhost:3000, /bin/bash) are now available,
+  tunneled through https://0tc62f7m9b.tunneled.pizza/, at the following
+  addresses:
+
+  https://0tc62f7m9b.tunneled.pizza/    → multiview
+  https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
+  https://0tc62f7m9b.tunneled.pizza/?1  → /bin/bash
+```
+
+One origin reads "Your application (/bin/bash) is now available, tunneled
+through https://…/, at the following address:", with its one line after. In
+colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache`
+there are no cached settings to read, so it says less: the pid and the log. The addresses are on stdout either way. The tunnel stays up.
+Nothing of the caller's is held after that, so
+`addr=$(npx tunneld -d :3000)` returns with the address, and nothing lands on
+a prompt later. `-d` is stripped before the binary sees the line, so
+`npx tunneld -d :3000 claude` is the run `npx tunneld :3000 claude` would have
+been, minus the console: with no terminal to read from, it draws no frame and
+opens no browser tab.
+
+The signal is `SIGUSR2`, asked for through `TUNNELD_NOTIFY_PID`, which the
+launcher sets to its own pid. A run sends it only to a parent with that pid,
+since `SIGUSR2` ends a process that has not asked for it, and whatever started
+a run is not always the launcher.
+
+A run that ends before it is up (a bad origin, a mint that fails, `--help`)
+has already said so on the caller's streams, and its exit status is passed
+on. Ctrl+C while `-d` is waiting ends the run, since nothing has been handed
+back yet.
+
+**`-k` ends every run.** As the only word. Every tunneld run on the machine,
+for this user — detached or in the foreground of another terminal, started
+through npx or not — gets `SIGINT`, which is what Ctrl+C sends a foreground
+run, so each tears down the same way: the programs its origins started, the
+attach servers, the tunnel. `-k` waits for them, names each one it stopped by
+pid and key, and exits non-zero if one is still going after 30 seconds.
+
+**`-kd` is both, a restart.** As the first word, spelled `-dk` too: every run
+ends, and only once they all have does this one start, detached. One still
+tearing down after the 30 seconds leaves the new run unstarted and the exit
+status 1. An ambiguous line is refused before anything is ended.
+
+**How `-k` finds a run.** The binary registers every run as `<key>.pid` in the
+cache directory, beside the `<key>.env` its spec is cached in — whether or
+not the spec is, since `--no-cache` is about the hostname and a run that mints
+a fresh one is still a run. It holds the file open for as long as it runs and
+removes it after teardown. `-k` signals every process holding such a file,
+and nothing else: the kernel closes the file however a process ends,
+`kill -9` included, so a file nobody holds is a run that is gone even when the
+pid in it has since been handed to another program, and `-k` clears it
+without signalling anything. Linux answers who holds it from `/proc`, other
+systems through `lsof`.
+
+**The same run twice is refused.** The file is locked as well as held, so a
+second run of the same thing — the same directory, origins and arguments,
+which is the same key — finds the lock taken and stops before it mints
+anything, with `ErrRunning`:
+
+```
+tunneld: already running as pid 43697, in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
+```
+
+Two of them would answer on one hostname, and one ending would take the
+other's registration with it. The kernel drops the lock with the file,
+however the process ends, so a run that died leaves nothing to refuse the
+next one.
+
+Registering is the binary's, not the builder's by default: a program that
+mounts tunneld as a subcommand is a process `-k` would end whole, so it opts in
+with `v1alpha1.WithPid(pid.New())`. See [embedding.md](./embedding.md).
+
+`<key>.log` keeps growing for as long as a detached run does, and is where to
+look when one misbehaves; the next detached run of the same thing starts it
+over. `make clean` removes the cache directory, registrations included, so a
+run started before it has to be ended by pid.
+
+None of the flags is offered on Windows yet. Node there can only terminate another
+process, which would skip the teardown `-k` exists to run, and a run nothing
+can end cleanly is not one to leave behind.
+
+**An ambiguous line is refused.** A bare program takes every word after it,
+up to a port or a URL, so
+
+```sh
+npx tunneld claude "next dev"
+```
+
+is, as written, one program, `claude`, with `next dev` as its argument. The
+shell has removed the quotes before anything runs, but a word with whitespace
+in it, whose first word is a program on `$PATH`, is most likely a quoted group
+meant as an origin of its own. When one sits among a bare program's
+arguments, and is not the value of a flag in front of it (`sh -c "npm run
+dev"` is one program on purpose), the launcher stops before the run starts
+and exits 1, naming both readings, each ready to paste back:
+
+```
+tunneld: ambiguous: 'next dev' could be claude's argument or an origin of its own.
+  Say which with quotes:
+    npx tunneld 'next dev' claude    two origins
+    npx tunneld 'claude "next dev"'  one origin
+```
+
+Two origins is the bare program moved last. One origin is the program quoted
+together with its arguments, which is a single word with whitespace in it and
+so never a bare program; the binary splits it back into the program and its
+arguments. Neither line is refused in turn. A prompt,
+`npx tunneld claude "fix the bug"`, is not refused at all, because `fix` is
+not a program.
 
 ## Environment
 

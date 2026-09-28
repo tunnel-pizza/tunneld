@@ -189,6 +189,26 @@ prints the build.
 
 Every flag and variable in full: [docs/reference.md](./docs/reference.md#flags).
 
+### In the background
+
+Under `npx`, `-d` as the first word detaches: the addresses print, the prompt
+comes back, and the tunnel stays up. `npx tunneld -k` ends every tunneld run
+on the machine, detached or not, the way Ctrl+C would. `-kd` does both, a
+restart. All three belong to the npm launcher, not to tunneld, and aren't
+available on Windows yet.
+
+```sh
+npx tunneld -d :3000 claude
+npx tunneld -kd :3000 claude    # end every run, start this one detached
+npx tunneld -k
+```
+
+The launcher also refuses a line that could mean two things:
+`npx tunneld claude "next dev"` is, as written, one program, `claude` with
+`next dev` as its argument, since a bare program takes the words after it. It
+stops and shows the quoting for each reading: `'next dev' claude` for two
+origins, `'claude "next dev"'` for one. See [The npm launcher](./docs/reference.md#the-npm-launcher).
+
 ## How it works
 
 tunneld is the command-line client for [tunnel.pizza](https://tunnel.pizza).

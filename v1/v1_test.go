@@ -22,6 +22,7 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.DockerProvider, "dockerd"},
 		{v1.IdentityProvidersEnv, "TUNNELD_IDENTITY_PROVIDERS"},
 		{v1.DefaultIdentityProviders, "github"},
+		{v1.NotifyPidEnv, "TUNNELD_NOTIFY_PID"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -41,6 +42,7 @@ func TestSentinelsAreDistinct(t *testing.T) {
 		"ErrInvalidLogLevel": v1.ErrInvalidLogLevel,
 		"ErrNotReady":        v1.ErrNotReady,
 		"ErrNoDocker":        v1.ErrNoDocker,
+		"ErrRunning":         v1.ErrRunning,
 	}
 	for name, err := range sentinels {
 		if err == nil {
