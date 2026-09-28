@@ -2275,7 +2275,7 @@ func TestIdentityProvidersSettle(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{"the default", "", nil, []string{"github"}},
+		{"the default", "", nil, []string{"github", "anthropic"}},
 		{"the variable", "kubernetes,github", nil, []string{"kubernetes", "github"}},
 		{"the flag beats it", "kubernetes", []string{"--identity-providers=github"}, []string{"github"}},
 		{"empty turns it off", "", []string{"--identity-providers="}, nil},

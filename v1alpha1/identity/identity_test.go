@@ -6,28 +6,58 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // stub is a provider that answers what it was built with and records being
-// asked, which is how a case proves the walk stopped where it should.
+// asked. Counted atomically: providers are asked on goroutines of their own.
 type stub struct {
 	name  string
 	token string
-	asked int
+	asked atomic.Int32
 }
 
 func (s *stub) Name() string { return s.name }
 
 func (s *stub) Token(context.Context, v1.Logger) (string, bool) {
-	s.asked++
+	s.asked.Add(1)
 	if s.token == "" {
 		return "", false
 	}
 	return s.token, true
+}
+
+// gated is a provider that holds its answer until release is closed, or
+// gives up when the lookup is cancelled — which is how a case controls which
+// provider finishes first, and observes the ones cancelled.
+type gated struct {
+	name     string
+	token    string
+	started  chan struct{}
+	release  chan struct{}
+	canceled chan struct{}
+}
+
+func newGated(name, token string) *gated {
+	return &gated{name: name, token: token, started: make(chan struct{}), release: make(chan struct{}), canceled: make(chan struct{})}
+}
+
+func (g *gated) Name() string { return g.name }
+
+func (g *gated) Token(ctx context.Context, _ v1.Logger) (string, bool) {
+	close(g.started)
+	select {
+	case <-g.release:
+		return g.token, g.token != ""
+	case <-ctx.Done():
+		close(g.canceled)
+		return "", false
+	}
 }
 
 // quiet is a logger that keeps what it was told, so a case can assert a
@@ -63,30 +93,71 @@ func TestKnownRefusesAProviderThatIsNotThere(t *testing.T) {
 	}
 }
 
-// TestTokenTakesTheFirstAnswer pins the walk: in order, first provider to find
-// one wins, and nothing after it is asked.
-func TestTokenTakesTheFirstAnswer(t *testing.T) {
+// TestTokenAsksAtOnceAndKeepsTheOrder pins the two halves of the lookup:
+// every provider is asked at once — the second is asked while the first is
+// still looking — and yet the list decides, so the first provider's answer
+// wins even though the second had one sooner.
+func TestTokenAsksAtOnceAndKeepsTheOrder(t *testing.T) {
 	log, _ := quiet()
-
-	first := &stub{name: "first", token: "from-first"}
+	first := newGated("first", "from-first")
 	second := &stub{name: "second", token: "from-second"}
 	i := New(WithProviders(first, second))
 
-	if got := i.Token(t.Context(), []string{"first", "second"}, log); got != "from-first" {
-		t.Errorf("Token() = %q, want %q", got, "from-first")
-	}
-	if second.asked != 0 {
-		t.Errorf("the second provider was asked %d times, want 0 — the first answered", second.asked)
-	}
+	got := make(chan string, 1)
+	go func() { got <- i.Token(t.Context(), []string{"first", "second"}, log) }()
 
-	// A provider that finds nothing is not a failure: the next one is tried.
+	<-first.started
+	deadline := time.After(5 * time.Second)
+	for second.asked.Load() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("the second provider was not asked while the first was still looking")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case token := <-got:
+		t.Fatalf("Token() = %q before the first provider answered, want it to wait for the list's first", token)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(first.release)
+	if token := <-got; token != "from-first" {
+		t.Errorf("Token() = %q, want %q — the list decides, not the clock", token, "from-first")
+	}
+}
+
+// TestTokenFallsThroughAnEmptyProvider pins that a provider finding nothing is
+// not a failure: the next one in the list answers.
+func TestTokenFallsThroughAnEmptyProvider(t *testing.T) {
+	log, _ := quiet()
 	empty := &stub{name: "empty"}
-	i = New(WithProviders(empty, second))
+	second := &stub{name: "second", token: "from-second"}
+	i := New(WithProviders(empty, second))
 	if got := i.Token(t.Context(), []string{"empty", "second"}, log); got != "from-second" {
 		t.Errorf("Token() = %q, want %q", got, "from-second")
 	}
-	if empty.asked != 1 {
-		t.Errorf("the empty provider was asked %d times, want 1", empty.asked)
+	if empty.asked.Load() != 1 {
+		t.Errorf("the empty provider was asked %d times, want 1", empty.asked.Load())
+	}
+}
+
+// TestTokenCancelsTheRest pins that once the answer is decided the providers
+// still looking are told to stop — gh's subprocess is killed rather than left
+// to run out its bound behind a tunnel already minting.
+func TestTokenCancelsTheRest(t *testing.T) {
+	log, _ := quiet()
+	first := &stub{name: "first", token: "from-first"}
+	slow := newGated("slow", "from-slow")
+	i := New(WithProviders(first, slow))
+
+	if got := i.Token(t.Context(), []string{"first", "slow"}, log); got != "from-first" {
+		t.Errorf("Token() = %q, want %q", got, "from-first")
+	}
+	<-slow.started
+	select {
+	case <-slow.canceled:
+	case <-time.After(5 * time.Second):
+		t.Error("the provider still looking was not cancelled once the answer was decided")
 	}
 }
 
@@ -116,8 +187,8 @@ func TestTokenYieldsToTheOperator(t *testing.T) {
 	if got := i.Token(t.Context(), []string{"github"}, log); got != "" {
 		t.Errorf("Token() = %q, want empty — libtunnel reads the variable itself", got)
 	}
-	if asked.asked != 0 {
-		t.Errorf("a provider was asked %d times, want 0", asked.asked)
+	if n := asked.asked.Load(); n != 0 {
+		t.Errorf("a provider was asked %d times, want 0", n)
 	}
 	if !strings.Contains(buf.String(), ltv1.TokenEnv) {
 		t.Errorf("the log %q does not say why the lookup was skipped", buf.String())

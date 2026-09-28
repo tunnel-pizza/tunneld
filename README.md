@@ -165,7 +165,8 @@ Ctrl+C when you're done.
 
 If you're signed in to the GitHub CLI, the mint says who's asking, and you can
 see your tunnels at `https://tunnel.pizza/<your-login>` once you sign in there.
-`--identity-providers=` sends nothing. See
+In a Claude Code workspace, it sends the workspace's own credential instead
+when there's no GitHub one. `--identity-providers=` sends nothing. See
 [Identity](./docs/reference.md#identity).
 
 ## Configuration

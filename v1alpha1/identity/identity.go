@@ -96,8 +96,16 @@ func (i *IdentityImpl) registered() []string {
 	return names
 }
 
-// Token walks the list in order and returns what the first provider to answer
-// found, or "" when none did.
+// Token asks every provider in the list at once and returns what the first of
+// them, in list order, found — or "" when none did.
+//
+// At once, because a lookup is a wait: gh is a subprocess with a two-second
+// bound, and a list walked one after another would add every provider's wait
+// to every mint. In list order, because the list is the operator's statement
+// of which identity to prefer, and which lookup happens to finish first is
+// not. So the answer is the earliest provider that found something, decided
+// as soon as every provider ahead of it has come back empty; the ones still
+// looking are cancelled then.
 //
 // No error, because there is no failure here a caller could act on: a provider
 // that finds nothing has not failed, one that fails at looking has still found
@@ -115,16 +123,32 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 		log.Debug("not looking for a mint credential", "reason", "$"+ltv1.TokenEnv+" is set")
 		return ""
 	}
-	for _, name := range names {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type answer struct {
+		token string
+		found bool
+	}
+	answers := make([]chan answer, len(names))
+	for n, name := range names {
+		answers[n] = make(chan answer, 1)
 		provider, ok := i.providers[name]
 		if !ok {
 			// Known refuses this before a run gets here. A caller that skipped
 			// it gets the same answer as a provider that found nothing.
+			answers[n] <- answer{}
 			continue
 		}
-		if token, found := provider.Token(ctx, log); found {
+		go func() {
+			token, found := provider.Token(ctx, log)
+			answers[n] <- answer{token, found}
+		}()
+	}
+	for n, name := range names {
+		if a := <-answers[n]; a.found {
 			log.Debug("found a mint credential", "provider", name)
-			return token
+			return a.token
 		}
 	}
 	return ""
