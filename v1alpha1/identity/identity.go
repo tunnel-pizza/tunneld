@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -43,6 +44,16 @@ type Provider interface {
 	Token(ctx context.Context, log v1.Logger) (string, bool)
 }
 
+// DefaultTimeout bounds a whole lookup: every provider looks under one
+// deadline, and whatever has not answered by then has found nothing.
+//
+// A provider may be waiting on something that never comes — gh reaching a
+// keyring that puts a dialog up, a workspace that has not written its token —
+// and a tunnel held behind either is worse than an anonymous mint. Two seconds
+// is far longer than reading a file or asking gh takes, and far shorter than a
+// person notices.
+const DefaultTimeout = 2 * time.Second
+
 // Option configures an IdentityImpl at construction.
 type Option = v1.Option[*IdentityImpl]
 
@@ -52,10 +63,22 @@ type Option = v1.Option[*IdentityImpl]
 // does not have is refused by Known rather than skipped.
 type IdentityImpl struct {
 	providers map[string]Provider
+	// timeout bounds a lookup. Seeded by New; a test shortens it to make the
+	// bound observable rather than slow.
+	timeout time.Duration
 }
 
 // New returns an IdentityImpl configured by opts.
-func New(opts ...Option) *IdentityImpl { return v1.Apply(&IdentityImpl{}, opts...) }
+func New(opts ...Option) *IdentityImpl {
+	return v1.Apply(&IdentityImpl{timeout: DefaultTimeout}, opts...)
+}
+
+// WithTimeout bounds a lookup. Zero or negative is not special-cased: a
+// lookup given no time finds what a provider can hand back at once, which is
+// nothing that has to be waited for.
+func WithTimeout(d time.Duration) Option {
+	return func(i *IdentityImpl) { i.timeout = d }
+}
 
 // WithProviders adds the providers a list may name. Each names itself, so
 // there are no keys to keep in step with the values. Repeating the option
@@ -123,12 +146,22 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 		log.Debug("not looking for a mint credential", "reason", "$"+ltv1.TokenEnv+" is set")
 		return ""
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	if len(names) == 0 {
+		log.Debug("not looking for a mint credential", "reason", "no identity providers listed")
+		return ""
+	}
+	log.Debug("looking for a mint credential", "providers", names)
+	start := time.Now()
+
+	// One deadline for every provider, and cancelled as soon as the answer
+	// is decided, so the ones still looking stop either way.
+	ctx, cancel := context.WithTimeout(ctx, i.timeout)
 	defer cancel()
 
 	type answer struct {
 		token string
 		found bool
+		took  time.Duration
 	}
 	answers := make([]chan answer, len(names))
 	for n, name := range names {
@@ -137,19 +170,30 @@ func (i *IdentityImpl) Token(ctx context.Context, names []string, log v1.Logger)
 		if !ok {
 			// Known refuses this before a run gets here. A caller that skipped
 			// it gets the same answer as a provider that found nothing.
+			log.Debug("no identity provider by that name", "provider", name)
 			answers[n] <- answer{}
 			continue
 		}
 		go func() {
+			began := time.Now()
 			token, found := provider.Token(ctx, log)
-			answers[n] <- answer{token, found}
+			answers[n] <- answer{token, found, time.Since(began)}
 		}()
 	}
 	for n, name := range names {
-		if a := <-answers[n]; a.found {
-			log.Debug("found a mint credential", "provider", name)
-			return a.token
+		a := <-answers[n]
+		if !a.found {
+			log.Debug("identity provider found nothing", "provider", name, "took", a.took)
+			continue
 		}
+		if rest := names[n+1:]; len(rest) > 0 {
+			// Whether these had answered yet or not, the list is decided:
+			// any still looking are cancelled as this returns.
+			log.Debug("the rest of the list is not needed", "providers", rest)
+		}
+		log.Debug("found a mint credential", "provider", name, "took", a.took, "total", time.Since(start))
+		return a.token
 	}
+	log.Debug("found no mint credential; minting anonymously", "providers", names, "total", time.Since(start))
 	return ""
 }

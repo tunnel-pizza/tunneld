@@ -83,8 +83,8 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, `Router`, `Console`, `Identity`, `Motd`, `Pid`, implemented respectively by
-`cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`, `pid`. The tunnel itself is `libtunnel.From`, called directly: with
+`Binder`, `Router`, `Console`, `Identity`, `Motd`, `Pid`, `Log`, implemented respectively by
+`cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`, `pid`, `logs`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
 drives a fake through. `Origins` is not among them: it maps a value to
@@ -758,17 +758,22 @@ Two things there will bite if you change them without knowing why:
   stands a server up only for a served origin and `bound.Mirror` refuses
   anything but a list of one. They are said again because the answer is needed
   before the mirror starts: the browser is told, and the log ring is muted.
-- **A drawing console mutes the log ring.** stderr writes straight through a
-  full-screen frame. `recent.Mute(true)` stops records reaching the handler
-  while the ring keeps every line, so nothing is lost and `^K l` is where they
+- **A drawing console mutes the log's stderr.** stderr writes straight through
+  a full-screen frame. `Mute(true)` stops records reaching stderr while the
+  ring and the file keep every line, so nothing is lost and `^K l` is where they
   are read; the mirror unmutes on its way out, so a detached console gets its
   logs back with its prompt.
-- **The log ring wraps rather than tees.** `logs.RingImpl.Wrap` sits in front
-  of the text handler, so what a terminal shows is what stderr got and neither
-  can drift. It asks what it wraps through `Enabled`, so a run at `--log-level`
-  silence keeps nothing. It is built in `v1alpha1.New`, before the command
-  knows where logs go or at what level, because the binder is constructed there
-  too and both need the same one.
+- **One logger, from `New` on.** `v1alpha1/logs` is the `Log` contract: the
+  first thing `New` builds, handed to the console (to mute) and the binder (to
+  read the recent lines), and the logger every later caller gets. It is
+  `slog.NewMultiHandler` over three handlers — the ring (`Pretty`, uncoloured),
+  the run's `<key>.log` (slog's text handler, buffered until `Open` names the
+  file), and a slot for stderr that `To` points wherever `--log-level` says,
+  replaying `With`/`WithGroup` onto whatever is current. So a logger derived
+  before the level was known still ends up in the right place. The ring and the
+  file keep info and above regardless of the stderr level; `logger()` in the
+  builder only points the slot, and is called as often as anything wants the
+  logger.
 - **A keystroke can end the process, and the path is deliberate.** `x` in the
   frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
   fans every origin's into one, because what they are asking for is the

@@ -15,7 +15,7 @@ For embedding tunneld in a Go program, see [embedding.md](./embedding.md).
 - [Multiview](#multiview)
 - [Output contract](#output-contract)
 - [The browser](#the-browser)
-- [Flags](#flags), [The npm launcher](#the-npm-launcher) and [Environment](#environment)
+- [Flags](#flags), [The npm launcher](#the-npm-launcher), [Logs](#logs) and [Environment](#environment)
 - [Running in a container](#running-in-a-container)
 
 ## Origins
@@ -638,7 +638,7 @@ default.**
 | ---- | -------- | ------ |
 | `--no-cache` | `TUNNELD_NO_CACHE` | Don't cache the tunnel spec: mint a fresh hostname every run. Cached, it goes to `<user cache dir>/tunneld/<key>.env` — one file per working directory and set of origins, where the key names that pairing and the banner prints it. Never the working directory: a spec is credentials, and a checkout is the one place they must not land. Where it goes is not configurable from a flag; an embedding program passes `v1alpha1.WithCacheDir`. |
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
-| `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
+| `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. The run's log file and the terminal's log view keep info and above regardless, and debug too when this asks for it; see [Logs](#logs). |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
@@ -673,8 +673,8 @@ binary's. The launcher adds a few things of its own.
 **`-d` detaches.** As the first word, and only there, it starts the run in the
 background, on the caller's own stdout and stderr, and waits for the run to
 say it is up. The banner, the addresses and the origin each reaches arrive
-exactly as a foreground run's would. Then the run caches its settings, moves
-its stdout and stderr to `<key>.log` in the cache directory, and signals the
+exactly as a foreground run's would. Then the run caches its settings, points
+its stdout and stderr at its log file (see [Logs](#logs)), and signals the
 launcher, which gives the prompt back with a summary read from the files
 beside it — the directory, the pid and the log, then what the run shares,
 said as a sentence, and each address and what it reaches:
@@ -757,10 +757,8 @@ Registering is the binary's, not the builder's by default: a program that
 mounts tunneld as a subcommand is a process `-k` would end whole, so it opts in
 with `v1alpha1.WithPid(pid.New())`. See [embedding.md](./embedding.md).
 
-`<key>.log` keeps growing for as long as a detached run does, and is where to
-look when one misbehaves; the next detached run of the same thing starts it
-over. `make clean` removes the cache directory, registrations included, so a
-run started before it has to be ended by pid.
+`make clean` removes the cache directory, registrations included, so a run
+started before it has to be ended by pid.
 
 None of the flags is offered on Windows yet. Node there can only terminate another
 process, which would skip the teardown `-k` exists to run, and a run nothing
@@ -794,6 +792,28 @@ so never a bare program; the binary splits it back into the program and its
 arguments. Neither line is refused in turn. A prompt,
 `npx tunneld claude "fix the bug"`, is not refused at all, because `fix` is
 not a program.
+
+## Logs
+
+A run keeps its own log in three places, and `--log-level` decides only one
+of them.
+
+- **stderr** shows what `--log-level` asks for, and nothing by default.
+- **The terminal's log view** (`Ctrl+K` then `l`) keeps the recent lines.
+- **The log file**, `<key>.log` beside the cached spec in
+  `<user cache dir>/tunneld/`, keeps the whole run. It is opened as soon as
+  the run knows its key, and what was logged before that is written in first.
+  Each run appends behind a `--- <time> pid <n>` line, so a restart keeps the
+  tail of the run it replaced. A file past 16 MB is started over.
+
+The log view and the file record info and above whatever stderr shows, and
+debug too when `--log-level debug` asks for it. Debug is per request and per
+keystroke, which a file kept by default would grow by with every visitor.
+
+A detached run points its own stdout and stderr at the same file, so what
+bypasses the logger, a panic's trace included, lands there too. The file is
+written by the Go side alone; the npm launcher only reads it, for the path
+its summary prints.
 
 ## Environment
 

@@ -2,6 +2,7 @@ package github
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -123,10 +124,12 @@ func TestTokenBoundsGH(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "from-the-environment")
 	const timeout = 250 * time.Millisecond
 	fakeGH(t, sleep+" 30")
-	log, _ := quiet()
+	log, buf := quiet()
 
 	start := time.Now()
-	got, ok := New(WithTimeout(timeout)).Token(t.Context(), log)
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
+	got, ok := New().Token(ctx, log)
 	elapsed := time.Since(start)
 
 	if !ok || got != "from-the-environment" {
@@ -137,6 +140,9 @@ func TestTokenBoundsGH(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Errorf("Token() took %s, want it bounded near %s", elapsed, timeout)
+	}
+	if !strings.Contains(buf.String(), "gh auth token took too long") {
+		t.Errorf("log %q does not say gh ran out of time", buf.String())
 	}
 }
 
@@ -167,11 +173,16 @@ func TestTokenReadsTheEnvironmentInOrder(t *testing.T) {
 func TestTokenFindsNothing(t *testing.T) {
 	noGH(t)
 	clearEnv(t)
-	log, _ := quiet()
+	log, buf := quiet()
 
 	got, ok := New().Token(t.Context(), log)
 	if ok || got != "" {
 		t.Errorf("Token() = %q, %v, want \"\", false", got, ok)
+	}
+	for _, want := range []string{"gh is not installed", "found no github credential"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log %q does not say %q", buf.String(), want)
+		}
 	}
 }
 

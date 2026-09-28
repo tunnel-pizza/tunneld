@@ -9,8 +9,10 @@ package v1alpha1
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -78,11 +80,37 @@ type Cache interface {
 // Register marks the run as running, for the launcher's -k to find and end,
 // until release is called, and refuses with v1.ErrRunning when the same run
 // is already going. Detach, once the addresses are out, hands the run
-// back from a launcher waiting on it — moving its output off the caller's
-// streams and telling the launcher — and reports whether one was waiting.
+// back from a launcher waiting on it — pointing its stdout and stderr at out,
+// or nowhere when out is nil, and telling the launcher — and reports whether
+// one was waiting.
 type Pid interface {
 	Register(origins Origins, log v1.Logger) (release func(), err error)
-	Detach(origins Origins, log v1.Logger) bool
+	Detach(out *os.File, log v1.Logger) bool
+}
+
+// Log is a run's own logging: one logger from New on, and where its lines go.
+//
+// Logger is the logger, the same every time. To points what --log-level shows
+// at a handler, or nowhere; Mute and Detach keep lines off it while a frame
+// draws, and for the rest of a detached run. Lines is the recent ones, for a
+// terminal's log view. Open starts the run's log file once its key is known,
+// File is that file, and Close ends it.
+type Log interface {
+	Logger() *slog.Logger
+	To(h slog.Handler, level slog.Level)
+	Lines() []string
+	Mute(muted bool)
+	Detach()
+	Open(origins Origins)
+	File() *os.File
+	Close()
+}
+
+// WithLog replaces a run's logging. The default is logs.New(), which New also
+// hands the console and the binder; a replacement leaves their log view and
+// muting on the default's ring.
+func WithLog(l Log) Option {
+	return func(b *BuilderImpl) { b.log = l }
 }
 
 // WithPid sets how a run is found and handed back from outside it. The
@@ -262,10 +290,10 @@ func WithMotd(m Motd) Option {
 // program. The default is
 //
 //	attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…),
-//	    attach.WithLogs(recent), attach.WithMotd(board))
+//	    attach.WithLogs(log), attach.WithMotd(board))
 //
-// attach serves, and each provider resolves the one scheme it answers. recent
-// is the log ring New shares with the console and board the motd instance it
+// attach serves, and each provider resolves the one scheme it answers. log
+// is the logging New shares with the console and board the motd instance it
 // gives WithMotd; a replacement built without them serves a frame whose logs
 // view is empty and with no messages above it.
 func WithBinder(binder Binder) Option {
@@ -282,6 +310,7 @@ var (
 	_ Router     = (*router.RouterImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 	_ Motd       = (*motd.MotdImpl)(nil)
+	_ Log        = (*logs.LogImpl)(nil)
 )
 
 // New returns a BuilderImpl carrying its defaults, then configured by opts.
@@ -299,17 +328,18 @@ var (
 // derived per run rather than defaulted, so "unset" is the state that matters
 // and its field is a pointer for exactly that reason.
 func New(opts ...Option) *BuilderImpl {
-	// Built before the builder, because two things need the same one: the
-	// terminal, which shows the lines, and the logger the command assembles
-	// later — by which time the binder has already been constructed with it.
-	recent := logs.New()
+	// The first thing built, because everything after it may log: the one
+	// logger a run has, which the console mutes and the binder's frames read
+	// the recent lines of, and the command points at stderr once it knows
+	// the level.
+	log := logs.New()
 
 	// One board for the three places a message is shown, built before the
 	// builder for the same reason the ring is: the binder and the display
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
-	b := v1.Apply(&BuilderImpl{recent: recent},
+	b := v1.Apply(&BuilderImpl{log: log},
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
@@ -320,14 +350,14 @@ func New(opts ...Option) *BuilderImpl {
 		WithDisplay(display.New(display.WithMotd(board))),
 		WithRouter(router.New()),
 		WithConsole(console.New(
-			console.WithLogs(recent),
+			console.WithLogs(log),
 			console.WithHint(stopHint),
 		)),
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			// Built here, before a flag has been parsed: no run to name yet.
 			attach.WithBanner(VersionLine(nil)),
-			attach.WithLogs(recent),
+			attach.WithLogs(log),
 			attach.WithMotd(board),
 		)),
 	)
@@ -390,10 +420,10 @@ type BuilderImpl struct {
 	// output goes. Nil means whatever cobra defaults to.
 	stdout, stderr io.Writer
 
-	// recent keeps tunneld's own log lines so a terminal can show them. The
-	// command wraps its log handler in this, and the binder was handed the
-	// same one at construction — see New, and Logs in v1alpha1/attach.
-	recent *logs.RingImpl
+	// log is the run's logging: the one logger, the recent lines a terminal
+	// shows, and the run's log file. The binder and the console were handed
+	// the same one at construction — see New.
+	log Log
 
 	// console is the screen this run was started on, seeded with what
 	// outlives a single run — the ring to keep off a drawn frame, and the

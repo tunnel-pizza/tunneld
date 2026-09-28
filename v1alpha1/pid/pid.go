@@ -4,7 +4,8 @@
 // beside its cached spec, a file it holds open for as long as it runs, which
 // is what the launcher's -k finds every run by. And a run the launcher
 // detached tells it, once its addresses are out, that it can hand the console
-// back: it moves its stdout and stderr to <key>.log and signals its parent.
+// back: it moves its stdout and stderr off the caller's — to the run's log
+// file, which v1alpha1/logs keeps — and signals its parent.
 package pid
 
 import (
@@ -185,40 +186,33 @@ func same(f *os.File, path string) bool {
 
 // Detach hands a run back from the launcher waiting on it, and reports
 // whether there was one. The addresses and the banner have gone to the
-// launcher's streams, which are the caller's; what the run says from here
-// goes to <key>.log, emptied, or nowhere when there is no directory to keep
-// one in. Stdout and stderr are moved and then the launcher is signalled, in
-// that order, so that once it exits nothing here holds a stream of the
-// caller's: `$(npx tunneld -d …)` returns, and nothing lands on a prompt
-// later. The launcher says where the log is, finding it by the <key>.pid
-// that names this process.
+// launcher's streams, which are the caller's; from here stdout and stderr go
+// to out — the run's log file, which is not this package's to open or close —
+// or nowhere when out is nil. They are moved and then the launcher is
+// signalled, in that order, so that once it exits nothing here holds a stream
+// of the caller's: `$(npx tunneld -d …)` returns, and nothing lands on a
+// prompt later.
 //
 // A run that cannot move its streams still signals: the launcher exits either
 // way, and the caller's streams stay held until the run ends, which is logged.
-func (p *PidImpl) Detach(origins v1.Origins, log v1.Logger) bool {
+func (p *PidImpl) Detach(out *os.File, log v1.Logger) bool {
 	if p.parent == 0 {
 		return false
 	}
-	var out *os.File
-	if path := p.file(origins, ".log"); path != "" {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			log.Warn("no log for this detached run", "error", err)
-		}
-		out = f
-	}
-	if out == nil {
+	target := out
+	if target == nil {
 		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 		if err != nil {
 			log.Warn("cannot let go of the caller's streams", "error", err)
+		} else {
+			defer f.Close()
+			target = f
 		}
-		out = f
 	}
-	if out != nil {
-		if err := redirect(out); err != nil {
+	if target != nil {
+		if err := redirect(target); err != nil {
 			log.Warn("cannot let go of the caller's streams", "error", err)
 		}
-		out.Close()
 	}
 	if err := notify(p.parent); err != nil {
 		log.Warn("cannot tell the launcher this run is up", "pid", p.parent, "error", err)
