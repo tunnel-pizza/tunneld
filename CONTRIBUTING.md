@@ -35,7 +35,8 @@ Deep-link by filename; line numbers will drift.
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
-| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
+| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, `-kd`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
+| A run's registration: the pid file `npx tunneld -k` finds it by | [`v1alpha1/pidfile.go`](./v1alpha1/pidfile.go) |
 | The launcher's tests, under `node --test` (`make launcher`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |

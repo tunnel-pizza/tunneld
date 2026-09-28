@@ -287,7 +287,7 @@ func New(opts ...Option) *BuilderImpl {
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
-	b := v1.Apply(&BuilderImpl{recent: recent},
+	b := v1.Apply(&BuilderImpl{recent: recent, pidDir: runDir()},
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
@@ -340,6 +340,12 @@ type BuilderImpl struct {
 	// seeds it, an operator overrides it, and neither has to reach into the
 	// process environment to find out what a run will do.
 	shellFallback bool
+
+	// pidFile is whether a run registers itself in pidDir for the npm
+	// launcher's -k to find; see WithPidFile. pidDir is runDir's answer,
+	// seeded by New and moved only by a test.
+	pidFile bool
+	pidDir  string
 
 	// newTunnel is how a spec becomes a tunnel: libtunnel.From, or what a
 	// test put there so a run never reaches the edge. See WithTunnelFactory.

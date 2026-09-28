@@ -95,6 +95,7 @@ func WithIdentityProviders(names ...string) Option // where to look for a mint c
 func WithOpen(open bool) Option                    // force the browser decision; unset means derived
 func WithMultiview(multiview bool) Option          // frame the origins together; default true
 func WithShellFallback(fallback bool) Option       // no origin at all means $SHELL; default true
+func WithPidFile(on bool) Option                   // register each run for npx tunneld -k to end; default false, on in the binary
 func WithStdout(w io.Writer) Option                // help text, the version command, public addresses
 func WithStderr(w io.Writer) Option                // banner, the origin each address reaches, logs
 ```

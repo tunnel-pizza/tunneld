@@ -647,8 +647,8 @@ docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docke
 A subcommand's name is read as the subcommand, not as a program: to expose a
 program called `version`, spell it `exec:///path/to/version`.
 
-`-d` and `-k` are not tunneld's and never will be: they are the npm
-launcher's, below, and the binary refuses both by name, so `tunneld -d` and
+`-d`, `-k`, `-kd` and `-dk` are not tunneld's and never will be: they are the
+npm launcher's, below, and the binary refuses them by name, so `tunneld -d` and
 `npx tunneld -d` cannot come to mean two things. An embedding program mounting
 the command under its own name inherits the refusal; any other flag error goes
 to the parent command's own handler.
@@ -657,7 +657,7 @@ to the parent command's own handler.
 
 `npx tunneld` runs a small Node launcher, `v1/v1.cjs`, that finds the binary
 for the machine and hands it the command line. Everything above is the
-binary's. The launcher adds three things of its own.
+binary's. The launcher adds a few things of its own.
 
 **`-d` detaches.** As the first word, and only there, it starts the run in the
 background and waits for its addresses. Once they are up it prints them on
@@ -673,20 +673,40 @@ A run that ends before its addresses (a bad origin, a mint that fails,
 Ctrl+C while `-d` is waiting ends the run, since nothing has been handed back
 yet.
 
-**`-k` ends every detached run.** As the only word. Each run gets `SIGINT`,
-which is what Ctrl+C sends a foreground run, so each tears down the same way:
-the programs its origins started, the attach servers, the tunnel. `-k` waits
-for them, names each one it stopped with its addresses, and exits non-zero if
-one is still going after 30 seconds.
+**`-k` ends every run.** As the only word. Every tunneld run on the machine,
+for this user — detached or in the foreground of another terminal, started
+through npx or not — gets `SIGINT`, which is what Ctrl+C sends a foreground
+run, so each tears down the same way: the programs its origins started, the
+attach servers, the tunnel. `-k` waits for them, names each one it stopped
+(with its addresses, when `-d` kept them), and exits non-zero if one is still
+going after 30 seconds.
 
-A detached run leaves three files in `<user cache dir>/tunneld/detached/`,
-named by its pid: a record `-k` reads, its stdout, and its stderr, which keeps
-growing for as long as the run does and is where to look when one misbehaves.
-A record whose pid is gone, or now belongs to another program, is a run that
-ended on its own, and `-k` clears it. `make clean` removes the directory with
-the rest of the cache, so a run detached before it has to be ended by pid.
+**`-kd` is both, a restart.** As the first word, spelled `-dk` too: every run
+ends, and only once they all have does this one start, detached. One still
+tearing down after the 30 seconds leaves the new run unstarted and the exit
+status 1. An ambiguous line is refused before anything is ended.
 
-Neither flag is offered on Windows yet. Node there can only terminate another
+**How `-k` finds a run.** The binary registers every run as a file named by
+its pid, in `$XDG_RUNTIME_DIR/tunneld/` where the session has one — per user,
+private, and emptied at reboot, which is what that directory is for — and in
+`<user cache dir>/tunneld/run/` otherwise, which is macOS and Linux without
+logind. It holds the file open for as long as it runs and removes it after
+teardown. `-k` signals a pid only if that process holds its own file: the
+kernel closes the file however the process ends, `kill -9` included, so a
+file nobody holds is a run that is gone even when its pid has since been
+handed to another program, and `-k` clears it without signalling anything.
+Linux answers who holds it from `/proc`, other systems through `lsof`.
+
+Registering is the binary's, not the builder's by default: a program that
+mounts tunneld as a subcommand is a process `-k` would end whole, so it opts in
+with `v1alpha1.WithPidFile(true)`. See [embedding.md](./embedding.md).
+
+A detached run also leaves its stdout and stderr in
+`<user cache dir>/tunneld/detached/`, as `<pid>.out` and `<pid>.log`. The log
+keeps growing for as long as the run does and is where to look when one
+misbehaves; `-k` clears both once the run is gone.
+
+None of the flags is offered on Windows yet. Node there can only terminate another
 process, which would skip the teardown `-k` exists to run, and a run nothing
 can end cleanly is not one to leave behind.
 

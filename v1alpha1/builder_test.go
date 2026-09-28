@@ -794,6 +794,34 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("a run is registered while it runs, and only when asked", func(t *testing.T) {
+		for _, on := range []bool{true, false} {
+			h := newRunHarness(t, live(public), ":3000")
+			dir := t.TempDir()
+			h.b.pidDir = dir
+			v1.Apply(h.b, WithPidFile(on))
+			file := filepath.Join(dir, strconv.Itoa(os.Getpid()))
+			ctx, cancel := context.WithCancel(t.Context())
+			var during error
+			h.cache.onSave = func() {
+				_, during = os.Stat(file)
+				cancel()
+			}
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v, want nil after a signal", err)
+			}
+			if on && during != nil {
+				t.Errorf("WithPidFile(true): no %s while the tunnel was up: %v", file, during)
+			}
+			if !on && !os.IsNotExist(during) {
+				t.Errorf("WithPidFile(false): %s while the tunnel was up (%v), want nothing written", file, during)
+			}
+			if _, err := os.Stat(file); !os.IsNotExist(err) {
+				t.Errorf("WithPidFile(%v): %s after the run (%v), want it removed", on, file, err)
+			}
+		}
+	})
+
 	t.Run("what the provider said is learned, and stderr stays the map", func(t *testing.T) {
 		tun := live(public)
 		tun.messages = []string{"data:text/markdown;base64,PiBbIXdhcm5pbmdd"} // "> [!warning]"
@@ -1503,7 +1531,9 @@ func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
 	}{
 		{"-d first", []string{"-d", ":3000"}, "-d is not a tunneld flag: the tunneld npm launcher detaches"},
 		{"-d after a flag", []string{"--log-level", "debug", "-d", ":3000"}, "-d is not a tunneld flag"},
-		{"-k", []string{"-k"}, "-k is not a tunneld flag: the tunneld npm launcher ends every detached run"},
+		{"-k", []string{"-k"}, "-k is not a tunneld flag: the tunneld npm launcher ends every run"},
+		{"-kd", []string{"-kd", ":3000"}, "-kd is not a tunneld flag: the tunneld npm launcher ends every run and detaches"},
+		{"-dk", []string{"-dk", ":3000"}, "-dk is not a tunneld flag"},
 		{"another", []string{"-z"}, "unknown shorthand flag: 'z' in -z"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

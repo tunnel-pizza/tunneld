@@ -32,8 +32,10 @@ func main() {
 	defer stop()
 
 	// SilenceErrors is set on the built command, so the error surfaces here
-	// exactly once, prefixed with the program name.
-	if err := v1alpha1.New().Command().ExecuteContext(ctx); err != nil {
+	// exactly once, prefixed with the program name. The pid file is this
+	// binary's to write, and not every program's that embeds the builder:
+	// it is how npx tunneld -k finds a run to end.
+	if err := v1alpha1.New(v1alpha1.WithPidFile(true)).Command().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
 		os.Exit(1)
 	}

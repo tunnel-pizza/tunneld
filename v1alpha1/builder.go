@@ -112,6 +112,17 @@ func WithShellFallback(fallback bool) Option {
 	return func(b *BuilderImpl) { b.shellFallback = fallback }
 }
 
+// WithPidFile registers every run in $XDG_RUNTIME_DIR/tunneld, or
+// <user cache dir>/tunneld/run where there is none, as a file
+// named by the pid and held open until the run ends, which is how the npm
+// launcher's -k finds every run on the machine and ends it the way Ctrl-C
+// would. Off by default and on in the tunneld binary: a program that mounts
+// tunneld under its own name is a process -k would end whole, so it opts in
+// here or stays out of reach.
+func WithPidFile(on bool) Option {
+	return func(b *BuilderImpl) { b.pidFile = on }
+}
+
 // WithStdout redirects the help text and the version banner. Command passes
 // it to the command's SetOut, so calling SetOut on the built command
 // overrides this. Unset, output goes to the process's stdout.
@@ -356,9 +367,10 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 		// debug :3000`. The environment is not argv and works anywhere.
 		cmd.Flags().SetInterspersed(false)
 		// -d and -k are the npm launcher's: as the first word, -d detaches the
-		// run and -k ends every run -d left behind, and the launcher strips
-		// them before this command sees the line. Neither can ever be a flag
-		// here, or `npx tunneld -d` and `tunneld -d` would mean two things.
+		// run, -k ends every run on the machine, and -kd or -dk does both, and
+		// the launcher strips them before this command sees the line. Neither
+		// can ever be a flag here, or `npx tunneld -d` and `tunneld -d` would
+		// mean two things.
 		// One that reaches this command anyway was typed to the wrong program
 		// or in the wrong place, and the error says where it goes. Any other
 		// flag error is handed to whatever the command this one is mounted
@@ -367,11 +379,13 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 		cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 			var unknown *pflag.NotExistError
 			if errors.As(err, &unknown) {
-				switch unknown.GetSpecifiedShortnames() {
+				switch s := unknown.GetSpecifiedShortnames(); s {
 				case "d":
 					return errors.New("-d is not a " + name + " flag: the tunneld npm launcher detaches a run with it, as the first word — npx tunneld -d …")
 				case "k":
-					return errors.New("-k is not a " + name + " flag: the tunneld npm launcher ends every detached run with it, as the only word — npx tunneld -k")
+					return errors.New("-k is not a " + name + " flag: the tunneld npm launcher ends every run with it, as the only word — npx tunneld -k")
+				case "kd", "dk":
+					return errors.New("-" + s + " is not a " + name + " flag: the tunneld npm launcher ends every run and detaches a new one with it, as the first word — npx tunneld -" + s + " …")
 				}
 			}
 			if parent := cmd.Parent(); parent != nil {
@@ -475,6 +489,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// listener, a tunnel — and a typo should cost none of it.
 	if err := b.identity.Known(b.identityProviders); err != nil {
 		return err
+	}
+
+	// Registered once the run is known to be one, and before the mint, so
+	// -k can end a run that is still coming up. Released last, after
+	// everything below has torn down: the file is gone only once the run is.
+	if b.pidFile {
+		defer register(b.pidDir, log)()
 	}
 
 	// Everything below opens something — the attach servers, the tunnel,
