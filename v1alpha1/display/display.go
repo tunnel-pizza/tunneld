@@ -166,7 +166,7 @@ var pageHTML string
 var pageTmpl = template.Must(template.New("panel").Parse(pageHTML))
 
 // EXPERIMENT: the panel as a Trellis workspace, served in place of
-// multiview.html when TUNNELD_TRELLIS=1. Undocumented on purpose.
+// multiview.html when TRELLIS=1. Undocumented on purpose.
 //
 //go:embed multiview.trellis.html
 var trellisHTML string
@@ -224,7 +224,7 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 		return nil
 	}
 	tmpl := pageTmpl
-	if os.Getenv("TUNNELD_TRELLIS") == "1" {
+	if os.Getenv("TRELLIS") == "1" {
 		tmpl = trellisTmpl
 	}
 	return func(next http.Handler) http.Handler {
