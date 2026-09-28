@@ -165,6 +165,14 @@ var pageHTML string
 // than surfacing as a 500 on somebody's first request.
 var pageTmpl = template.Must(template.New("panel").Parse(pageHTML))
 
+// EXPERIMENT: the panel as a Trellis workspace, served in place of
+// multiview.html when TRELLIS=1. Undocumented on purpose.
+//
+//go:embed multiview.trellis.html
+var trellisHTML string
+
+var trellisTmpl = template.Must(template.New("trellis").Parse(trellisHTML))
+
 // pageData is what multiview.html renders from.
 type pageData struct {
 	// Host is the public hostname, taken from the request rather than the
@@ -214,6 +222,10 @@ type tile struct {
 func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) func(next http.Handler) http.Handler {
 	if !enabled || origins.Len() < 2 {
 		return nil
+	}
+	tmpl := pageTmpl
+	if os.Getenv("TRELLIS") == "1" {
+		tmpl = trellisTmpl
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,7 +309,7 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 				}
 
 				var page strings.Builder
-				if err := pageTmpl.Execute(&page, data); err != nil {
+				if err := tmpl.Execute(&page, data); err != nil {
 					log.Error("multiview render failed", "error", err)
 					http.Error(w, "multiview: "+err.Error(), http.StatusInternalServerError)
 					return
