@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -354,6 +355,30 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 		// first, and `tunneld :3000 --log-level debug` is `tunneld --log-level
 		// debug :3000`. The environment is not argv and works anywhere.
 		cmd.Flags().SetInterspersed(false)
+		// -d and -k are the npm launcher's: as the first word, -d detaches the
+		// run and -k ends every run -d left behind, and the launcher strips
+		// them before this command sees the line. Neither can ever be a flag
+		// here, or `npx tunneld -d` and `tunneld -d` would mean two things.
+		// One that reaches this command anyway was typed to the wrong program
+		// or in the wrong place, and the error says where it goes. Any other
+		// flag error is handed to whatever the command this one is mounted
+		// under would have done with it — its parent's, not c's, since c is
+		// this command or one of its own subcommands, which inherit this.
+		cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+			var unknown *pflag.NotExistError
+			if errors.As(err, &unknown) {
+				switch unknown.GetSpecifiedShortnames() {
+				case "d":
+					return errors.New("-d is not a " + name + " flag: the tunneld npm launcher detaches a run with it, as the first word — npx tunneld -d …")
+				case "k":
+					return errors.New("-k is not a " + name + " flag: the tunneld npm launcher ends every detached run with it, as the only word — npx tunneld -k")
+				}
+			}
+			if parent := cmd.Parent(); parent != nil {
+				return parent.FlagErrorFunc()(c, err)
+			}
+			return err
+		})
 		// The version subcommand prints the build banner and exits — the
 		// build id of the binary plus the tunnel library it links against,
 		// since that library is what actually speaks to the edge and a bug

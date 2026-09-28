@@ -35,7 +35,8 @@ Deep-link by filename; line numbers will drift.
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
-| npm launcher: finds the platform binary, hands it the process | [`v1/v1.cjs`](./v1/v1.cjs)                            |
+| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, the misread warning | [`v1/v1.cjs`](./v1/v1.cjs) |
+| The launcher's tests, under `node --test` (`make launcher`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -149,7 +150,13 @@ cd tunneld
 make test     # unit tests (fast, in-package, never opens a tunnel)
 make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
+make launcher # the npm launcher's tests (needs Node 20+)
+npm run dev -- -d :3000   # the launcher against dist/'s binary for the host, built first
 ```
+
+`npm run dev` builds only this machine's `dist/` binary (`make host`) and runs
+the launcher on it, so trying a launcher change is one line rather than a
+publish.
 
 The container tests under [`v1alpha1/attach/`](./v1alpha1/attach) skip
 themselves unless a Docker daemon answers *and* the `alpine` image is already
@@ -244,6 +251,10 @@ is the Acknowledgements section against `go.mod` and against the versions the
 pages load from jsDelivr, so a new dependency fails `make test` until the
 README says what it is for.
 
+`v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
+source file that is not Go, so its tests sit beside it under the name
+`node --test` looks for, and run with `make launcher`.
+
 Two deliberate exceptions:
 
 - **`v1alpha1/example_test.go`** — godoc examples. `example_test.go` is an
@@ -263,6 +274,7 @@ file is internal, and the genuine consumer's view is covered by `e2e`.
 - `gofmt -w .`
 - `go vet ./...`
 - `make test`
+- `make launcher`
 - `make e2e`
 
 Or `make all`, which is all of the above plus the Windows cross-build.

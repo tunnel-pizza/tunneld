@@ -24,6 +24,7 @@ import (
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/creack/pty"
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -1480,6 +1481,56 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 	if got.Len() != 1 || !slices.Equal(got.At(0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
 		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
+}
+
+// TestLauncherFlagsAreNotTunnelds pins that -d and -k stay the npm
+// launcher's. Neither is defined here, so `npx tunneld -d` and `tunneld -d`
+// cannot come to mean two things; one that reaches the command anyway, first
+// or after another flag, is refused with where it belongs. Any other unknown
+// flag is still cobra's error, or the error of the command this one is
+// mounted under, which is what an embedding program's own handler expects.
+func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
+	for _, s := range []string{"d", "k"} {
+		if f := New().Command().Flags().ShorthandLookup(s); f != nil {
+			t.Errorf("-%s is defined as --%s: it is the npm launcher's", s, f.Name)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"-d first", []string{"-d", ":3000"}, "-d is not a tunneld flag: the tunneld npm launcher detaches"},
+		{"-d after a flag", []string{"--log-level", "debug", "-d", ":3000"}, "-d is not a tunneld flag"},
+		{"-k", []string{"-k"}, "-k is not a tunneld flag: the tunneld npm launcher ends every detached run"},
+		{"another", []string{"-z"}, "unknown shorthand flag: 'z' in -z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := execute(t, New(), tc.args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("mounted", func(t *testing.T) {
+		parent := &cobra.Command{Use: "host", SilenceErrors: true, SilenceUsage: true}
+		parent.SetFlagErrorFunc(func(*cobra.Command, error) error { return errors.New("the host's") })
+		parent.AddCommand(New().Command())
+		parent.SetOut(io.Discard)
+		parent.SetErr(io.Discard)
+		for args, want := range map[string]string{
+			"tunneld -z":         "the host's",
+			"tunneld version -z": "the host's",
+			"tunneld -d":         "-d is not a tunneld flag",
+		} {
+			parent.SetArgs(strings.Fields(args))
+			if err := parent.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: error = %v, want it to contain %q", args, err, want)
+			}
+		}
+	})
 }
 
 // TestOriginsWarnsAtTheTunnelsLevel pins that a dropped origin is reported at

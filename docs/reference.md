@@ -15,7 +15,7 @@ For embedding tunneld in a Go program, see [embedding.md](./embedding.md).
 - [Multiview](#multiview)
 - [Output contract](#output-contract)
 - [The browser](#the-browser)
-- [Flags](#flags) and [Environment](#environment)
+- [Flags](#flags), [The npm launcher](#the-npm-launcher) and [Environment](#environment)
 - [Running in a container](#running-in-a-container)
 
 ## Origins
@@ -646,6 +646,74 @@ docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docke
 
 A subcommand's name is read as the subcommand, not as a program: to expose a
 program called `version`, spell it `exec:///path/to/version`.
+
+`-d` and `-k` are not tunneld's and never will be: they are the npm
+launcher's, below, and the binary refuses both by name, so `tunneld -d` and
+`npx tunneld -d` cannot come to mean two things. An embedding program mounting
+the command under its own name inherits the refusal; any other flag error goes
+to the parent command's own handler.
+
+## The npm launcher
+
+`npx tunneld` runs a small Node launcher, `v1/v1.cjs`, that finds the binary
+for the machine and hands it the command line. Everything above is the
+binary's. The launcher adds three things of its own.
+
+**`-d` detaches.** As the first word, and only there, it starts the run in the
+background and waits for its addresses. Once they are up it prints them on
+stdout, what the run said on stderr so far (the banner, the origin each
+address reaches) on stderr, and the run's pid, then gives the prompt back. The
+tunnel stays up. `-d` is stripped before the binary sees the line, so
+`npx tunneld -d :3000 claude` is the run `npx tunneld :3000 claude` would have
+been, minus the console: with no terminal on any of its streams, it draws no
+frame and opens no browser tab.
+
+A run that ends before its addresses (a bad origin, a mint that fails,
+`--help`) is relayed like a foreground one, output and exit status both.
+Ctrl+C while `-d` is waiting ends the run, since nothing has been handed back
+yet.
+
+**`-k` ends every detached run.** As the only word. Each run gets `SIGINT`,
+which is what Ctrl+C sends a foreground run, so each tears down the same way:
+the programs its origins started, the attach servers, the tunnel. `-k` waits
+for them, names each one it stopped with its addresses, and exits non-zero if
+one is still going after 30 seconds.
+
+A detached run leaves three files in `<user cache dir>/tunneld/detached/`,
+named by its pid: a record `-k` reads, its stdout, and its stderr, which keeps
+growing for as long as the run does and is where to look when one misbehaves.
+A record whose pid is gone, or now belongs to another program, is a run that
+ended on its own, and `-k` clears it. `make clean` removes the directory with
+the rest of the cache, so a run detached before it has to be ended by pid.
+
+Neither flag is offered on Windows yet. Node there can only terminate another
+process, which would skip the teardown `-k` exists to run, and a run nothing
+can end cleanly is not one to leave behind.
+
+**A likely misread is named.** A bare program takes every word after it, up
+to a port or a URL, so
+
+```sh
+npx tunneld claude "next dev"
+```
+
+is one program, `claude`, with `next dev` as its argument. The shell has
+removed the quotes before anything runs, but a word with whitespace in it,
+whose first word is a program on `$PATH`, is almost certainly a quoted group
+meant as an origin of its own. When one sits among a bare program's arguments,
+and is not the value of a flag in front of it (`sh -c "npm run dev"` is one
+program on purpose), the launcher warns on stderr and names the line that
+gives two origins, which is the bare program last:
+
+```
+tunneld: warning: 'next dev' is an argument to claude, not an origin of its own:
+  a bare program takes the words after it, up to a port or a URL.
+  Running it as written. For two origins, put the bare program last:
+    npx tunneld 'next dev' claude
+```
+
+The run goes ahead as written either way: `npx tunneld claude "fix the bug"` is
+a prompt, and a warning is the most a guess should do.
 
 ## Environment
 

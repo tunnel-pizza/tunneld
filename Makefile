@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries licenses image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test launcher race e2e run
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -16,10 +16,10 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 
 # Default: everything CI runs except the race lane (needs a C toolchain — run
 # `make race` for it) and the auto-bump release step.
-all: fmt-check vet build windows test e2e
+all: fmt-check vet build windows test launcher e2e
 
 # Compose the common pre-push checklist. Mirrors the CI matrix.
-check: fmt-check vet windows test e2e
+check: fmt-check vet windows test launcher e2e
 
 # gofmt the tree in place.
 fmt:
@@ -59,6 +59,13 @@ BINARIES := $(foreach p,$(PLATFORMS),dist/tunneld-$(p)$(if $(findstring win32,$(
 binaries:
 	rm -rf dist
 	$(MAKE) $(BINARIES)
+
+# Just this machine's, by the same name, and without wiping the others: what
+# `npm run dev` builds before handing the launcher its arguments. The host is
+# go env's, mapped to node's names the other way round.
+HOST := $(subst windows,win32,$(shell go env GOOS))-$(subst amd64,x64,$(shell go env GOARCH))
+
+host: dist/tunneld-$(HOST)$(if $(findstring win32,$(HOST)),.exe)
 
 .PHONY: $(BINARIES)
 $(BINARIES): dist/tunneld-%:
@@ -124,6 +131,12 @@ windows:
 # unit lane stays offline; `make e2e` is the target that goes out.
 test:
 	go test . ./v1/... ./v1alpha1/...
+
+# The npm launcher's tests, under node's own runner. Every case builds its
+# own package tree in a temporary directory with a stand-in binary, so none
+# needs a Go build or touches the real cache directory.
+launcher:
+	node --test v1/v1.test.cjs
 
 # The unit packages under the race detector — the same lane CI runs, runnable
 # locally to reproduce a CI race find. The recipe-line CGO_ENABLED=1 overrides

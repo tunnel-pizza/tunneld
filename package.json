@@ -46,6 +46,7 @@
     "!dist/*.sigstore"
   ],
   "scripts": {
+    "dev": "make -s host && node v1/v1.cjs",
     "prepublishOnly": "make binaries licenses"
   }
 }
