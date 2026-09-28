@@ -1,4 +1,4 @@
-// Tests for v1.cjs, the npm launcher, under node's own runner: make launcher.
+// Tests for v1.cjs, the npm launcher, under node's own runner: make test runs them.
 //
 // The launcher is exercised two ways. misread is a function and is called
 // directly, against a $PATH built for the case. Everything that spawns is

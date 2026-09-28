@@ -37,7 +37,7 @@ Deep-link by filename; line numbers will drift.
 | Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
 | npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, `-kd`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
 | How a run is found and handed back: `<key>.pid` for `npx tunneld -k`, and `-d`'s signal | [`v1alpha1/pid/pid.go`](./v1alpha1/pid/pid.go) |
-| The launcher's tests, under `node --test` (`make launcher`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
+| The launcher's tests, under `node --test` (part of `make test`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
@@ -150,10 +150,9 @@ Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engin
 ```sh
 git clone https://github.com/tunnel-pizza/tunneld.git
 cd tunneld
-make test     # unit tests (fast, in-package, never opens a tunnel)
+make test     # unit tests, Go and the npm launcher's (needs Node 20+); never opens a tunnel
 make e2e      # builds the binary and every example, drives their offline paths
 make binary   # build ./tunneld for the host
-make launcher # the npm launcher's tests (needs Node 20+)
 npm run dev -- -d :3000   # the launcher against dist/'s binary for the host, built first
 ```
 
@@ -256,7 +255,7 @@ README says what it is for.
 
 `v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
 source file that is not Go, so its tests sit beside it under the name
-`node --test` looks for, and run with `make launcher`.
+`node --test` looks for, and run with the rest under `make test`.
 
 Two deliberate exceptions:
 
@@ -277,7 +276,6 @@ file is internal, and the genuine consumer's view is covered by `e2e`.
 - `gofmt -w .`
 - `go vet ./...`
 - `make test`
-- `make launcher`
 - `make e2e`
 
 Or `make all`, which is all of the above plus the Windows cross-build.

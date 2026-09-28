@@ -180,18 +180,16 @@ jobs:
       - name: build
         run: make build
 
-      - name: unit
-        run: make test
-
-      # The npm launcher runs on every platform the package ships to, so its
-      # tests do too — on the oldest Node package.json's engines admits,
-      # which is the one the launcher's own code has to stay inside.
+      # make test runs the npm launcher's tests too. The launcher runs on
+      # every platform the package ships to, so its tests do — on the oldest
+      # Node package.json's engines admits, which is the one the launcher's
+      # own code has to stay inside.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
 
-      - name: launcher
-        run: make launcher
+      - name: unit
+        run: make test
 
       # The mint credential. A run:` step never sees the runner's own tokens —
       # GitHub injects them into node actions, not shells — so this step asks
