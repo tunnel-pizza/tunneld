@@ -35,13 +35,16 @@
 </head>
 <body>
 <main id="workspace"></main>
+<!-- The origins, as display.go hands them to the template: what each one is
+     called, the route that reaches it, and whether tunneld draws it itself.
+     A JSON block rather than a literal in the module, so the script stays
+     JavaScript an editor can read; html/template escapes it as JSON. -->
+<script type="application/json" id="origins">{{.Origins}}</script>
 
 <script type="module">
   import { createWorkspace, layout } from "trellis";
 
-  // The origins, as display.go hands them to the template: what each one is
-  // called, the route that reaches it, and whether tunneld draws it itself.
-  const origins = {{.Origins}};
+  const origins = JSON.parse(document.getElementById("origins").textContent);
 
   const view = (o, i) => layout.view(o.Terminal ? "terminal" : "origin", {
     id: `o${i}`,
