@@ -154,7 +154,18 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 		}
 		log.Debug("registered this run", "path", path)
 		return func() {
-			os.Remove(path)
+			// Removed while still locked where the system allows it, so no
+			// other run can have registered in between. Windows will not
+			// delete a file this process holds open, so there it goes after
+			// the close — and only if it still names this run, since by then
+			// another may have taken it.
+			if os.Remove(path) != nil {
+				f.Close()
+				if body, err := os.ReadFile(path); err == nil && string(body) == pid {
+					os.Remove(path)
+				}
+				return
+			}
 			f.Close()
 		}, nil
 	}
