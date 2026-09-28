@@ -671,9 +671,9 @@ what it reaches, the directory, the pid and the log:
 ```
 🍕 tunneld is now running in the background
 
-  What's serving on localhost:3000 and a terminal running /bin/bash are now
-  available side by side at https://0tc62f7m9b.tunneled.pizza/, in any web
-  browser, and each at an address of its own below.
+  Your applications (http://localhost:3000, /bin/bash) are now available,
+  tunneled through https://0tc62f7m9b.tunneled.pizza/, at the following
+  addresses:
 
   https://0tc62f7m9b.tunneled.pizza/    → multiview
   https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
@@ -684,9 +684,9 @@ what it reaches, the directory, the pid and the log:
   log      ~/Library/Caches/tunneld/894bb9b319b7b699.log
 ```
 
-One origin is a sentence alone — "A terminal running /bin/bash is now
-available at https://…/. Open it in any web browser." — with no list after
-it. In colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache`
+One origin reads "Your application (/bin/bash) is now available, tunneled
+through https://…/, at the following address:", with its one line after. In
+colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache`
 there are no cached settings to read, so it says less: the pid and the log. The addresses are on stdout either way. The tunnel stays up.
 Nothing of the caller's is held after that, so
 `addr=$(npx tunneld -d :3000)` returns with the address, and nothing lands on

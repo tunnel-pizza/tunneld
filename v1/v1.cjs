@@ -450,31 +450,6 @@ function label(origin) {
   return origin;
 }
 
-// describe names an origin by what somebody opening it gets: a terminal for
-// a program or a container, and for a service, what is serving where.
-function describe(origin) {
-  try {
-    const u = new URL(origin);
-    if (u.protocol === "exec:") {
-      return `a terminal running ${label(origin)}`;
-    }
-    if (u.protocol === "attach:") {
-      return `the terminal of the ${decodeURIComponent(u.pathname.slice(1))} container`;
-    }
-    if (/^(http|ws)/.test(u.protocol)) {
-      return `what's serving on ${u.host}${u.pathname === "/" ? "" : u.pathname}`;
-    }
-  } catch {
-    // Not a URL this can read; named as it is.
-  }
-  return origin;
-}
-
-// and joins names the way a sentence does: a, b and c.
-function and(names) {
-  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-}
-
 // wrap breaks prose into lines of at most width visible columns, indented,
 // never inside a word, so a URL stays whole to be clicked. Styling is applied
 // by the caller's style function to each word, after measuring.
@@ -497,26 +472,21 @@ function wrap(words, width, indent) {
   return lines;
 }
 
-// prose is what the run shares, said as a sentence: each origin by what it
-// gives, and where to open it, in lines of at most columns, indent included.
-function prose(host, origins, multiview, columns) {
+// prose is what the run shares, said as a sentence: the origins, the address
+// they are tunneled through, and that the list below is where each one
+// answers. In lines of at most columns, indent included.
+function prose(host, origins, columns) {
   const plain = (s) => s.split(" ").map((w) => [w, (x) => x]);
-  const link = (url, tail = "") => [[url + tail, (x) => cyan(url) + tail]];
-  const up = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-  const names = up(and(origins.map(describe)));
+  const one = origins.length === 1;
+  const names = `(${origins.map(label).join(", ")})`;
   const base = `https://${host}/`;
-  let words;
-  if (origins.length <= 1) {
-    words = [...plain(`${names} is now available at`), ...link(base, "."), ...plain("Open it in any web browser.")];
-  } else if (multiview) {
-    words = [
-      ...plain(`${names} are now available side by side at`),
-      ...link(base, ","),
-      ...plain("in any web browser, and each at an address of its own below."),
-    ];
-  } else {
-    words = plain(`${names} are now available in any web browser, each at an address of its own below.`);
-  }
+  const words = [
+    ...plain(one ? "Your application" : "Your applications"),
+    ...plain(names),
+    ...plain(one ? "is now available, tunneled through" : "are now available, tunneled through"),
+    [base + ",", () => cyan(base) + ","],
+    ...plain(one ? "at the following address:" : "at the following addresses:"),
+  ];
   return wrap(words, Math.max(columns, 24) - 2, "  ");
 }
 
@@ -546,22 +516,24 @@ function summary(pid) {
   const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
   const host = env.LIBTUNNEL_HOSTNAME;
   if (!host) {
-    lines.push("  What it shares is available in any web browser, at the address above.", "");
+    lines.push("  Your application is now available at the address above.", "");
   } else {
     const base = `https://${host}/`;
     const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
     // The terminal's width where there is one, so a narrow window does not
     // wrap every line a second time; 78 at most, and 78 into a file.
     const columns = Math.min(process.stderr.columns || 78, 78);
-    lines.push(...prose(host, origins, env.TUNNELD_MULTIVIEW === "true", columns), "");
-    if (origins.length > 1) {
+    lines.push(...prose(host, origins, columns), "");
+    if (origins.length <= 1) {
+      lines.push(`  ${cyan(base)}  ${dim("→")} ${label(origins[0] || "")}`);
+    } else {
       const width = `${base}?${origins.length - 1}`.length;
       if (env.TUNNELD_MULTIVIEW === "true") {
         lines.push(`  ${cyan(base.padEnd(width))}  ${dim("→")} multiview`);
       }
       origins.forEach((o, i) => lines.push(`  ${cyan(`${base}?${i}`.padEnd(width))}  ${dim("→")} ${label(o)}`));
-      lines.push("");
     }
+    lines.push("");
   }
 
   const row = (name, value) => lines.push(`  ${dim(name.padEnd(8))} ${value}`);
@@ -745,4 +717,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { ambiguous, describe, isOrigin, misread, onPath, prose, quote };
+module.exports = { ambiguous, isOrigin, misread, onPath, prose, quote };
