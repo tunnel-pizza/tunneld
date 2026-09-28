@@ -382,9 +382,10 @@ Easy to get wrong from the diff alone:
 - **A mint credential is found, never made.** `v1alpha1/identity` has
   `attach`'s shape for `attach`'s reason: a list the operator wrote, dispatched
   by name to providers that each know a different kind of machine. The package
-  owns the `Provider` contract, the name-keyed registry, the ordered walk and
-  the `LIBTUNNEL_TOKEN` rule; a provider is a directory under it
-  (`identity/github`), and adding one touches neither the builder nor either
+  owns the `Provider` contract, the name-keyed registry, the lookup — every
+  provider asked at once, the first in the list to find one winning — and the
+  `LIBTUNNEL_TOKEN` rule; a provider is a directory under it
+  (`identity/github`, `identity/anthropic`), and adding one touches neither the builder nor either
   contract. The builder's `Identity` contract has two methods because the two
   questions are asked at two moments — `Known` before `Bind` opens anything, so
   a typo costs nothing, and `Token` just before the mint, so a run that fails

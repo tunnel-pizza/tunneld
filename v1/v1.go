@@ -334,8 +334,13 @@ const (
 const DefaultMultiview = true
 
 // DefaultIdentityProviders is the list a run looks for a mint credential with
-// when nothing says otherwise: the providers, comma-separated and in order,
-// the first one to find a credential winning.
+// when nothing says otherwise: the providers, comma-separated and in order.
+// Every one is asked at once, and the first in the list to find a credential
+// wins — the order is a preference, not a queue.
+//
+// github first, being the identity a developer's machine is most likely to
+// have; anthropic after, the credential a Claude Code workspace keeps, which
+// anywhere else finds nothing without a wait.
 //
 // A string rather than a slice so it can be a constant, and comma-separated
 // because that is the shape IdentityProvidersEnv carries — one spelling for
@@ -343,7 +348,7 @@ const DefaultMultiview = true
 //
 // The names here are the providers' own, and v1 cannot import them to check:
 // a test in v1alpha1 asserts that what this names is what New registers.
-const DefaultIdentityProviders = "github"
+const DefaultIdentityProviders = "github,anthropic"
 
 // DefaultShellFallback is whether a run with no origin from any source — no
 // argument, no ShellFallbackEnv sibling, no WithOrigin seed — exposes $SHELL

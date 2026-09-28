@@ -24,6 +24,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/anthropic"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
@@ -312,7 +313,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
-		WithIdentity(identity.New(identity.WithProviders(github.New()))),
+		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),

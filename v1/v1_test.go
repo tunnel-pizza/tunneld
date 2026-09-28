@@ -21,7 +21,7 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.ExecScheme, "exec"},
 		{v1.DockerProvider, "dockerd"},
 		{v1.IdentityProvidersEnv, "TUNNELD_IDENTITY_PROVIDERS"},
-		{v1.DefaultIdentityProviders, "github"},
+		{v1.DefaultIdentityProviders, "github,anthropic"},
 		{v1.NotifyPidEnv, "TUNNELD_NOTIFY_PID"},
 	}
 	for _, tc := range cases {

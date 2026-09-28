@@ -462,9 +462,16 @@ tell who is asking. tunneld does not create one — it looks where this machine
 already keeps one, and sends what it finds:
 
 ```sh
-tunneld :3000                               # the default, github
+tunneld :3000                               # the default, github,anthropic
+tunneld --identity-providers=anthropic :3000
 tunneld --identity-providers= :3000         # send nothing
 ```
+
+Every provider in the list is asked at once, and the first **in the list** to
+find a credential wins: the order is a preference, not a race, so which lookup
+happens to finish first never decides. Once the answer is known, the ones
+still looking are stopped. A list of several costs the slowest lookup it has
+to wait for, not their sum.
 
 `github` asks `gh auth token` first, since a logged-in `gh` is the identity the
 machine is actually using, and falls back to `GITHUB_TOKEN`, `GH_TOKEN`,
@@ -473,6 +480,10 @@ last of those is the Actions runner's own token, scoped to the runner's
 services rather than the GitHub API; it is sent because it is the only
 credential a default Actions job has, and what it is worth is the mint
 provider's call.
+
+`anthropic` reads the OAuth token a Claude Code workspace keeps at
+`/home/claude/.claude/remote/.oauth_token`. Anywhere else there is no such
+file, and it finds nothing without a wait.
 
 Finding nothing is ordinary: the tunnel mints anonymously, as every tunnel did
 before this. A name the list carries that tunneld has no provider for is an
@@ -630,7 +641,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
-| `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, in order — the first to find one wins. **Default `github`**, which asks `gh auth token` and then the GitHub environment variables. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
+| `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:
 

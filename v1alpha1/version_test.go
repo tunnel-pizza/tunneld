@@ -53,6 +53,15 @@ func TestVersionDevelBeatsUnknown(t *testing.T) {
 // TestVersionLineNamesTheCache pins the third number a bug report needs. Which
 // spec a run replayed is the question behind every report of a hostname that
 // changed when it should not have, and the key is the whole answer.
+// TestUserAgentIsTunneldAndItsVersion pins the product token the mint sees:
+// tunneld, a slash, and the release this build is — nothing else, since
+// libtunnel appends its own comment after it.
+func TestUserAgentIsTunneldAndItsVersion(t *testing.T) {
+	if got, want := UserAgent(), "tunneld/"+Version(); got != want {
+		t.Errorf("UserAgent() = %q, want %q", got, want)
+	}
+}
+
 func TestVersionLineNamesTheCache(t *testing.T) {
 	u, err := url.Parse("http://localhost:3000")
 	if err != nil {

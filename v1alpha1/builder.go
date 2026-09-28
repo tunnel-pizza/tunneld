@@ -599,6 +599,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// not be reached, which a remint could not reach either.
 	tun := b.newTunnel(spec.Load(origins, log)).
 		WithToken(token).
+		// Which tunneld is asking, ahead of the libtunnel comment the mint
+		// adds after it. Always tunneld's, under whatever name an embedding
+		// program mounts the command as: it is this code minting.
+		WithHeader("User-Agent", UserAgent()).
 		WithLogger(log).
 		WithContext(ctx).
 		WithEventListener(listen).
