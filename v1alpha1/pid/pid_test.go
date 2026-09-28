@@ -3,7 +3,6 @@
 package pid_test
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 	"net/url"
@@ -129,7 +128,7 @@ func TestRegisterRefusesTheSameRun(t *testing.T) {
 
 // TestNothingToDo pins the quiet cases: no directory registers nothing and
 // fails nothing, and with no launcher waiting Detach says so and touches
-// nothing — no log, no line on stderr.
+// nothing.
 func TestNothingToDo(t *testing.T) {
 	_, o, _ := fixed(t)
 	release, err := pid.New(pid.WithDir("")).Register(o, discard())
@@ -139,12 +138,11 @@ func TestNothingToDo(t *testing.T) {
 	release()
 
 	p, o, stem := fixed(t, pid.WithParent(0))
-	var stderr bytes.Buffer
-	if p.Detach(o, &stderr, discard()) {
+	if p.Detach(o, discard()) {
 		t.Error("Detach() = true with no launcher waiting")
 	}
-	if _, err := os.Stat(stem + ".log"); !os.IsNotExist(err) || stderr.Len() > 0 {
-		t.Errorf("log: %v, stderr: %q, want neither", err, stderr.String())
+	if _, err := os.Stat(stem + ".log"); !os.IsNotExist(err) {
+		t.Errorf("log: %v, want none", err)
 	}
 }
 

@@ -468,7 +468,7 @@ func (f *fakePid) Register(Origins, v1.Logger) (func(), error) {
 	return func() { *f.order = append(*f.order, "release") }, nil
 }
 
-func (f *fakePid) Detach(Origins, io.Writer, v1.Logger) bool {
+func (f *fakePid) Detach(Origins, v1.Logger) bool {
 	*f.order = append(*f.order, "detach")
 	return f.waiting
 }
@@ -833,7 +833,7 @@ func TestRun(t *testing.T) {
 			}
 			want := []string{"url", "save"}
 			if on {
-				want = []string{"register", "url", "detach", "save", "release"}
+				want = []string{"register", "url", "save", "detach", "release"}
 			}
 			if !slices.Equal(h.order, want) {
 				t.Errorf("WithPid set = %v: effects in order %v, want %v", on, h.order, want)

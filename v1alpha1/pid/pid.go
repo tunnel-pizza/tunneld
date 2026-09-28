@@ -10,7 +10,6 @@ package pid
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -177,14 +176,15 @@ func same(f *os.File, path string) bool {
 // whether there was one. The addresses and the banner have gone to the
 // launcher's streams, which are the caller's; what the run says from here
 // goes to <key>.log, emptied, or nowhere when there is no directory to keep
-// one in. The last line on the caller's stderr says which, then stdout and
-// stderr are moved and the launcher is signalled, in that order, so that
-// once it exits nothing here holds a stream of the caller's: `$(npx tunneld
-// -d …)` returns, and nothing lands on a prompt later.
+// one in. Stdout and stderr are moved and then the launcher is signalled, in
+// that order, so that once it exits nothing here holds a stream of the
+// caller's: `$(npx tunneld -d …)` returns, and nothing lands on a prompt
+// later. The launcher says where the log is, finding it by the <key>.pid
+// that names this process.
 //
 // A run that cannot move its streams still signals: the launcher exits either
 // way, and the caller's streams stay held until the run ends, which is logged.
-func (p *PidImpl) Detach(origins v1.Origins, stderr io.Writer, log v1.Logger) bool {
+func (p *PidImpl) Detach(origins v1.Origins, log v1.Logger) bool {
 	if p.parent == 0 {
 		return false
 	}
@@ -193,10 +193,8 @@ func (p *PidImpl) Detach(origins v1.Origins, stderr io.Writer, log v1.Logger) bo
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			log.Warn("no log for this detached run", "error", err)
-		} else {
-			fmt.Fprintf(stderr, "%s: detached; its log is %s\n", v1.CommandName, path)
-			out = f
 		}
+		out = f
 	}
 	if out == nil {
 		f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)

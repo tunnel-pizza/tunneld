@@ -21,8 +21,7 @@ import (
 )
 
 // TestDetach pins what a detached run does once its addresses are out: the
-// caller's stderr is told where the log is, the run's stdout and stderr stop
-// being the caller's — so a caller reading them to the end gets there while
+// run's stdout and stderr stop being the caller's — so a caller reading them to the end gets there while
 // the run goes on — the launcher gets SIGUSR2, and what the run says
 // afterwards lands in <key>.log.
 //
@@ -35,7 +34,7 @@ func TestDetach(t *testing.T) {
 		o := origins.New(origins.WithDir("/work/project"), origins.WithURL(u))
 		p := pid.New(pid.WithDir(dir), pid.WithParent(os.Getppid()))
 		fmt.Println("https://t.example/")
-		if !p.Detach(o, os.Stderr, slog.New(slog.NewTextHandler(os.Stderr, nil))) {
+		if !p.Detach(o, slog.New(slog.NewTextHandler(os.Stderr, nil))) {
 			os.Exit(2)
 		}
 		fmt.Println("after, on stdout")
@@ -88,8 +87,8 @@ func TestDetach(t *testing.T) {
 	if len(logs) != 1 {
 		t.Fatalf("logs = %q, want one", logs)
 	}
-	if want := "tunneld: detached; its log is " + logs[0] + "\n"; errOut != want {
-		t.Errorf("caller's stderr = %q, want %q", errOut, want)
+	if errOut != "" {
+		t.Errorf("caller's stderr = %q, want nothing: the launcher says where the log is", errOut)
 	}
 	if cmd.Process.Signal(syscall.Signal(0)) != nil {
 		t.Error("the run ended before its streams were let go, which proves nothing")

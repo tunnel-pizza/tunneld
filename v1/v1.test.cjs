@@ -135,8 +135,10 @@ test("ambiguous names both readings, ready to paste", { skip: win && "cmd.exe qu
 // It registers as <key>.pid in $CACHE, held open on a descriptor its children
 // do not get, and removes it on the way out while it still names its pid. It
 // writes its argv to stderr, then two addresses to stdout with their origins
-// on stderr. With TUNNELD_NOTIFY_PID naming its parent, it says where its log
-// is, moves stdout and stderr to <key>.log and sends its parent SIGUSR2;
+// on stderr, and caches <key>.env — the hostname, $ORIGINS as what it
+// settled on, and a spec that must never be shown — unless its first word is
+// --no-cache. With TUNNELD_NOTIFY_PID naming its parent, it moves stdout and
+// stderr to <key>.log and sends its parent SIGUSR2;
 // otherwise it prints the binary's stop hint. Then it waits. SIGINT is its
 // Ctrl-C: it takes a moment, as a real teardown does, leaves a mark in
 // $MARKER so a test can tell a teardown from a kill, and exits 0. Coming up
@@ -155,8 +157,11 @@ echo "https://t.example/?0"
 echo "  -> $1" >&2
 echo "https://t.example/?1"
 echo "  -> $2" >&2
+if [ "$1" != --no-cache ]; then
+  printf "%s\\n" "LIBTUNNEL_SPEC='{\\"secret\\":1}'" "LIBTUNNEL_HOSTNAME='t.example'" "PWD='$HOME/project'" \\
+    "TUNNELD_MULTIVIEW='true'" "TUNNELD_ORIGINS='$ORIGINS'" > "$CACHE/$key.env"
+fi
 if [ -n "$TUNNELD_NOTIFY_PID" ] && [ "$TUNNELD_NOTIFY_PID" = "$PPID" ]; then
-  echo "tunneld: detached; its log is $CACHE/$key.log" >&2
   exec >"$CACHE/$key.log" 2>&1
   kill -USR2 "$PPID"
 else
@@ -185,6 +190,7 @@ function pkg(t) {
     XDG_CACHE_HOME: path.join(home, ".cache"),
     MARKER: path.join(root, "marker"),
     EVENTS: path.join(root, "events"),
+    ORIGINS: "exec:///bin/bash?arg=-l",
   };
   delete env.TUNNELD_NOTIFY_PID;
   env.CACHE =
@@ -218,18 +224,36 @@ test("a plain run hands the binary every word and relays its status", posixOnly,
 });
 
 test("-d hands the console back once the run signals, and -k tears it down", posixOnly, (t) => {
-  const { launch, cache, marker } = pkg(t);
+  const { launch, cache, marker, env } = pkg(t);
 
   // spawnSync reads the launcher's streams to the end, the way $(…) does: it
   // returns only if the run has let go of them too.
   const up = launch("-d", ":3000", "bash");
   assert.equal(up.status, 0, up.stderr);
   assert.equal(up.stdout, "https://t.example/?0\nhttps://t.example/?1\n");
-  assert.match(
-    up.stderr,
-    /^argv: :3000 bash\n  -> :3000\n  -> bash\ntunneld: detached; its log is .*_3000_bash\.log\ntunneld: detached as pid \d+; npx tunneld -k ends it, and every other run\n$/,
+  const pid = Number(up.stderr.match(/^  pid +(\d+)$/m)[1]);
+  assert.equal(
+    up.stderr.replaceAll(`~${cache.slice(env.HOME.length)}`, "<cache>"),
+    [
+      "argv: :3000 bash",
+      "  -> :3000",
+      "  -> bash",
+      "",
+      "🍕 tunneld is up, in the background",
+      "",
+      "  https://t.example/  → /bin/bash -l",
+      "",
+      "  from     ~/project",
+      `  pid      ${pid}`,
+      "  log      <cache>/_3000_bash.log",
+      "  stop     npx tunneld -k",
+      "  restart  npx tunneld -kd :3000 bash",
+      "",
+      "",
+    ].join("\n"),
   );
-  const pid = Number(up.stderr.match(/detached as pid (\d+)/)[1]);
+  assert.doesNotMatch(up.stderr, /secret/, "the spec is never shown");
+
   t.after(() => {
     try {
       process.kill(pid, "SIGKILL");
@@ -243,6 +267,26 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
   assert.equal(down.stderr, `tunneld: stopped pid ${pid} (_3000_bash)\n`);
   assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "SIGINT, not a kill");
   assert.deepEqual(pids(cache), []);
+});
+
+test("-d names every origin's address, and says less with no cached settings", posixOnly, (t) => {
+  const { launch, env } = pkg(t);
+  env.ORIGINS = "http://localhost:3000,exec:///usr/bin/claude?arg=--resume";
+  const up = launch("-d", ":3000", "claude");
+  assert.equal(up.status, 0, up.stderr);
+  assert.match(
+    up.stderr,
+    /\n  https:\/\/t\.example\/    → all 2, side by side\n  https:\/\/t\.example\/\?0  → http:\/\/localhost:3000\n  https:\/\/t\.example\/\?1  → \/usr\/bin\/claude --resume\n/,
+  );
+  assert.equal(launch("-k").status, 0);
+
+  // --no-cache: no .env, so no hostname or directory to name — the pid, log
+  // and levers still.
+  const bare = launch("-d", "--no-cache", ":3000");
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.doesNotMatch(bare.stderr, /t\.example|from/);
+  assert.match(bare.stderr, /  pid      \d+\n  log      .*__no_cache__3000\.log\n  stop     npx tunneld -k\n  restart  npx tunneld -kd --no-cache :3000\n/);
+  assert.equal(launch("-k").status, 0);
 });
 
 test("-k ends a run in the foreground too", posixOnly, async (t) => {
@@ -272,7 +316,7 @@ for (const flag of ["-kd", "-dk"]) {
     assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "the old run tore down");
     assert.equal(up.stdout, "https://t.example/?0\nhttps://t.example/?1\n");
     const old = Number(up.stderr.match(/stopped pid (\d+)/)[1]);
-    const pid = Number(up.stderr.match(/detached as pid (\d+)/)[1]);
+    const pid = Number(up.stderr.match(/^  pid +(\d+)$/m)[1]);
     t.after(() => {
       try {
         process.kill(pid, "SIGKILL");
@@ -318,7 +362,7 @@ test("Ctrl-C while -d waits ends the run", posixOnly, async (t) => {
   let stderr = "";
   child.stderr.on("data", (d) => (stderr += d));
   // Once it is up, the trap is set and the launcher is waiting.
-  await until(() => stderr.includes("detached; its log is"));
+  await until(() => stderr.includes("  -> :3000"));
   child.kill("SIGINT");
   const status = await new Promise((r) => child.on("exit", (code) => r(code)));
   assert.equal(status, 130, stderr);

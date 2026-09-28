@@ -313,6 +313,14 @@ function refuseOnWindows(flag) {
   }
 }
 
+function read(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 function signum(signal) {
   return 128 + (constants.signals[signal] ?? 0);
 }
@@ -380,7 +388,7 @@ function detach(bin, args) {
     child.removeAllListeners("exit");
     child.unref();
     finish(0);
-    console.error(`${WRAPPER_NAME}: detached as pid ${child.pid}; npx ${WRAPPER_NAME} -k ends it, and every other run`);
+    process.stderr.write(summary(child.pid, args));
   });
   for (const signal of signals) {
     process.on(signal, () => {
@@ -398,6 +406,102 @@ function detach(bin, args) {
   child.on("exit", (code, signal) => {
     finish(interrupted ? signum(interrupted) : signal ? signum(signal) : (code ?? 1));
   });
+}
+
+// paint wraps text in an ANSI style when stderr is a terminal that wants
+// one: not when it is a file or a pipe, not under NO_COLOR, not on a dumb
+// terminal.
+const COLOR = process.stderr.isTTY && !("NO_COLOR" in process.env) && process.env.TERM !== "dumb";
+const paint = (code) => (text) => (COLOR ? `\x1b[${code}m${text}\x1b[0m` : text);
+const bold = paint("1");
+const dim = paint("2");
+const cyan = paint("36");
+
+// home spells a path under $HOME the short way.
+function home(p) {
+  const h = process.env.HOME;
+  return h && p.startsWith(h + path.sep) ? "~" + p.slice(h.length) : p;
+}
+
+// envFile reads the NAME='value' lines the binary caches a run's spec and
+// settings in. The spec line is among them and is never shown.
+function envFile(text) {
+  const out = {};
+  for (const line of text.split("\n")) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)='(.*)'$/);
+    if (m) {
+      out[m[1]] = m[2];
+    }
+  }
+  return out;
+}
+
+// label is an origin as a person reads it: a program as its path and
+// arguments rather than the exec:// URL carrying them.
+function label(origin) {
+  try {
+    const u = new URL(origin);
+    if (u.protocol === "exec:") {
+      return [decodeURIComponent(u.pathname), ...u.searchParams.getAll("arg")].map(quote).join(" ");
+    }
+  } catch {
+    // Not a URL this can read; shown as it is.
+  }
+  return origin;
+}
+
+// summary is what a detached run is handed back with, once it has signalled:
+// where it answers and what each address reaches, where it runs from, its
+// pid and log, and how to end or restart it.
+//
+// Read from the files the run keeps beside its spec, which it wrote before
+// signalling: <key>.pid, to find the key by the pid, and <key>.env, the
+// settings the run settled on and the hostname it got. A run under
+// --no-cache writes no .env, and gets what the pid file alone can say; its
+// addresses are on stdout above either way.
+function summary(pid, args) {
+  const dir = cacheDir();
+  let key = null;
+  try {
+    key = fs
+      .readdirSync(dir)
+      .filter((n) => n.endsWith(".pid"))
+      .map((n) => path.basename(n, ".pid"))
+      .find((k) => read(path.join(dir, `${k}.pid`)).trim() === String(pid));
+  } catch {
+    // No cache directory: nothing more to say than the pid.
+  }
+  const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
+
+  const lines = ["", `${bold("🍕 tunneld is up, in the background")}`, ""];
+  const host = env.LIBTUNNEL_HOSTNAME;
+  if (host) {
+    const base = `https://${host}/`;
+    const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
+    if (origins.length <= 1) {
+      lines.push(`  ${cyan(base)}  ${dim("→")} ${label(origins[0] || "")}`);
+    } else {
+      const width = `${base}?${origins.length - 1}`.length;
+      if (env.TUNNELD_MULTIVIEW === "true") {
+        lines.push(`  ${cyan(base.padEnd(width))}  ${dim("→")} all ${origins.length}, side by side`);
+      }
+      origins.forEach((o, i) => lines.push(`  ${cyan(`${base}?${i}`.padEnd(width))}  ${dim("→")} ${label(o)}`));
+    }
+    lines.push("");
+  }
+
+  const row = (name, value) => lines.push(`  ${dim(name.padEnd(8))} ${value}`);
+  if (env.PWD) {
+    row("from", home(env.PWD));
+  }
+  row("pid", String(pid));
+  if (key) {
+    row("log", home(path.join(dir, `${key}.log`)));
+  }
+  row("stop", `npx ${WRAPPER_NAME} -k`);
+  row("restart", [`npx ${WRAPPER_NAME} -kd`, ...args.map(quote)].join(" "));
+  lines.push("");
+  return lines.join("\n") + "\n";
 }
 
 // holders is every process holding file open. A run keeps its <key>.pid open

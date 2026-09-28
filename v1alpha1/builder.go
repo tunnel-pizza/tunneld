@@ -733,17 +733,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		display.WithInteractive(display.IsInteractive(cmd)),
 		display.WithScreen(screen),
 	)
-	// A launcher waiting to hand the console back gets it now. Ctrl-C there
-	// will not reach this run, so it gets no hint saying so; Detach says
-	// where the run's output goes instead.
-	detached := b.pid != nil && b.pid.Detach(origins, stderr, log)
-	if screen == nil && !detached {
-		// Nothing is going to be drawn here. The addresses are up, the run
-		// blocks from now on, and the signal is the only thing left on this
-		// side of it.
-		fmt.Fprintln(stderr, stopHint)
-	}
-
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	// The hostname beside the rest of what the run settled on: never read
@@ -751,6 +740,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	tracking := b.tracking(origins)
 	tracking[ltv1.HostnameEnv] = public.Hostname()
 	spec.Save(origins, tun.Serialize(), tracking, log)
+
+	// A launcher waiting to hand the console back gets it now, after the
+	// save, so the file it reads to say what is running is there. Ctrl-C
+	// there will not reach this run, so it gets no hint saying so.
+	detached := b.pid != nil && b.pid.Detach(origins, log)
+	if screen == nil && !detached {
+		// Nothing is going to be drawn here. The addresses are up, the run
+		// blocks from now on, and the signal is the only thing left on this
+		// side of it.
+		fmt.Fprintln(stderr, stopHint)
+	}
 
 	// A viewer asking to end the run is the third way this stops, beside a
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it

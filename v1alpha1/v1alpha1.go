@@ -81,7 +81,7 @@ type Cache interface {
 // streams and telling the launcher — and reports whether one was waiting.
 type Pid interface {
 	Register(origins Origins, log v1.Logger) (release func(), err error)
-	Detach(origins Origins, stderr io.Writer, log v1.Logger) bool
+	Detach(origins Origins, log v1.Logger) bool
 }
 
 // WithPid sets how a run is found and handed back from outside it. The

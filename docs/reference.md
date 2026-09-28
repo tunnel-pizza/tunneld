@@ -662,9 +662,29 @@ binary's. The launcher adds a few things of its own.
 **`-d` detaches.** As the first word, and only there, it starts the run in the
 background, on the caller's own stdout and stderr, and waits for the run to
 say it is up. The banner, the addresses and the origin each reaches arrive
-exactly as a foreground run's would. Then the run moves its stdout and stderr
-to `<key>.log` in the cache directory, says so, and signals the launcher,
-which prints the run's pid and gives the prompt back. The tunnel stays up.
+exactly as a foreground run's would. Then the run caches its settings, moves
+its stdout and stderr to `<key>.log` in the cache directory, and signals the
+launcher, which gives the prompt back with a summary read from the files
+beside it — each address and what it reaches, the directory, the pid, the
+log, and the lines that stop and restart it:
+
+```
+🍕 tunneld is up, in the background
+
+  https://0tc62f7m9b.tunneled.pizza/    → all 2, side by side
+  https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
+  https://0tc62f7m9b.tunneled.pizza/?1  → /bin/bash
+
+  from     ~/project
+  pid      73146
+  log      ~/Library/Caches/tunneld/894bb9b319b7b699.log
+  stop     npx tunneld -k
+  restart  npx tunneld -kd :3000 bash
+```
+
+In colour on a terminal, unless `NO_COLOR` is set. Under `--no-cache` there
+are no cached settings to read, so it says less: the pid, the log and the two
+lines. The addresses are on stdout either way. The tunnel stays up.
 Nothing of the caller's is held after that, so
 `addr=$(npx tunneld -d :3000)` returns with the address, and nothing lands on
 a prompt later. `-d` is stripped before the binary sees the line, so
