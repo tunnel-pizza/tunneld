@@ -491,8 +491,8 @@ function prose(host, origins, columns) {
 }
 
 // summary is what a detached run is handed back with, once it has signalled:
-// where it answers and what each address reaches, where it runs from, its
-// pid and its log.
+// the directory it runs in, its pid and its log, then what it shares and the
+// address each origin answers on.
 //
 // Read from the files the run keeps beside its spec, which it wrote before
 // signalling: <key>.pid, to find the key by the pid, and <key>.env, the
@@ -514,6 +514,16 @@ function summary(pid) {
   const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
 
   const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
+  const row = (name, value) => lines.push(`  ${dim(name)}  ${value}`);
+  if (env.PWD) {
+    row("cwd", home(env.PWD));
+  }
+  row("pid", String(pid));
+  if (key) {
+    row("log", home(path.join(dir, `${key}.log`)));
+  }
+  lines.push("");
+
   const host = env.LIBTUNNEL_HOSTNAME;
   if (!host) {
     lines.push("  Your application is now available at the address above.", "");
@@ -535,16 +545,6 @@ function summary(pid) {
     }
     lines.push("");
   }
-
-  const row = (name, value) => lines.push(`  ${dim(name.padEnd(8))} ${value}`);
-  if (env.PWD) {
-    row("from", home(env.PWD));
-  }
-  row("pid", String(pid));
-  if (key) {
-    row("log", home(path.join(dir, `${key}.log`)));
-  }
-  lines.push("");
   return lines.join("\n") + "\n";
 }
 

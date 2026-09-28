@@ -665,11 +665,15 @@ say it is up. The banner, the addresses and the origin each reaches arrive
 exactly as a foreground run's would. Then the run caches its settings, moves
 its stdout and stderr to `<key>.log` in the cache directory, and signals the
 launcher, which gives the prompt back with a summary read from the files
-beside it — what the run shares, said as a sentence, then each address and
-what it reaches, the directory, the pid and the log:
+beside it — the directory, the pid and the log, then what the run shares,
+said as a sentence, and each address and what it reaches:
 
 ```
 🍕 tunneld is now running in the background
+
+  cwd  ~/project
+  pid  73146
+  log  ~/Library/Caches/tunneld/894bb9b319b7b699.log
 
   Your applications (http://localhost:3000, /bin/bash) are now available,
   tunneled through https://0tc62f7m9b.tunneled.pizza/, at the following
@@ -678,10 +682,6 @@ what it reaches, the directory, the pid and the log:
   https://0tc62f7m9b.tunneled.pizza/    → multiview
   https://0tc62f7m9b.tunneled.pizza/?0  → http://localhost:3000
   https://0tc62f7m9b.tunneled.pizza/?1  → /bin/bash
-
-  from     ~/project
-  pid      73146
-  log      ~/Library/Caches/tunneld/894bb9b319b7b699.log
 ```
 
 One origin reads "Your application (/bin/bash) is now available, tunneled

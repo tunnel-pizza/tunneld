@@ -250,7 +250,7 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
   const up = launch("-d", ":3000", "bash");
   assert.equal(up.status, 0, up.stderr);
   assert.equal(up.stdout, "https://t.example/?0\nhttps://t.example/?1\n");
-  const pid = Number(up.stderr.match(/^  pid +(\d+)$/m)[1]);
+  const pid = Number(up.stderr.match(/^  pid  (\d+)$/m)[1]);
   assert.equal(
     up.stderr.replaceAll(`~${cache.slice(env.HOME.length)}`, "<cache>"),
     [
@@ -260,14 +260,14 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
       "",
       "🍕 tunneld is now running in the background",
       "",
+      "  cwd  ~/project",
+      `  pid  ${pid}`,
+      "  log  <cache>/_3000_bash.log",
+      "",
       "  Your application (/bin/bash -l) is now available, tunneled through",
       "  https://t.example/, at the following address:",
       "",
       "  https://t.example/  → /bin/bash -l",
-      "",
-      "  from     ~/project",
-      `  pid      ${pid}`,
-      "  log      <cache>/_3000_bash.log",
       "",
       "",
     ].join("\n"),
@@ -304,9 +304,9 @@ test("-d names every origin's address, and says less with no cached settings", p
   // log still.
   const bare = launch("-d", "--no-cache", ":3000");
   assert.equal(bare.status, 0, bare.stderr);
-  assert.doesNotMatch(bare.stderr, /t\.example\/\?|from/);
+  assert.doesNotMatch(bare.stderr, /t\.example\/\?|cwd/);
   assert.match(bare.stderr, /Your application is now available at the address above\./);
-  assert.match(bare.stderr, /  pid      \d+\n  log      .*__no_cache__3000\.log\n\n$/);
+  assert.match(bare.stderr, /running in the background\n\n  pid  \d+\n  log  .*__no_cache__3000\.log\n\n  Your application is now available at the address above\.\n\n$/);
   assert.equal(launch("-k").status, 0);
 });
 
@@ -337,7 +337,7 @@ for (const flag of ["-kd", "-dk"]) {
     assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "the old run tore down");
     assert.equal(up.stdout, "https://t.example/?0\nhttps://t.example/?1\n");
     const old = Number(up.stderr.match(/stopped pid (\d+)/)[1]);
-    const pid = Number(up.stderr.match(/^  pid +(\d+)$/m)[1]);
+    const pid = Number(up.stderr.match(/^  pid  (\d+)$/m)[1]);
     t.after(() => {
       try {
         process.kill(pid, "SIGKILL");
