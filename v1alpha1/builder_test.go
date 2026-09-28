@@ -447,6 +447,27 @@ type fakeCache struct {
 	order    *[]string
 }
 
+// fakePid records a run's registration in the order of effects, and says a
+// launcher was waiting when waiting is set.
+type fakePid struct {
+	order      *[]string
+	onRegister func()
+	waiting    bool
+}
+
+func (f *fakePid) Register(Origins, v1.Logger) func() {
+	*f.order = append(*f.order, "register")
+	if f.onRegister != nil {
+		f.onRegister()
+	}
+	return func() { *f.order = append(*f.order, "release") }
+}
+
+func (f *fakePid) Detach(Origins, io.Writer, v1.Logger) bool {
+	*f.order = append(*f.order, "detach")
+	return f.waiting
+}
+
 func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
 func (f *fakeCache) Save(_ Origins, spec string, tracking map[string]string, _ v1.Logger) {
 	f.saved, f.spec, f.tracking = true, spec, tracking
@@ -797,27 +818,45 @@ func TestRun(t *testing.T) {
 	t.Run("a run is registered while it runs, and only when asked", func(t *testing.T) {
 		for _, on := range []bool{true, false} {
 			h := newRunHarness(t, live(public), ":3000")
-			dir := t.TempDir()
-			h.b.pidDir = dir
-			v1.Apply(h.b, WithPidFile(on))
-			file := filepath.Join(dir, strconv.Itoa(os.Getpid()))
-			ctx, cancel := context.WithCancel(t.Context())
-			var during error
-			h.cache.onSave = func() {
-				_, during = os.Stat(file)
-				cancel()
+			if on {
+				v1.Apply(h.b, WithPid(&fakePid{order: &h.order}))
 			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run() = %v, want nil after a signal", err)
 			}
-			if on && during != nil {
-				t.Errorf("WithPidFile(true): no %s while the tunnel was up: %v", file, during)
+			want := []string{"url", "save"}
+			if on {
+				want = []string{"register", "url", "detach", "save", "release"}
 			}
-			if !on && !os.IsNotExist(during) {
-				t.Errorf("WithPidFile(false): %s while the tunnel was up (%v), want nothing written", file, during)
+			if !slices.Equal(h.order, want) {
+				t.Errorf("WithPid set = %v: effects in order %v, want %v", on, h.order, want)
 			}
-			if _, err := os.Stat(file); !os.IsNotExist(err) {
-				t.Errorf("WithPidFile(%v): %s after the run (%v), want it removed", on, file, err)
+		}
+	})
+
+	t.Run("--no-cache keeps the spec, not the registration", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+		_ = h.run(t, ctx, "--no-cache", ":3000")
+		if !slices.Contains(h.order, "register") || h.cache.saved {
+			t.Errorf("effects %v, saved = %v, want a registration and no spec", h.order, h.cache.saved)
+		}
+	})
+
+	t.Run("a detached run says nothing about Ctrl+C", func(t *testing.T) {
+		for _, waiting := range []bool{true, false} {
+			h := newRunHarness(t, live(public), ":3000")
+			v1.Apply(h.b, WithPid(&fakePid{order: &h.order, waiting: waiting}))
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if got := strings.Contains(h.stderr.String(), stopHint); got == waiting {
+				t.Errorf("launcher waiting = %v: stop hint printed = %v", waiting, got)
 			}
 		}
 	})

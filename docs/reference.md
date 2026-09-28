@@ -660,51 +660,63 @@ for the machine and hands it the command line. Everything above is the
 binary's. The launcher adds a few things of its own.
 
 **`-d` detaches.** As the first word, and only there, it starts the run in the
-background and waits for its addresses. Once they are up it prints them on
-stdout, what the run said on stderr so far (the banner, the origin each
-address reaches) on stderr, and the run's pid, then gives the prompt back. The
-tunnel stays up. `-d` is stripped before the binary sees the line, so
+background, on the caller's own stdout and stderr, and waits for the run to
+say it is up. The banner, the addresses and the origin each reaches arrive
+exactly as a foreground run's would. Then the run moves its stdout and stderr
+to `<key>.log` in the cache directory, says so, and signals the launcher,
+which prints the run's pid and gives the prompt back. The tunnel stays up.
+Nothing of the caller's is held after that, so
+`addr=$(npx tunneld -d :3000)` returns with the address, and nothing lands on
+a prompt later. `-d` is stripped before the binary sees the line, so
 `npx tunneld -d :3000 claude` is the run `npx tunneld :3000 claude` would have
-been, minus the console: with no terminal on any of its streams, it draws no
-frame and opens no browser tab.
+been, minus the console: with no terminal to read from, it draws no frame and
+opens no browser tab.
 
-A run that ends before its addresses (a bad origin, a mint that fails,
-`--help`) is relayed like a foreground one, output and exit status both.
-Ctrl+C while `-d` is waiting ends the run, since nothing has been handed back
-yet.
+The signal is `SIGUSR2`, asked for through `TUNNELD_NOTIFY_PID`, which the
+launcher sets to its own pid. A run sends it only to a parent with that pid,
+since `SIGUSR2` ends a process that has not asked for it, and whatever started
+a run is not always the launcher.
+
+A run that ends before it is up (a bad origin, a mint that fails, `--help`)
+has already said so on the caller's streams, and its exit status is passed
+on. Ctrl+C while `-d` is waiting ends the run, since nothing has been handed
+back yet.
 
 **`-k` ends every run.** As the only word. Every tunneld run on the machine,
 for this user — detached or in the foreground of another terminal, started
 through npx or not — gets `SIGINT`, which is what Ctrl+C sends a foreground
 run, so each tears down the same way: the programs its origins started, the
-attach servers, the tunnel. `-k` waits for them, names each one it stopped
-(with its addresses, when `-d` kept them), and exits non-zero if one is still
-going after 30 seconds.
+attach servers, the tunnel. `-k` waits for them, names each one it stopped by
+pid and key, and exits non-zero if one is still going after 30 seconds.
 
 **`-kd` is both, a restart.** As the first word, spelled `-dk` too: every run
 ends, and only once they all have does this one start, detached. One still
 tearing down after the 30 seconds leaves the new run unstarted and the exit
 status 1. An ambiguous line is refused before anything is ended.
 
-**How `-k` finds a run.** The binary registers every run as a file named by
-its pid, in `$XDG_RUNTIME_DIR/tunneld/` where the session has one — per user,
-private, and emptied at reboot, which is what that directory is for — and in
-`<user cache dir>/tunneld/run/` otherwise, which is macOS and Linux without
-logind. It holds the file open for as long as it runs and removes it after
-teardown. `-k` signals a pid only if that process holds its own file: the
-kernel closes the file however the process ends, `kill -9` included, so a
-file nobody holds is a run that is gone even when its pid has since been
-handed to another program, and `-k` clears it without signalling anything.
-Linux answers who holds it from `/proc`, other systems through `lsof`.
+**How `-k` finds a run.** The binary registers every run as `<key>.pid` in the
+cache directory, beside the `<key>.env` its spec is cached in — whether or
+not the spec is, since `--no-cache` is about the hostname and a run that mints
+a fresh one is still a run. It holds the file open for as long as it runs and
+removes it after teardown. `-k` signals every process holding such a file,
+and nothing else: the kernel closes the file however a process ends,
+`kill -9` included, so a file nobody holds is a run that is gone even when the
+pid in it has since been handed to another program, and `-k` clears it
+without signalling anything. Linux answers who holds it from `/proc`, other
+systems through `lsof`.
+
+Two runs of the same thing at once — the same directory and origins, in two
+terminals — share one file, and `-k` ends both. If the later one ends first,
+though, the file goes with it and the earlier run can no longer be found.
 
 Registering is the binary's, not the builder's by default: a program that
 mounts tunneld as a subcommand is a process `-k` would end whole, so it opts in
-with `v1alpha1.WithPidFile(true)`. See [embedding.md](./embedding.md).
+with `v1alpha1.WithPid(pid.New())`. See [embedding.md](./embedding.md).
 
-A detached run also leaves its stdout and stderr in
-`<user cache dir>/tunneld/detached/`, as `<pid>.out` and `<pid>.log`. The log
-keeps growing for as long as the run does and is where to look when one
-misbehaves; `-k` clears both once the run is gone.
+`<key>.log` keeps growing for as long as a detached run does, and is where to
+look when one misbehaves; the next detached run of the same thing starts it
+over. `make clean` removes the cache directory, registrations included, so a
+run started before it has to be ended by pid.
 
 None of the flags is offered on Windows yet. Node there can only terminate another
 process, which would skip the teardown `-k` exists to run, and a run nothing

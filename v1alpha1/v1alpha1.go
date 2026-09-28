@@ -71,6 +71,26 @@ type Cache interface {
 	Save(origins Origins, spec string, tracking map[string]string, log v1.Logger)
 }
 
+// Pid is how a run is found and handed back from outside it, by the npm
+// launcher.
+//
+// Register marks the run as running, for the launcher's -k to find and end,
+// until release is called. Detach, once the addresses are out, hands the run
+// back from a launcher waiting on it — moving its output off the caller's
+// streams and telling the launcher — and reports whether one was waiting.
+type Pid interface {
+	Register(origins Origins, log v1.Logger) (release func())
+	Detach(origins Origins, stderr io.Writer, log v1.Logger) bool
+}
+
+// WithPid sets how a run is found and handed back from outside it. The
+// default is nil, neither: a program that mounts tunneld under its own name
+// is a process -k would end whole, so it opts in here or stays out of reach.
+// The tunneld binary passes pid.New().
+func WithPid(p Pid) Option {
+	return func(b *BuilderImpl) { b.pid = p }
+}
+
 // WithCache replaces where a tunnel's spec is kept between runs. The default
 // is cache.New(), one file per tunnel under the user's cache directory.
 //
@@ -287,7 +307,7 @@ func New(opts ...Option) *BuilderImpl {
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
-	b := v1.Apply(&BuilderImpl{recent: recent, pidDir: runDir()},
+	b := v1.Apply(&BuilderImpl{recent: recent},
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
@@ -341,11 +361,9 @@ type BuilderImpl struct {
 	// process environment to find out what a run will do.
 	shellFallback bool
 
-	// pidFile is whether a run registers itself in pidDir for the npm
-	// launcher's -k to find; see WithPidFile. pidDir is runDir's answer,
-	// seeded by New and moved only by a test.
-	pidFile bool
-	pidDir  string
+	// pid is how the run is found and handed back from outside it, for the
+	// npm launcher; nil, the default, is neither. See WithPid.
+	pid Pid
 
 	// newTunnel is how a spec becomes a tunnel: libtunnel.From, or what a
 	// test put there so a run never reaches the edge. See WithTunnelFactory.

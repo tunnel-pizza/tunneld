@@ -25,16 +25,17 @@
 // duplicate a Ctrl-C produces is harmless: tunneld's signal context swallows
 // repeats until it exits.
 //
-// Beyond that, the launcher does three things the binary does not:
+// Beyond that, the launcher does what the binary does not:
 //
 //   - It refuses a command line that could mean two things (misread, below),
 //     before the run starts, and names the quoting for each.
 //   - `-d`, as the first word, detaches: the run goes on in the background,
-//     and the launcher prints its addresses and hands the console back.
+//     and once it signals that its addresses are out the launcher hands the
+//     console back.
 //   - `-k`, as the only word, ends every run on the machine, detached or
 //     not, the way Ctrl-C would, so the teardown runs. The binary registers
-//     each run in a file it holds open (v1alpha1/pidfile.go), and -k ends
-//     whatever holds one.
+//     each run as a file it holds open beside its cached spec
+//     (v1alpha1/cache), and -k ends whatever holds one.
 //   - `-kd`, or `-dk`, as the first word, is both: every run ended, then this
 //     one started detached.
 //
@@ -61,21 +62,13 @@ const PLATFORMS = [
   "win32-x64",
 ];
 
-// How often a detaching launcher looks at the run's stdout, and how long that
-// stdout has to sit still before the addresses on it count as all of them.
-// The binary writes every address in one loop once the tunnel is verified,
-// so the quiet is only there to not stop between two lines of it.
-const POLL_MS = 50;
-const SETTLE_MS = 300;
-
-// How long -k waits for a run it has signalled to finish tearing down.
+// How long -k waits for a run it has signalled to finish tearing down, and
+// how often it looks.
 const STOP_MS = 30000;
+const POLL_MS = 50;
 
-// What the binary tells a console it has nothing to draw on, once the
-// addresses are up. Relayed from a detached run it would be wrong — Ctrl-C
-// here ends the launcher, which has already let go — so it is left out, and
-// the line saying how to end a detached run stands where it was.
-const STOP_HINT = "Press Ctrl+C to stop the tunnel...";
+// What the binary reads to know a launcher is waiting on it; see detach.
+const NOTIFY_ENV = "TUNNELD_NOTIFY_PID";
 
 function fail(message) {
   console.error(`${WRAPPER_NAME}: ${message}`);
@@ -287,9 +280,10 @@ function ambiguous(reading, prefix) {
   );
 }
 
-// userCacheDir is Go's os.UserCacheDir, so what the launcher keeps sits
-// beside what the binary does, under <user cache dir>/tunneld/.
-function userCacheDir() {
+// cacheDir is <user cache dir>/tunneld, the binary's own: Go's
+// os.UserCacheDir, spelled out. Each run registers there as <key>.pid, beside
+// its spec, and a detached one logs to <key>.log.
+function cacheDir() {
   const env = process.env;
   let base;
   switch (process.platform) {
@@ -308,23 +302,6 @@ function userCacheDir() {
   return path.join(base, BINARY_NAME);
 }
 
-// detachedDir holds a detached run's stdout and stderr, as <pid>.out and
-// <pid>.log.
-function detachedDir() {
-  return path.join(userCacheDir(), "detached");
-}
-
-// runDir is where the binary registers every run, resolved the way runDir in
-// v1alpha1/pidfile.go resolves it: $XDG_RUNTIME_DIR/tunneld where the session
-// has one, <user cache dir>/tunneld/run otherwise.
-function runDir() {
-  const runtime = process.env.XDG_RUNTIME_DIR;
-  if (runtime && path.isAbsolute(runtime)) {
-    return path.join(runtime, BINARY_NAME);
-  }
-  return path.join(userCacheDir(), "run");
-}
-
 // Windows has no way for this process to deliver a Ctrl-C to one that is not
 // on its console: process.kill there is TerminateProcess, which skips the
 // teardown -k exists to run. A run -k could only cut short is not one to
@@ -332,20 +309,6 @@ function runDir() {
 function refuseOnWindows(flag) {
   if (process.platform === "win32") {
     fail(`${flag} is not supported on Windows yet`);
-  }
-}
-
-function read(file) {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-function remove(stem) {
-  for (const ext of [".out", ".log"]) {
-    fs.rmSync(stem + ext, { force: true });
   }
 }
 
@@ -378,88 +341,46 @@ function run(bin, args) {
   });
 }
 
-// detach starts the binary in a session of its own, with its stdout and
-// stderr in files under detachedDir, and waits for the addresses. Once stdout
-// carries them and has gone quiet, they are printed to this stdout and what
-// the run said on stderr so far (the banner, which origin each address
-// reaches) to this stderr, the same two streams a foreground run uses. Then
-// this process exits and the run goes on.
+// detach starts the binary in a session of its own, on this process's own
+// streams, and waits to be told it is up. The banner, the addresses and the
+// origin each reaches go straight to the caller, the same two streams a
+// foreground run uses.
 //
-// A run that ends before that — a bad origin, --help, a mint that fails —
-// has its output relayed the same way and its exit status passed on, so a
-// detached run that could not start fails like a foreground one. Ctrl-C while
-// waiting ends the run: nothing has been handed back yet, so nothing should
-// be left behind.
+// The telling is a signal. The binary is given this process's pid in
+// NOTIFY_ENV, and once its addresses are out it moves its stdout and stderr
+// to <key>.log beside its spec, says so on stderr, and sends SIGUSR2 to its
+// parent when that is the pid it was given — and to nobody otherwise, since
+// SIGUSR2 ends a process that has not asked for it. Moving the streams first
+// is what lets the caller go: once this exits, nothing holds them, so
+// `$(npx tunneld -d …)` returns, and nothing lands on a prompt later.
+// SIGUSR2 rather than SIGUSR1, which Node keeps for its debugger.
 //
-// Each run leaves <pid>.out and <pid>.log, which -k clears once the run is
-// gone. The log keeps growing for as long as the run does, and is where to
-// look when a detached run misbehaves. What -k finds a run by is the
-// binary's own registration, not these.
+// A run that ends first — a bad origin, --help, a mint that fails — has
+// already said so on the caller's streams, and its exit status is passed on,
+// so a detached run that could not start fails like a foreground one. Ctrl-C
+// while waiting ends the run: it is in a session of its own, where the
+// terminal's Ctrl-C does not reach, and nothing has been handed back yet.
 function detach(bin, args) {
-  const dir = detachedDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const pending = path.join(dir, `pending-${process.pid}`);
-  const out = fs.openSync(`${pending}.out`, "w", 0o600);
-  const log = fs.openSync(`${pending}.log`, "w", 0o600);
-  const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, log] });
-  fs.closeSync(out);
-  fs.closeSync(log);
-
-  let stem = pending;
-  let interrupted = null;
-  let timer = null;
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  let interrupted = null;
+  let child = null;
 
   // Leaves by letting the event loop run dry rather than process.exit, which
   // can cut short a write to a pipe that is still draining.
   const finish = (status) => {
-    clearInterval(timer);
-    for (const signal of signals) {
+    for (const signal of [...signals, "SIGUSR2"]) {
       process.removeAllListeners(signal);
     }
     process.exitCode = status;
   };
 
-  child.on("error", (err) => {
-    remove(pending);
-    fail(`cannot run ${bin}: ${err.message}`);
+  // Listening before the spawn: unheard, SIGUSR2 would end this process.
+  process.on("SIGUSR2", () => {
+    child.removeAllListeners("exit");
+    child.unref();
+    finish(0);
+    console.error(`${WRAPPER_NAME}: detached as pid ${child.pid}; npx ${WRAPPER_NAME} -k ends it, and every other run`);
   });
-
-  child.on("spawn", () => {
-    stem = path.join(dir, String(child.pid));
-    fs.renameSync(`${pending}.out`, `${stem}.out`);
-    fs.renameSync(`${pending}.log`, `${stem}.log`);
-
-    let seen = "";
-    let still = 0;
-    timer = setInterval(() => {
-      const now = read(`${stem}.out`);
-      if (now !== seen || !now.endsWith("\n")) {
-        seen = now;
-        still = 0;
-        return;
-      }
-      still += POLL_MS;
-      if (still < SETTLE_MS) {
-        return;
-      }
-      child.removeAllListeners("exit");
-      child.unref();
-      finish(0);
-      process.stderr.write(
-        read(`${stem}.log`)
-          .split("\n")
-          .filter((line) => line !== STOP_HINT)
-          .join("\n"),
-      );
-      process.stdout.write(now);
-      console.error(
-        `${WRAPPER_NAME}: detached as pid ${child.pid}; its log is ${stem}.log\n` +
-          `  npx ${WRAPPER_NAME} -k ends it, and every other run`,
-      );
-    }, POLL_MS);
-  });
-
   for (const signal of signals) {
     process.on(signal, () => {
       interrupted = signal;
@@ -467,41 +388,56 @@ function detach(bin, args) {
     });
   }
 
+  child = spawn(bin, args, {
+    detached: true,
+    stdio: ["ignore", "inherit", "inherit"],
+    env: { ...process.env, [NOTIFY_ENV]: String(process.pid) },
+  });
+  child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
   child.on("exit", (code, signal) => {
     finish(interrupted ? signum(interrupted) : signal ? signum(signal) : (code ?? 1));
-    if (!interrupted) {
-      process.stdout.write(read(`${stem}.out`));
-      process.stderr.write(read(`${stem}.log`));
-    }
-    remove(stem);
   });
 }
 
-// holds reports whether pid holds file open. The binary keeps its
-// registration open for as long as it runs, and the kernel closes it however
-// the process ends, so this is true of a live run and of nothing else — not
-// of a process that has since been given a dead run's pid. Linux answers from
-// /proc; everywhere else lsof does, which macOS always has.
-function holds(pid, file) {
+// holders is every process holding file open. A run keeps its <key>.pid open
+// for as long as it runs, and the kernel closes it however the process ends,
+// so this is the live runs registered there and nothing else — not a process
+// that has since been given a dead run's pid. Two runs of the same thing at
+// once share the file, so it can be more than one. Linux answers from /proc,
+// where only this user's processes can be read, which are the only ones this
+// could signal anyway; everywhere else lsof does, which macOS always has.
+function holders(file) {
   try {
     if (process.platform === "linux") {
       const target = fs.realpathSync(file);
-      const fds = `/proc/${pid}/fd`;
-      return fs.readdirSync(fds).some((fd) => {
+      const found = [];
+      for (const pid of fs.readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {
+        let fds;
         try {
-          return fs.readlinkSync(path.join(fds, fd)) === target;
+          fds = fs.readdirSync(`/proc/${pid}/fd`);
         } catch {
-          return false;
+          continue; // Not ours, or gone.
         }
-      });
+        for (const fd of fds) {
+          try {
+            if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === target) {
+              found.push(Number(pid));
+              break;
+            }
+          } catch {
+            // Closed while being looked at.
+          }
+        }
+      }
+      return found;
     }
     const out = execFileSync("lsof", ["-t", "--", file], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return out.split("\n").includes(String(pid));
+    return out.split("\n").filter(Boolean).map(Number);
   } catch {
-    return false;
+    return [];
   }
 }
 
@@ -517,21 +453,18 @@ function alive(pid) {
 // kill ends every registered run with SIGINT, which is what Ctrl-C sends a
 // foreground run, so each one tears down the way it would there: the
 // programs its origins started, the attach servers, the tunnel. Detached or
-// not, npx or brew: whatever holds a file in runDir is a run. It waits for
-// them to finish, and names each one it stopped, with its addresses when -d
-// kept them.
+// not, npx or brew: whatever holds a <key>.pid in cacheDir is a run. It waits
+// for them to finish, and names each one it stopped.
 //
 // A file nobody holds is a run that ended without removing it — kill -9, a
-// crash, a reboot where runDir outlives one — and is cleared without a word,
-// with whatever -d kept for that pid. One still going after STOP_MS is named
-// and the exit status is 1: it was asked, and asking twice changes nothing,
-// since the binary swallows repeats.
+// crash — and is cleared without a word. One still going after STOP_MS is
+// named and the exit status is 1: it was asked, and asking twice changes
+// nothing, since the binary swallows repeats.
 //
 // then, if given, runs once every run is gone, and not at all if one is
 // still there: -kd starts its run only on a clean slate.
 function kill(then) {
-  const dir = runDir();
-  const detached = detachedDir();
+  const dir = cacheDir();
   let names = [];
   try {
     names = fs.readdirSync(dir);
@@ -542,36 +475,24 @@ function kill(then) {
   }
 
   const runs = [];
-  for (const name of names.filter((n) => /^\d+$/.test(n))) {
-    const pid = Number(name);
+  for (const name of names.filter((n) => n.endsWith(".pid"))) {
     const file = path.join(dir, name);
-    const stem = path.join(detached, name);
-    if (!holds(pid, file)) {
+    const pids = holders(file);
+    if (pids.length === 0) {
       fs.rmSync(file, { force: true });
-      remove(stem);
       continue;
     }
-    try {
-      process.kill(pid, "SIGINT");
-    } catch (err) {
-      console.error(`${WRAPPER_NAME}: cannot stop pid ${pid}: ${err.message}`);
-      continue;
-    }
-    runs.push({ pid, file, stem, addresses: read(`${stem}.out`).trim().split("\n").join(" ") });
-  }
-
-  // What -d kept for a run that is gone and never registered, or whose
-  // registration went with its directory.
-  let kept = [];
-  try {
-    kept = fs.readdirSync(detached);
-  } catch {
-    // Nothing detached, ever.
-  }
-  for (const name of kept) {
-    const pid = Number(path.basename(name, path.extname(name)));
-    if (Number.isInteger(pid) && !alive(pid)) {
-      fs.rmSync(path.join(detached, name), { force: true });
+    for (const pid of pids) {
+      if (runs.some((r) => r.pid === pid)) {
+        continue;
+      }
+      try {
+        process.kill(pid, "SIGINT");
+      } catch (err) {
+        console.error(`${WRAPPER_NAME}: cannot stop pid ${pid}: ${err.message}`);
+        continue;
+      }
+      runs.push({ pid, key: path.basename(name, ".pid") });
     }
   }
 
@@ -587,9 +508,7 @@ function kill(then) {
   const timer = setInterval(() => {
     for (const r of runs.filter((r) => !r.done && !alive(r.pid))) {
       r.done = true;
-      fs.rmSync(r.file, { force: true });
-      remove(r.stem);
-      console.error(`${WRAPPER_NAME}: stopped pid ${r.pid} ${r.addresses}`.trimEnd());
+      console.error(`${WRAPPER_NAME}: stopped pid ${r.pid} (${r.key})`);
     }
     const left = runs.filter((r) => !r.done);
     if (left.length === 0) {

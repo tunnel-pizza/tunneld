@@ -239,6 +239,18 @@ const (
 	// --identity-providers, which beats it. Empty turns the lookup off.
 	IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
 
+	// NotifyPidEnv is how the npm launcher asks a detached run to say when it
+	// is up. It carries the launcher's pid, and a run whose parent has that
+	// pid sends it SIGUSR2 once its addresses are out, having first moved its
+	// stdout and stderr to a log beside its spec, so the launcher can exit and
+	// hand the console back. A value naming any other process is ignored:
+	// SIGUSR2 ends a process that has not asked for it, and whatever started a
+	// run is not always a launcher.
+	//
+	// Not a knob. Nothing mirrors it and nobody sets it by hand; it is the one
+	// line of protocol between the launcher and the binary it ships with.
+	NotifyPidEnv = "TUNNELD_NOTIFY_PID"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"

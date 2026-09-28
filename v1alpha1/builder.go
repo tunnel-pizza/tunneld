@@ -112,17 +112,6 @@ func WithShellFallback(fallback bool) Option {
 	return func(b *BuilderImpl) { b.shellFallback = fallback }
 }
 
-// WithPidFile registers every run in $XDG_RUNTIME_DIR/tunneld, or
-// <user cache dir>/tunneld/run where there is none, as a file
-// named by the pid and held open until the run ends, which is how the npm
-// launcher's -k finds every run on the machine and ends it the way Ctrl-C
-// would. Off by default and on in the tunneld binary: a program that mounts
-// tunneld under its own name is a process -k would end whole, so it opts in
-// here or stays out of reach.
-func WithPidFile(on bool) Option {
-	return func(b *BuilderImpl) { b.pidFile = on }
-}
-
 // WithStdout redirects the help text and the version banner. Command passes
 // it to the command's SetOut, so calling SetOut on the built command
 // overrides this. Unset, output goes to the process's stdout.
@@ -494,8 +483,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// Registered once the run is known to be one, and before the mint, so
 	// -k can end a run that is still coming up. Released last, after
 	// everything below has torn down: the file is gone only once the run is.
-	if b.pidFile {
-		defer register(b.pidDir, log)()
+	// Whether or not the spec is cached: --no-cache is about the hostname,
+	// and a run that mints a fresh one is still a run -k should find.
+	if b.pid != nil {
+		defer b.pid.Register(origins, log)()
 	}
 
 	// Everything below opens something — the attach servers, the tunnel,
@@ -737,7 +728,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		display.WithInteractive(display.IsInteractive(cmd)),
 		display.WithScreen(screen),
 	)
-	if screen == nil {
+	// A launcher waiting to hand the console back gets it now. Ctrl-C there
+	// will not reach this run, so it gets no hint saying so; Detach says
+	// where the run's output goes instead.
+	detached := b.pid != nil && b.pid.Detach(origins, stderr, log)
+	if screen == nil && !detached {
 		// Nothing is going to be drawn here. The addresses are up, the run
 		// blocks from now on, and the signal is the only thing left on this
 		// side of it.

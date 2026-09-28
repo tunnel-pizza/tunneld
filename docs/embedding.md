@@ -95,7 +95,6 @@ func WithIdentityProviders(names ...string) Option // where to look for a mint c
 func WithOpen(open bool) Option                    // force the browser decision; unset means derived
 func WithMultiview(multiview bool) Option          // frame the origins together; default true
 func WithShellFallback(fallback bool) Option       // no origin at all means $SHELL; default true
-func WithPidFile(on bool) Option                   // register each run for npx tunneld -k to end; default false, on in the binary
 func WithStdout(w io.Writer) Option                // help text, the version command, public addresses
 func WithStderr(w io.Writer) Option                // banner, the origin each address reaches, logs
 ```
@@ -111,6 +110,13 @@ as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
 caching off, and what `--no-cache` leaves a run in. They are a contributor's
 and a test's concern, not an embedder's — see
 [CONTRIBUTING.md → Design conventions](../CONTRIBUTING.md#design-conventions).
+
+`WithPid` is the one of them an embedder may want. It is how a run is found
+and handed back by the npm launcher: `npx tunneld -k` ends every run
+registered through it, and `-d` waits on it to hand the console back. Unset,
+the default, a run is neither — a program that mounts tunneld under its own
+name is a process `-k` would end whole, so it stays out of reach unless it
+passes `WithPid(pid.New())`, which is what the tunneld binary does.
 The motd board and the log ring are built once in `New` and shared through
 their own options — the board into the display and the binder, the ring into
 the console and the binder — so an embedder replacing one of those passes the
