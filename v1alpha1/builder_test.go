@@ -1468,56 +1468,103 @@ func TestRunIsTheOtherDoor(t *testing.T) {
 }
 
 // TestOriginsFallsBackToTheShell covers the answer to being given nothing:
-// the one origin every machine has. It is resolved before it is adopted,
+// a shell, which every run can have. $SHELL first, then bash and sh on $PATH,
+// then the one built into tunneld. Each is resolved before it is adopted,
 // because the parse loop's fallback for an unresolvable word is to read it as
-// an address — so an unrunnable $SHELL has to leave the count at zero and get
-// the message that names the lever, not become a proxy to localhost.
+// an address — so an unrunnable $SHELL has to be passed over, not become a
+// proxy to localhost.
 //
-// A seed or an argument outranks it: the fallback is for having nothing, and
-// anything settled above is something.
+// A seed or an argument outranks all of it, and declining the fallback
+// declines every step, the built-in shell included.
 func TestOriginsFallsBackToTheShell(t *testing.T) {
-	// Resolved the way Origins resolves it, so the case pins where $SHELL
-	// ends up rather than re-deriving how a path is spelled — LookPath
-	// answers a PATH hit absolutely and Resolve makes it absolute again, and
-	// on Windows the answer is C:\Program Files\Git\usr\bin\sh.exe.
-	real, ok := shell.Resolve("sh")
-	if !ok {
-		t.Skip("no sh on PATH to fall back to")
+	// A $PATH of fake shells, so which one is chosen is this case's to
+	// decide and not the machine's. Windows finds a program by its
+	// extension, so the fakes carry one there.
+	fake := func(t *testing.T, dir, name string) string {
+		t.Helper()
+		if runtime.GOOS == "windows" {
+			name += ".bat"
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
 	}
-	// Compared as fields rather than as strings, because a Windows shell is
-	// C:\Program Files\Git\usr\bin\sh.exe and url.URL.String escapes every
-	// separator in it — exec://C:%5CProgram%20Files%5C... is correct and
-	// nothing anybody would write down. Path is the claim worth pinning
-	// anyway: the resolved program, not the word that named it.
+	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: v1.ExecScheme, Path: path}} }
+	builtin, err := shell.Builtin()
+	if err != nil {
+		t.Fatalf("shell.Builtin() = %v", err)
+	}
+	builtinURL, _ := url.Parse(builtin)
+
 	for _, tc := range []struct {
 		name     string
-		shell    string
+		onPath   []string // fake shells on $PATH
+		shell    string   // $SHELL: a fake's name, a path that is not there, or ""
 		fallback bool
 		args     []string
-		want     []*url.URL
+		want     string // the fake chosen, "builtin", ":3000", or "" for none
 		mention  string
 	}{
-		{"a runnable shell is the origin", real, true, nil, []*url.URL{{Scheme: v1.ExecScheme, Path: real}}, ""},
-		{"an unrunnable one is dropped", filepath.Join(t.TempDir(), "nope"), true, nil, nil, "not exposing a shell"},
-		{"unset is nothing to fall back to", "", true, nil, nil, ""},
-		{"an argument outranks it", real, true, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
-		// The knob is asked before the variable is read, so a shell that is
-		// there and runnable is still not an origin when nobody wanted one.
-		{"the option declines it", real, false, nil, nil, ""},
-		{"declining does not touch an argument", real, false, []string{":3000"}, []*url.URL{{Scheme: "http", Host: "localhost:3000"}}, ""},
+		{"a runnable $SHELL is the origin", []string{"zsh", "bash", "sh"}, "zsh", true, nil, "zsh", ""},
+		{"an unrunnable $SHELL is passed over for bash", []string{"bash", "sh"}, "missing", true, nil, "bash", "not exposing $SHELL"},
+		{"no $SHELL is bash", []string{"bash", "sh"}, "", true, nil, "bash", ""},
+		{"no bash is sh", []string{"sh"}, "", true, nil, "sh", ""},
+		{"no shell at all is the built-in one", nil, "", true, nil, "builtin", ""},
+		{"an unrunnable $SHELL and nothing else is the built-in one", nil, "missing", true, nil, "builtin", "not exposing $SHELL"},
+		{"an argument outranks it", []string{"bash"}, "", true, []string{":3000"}, ":3000", ""},
+		// The knob is asked before anything is looked for, so a shell that is
+		// there, or the built-in one, is still not an origin when nobody
+		// wanted one.
+		{"the option declines a shell", []string{"bash"}, "", false, nil, "", ""},
+		{"the option declines the built-in one", nil, "", false, nil, "", ""},
+		{"declining does not touch an argument", nil, "", false, []string{":3000"}, ":3000", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			paths := map[string]string{}
+			for _, name := range tc.onPath {
+				paths[name] = fake(t, dir, name)
+			}
+			t.Setenv("PATH", dir)
 			t.Setenv(v1.OriginsEnv, "") // a developer's shell must not seed this
-			t.Setenv("SHELL", tc.shell)
+			switch tc.shell {
+			case "":
+				t.Setenv("SHELL", "")
+			case "missing":
+				t.Setenv("SHELL", filepath.Join(dir, "nope"))
+			default:
+				t.Setenv("SHELL", paths[tc.shell])
+			}
+
 			var stderr bytes.Buffer
 			b := New(WithLogLevel("warn"), WithStderr(&stderr), WithShellFallback(tc.fallback))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
 
+			var want []*url.URL
+			switch tc.want {
+			case "":
+			case ":3000":
+				want = []*url.URL{{Scheme: "http", Host: "localhost:3000"}}
+			case "builtin":
+				want = []*url.URL{builtinURL}
+			default:
+				resolved, ok := shell.Resolve(paths[tc.want])
+				if !ok {
+					t.Fatalf("fake %s does not resolve", tc.want)
+				}
+				want = exec(resolved)
+			}
+			// Compared as fields rather than as strings, because a Windows
+			// path is C:\... and url.URL.String escapes every separator in it.
 			got := b.Origins().URLs()
-			if !slices.EqualFunc(got, tc.want, func(a, b *url.URL) bool { return *a == *b }) {
-				t.Errorf("Origins() = %+v, want %+v", got, tc.want)
+			if !slices.EqualFunc(got, want, func(a, b *url.URL) bool {
+				return a.Scheme == b.Scheme && a.Host == b.Host && a.Path == b.Path && a.RawQuery == b.RawQuery
+			}) {
+				t.Errorf("Origins() = %v, want %v", got, want)
 			}
 			if tc.mention != "" && !strings.Contains(stderr.String(), tc.mention) {
 				t.Errorf("stderr %q does not mention %q", stderr.String(), tc.mention)

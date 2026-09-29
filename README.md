@@ -296,6 +296,9 @@ tunneld is a thin layer over other people's work. Thank you to:
   (`github.com/charmbracelet/x/vt`) and [colorprofile](https://github.com/charmbracelet/colorprofile)
   (`github.com/charmbracelet/colorprofile`). The whole frame is built on them,
   on your console and in a tab.
+- **[Elvish](https://elv.sh)** (`src.elv.sh`): the shell built into tunneld,
+  the one a run with no origin serves when this machine has no `$SHELL`,
+  `bash` or `sh` of its own.
 - **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
   `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
   `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded

@@ -447,9 +447,10 @@ shell. Anyone with the link has it.
 tunneld
 ```
 
-exposes `$SHELL` — the one origin every machine has, needing no port to be
-listening. It is the ordinary program path, so the terminal is drawn on your
-console as well:
+exposes a shell — the one origin every run can have, needing no port to be
+listening: `$SHELL`, else `bash` on `$PATH`, else `sh` on `$PATH`, else the
+shell built into tunneld. It is the ordinary program path, so the terminal is
+drawn on your console as well:
 
 ```
 https://0t8qsb6pq3.tunneled.pizza/
@@ -457,9 +458,17 @@ https://0t8qsb6pq3.tunneled.pizza/
 ```
 
 An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
-it. A `$SHELL` naming a program that is not there is dropped rather than read
-as an address, so what you get is the message about passing an origin and not a
-tunnel to nothing.
+it. A `$SHELL` naming a program that is not there is passed over, with a warning
+naming it, rather than read as an address: a tunnel to nothing is never the
+answer.
+
+The built-in shell is [Elvish](https://elv.sh), for a machine with no shell of
+its own — a container image with no `bash` or `sh`, a scrubbed environment. It
+is tunneld's own executable run again as the shell, so it is served like any
+program, on a pseudo-terminal where Ctrl-C ends what is running and not the
+shell. It has its own line editor (history, completion, the arrow keys) and its
+own language, which is not POSIX: `export`, `$(…)` and `&&` are spelled
+differently. History lasts as long as the session; nothing is stored.
 
 `--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
 `WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it

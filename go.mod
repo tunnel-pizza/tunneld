@@ -30,6 +30,7 @@ require (
 	k8s.io/cri-streaming v0.37.0
 	k8s.io/klog/v2 v2.140.0
 	rsc.io/qr v0.2.0
+	src.elv.sh v0.21.0
 )
 
 require (
@@ -94,6 +95,7 @@ require (
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/quic-go/quic-go v0.62.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/rogpeppe/go-internal v1.15.0 // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect

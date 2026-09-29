@@ -285,7 +285,7 @@ a port, a program, or a container. No account.
 		case len(b.origins) > 0:
 			long += "\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ") + "\n"
 		case b.shellFallback:
-			long += "\nWith no arguments at all, it shares your $SHELL.\n"
+			long += "\nWith no arguments at all, it shares your $SHELL (or bash, sh, or a shell built in).\n"
 		}
 
 		long += `
@@ -1243,6 +1243,41 @@ func (b *BuilderImpl) cached() Origins {
 	return b.Origins()
 }
 
+// fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
+// else bash on $PATH, else sh on $PATH, else the one built into tunneld
+// (shell.Builtin), so a run with no origin always has one — a container image
+// that sets no $SHELL, a scrubbed CI environment, a $SHELL inherited from a
+// host that names a shell the image does not have.
+//
+// Each shell passed over says why on the log, and the one chosen says which it
+// is: a shell nobody named is the one choice here somebody will want
+// explained. A $SHELL that names nothing runnable warns, since it was set and
+// is wrong; bash and sh missing is ordinary, and debug.
+func fallbackShell(log v1.Logger) (string, bool) {
+	if sh := os.Getenv("SHELL"); sh == "" {
+		log.Debug("$SHELL is not set; looking for another shell")
+	} else if path, ok := shell.Resolve(sh); ok {
+		log.Info("no origin given; exposing this machine's shell", "shell", path)
+		return path, true
+	} else {
+		log.Warn("not exposing $SHELL", "shell", sh, "reason", "it names no program that can be run; looking for another shell")
+	}
+	for _, name := range []string{"bash", "sh"} {
+		if path, ok := shell.Resolve(name); ok {
+			log.Info("no origin given; exposing this machine's shell", "shell", path)
+			return path, true
+		}
+		log.Debug("no shell of that name on $PATH", "shell", name)
+	}
+	origin, err := shell.Builtin()
+	if err != nil {
+		log.Warn("not exposing a shell", "reason", err)
+		return "", false
+	}
+	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin)
+	return origin, true
+}
+
 func (b *BuilderImpl) Origins() Origins {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
@@ -1275,13 +1310,8 @@ func (b *BuilderImpl) Origins() Origins {
 	// Dropping it instead leaves the count at zero, and zero has a message
 	// that names the lever.
 	if len(settled) == 0 && b.shellFallback {
-		if sh := os.Getenv("SHELL"); sh != "" {
-			if path, ok := shell.Resolve(sh); ok {
-				log.Info("no origin given; exposing this machine's shell", "shell", path)
-				settled = append(settled, path)
-			} else {
-				log.Warn("not exposing a shell", "shell", sh, "reason", "$SHELL names no program that can be run")
-			}
+		if origin, ok := fallbackShell(log); ok {
+			settled = append(settled, origin)
 		}
 	}
 
