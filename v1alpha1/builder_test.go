@@ -36,6 +36,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
+	"rsc.io/qr"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -64,6 +65,7 @@ func TestOptionsLand(t *testing.T) {
 		WithOrigin("http://localhost:4000"),
 		WithProvider("example.test"),
 		WithLogLevel("warn"),
+		WithQR(true),
 		WithStdout(&sink),
 		WithStderr(&sink),
 	)
@@ -81,6 +83,7 @@ func TestOptionsLand(t *testing.T) {
 	for flag, want := range map[string]string{
 		"provider":  "example.test",
 		"log-level": "warn",
+		"qr":        "true",
 	} {
 		if got := cmd.Flags().Lookup(flag).DefValue; got != want {
 			t.Errorf("--%s default = %q, want %q", flag, got, want)
@@ -246,12 +249,15 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 		name     string
 		open     *bool
 		terminal bool
+		qr       bool
 		want     bool
 	}{
 		{name: "a pipe is nobody watching", want: false},
 		{name: "a terminal is somebody", terminal: true, want: true},
 		{name: "a caller who declined outranks the terminal", open: ptr(false), terminal: true, want: false},
 		{name: "a caller who insisted outranks the pipe", open: ptr(true), want: true},
+		{name: "--qr is for a phone, so no tab on a terminal", terminal: true, qr: true, want: false},
+		{name: "a caller who insisted outranks --qr", open: ptr(true), qr: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CI", "")
@@ -274,7 +280,11 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			h.cache.onSave = cancel
 
-			if err := h.run(t, ctx); err != nil {
+			var args []string
+			if tc.qr {
+				args = append(args, "--qr")
+			}
+			if err := h.run(t, ctx, args...); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
 			if got := len(h.display.opened) > 0; got != tc.want {
@@ -639,6 +649,16 @@ type fakeRouter struct {
 	// configured is the real router the run's options build, never routed by
 	// the run: a case can route it itself to see what those options serve.
 	configured *router.RouterImpl
+	// unanswered is what Unanswered says nothing answered on, dialing
+	// nothing: the dial is the router's, and router_test.go dials it. probed
+	// is the list the run asked about.
+	unanswered []int
+	probed     Origins
+}
+
+func (f *fakeRouter) Unanswered(_ context.Context, origins Origins) []int {
+	f.probed = origins
+	return f.unanswered
 }
 
 func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL, error) {
@@ -758,7 +778,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.LogEnv, v1.MultiviewEnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.LogEnv, v1.MultiviewEnv, v1.QREnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
@@ -971,6 +991,59 @@ func TestRun(t *testing.T) {
 			if got := strings.Contains(h.stderr.String(), stopHint); got == waiting {
 				t.Errorf("launcher waiting = %v: stop hint printed = %v", waiting, got)
 			}
+		}
+	})
+
+	// --qr is the address a browser would open, drawn as a code: the panel's
+	// when there is one, since it reaches every origin, and otherwise the
+	// default origin's, one code either way. It goes on stderr after the map,
+	// stdout keeping the addresses alone, and it is out before a detached run
+	// hands its streams to the log, which is how a launcher's caller gets it.
+	t.Run("--qr draws the address a browser opens, on stderr, before a detach", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args []string
+			addr string // "" is no code at all
+		}{
+			{"one code for the panel", []string{"--qr"}, public},
+			{"the default origin's without one", []string{"--qr", "--multiview=false"}, public + "?0"},
+			{"none unless asked for", nil, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newRunHarness(t, live(public), ":3000", ":4000")
+				ctx, cancel := context.WithCancel(t.Context())
+				var detached string
+				v1.Apply(h.b, WithPid(&fakePid{order: &h.order, waiting: true, onDetach: func() {
+					detached = h.stderr.String()
+					cancel()
+				}}))
+				if err := h.run(t, ctx, tc.args...); err != nil {
+					t.Fatalf("run() = %v", err)
+				}
+				if strings.ContainsAny(h.stdout.String(), "█▀▄") {
+					t.Errorf("stdout = %q, want the addresses alone", h.stdout.String())
+				}
+				if tc.addr == "" {
+					if strings.Contains(h.stderr.String(), "█") {
+						t.Errorf("stderr carries a code nobody asked for:\n%s", h.stderr.String())
+					}
+					return
+				}
+				lines, err := attach.QRLines(tc.addr, qr.M)
+				if err != nil {
+					t.Fatalf("QRLines: %v", err)
+				}
+				code := strings.Join(lines, "\n") + "\n"
+				if got := strings.Count(h.stderr.String(), code); got != 1 {
+					t.Errorf("the code of %s appears %d times on stderr, want 1:\n%s", tc.addr, got, h.stderr.String())
+				}
+				if !strings.Contains(detached, code) {
+					t.Errorf("stderr at the detach = %q, want the code already out", detached)
+				}
+				if at, origin := strings.Index(h.stderr.String(), code), strings.LastIndex(h.stderr.String(), "  -> "); at < origin {
+					t.Errorf("code at %d, last origin at %d, want the code after the map:\n%s", at, origin, h.stderr.String())
+				}
+			})
 		}
 	})
 
@@ -1914,6 +1987,57 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	}
 }
 
+// TestReportLogsWhatNothingListensOn pins what the run does with an origin
+// nothing is listening on once the tunnel is up: it asks the router about the
+// origins as typed, and logs a warning per origin named. It prints nothing to
+// the console for it: that is left to the builder, in one place, later
+// (#206), and stdout stays the address alone.
+//
+// The dial is the router's, and router_test.go dials a loopback listener and a
+// closed port for it; the fake here answers from a list.
+func TestReportLogsWhatNothingListensOn(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	for name, tc := range map[string]struct {
+		unanswered []int
+		args       []string
+		logged     []string
+	}{
+		"everything answers":           {},
+		"one does not, log off":        {unanswered: []int{1}},
+		"one does not, logged at warn": {unanswered: []int{1}, args: []string{"--log-level", "warn"}, logged: []string{"http://localhost:4000"}},
+		"none does, logged at warn":    {unanswered: []int{0, 1}, args: []string{"--log-level", "warn"}, logged: []string{"http://localhost:3000", "http://localhost:4000"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRunHarness(t, live(public), ":3000", ":4000")
+			h.router.unanswered = tc.unanswered
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx, tc.args...); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+
+			if h.router.probed == nil {
+				t.Fatal("the run never asked the router what answers")
+			}
+			if got, want := urlStrings(h.router.probed.URLs()), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
+				t.Errorf("asked about %q, want the origins as typed %q", got, want)
+			}
+			out := h.stderr.String()
+			if got := strings.Count(out, "nothing is listening"); got != len(tc.logged) {
+				t.Errorf("stderr mentions nothing listening %d times, want %d:\n%s", got, len(tc.logged), out)
+			}
+			for _, origin := range tc.logged {
+				if !strings.Contains(out, "origin="+origin) {
+					t.Errorf("no warning names %s:\n%s", origin, out)
+				}
+			}
+			if want := public + "\n"; h.stdout.String() != want {
+				t.Errorf("stdout = %q, want the address alone", h.stdout.String())
+			}
+		})
+	}
+}
+
 // TestMirroringTellsTheBrowser covers what a drawn console reports: the
 // terminal is already on a screen the person is looking at, and a tab on top
 // of it would be a second copy of the one thing they can already see, counted
@@ -1922,6 +2046,10 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 // WithOpen(true) is asked for so the console is the only thing that can be
 // suppressing the tab — otherwise a runner with $CI set would pass this for
 // the wrong reason.
+//
+// A code asked for with --qr stays off that console too: Ctrl+K q is the code
+// there, sized to the pane, and one printed first would only sit behind the
+// frame.
 //
 // A real pty, because the console package asks whether the command's own
 // streams are one and a buffer can never answer yes. Skipped where there is
@@ -1943,11 +2071,14 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
 
-	if err := h.run(t, ctx); err != nil {
+	if err := h.run(t, ctx, "--qr"); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
 	if len(h.display.opened) != 0 {
 		t.Errorf("opened %q, want nothing — the console is already showing it", h.display.opened)
+	}
+	if strings.Contains(h.stderr.String(), "█") {
+		t.Errorf("stderr carries a code under the frame:\n%s", h.stderr.String())
 	}
 }
 
@@ -2179,6 +2310,7 @@ func TestFlagEnvRegistryIsComplete(t *testing.T) {
 	want := map[string]string{
 		"provider":  "TUNNELD_PROVIDER",
 		"log-level": "TUNNELD_LOG",
+		"qr":        "TUNNELD_QR",
 	}
 	for flag, env := range want {
 		if got := flagEnv[flag]; got != env {
@@ -2534,6 +2666,7 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		v1.ShellFallbackEnv:     "true",
 		v1.NoCacheEnv:           "false",
 		v1.IdentityProvidersEnv: strings.Join(splitList(v1.DefaultIdentityProviders), ","),
+		v1.QREnv:                "false",
 	} {
 		if got := h.cache.tracking[name]; got != want {
 			t.Errorf("tracking[%s] = %q, want %q", name, got, want)

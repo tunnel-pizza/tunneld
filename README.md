@@ -1,7 +1,7 @@
 # tunneld
 
-**A public URL for what's running on your machine.** A port, a shell, a coding
-agent, a container: one command, no account, no daemon.
+**Put what's running on your machine on a public URL.** A port, a shell, a
+coding agent, a container: one command, no account.
 
 [![npm](https://img.shields.io/npm/v/tunneld)](https://www.npmjs.com/package/tunneld)
 [![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)
@@ -10,7 +10,7 @@ agent, a container: one command, no account, no daemon.
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](./LICENSE.md)
 
 ```sh
-npx tunneld :3000
+npx tunneld
 ```
 
 <!-- TODO(#180): a screen recording goes here: the frame coming up in a tab,
@@ -35,6 +35,11 @@ That address works for anyone, anywhere, over HTTPS. On a desktop a browser tab
 opens on it too. Press Ctrl+C and it's gone. Run the same command from the
 same directory later and you usually get the same address back.
 
+Start your app before or after: the address comes up either way. Until
+something answers on the port, a visitor gets a page asking for it, which loads
+the app on its own once it's up. Nothing to share at all? Run `npx tunneld` on
+its own to share your shell.
+
 <details>
 <summary>Other ways to install</summary>
 
@@ -58,7 +63,7 @@ same directory later and you usually get the same address back.
 | 🤖 | `npx tunneld claude --resume` | A coding agent you can keep working with from your phone or another computer. |
 | ✏️ | `npx tunneld nvim` | Your editor, config and plugins included, in a browser tab. |
 | 🪟 | `npx tunneld :3000 :4000` | Two apps on one hostname, side by side in one window. |
-| 🍕 | `npx tunneld :3000 "next dev" claude` | `next dev`, the app it serves, and a Claude session beside it. |
+| 🍕 | `npx tunneld :3000 'npm run dev' claude` | `npm run dev`, the app it serves, and a Claude session beside it. |
 | 🐳 | `npx tunneld attach://dockerd/web` | A running container's terminal. Compose service names work too. |
 
 Anything that runs in a terminal works: htop, a REPL, Codex, Gemini CLI,
@@ -180,6 +185,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
 | `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
 | `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code too, and open no tab. Scan it with your phone. |
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
@@ -220,6 +226,20 @@ edge and your machine, not through tunnel.pizza, which is only the control
 plane. The one exception is a network that blocks the edge's port 7844: there
 the connection goes through tunnel.pizza's relay, which forwards the encrypted
 bytes without reading them.
+
+## Use it from Claude Code
+
+Install the plugin:
+
+```
+/plugin marketplace add tunnel-pizza/tunneld
+/plugin install tunneld@tunnel-pizza
+```
+
+- **Ask Claude to show you the app on your phone**, or to send it to someone. It
+  shares the dev server it started and tells you what the address gives away.
+- **Type `/tunneld:session` to carry on from your phone.** Type `/exit` here,
+  then scan the QR code it shows.
 
 ## Use it from Go
 

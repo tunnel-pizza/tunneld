@@ -1,7 +1,7 @@
 // Package router is what puts several origins behind one tunnel hostname: a
 // loopback server in front of them that decides, per request, which one it
 // reaches, with the multiview panel and the framing-header scrub in front of
-// that.
+// that — and what a visitor is told when the one it reaches is not listening.
 //
 // Every rule here is tunneld's convention and no tunnel's concern — the bare
 // ?n parameter the panel's tiles and the reported addresses carry, the +ws
@@ -15,12 +15,15 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
+	_ "embed"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -30,6 +33,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -49,6 +53,38 @@ const Cookie = "tunneld-origin"
 // to the clean form; in front of the origins that would rewrite what they are
 // sent. Under this prefix only tunneld's own paths are cleaned.
 const ControlPath = "/_tunneld/"
+
+// unreachableHeader marks tunneld's own answer for an origin nothing is
+// listening on, its value that origin's host. The page the answer carries
+// asks again until the origin answers, and needs to tell the two apart: a 503
+// on its own could be the origin's, and an app that is up and says it is
+// unavailable is answering — waiting on it would hide it.
+const unreachableHeader = "X-Tunneld-Unreachable"
+
+// retryAfter is the Retry-After, in seconds, on that answer, and how soon its
+// page first asks again. About as long as a dev server takes to bind once it
+// is started, so somebody who starts it after the link went out is not left
+// waiting on a timer; long enough that a page left open is not a busy loop
+// across the edge, and the page backs off from here. A client that honours
+// the header, curl --retry among them, waits the same.
+const retryAfter = 2
+
+// dialTimeout bounds each dial Unanswered makes. A refused dial on this
+// machine answers at once; the bound is for an origin on another host that
+// drops the attempt instead, which would otherwise hold the run's report for
+// as long as a dial takes to give up — thirty seconds, in the transport's.
+const dialTimeout = time.Second
+
+// unreachableHTML is the page a browser gets for an origin nothing is
+// listening on. Embedded, like the panel, so a tunnel serves it with nothing
+// installed and no outbound request.
+//
+//go:embed unreachable.html
+var unreachableHTML string
+
+// unreachableTmpl is parsed once at init: a page that fails to parse is a
+// mistake in a file that ships inside the binary, not a visitor's problem.
+var unreachableTmpl = template.Must(template.New("unreachable").Parse(unreachableHTML))
 
 // Option configures a RouterImpl, at construction or for one Route.
 type Option = v1.Option[*RouterImpl]
@@ -201,12 +237,58 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets and Handler read back what the options set, for a caller
-// standing in for a router that wants to see what it was handed without
-// standing one up.
+// Origins, WebSockets and Handler read back what the options set, for a
+// caller standing in for a router that wants to see what it was handed
+// without standing one up.
 func (r *RouterImpl) Origins() v1.Origins                      { return r.dialable }
 func (r *RouterImpl) WebSockets() int                          { return r.ws }
 func (r *RouterImpl) Handler() func(http.Handler) http.Handler { return r.handler }
+
+// Unanswered dials each http and https origin in origins once and answers
+// with the index of every one nothing answered on — nothing listening, no
+// route, or no answer within dialTimeout — in order. An origin tunneld serves
+// itself is not an address, and is not dialed. A context that ends first
+// answers nothing: what failed then was the asking.
+//
+// A dial and not a request: whether anything listens is the question, and a
+// request would reach an app that does with a visit nobody made. All at once,
+// so a report waits on one slow dial at most.
+func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
+	urls := origins.URLs()
+	down := make([]bool, len(urls))
+	var wg sync.WaitGroup
+	for i, u := range urls {
+		port := u.Port()
+		switch {
+		case u.Scheme != "http" && u.Scheme != "https":
+			continue
+		case port == "" && u.Scheme == "http":
+			port = "80"
+		case port == "":
+			port = "443"
+		}
+		wg.Go(func() {
+			d := net.Dialer{Timeout: dialTimeout}
+			conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(u.Hostname(), port))
+			if err != nil {
+				down[i] = true
+				return
+			}
+			_ = conn.Close()
+		})
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	var unanswered []int
+	for i, d := range down {
+		if d {
+			unanswered = append(unanswered, i)
+		}
+	}
+	return unanswered
+}
 
 // Route stands a loopback server up in front of the origins and returns the
 // one address the tunnel should forward to.
@@ -353,7 +435,17 @@ func (r *RouterImpl) Cancel() {
 // The inbound Host is kept: an origin may key on it, and the stdlib default
 // would rewrite it to the origin's own host.
 func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
-	p := &httputil.ReverseProxy{
+	// index is the origin a request was routed to, found in the list by the
+	// host it was sent to rather than read off the request; -1 for none.
+	index := func(host string) int {
+		for i, o := range origins {
+			if o.Host == host {
+				return i
+			}
+		}
+		return -1
+	}
+	return &httputil.ReverseProxy{
 		Transport: transport(origins),
 		Rewrite: func(r *httputil.ProxyRequest) {
 			origin := origins[0]
@@ -424,48 +516,111 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			r.Out.Host = r.In.Host
 		},
 		// An origin that cannot be reached is the one failure here an
-		// operator can act on, and the edge shows it as a bare 502 with no
-		// word of which origin or why: tunneld :3000 :4000 with :4000 not up
-		// yet, and /?1 is a blank page. So it is said at warn, naming the
-		// origin. A visitor who went away first is not a failure of anything.
+		// operator can act on, so it is said at warn, naming the origin. A
+		// visitor who went away first is not a failure of anything.
 		//
-		// Nothing the visitor sent reaches the line. The origin is named from
-		// the list, found by the host the request was routed to rather than
-		// read off it, and the error is the dial's, not the url.Error around
-		// it that carries the request's path and query, with any line break
-		// taken out besides.
+		// Nothing the visitor sent reaches the line, or the answer below. The
+		// origin is named from the list, found by the host the request was
+		// routed to rather than read off it, and the error is the dial's, not
+		// the url.Error around it that carries the request's path and query,
+		// with any line break taken out besides.
+		//
+		// When nothing answered the dial at all — refused, no route, nothing
+		// within the dial's timeout — the visitor gets a page saying so. The
+		// router says nothing on the console: the warn line is its report,
+		// and what the operator sees is the builder's to show. Before,
+		// tunneld :3999 with nothing listening answered a bodiless 502, and
+		// the edge painted its own "Bad gateway · Host Error" page over it.
+		//
+		// A 503 rather than a 502, because the edge replaces an origin's 502
+		// with its own page and is expected to pass a 503 through with its
+		// body — to be confirmed live. It is also the truer status: the
+		// service behind the address is unavailable, and Retry-After says how
+		// soon to ask again. Any other failure — an origin that took the
+		// connection and hung up, a malformed answer — stays a bare 502:
+		// something is listening there, and a page saying nothing is would be
+		// wrong.
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			ix := index(r.URL.Host)
 			origin := "unknown"
-			for _, o := range origins {
-				if o.Host == r.URL.Host {
-					origin = o.Redacted()
-					break
-				}
+			if ix >= 0 {
+				origin = origins[ix].Redacted()
 			}
 			if errors.Is(err, context.Canceled) {
 				log.Debug("request ended before the origin answered", "origin", origin)
-			} else {
-				var ue *url.Error
-				if errors.As(err, &ue) {
-					err = ue.Err
-				}
-				reason := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\n", " "), "\r", " ")
-				log.Warn("origin did not answer", "origin", origin, "err", reason)
+				w.WriteHeader(http.StatusBadGateway)
+				return
 			}
-			w.WriteHeader(http.StatusBadGateway)
+			var dial *net.OpError
+			unanswered := ix >= 0 && errors.As(err, &dial) && dial.Op == "dial"
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				err = ue.Err
+			}
+			reason := strings.ReplaceAll(strings.ReplaceAll(err.Error(), "\n", " "), "\r", " ")
+			log.Warn("origin did not answer", "origin", origin, "err", reason)
+			if !unanswered {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+
+			// The page is for a browser loading one: a GET or HEAD that takes
+			// HTML, for a document or a frame rather than a fetch or an asset
+			// (no Sec-Fetch-Dest is a client from before the header, and
+			// counts), and never a WebSocket handshake. Anything else gets the
+			// same news in a line of text. Either way it is never stored, so a
+			// visit after the origin is up gets the origin.
+			host := origins[ix].Host
+			// What the page and the line tell someone to start something
+			// on: "port 3999" for an origin on this machine, which is how a
+			// person says it and what a dev server is started on, and the
+			// host whole for one elsewhere. Both are a call to act, not a
+			// diagnosis: whoever shared the link starts it, and whoever was
+			// sent it asks them to.
+			where := host
+			if name, port, err := net.SplitHostPort(host); err == nil {
+				if ip := net.ParseIP(name); name == "localhost" || ip != nil && ip.IsLoopback() {
+					where = "port " + port
+				}
+			}
+			h := w.Header()
+			h.Set("Retry-After", strconv.Itoa(retryAfter))
+			h.Set("Cache-Control", "no-store")
+			h.Set(unreachableHeader, host)
+			dest := r.Header.Get("Sec-Fetch-Dest")
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+				r.Header.Get("Upgrade") == "" &&
+				strings.Contains(strings.Join(r.Header.Values("Accept"), ","), "text/html") &&
+				(dest == "" || dest == "document" || dest == "iframe" || dest == "frame") {
+				var page bytes.Buffer
+				err := unreachableTmpl.Execute(&page, struct {
+					Where, Mark string
+					RetryAfter  int
+				}{where, unreachableHeader, retryAfter})
+				if err == nil {
+					h.Set("Content-Type", "text/html; charset=utf-8")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write(page.Bytes())
+					return
+				}
+				log.Error("unreachable page render failed", "error", err)
+			}
+			h.Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = fmt.Fprintf(w, "nothing is running on %s yet: start a process on it, or ask whoever shared this address to\n", where)
 		},
-		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
-	}
-	if len(origins) > 1 {
-		p.ModifyResponse = func(resp *http.Response) error {
+		// With several origins, an explicit top-level pick is answered with
+		// the sticky cookie; Rewrite put the index on the outbound context for
+		// it, and only then.
+		ModifyResponse: func(resp *http.Response) error {
 			if ix, ok := resp.Request.Context().Value(stickyKey{}).(int); ok {
 				cookie := &http.Cookie{Name: Cookie, Value: strconv.Itoa(ix), Path: "/"}
 				resp.Header.Add("Set-Cookie", cookie.String())
 			}
 			return nil
-		}
+		},
+		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
-	return p
 }
 
 // redirect canonicalizes referer-routed navigations onto an explicit ?n URL,

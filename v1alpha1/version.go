@@ -2,10 +2,12 @@ package v1alpha1
 
 import (
 	"fmt"
+	"net/url"
 	"runtime"
 	"runtime/debug"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/cnuss/libtunnel"
 )
 
@@ -87,12 +89,39 @@ func UserAgent() string {
 // And the cache key, when there is a run to name: it says which spec this run
 // replays, which is the question behind a hostname that changed when it should
 // not have — or did not when it should have. Origins with nothing in them, or
-// none at all, drop the clause: that is the frame's banner, built in New
-// before a flag has been parsed, where there is no run to identify yet.
+// none at all, drop the clause: that is what the frame's banner is built from,
+// in New before a flag has been parsed, where there is no run to identify yet.
 func VersionLine(origins Origins) string {
 	line := fmt.Sprintf("tunneld %s (libtunnel %s, built %s", Version(), libtunnel.Version(), runtime.Version())
 	if origins != nil && origins.Len() > 0 {
 		line += ", cache " + origins.Key()
 	}
 	return line + ")"
+}
+
+// frameLine is the build line a terminal's frame shows along its bottom:
+// VersionLine with no run to name, since New builds it before a flag has been
+// parsed, and with tunneld's name marked as a hyperlink to tunnel.pizza.
+//
+// Every shared terminal carries this line, and most of the people reading it
+// have never run tunneld, so the name is where they find out what it is. It
+// is marked the way the frame marks its address, with OSC 8: the page's
+// linkHandler opens it in a tab, a terminal that understands the escape makes
+// it clickable, and one that does not drops it and shows the line unchanged.
+// Not VersionLine itself, which `tunneld version` prints to stdout, where an
+// escape is noise in whatever reads it.
+//
+// The query says a frame sent the visit and which release drew it, so
+// tunnel.pizza can count them, and nothing about the run: not the origin, not
+// the machine, and above all not the tunnel's hostname, which is its only
+// credential. The page opens every link with no Referer for the same reason;
+// see attach/index.html.
+func frameLine() string {
+	home := url.URL{Scheme: "https", Host: "tunnel.pizza", Path: "/", RawQuery: url.Values{
+		"utm_source": {"tunneld"},
+		"utm_medium": {"frame"},
+		"utm_term":   {Version()},
+	}.Encode()}
+	name, build, _ := strings.Cut(VersionLine(nil), " ")
+	return ansi.SetHyperlink(home.String()) + name + ansi.ResetHyperlink() + " " + build
 }

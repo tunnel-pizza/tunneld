@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex, nofollow">
+<!-- No Referer from anything this page loads or opens: the hostname is the
+     tunnel's only credential. Its one request of its own, the question
+     below, routes by the ?n in the page's own URL, never by a Referer. -->
+<meta name="referrer" content="no-referrer">
+<title>Nothing is running on {{.Where}} yet…</title>
+<!-- Without script the page still comes back by itself, only slower and by
+     reloading whole each time. With script this is inert. -->
+<noscript><meta http-equiv="refresh" content="10"></noscript>
+<style>
+  /* Everything is here: no font, stylesheet or image is fetched, so the page
+     costs one request and asks nothing of any other host. */
+  :root {
+    --paper: #fafaf9;
+    --ink: #1c1917;
+    --muted: #57534e;
+    --rule: #e7e5e4;
+    --well: #f0efed;
+    --live: #c2410c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0c0a09;
+      --ink: #e7e5e4;
+      --muted: #a8a29e;
+      --rule: #292524;
+      --well: #1c1917;
+      --live: #fb923c;
+    }
+  }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    box-sizing: border-box;
+    min-height: 100vh;
+    margin: 0;
+    padding: 2rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    font: 1rem/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main, footer { width: 100%; max-width: 34rem; margin: 0 auto; }
+  .waiting {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    margin: 0 0 .75rem;
+    color: var(--muted);
+    font-size: .875rem;
+  }
+  /* The one thing that moves: this page is still asking. */
+  .dot {
+    flex: none;
+    width: .5rem;
+    height: .5rem;
+    border-radius: 50%;
+    background: var(--live);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: .2; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  h1 { margin: 0 0 1rem; font-size: 1.75rem; line-height: 1.2; letter-spacing: -.01em; }
+  p { margin: 0 0 1rem; }
+  code {
+    padding: .1em .35em;
+    border-radius: .25rem;
+    background: var(--well);
+    font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  .who { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+  .who p { color: var(--muted); }
+  .who strong { color: var(--ink); }
+  footer { margin-top: 1.5rem; font-size: .8125rem; color: var(--muted); }
+  footer a { color: inherit; text-decoration: none; }
+  footer a:hover, footer a:focus-visible { text-decoration: underline; }
+</style>
+</head>
+<!-- What the script needs from the server rides on the body as data
+     attributes rather than being written into the script: a template action
+     inside a script element is not JavaScript until it is rendered, so an
+     editor reports the file as broken, and the other pages here keep their
+     actions in markup too. -->
+<body data-mark="{{.Mark}}" data-retry-after="{{.RetryAfter}}">
+<main>
+  <p class="waiting"><span class="dot" aria-hidden="true"></span>Waiting for {{.Where}}</p>
+  <h1>Nothing is running on {{.Where}} yet…</h1>
+  <div class="who">
+    <p>Start a process on {{.Where}}. This page will automatically refresh.</p>
+    <p><strong>Got this link?</strong> Ask whoever shared it to start something on {{.Where}}, and keep this tab open.</p>
+  </div>
+</main>
+<footer>
+  <a href="https://tunnel.pizza/?utm_source=tunneld&amp;utm_medium=unreachable" target="_blank" rel="noopener noreferrer">🍕 served by tunneld</a>
+</footer>
+
+<script>
+  // Ask whether the origin answers yet, and reload once it does.
+  //
+  // Asked with a HEAD of this same URL rather than by reloading the page each
+  // time. The page holds still while it waits, so nothing flickers and a
+  // phone left on it spends a request, not a render; the one reload is the
+  // one that shows the app. That reload is location.reload(): the same path
+  // and query — the ?n that routed here routes it again, and the sticky
+  // cookie is sent as it was — and no entry in the history, so Back still
+  // leaves where it did.
+  //
+  // tunneld marks its own answer with a header, so anything without it is
+  // the origin answering — a redirect included, which is opaque here and
+  // reloads into the browser following it. A 503 alone could be the
+  // origin's own, and waiting on that would hide an app that is up. A
+  // gateway's status is the tunnel between rather than the origin, the same
+  // statuses the multiview panel retries on, so it waits through those too.
+  //
+  // Nothing is asked while the page is hidden — a tab behind others, a phone
+  // with its screen off — and it asks at once when it is looked at again.
+  // The wait grows from the answer's Retry-After to a ceiling, so a page
+  // left open for an hour is not a request every two seconds.
+  (() => {
+    const { mark, retryAfter } = document.body.dataset;
+    const first = Number(retryAfter) * 1000, ceiling = 10000;
+    const gateway = (status) => status === 502 || status === 504 || status === 530 || (status >= 520 && status <= 527);
+    let wait = first, timer = 0, asking = false;
+    const later = () => {
+      timer = setTimeout(ask, wait);
+      wait = Math.min(wait * 1.5, ceiling);
+    };
+    const ask = async () => {
+      clearTimeout(timer);
+      if (asking || document.hidden) return;
+      asking = true;
+      try {
+        const answer = await fetch(location.href, { method: 'HEAD', cache: 'no-store', redirect: 'manual' });
+        if (!answer.headers.has(mark) && !gateway(answer.status)) return location.reload();
+      } catch (e) {
+        // Offline, or the tunnel between is down: ask again.
+      } finally {
+        asking = false;
+      }
+      later();
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      wait = first;
+      ask();
+    });
+    later();
+  })();
+</script>
+</body>
+</html>

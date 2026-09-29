@@ -114,6 +114,13 @@ func WithShellFallback(fallback bool) Option {
 	return func(b *BuilderImpl) { b.shellFallback = fallback }
 }
 
+// WithQR seeds whether a run prints its address as a QR code on stderr once
+// the tunnel is up, for a phone to read off the screen. --qr and v1.QREnv
+// both beat it. Unset, it prints none.
+func WithQR(show bool) Option {
+	return func(b *BuilderImpl) { b.qr = show }
+}
+
 // WithStdout redirects the help text and the version banner. Command passes
 // it to the command's SetOut, so calling SetOut on the built command
 // overrides this. Unset, output goes to the process's stdout.
@@ -200,6 +207,8 @@ var flagEnv = map[string]string{
 	"shell-fallback": v1.ShellFallbackEnv,
 
 	"identity-providers": v1.IdentityProvidersEnv,
+
+	"qr": v1.QREnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -251,7 +260,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		// contract, the served schemes and the +ws marker are in the README
 		// and docs/reference.md, where there is room to say why.
 		long := name + ` puts what is running on this machine on a public URL:
-a port, a program, or a container. No account, no daemon.
+a port, a program, or a container. No account.
 
 `
 		examples := [][2]string{
@@ -349,6 +358,8 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
 			"with no origin given anywhere, expose $SHELL rather than refusing to start [$"+v1.ShellFallbackEnv+"]")
+		cmd.Flags().BoolVar(&b.qr, "qr", b.qr,
+			"print the address as a QR code on stderr once the tunnel is up [$"+v1.QREnv+"]")
 
 		// Docker's rule: options before the image. Flag parsing stops at the
 		// first origin, and every word after it is positional — so the words
@@ -596,6 +607,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// the hostname's credential and nothing guards it yet.
 		router.WithCache(spec),
 		router.WithLog(log),
+		// TODO(#206): tell the operator when a visitor finds an origin that
+		// is not listening, once per outage. The router logs every such
+		// request at warn; showing it belongs here in the builder, at a point
+		// where a line cannot land in the middle of a frame, not on the
+		// request's goroutine deep in the router.
 	)
 	if err != nil {
 		return err
@@ -709,6 +725,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		}
 	}
 
+	// An origin nothing is listening on is the one thing here the person who
+	// ran this can fix; a visitor already gets a page saying so. Logged for
+	// now, after the addresses so a slow dial holds back nothing a script is
+	// waiting for.
+	//
+	// TODO(#206): show it to the operator beneath the map, from the builder,
+	// once there is one place that prints the run's human lines.
+	for _, i := range b.router.Unanswered(ctx, origins) {
+		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).Redacted())
+	}
+
 	// What the provider said with the spec, learned here because Messages
 	// resolves the spec, which URL returning has already done. Every run,
 	// cached or fresh — the messages ride the envelope with the spec they
@@ -739,8 +766,34 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		shown := false
 		screen, open = nil, &shown
 	}
+	addr := cmp.Or(view, publicURL(public, 0, origins.Len()))
+
+	// The address as a code for a phone, when asked for: the one address Open
+	// is handed below, so one code however many origins there are. On stderr
+	// with the map it follows, since stdout is the addresses and nothing else,
+	// and before a detached run's streams move to its log, so the caller a
+	// launcher is holding the prompt for gets it. Not when a frame is about to
+	// take the console: Ctrl+K q is the code there, sized to the pane, and one
+	// printed now would only sit behind it. The code itself is the display's,
+	// which draws it; printing it is the builder's, which knows when.
+	//
+	// And no tab: a run that asked for a code is being opened on a phone, and
+	// a tab on this machine would be a second copy nobody asked for. A caller
+	// who decided with WithOpen still wins.
+	if b.qr && screen == nil {
+		if lines, err := b.display.QR(addr); err != nil {
+			log.Warn("the address could not be drawn as a QR code", "error", err)
+		} else {
+			fmt.Fprintln(stderr, strings.Join(lines, "\n"))
+		}
+	}
+	if b.qr && open == nil {
+		shown := false
+		open = &shown
+	}
+
 	b.display.Open(ctx, log,
-		display.WithAddr(cmp.Or(view, publicURL(public, 0, origins.Len()))),
+		display.WithAddr(addr),
 		display.WithForced(open),
 		display.WithStderr(stderr),
 		display.WithInteractive(display.IsInteractive(cmd)),
@@ -971,6 +1024,7 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 		v1.ShellFallbackEnv:     strconv.FormatBool(b.shellFallback),
 		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
 		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
+		v1.QREnv:                strconv.FormatBool(b.qr),
 	}
 	// Facts about the run rather than knobs, so they carry no v1 constant and
 	// nothing reads them back: which build wrote the file, and where it was

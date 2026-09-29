@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"rsc.io/qr"
 )
 
 // host is the machine tunneld is running on, asked for once. It cannot change
@@ -794,7 +795,10 @@ func (f frame) drawQR(pixels uv.ScreenBuffer) {
 		centred(h/2, "no address yet", logStyle)
 		return
 	}
-	lines, err := qrLines(addr)
+	// The lowest level, and the smallest code: this one is drawn on a screen
+	// for a camera pointed straight at it, nothing stands between the two to
+	// get a module wrong, and a pane that cannot hold the code gets no code.
+	lines, err := QRLines(addr, qr.L)
 	if err != nil {
 		centred(h/2-1, "the address could not be encoded: "+err.Error(), logStyle)
 		centred(h/2+1, addr, qrStyle)
@@ -1187,6 +1191,10 @@ func (f frame) where() string {
 // banner is the build this is running, along the bottom. It is what a bug
 // report needs and nobody thinks to ask for, so it sits where it can be read
 // without being in the way.
+//
+// Drawn as it was handed over, hyperlink included: the default names tunneld
+// as a link home, which is how a page somebody was sent says what served it
+// without a row of chrome to say so. See WithBanner.
 func (f frame) banner() string {
 	if f.sess.banner == "" {
 		return ""

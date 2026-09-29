@@ -4,7 +4,7 @@ The [README](../README.md) is how to use tunneld. This is how each part of it
 behaves, and why. `tunneld` below is `npx tunneld` if you haven't installed it.
 For embedding tunneld in a Go program, see [embedding.md](./embedding.md).
 
-- [Origins](#origins)
+- [Origins](#origins), and [when nothing is listening](#when-nothing-is-listening)
 - [Several origins on one address](#several-origins-on-one-address), and [WebSockets](#websockets)
 - [Programs](#programs)
 - [Containers](#containers)
@@ -42,6 +42,46 @@ can run is that origin written short, so `tunneld htop` exposes htop rather
 than a hostname that resolves nowhere. See [Programs](#programs). Marking one
 origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
 [WebSockets](#websockets).
+
+### When nothing is listening
+
+Start the app before or after `tunneld :3999`: the address comes up either way
+and serves the app as soon as it answers.
+
+tunneld dials each `http` and `https` origin once when the tunnel comes up, for
+a second at most, and logs one it finds nothing on at `warn`. Program and
+container origins are its own to serve and are not dialed.
+
+A visitor who arrives first gets tunneld's page, not the edge's "Bad gateway":
+
+- **Nothing is running on port 3999 yet…** An origin on this machine is named
+  by its port, one elsewhere by its host.
+- Start a process on port 3999. This page will automatically refresh.
+- **Got this link?** Ask whoever shared it to start something on port 3999, and
+  keep this tab open.
+
+The page checks every few seconds, backs off to every ten, pauses while hidden,
+and reloads the same URL once the origin answers, in a tile of the
+[multiview panel](#multiview) too. It loads nothing from elsewhere, is
+`noindex`, and sends no `Referer` on its one link.
+
+The answer is a `503` with `Retry-After: 2` and `Cache-Control: no-store`,
+marked `X-Tunneld-Unreachable: <origin host>` so a script can tell it from the
+origin's own 503. It is a 503 because Cloudflare's edge replaces a 502 with a
+gateway page of its own. A browser loading a page (a `GET` or `HEAD` that
+accepts `text/html`, for a document or a frame) gets the page; a `fetch`, an
+asset, a `POST`, a WebSocket handshake and `curl` get one line:
+
+```
+nothing is running on port 3999 yet: start a process on it, or ask whoever shared this address to
+```
+
+Only a failed dial counts: refused, no route, or no answer in time. An origin
+that accepts the connection and hangs up still gets a bare `502`, because
+something is listening there.
+
+Each such request is logged at `warn` as `origin did not answer`; see
+[Logs](#logs).
 
 ## Several origins on one address
 
@@ -324,6 +364,13 @@ that understands OSC 8 opens it in a tab of its own. The frame has nothing to
 show there until the tunnel is up, because a container is bound before the
 tunnel exists.
 
+The build along the bottom starts with tunneld's name, and that is a link too,
+to tunnel.pizza, so whoever you sent the address to can find out what is
+serving it. Its query says it came from a frame and which release drew it,
+and nothing about the tunnel, the origin or your machine. The page opens every
+link with no `Referer` and no `opener`: the hostname is the tunnel's only
+secret, and a `Referer` would carry it to whatever site a link names.
+
 Centred along the top is whatever the terminal calls itself. A terminal carries
 a title and a subtitle and they are not the same thing — a prompt framework
 sets the title to the running command's whole line and the subtitle to its name
@@ -549,6 +596,12 @@ guess. Anything the provider said with the mint sits in a bar above the
 tiles, the same bar the frame draws, in the colour of how loudly it was said.
 When a browser is opened at all, this is the page it lands on.
 
+A tile whose origin is not up yet shows [tunneld's page saying
+so](#when-nothing-is-listening), which reloads itself once the origin
+answers. A tile showing a gateway's page instead — the edge's, while the
+tunnel between is down — is reloaded by the panel every few seconds until it
+is not.
+
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
 path `/`, an empty query, and a top-level navigation that did not come from a
@@ -591,11 +644,13 @@ origin. It carries the help text and `tunneld version` too, which is what keeps
 those pipeable.
 
 **stderr** carries everything human: the build banner, the origin each address
-reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
-one address, and every origin it serves is listed beneath it. Whatever the
-provider said with the mint — a note, a warning or a caution — is not printed
-here: it is shown on every terminal frame and above the panel's tiles, where
-the reader is, every run, cached spec or fresh.
+reaches, a line for an origin [nothing is listening
+on](#when-nothing-is-listening), with `--qr` the address as a QR code, and the
+tunnel's own logs at `--log-level`. With the panel on there is one address, and
+every origin it serves is listed beneath it. Whatever the provider said with the
+mint — a note, a warning or a caution — is not printed here: it is shown on
+every terminal frame and above the panel's tiles, where the reader is, every
+run, cached spec or fresh.
 
 On a terminal holding both, with `--multiview=false`, that reads as a map:
 
@@ -666,6 +721,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. The run's log file and the terminal's log view keep info and above regardless, and debug too when this asks for it; see [Logs](#logs). |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `q` is the code. **Default off.** |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:
@@ -697,12 +753,13 @@ binary's. The launcher adds a few things of its own.
 
 **`-d` detaches.** As the first word, and only there, it starts the run in the
 background, on the caller's own stdout and stderr, and waits for the run to
-say it is up. The banner, the addresses and the origin each reaches arrive
-exactly as a foreground run's would. Then the run caches its settings, points
-its stdout and stderr at its log file (see [Logs](#logs)), and signals the
-launcher, which gives the prompt back with a summary read from the files
-beside it — the directory, the pid and the log, then what the run shares,
-said as a sentence, and each address and what it reaches:
+say it is up. The banner, the addresses, the origin each reaches and, with
+`--qr`, the code arrive exactly as a foreground run's would. Then the run
+caches its settings, points its stdout and stderr at its log file (see
+[Logs](#logs)), and signals the launcher, which gives the prompt back with a
+summary read from the files beside it — the directory, the pid and the log,
+then what the run shares, said as a sentence, and each address and what it
+reaches:
 
 ```
 🍕 tunneld is now running in the background
@@ -835,6 +892,12 @@ The log view and the file record info and above whatever stderr shows, and
 debug too when `--log-level debug` asks for it. Debug is per request and per
 keystroke, which a file kept by default would grow by with every visitor.
 
+A request an origin does not answer is a `warn` line, `origin did not
+answer`, naming the origin and the dial's error, every time. What stderr
+carries without `--log-level` is the one plain line per outage
+[beneath the map](#when-nothing-is-listening), which is not a log line and is
+not repeated per request.
+
 A detached run points its own stdout and stderr at the same file, so what
 bypasses the logger, a panic's trace included, lands there too. The file is
 written by the Go side alone; the npm launcher only reads it, for the path
@@ -856,6 +919,7 @@ after construction still lands.
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
+| `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

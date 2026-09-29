@@ -1,0 +1,13 @@
+{
+  "name": "tunneld",
+  "description": "Put the dev server you just started on a public HTTPS URL with npx tunneld, for a phone, a teammate or a webhook, or hand the conversation itself to one with /tunneld:session.",
+  "author": {
+    "name": "tunnel.pizza",
+    "email": "help@tunnel.pizza",
+    "url": "https://tunnel.pizza/"
+  },
+  "homepage": "https://tunnel.pizza",
+  "repository": "https://github.com/tunnel-pizza/tunneld",
+  "license": "FSL-1.1-MIT",
+  "keywords": ["tunnel", "share", "public-url", "localhost", "dev-server", "preview", "webhook"]
+}

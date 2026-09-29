@@ -542,6 +542,22 @@ func TestViewIsBordered(t *testing.T) {
 		}
 	}
 
+	// A build line that arrives with a hyperlink in it keeps it: New marks
+	// tunneld's name as a link home, and a label is drawn into a buffer of its
+	// own and copied in, which has to carry each cell's link along with its
+	// rune. The markers take no columns, so the row reads as it did without.
+	const home = "https://tunnel.pizza/?utm_source=tunneld"
+	plain := stripSGR(bottomOf(h))
+	h.s.banner = ansi.SetHyperlink(home) + "tunneld" + ansi.ResetHyperlink() + strings.TrimPrefix(testBanner, "tunneld")
+	linked := bottomOf(h)
+	h.s.banner = testBanner
+	if !strings.Contains(linked, "\x1b]8;;"+home) {
+		t.Errorf("bottom border = %q, want tunneld's name marked as a link (%q)", linked, home)
+	}
+	if got := stripSGR(linked); got != plain {
+		t.Errorf("bottom border with a linked build = %q, want it to read as the plain one, %q", got, plain)
+	}
+
 	// Narrower, and the three give way in order. First the build, which is the
 	// least urgent.
 	h.window(tight, h.f.height)

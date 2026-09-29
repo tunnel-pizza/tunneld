@@ -205,6 +205,7 @@ type Display interface {
 	URL(enabled bool, public *url.URL, origins Origins) string
 	Panel(enabled bool, origins Origins, log v1.Logger) func(next http.Handler) http.Handler
 	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
+	QR(addr string) ([]string, error)
 }
 
 // WithDisplay replaces what serves the tunnel's bare address and opens it
@@ -231,10 +232,16 @@ func WithDisplay(display Display) Option {
 // origins, the index of the one marked +ws, what the display's Panel answered
 // to put in front, and the run's logger.
 //
+// Unanswered dials each http and https origin once and says which indexes
+// nothing answered on, so the run can report that the address is up and the
+// thing behind it is not. It is the router's because the router is what dials
+// origins: a failed dial is what it answers visitors with a page for.
+//
 // Cancel takes the router down. Not ctx: the router outlives the run for as
 // long as the tunnel drains, so the caller cancels it once the tunnel is done.
 type Router interface {
 	Route(ctx context.Context, opts ...router.Option) (*url.URL, error)
+	Unanswered(ctx context.Context, origins Origins) []int
 	Cancel()
 }
 
@@ -377,7 +384,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			// Built here, before a flag has been parsed: no run to name yet.
-			attach.WithBanner(VersionLine(nil)),
+			attach.WithBanner(frameLine()),
 			attach.WithLogs(log),
 			attach.WithMotd(board),
 		)),
@@ -413,6 +420,10 @@ type BuilderImpl struct {
 	// seeds it, an operator overrides it, and neither has to reach into the
 	// process environment to find out what a run will do.
 	shellFallback bool
+
+	// qr is whether the run prints its address as a QR code on stderr once
+	// the tunnel is up. Flag-backed like the rest; off unless asked for.
+	qr bool
 
 	// pid is how the run is found and handed back from outside it, for the
 	// npm launcher; nil, the default, is neither. See WithPid.

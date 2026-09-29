@@ -19,7 +19,7 @@ Deep-link by filename; line numbers will drift.
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
-| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
+| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, and the page for an origin nothing answers on (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
@@ -28,7 +28,9 @@ Deep-link by filename; line numbers will drift.
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
-| The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins | [`readme_test.go`](./readme_test.go) |
+| The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins, and the plugin's install lines to the marketplace | [`readme_test.go`](./readme_test.go) |
+| The Claude Code marketplace, and its one plugin: a skill that teaches an agent to share a dev server, and `/tunneld:session`, which hands a conversation to a tunnel | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), [`plugin/`](./plugin) |
+| The plugin held to the marketplace, each skill's header, and every flag a skill types | [`plugin/plugin_test.go`](./plugin/plugin_test.go) |
 | Every origin form, the frame, flags and environment in full | [`docs/reference.md`](./docs/reference.md)          |
 | Embedding: the options, `Run`, the `v1` surface, the examples table | [`docs/embedding.md`](./docs/embedding.md)  |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -253,6 +255,14 @@ is the Acknowledgements section against `go.mod` and against the versions the
 pages load from jsDelivr, so a new dependency fails `make test` until the
 README says what it is for.
 
+`plugin/plugin_test.go` is the rule once more: `plugin.json` and the skills
+are the source, and their test sits beside them. It reads the marketplace one
+level up, since `go test ./...` skips `.claude-plugin/`. It holds the names to
+each other, each skill to the header a model picks it by or is kept from it
+by, and every flag a skill tells an agent to type to the command that has it
+(or, for `-d` and `-k`, to the command's refusal naming the npm launcher). It
+ships with the plugin to everyone who installs it, inert.
+
 `v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
 source file that is not Go, so its tests sit beside it under the name
 `node --test` looks for, and run with the rest under `make test`.
@@ -325,6 +335,22 @@ Easy to get wrong from the diff alone:
   and a path under it never reaches an origin. Only that prefix goes through
   the mux, since a `ServeMux` redirects unclean paths and would rewrite what
   origins are sent.
+- **An origin nothing answers is a 503 with a page, and only a failed dial
+  is.** The router's `ErrorHandler` answers a dial that nothing took —
+  refused, no route, timed out — with `unreachable.html`, or a line of text
+  for anything but a browser loading a page: a 503 with `Retry-After`,
+  `no-store` and `X-Tunneld-Unreachable`. A 503 because the edge paints its
+  own page over an origin's 502, where a 503 is expected through with its
+  body; the marker because the page asks after the origin with a `HEAD` and
+  has to tell tunneld's 503 from the app's own. Anything else stays the bare
+  502 — something is listening — and nothing from the request is read into
+  either answer. The page reloads itself, so the multiview panel leaves it
+  alone: the panel retries a gateway's status, and 503 is not one, which is
+  what keeps two things from reloading one tile. The router never writes to
+  the console: it logs every failed dial at warn. `Router.Unanswered` dials
+  the http origins once the tunnel is up, and the builder logs what it finds;
+  showing either to the person who ran the command is the builder's, from one
+  place, still to do (#206).
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the
@@ -526,12 +552,18 @@ Two things there will bite if you change them without knowing why:
   build information, and none of it changes while the process runs. So it
   arrives through `attach.WithBanner` at construction, where the address has to
   arrive later through `Announcer`.
-- **A hyperlink needs both ends.** The frame marks its address with OSC 8, and
-  `index.html` sets xterm's `linkHandler` — without one xterm underlines the
-  link and does nothing when it is clicked, which is worse than not marking it.
-  The handler opens with `noopener,noreferrer`, because the container's output
+- **A hyperlink needs both ends.** The frame marks its address with OSC 8, the
+  build line arrives with tunneld's name marked the same way (a link to
+  tunnel.pizza, built by `frameLine` in the root), and `index.html` sets
+  xterm's `linkHandler` — without one xterm underlines the link and does
+  nothing when it is clicked, which is worse than not marking it. The handler
+  opens with `noopener,noreferrer`: noopener because the container's output
   reaches this terminal and an origin that printed its own OSC 8 would
-  otherwise be handed a reference to the window.
+  otherwise be handed a reference to the window, and noreferrer because a
+  Referer carries the page's hostname, the tunnel's only credential, to
+  whatever site the link names. The page's `<meta name="referrer">` says the
+  same for everything it loads, which costs nothing only because its own
+  requests route by the `?n` in `location.search`, never by a Referer.
 - **The page needs the WebGL renderer, and it is not an optimization.** xterm's
   DOM renderer draws every cell as text in a clipped row, which a full-screen
   program's box drawing does not survive: at the page's font size U+2502

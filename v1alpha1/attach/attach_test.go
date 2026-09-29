@@ -316,6 +316,11 @@ func TestPage(t *testing.T) {
 		{"the page can say the socket is gone", "/", http.StatusOK, `id="gone"`},
 		{"and offers a way back", "/", http.StatusOK, "location.reload()"},
 		{"after asking whether there is one", "/", http.StatusOK, "/alive"},
+		// The hostname is the tunnel's only credential, and a Referer would
+		// carry it to whatever a link names: tunnel.pizza, from the frame's
+		// own build line, or anywhere a program's output points.
+		{"the page sends no Referer", "/", http.StatusOK, `<meta name="referrer" content="no-referrer">`},
+		{"and opens a link with no Referer and no opener", "/", http.StatusOK, `'noopener,noreferrer'`},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}

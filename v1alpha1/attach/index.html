@@ -5,6 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
+<!-- No Referer from anything this page loads or opens. The hostname is the
+     tunnel's only credential, and a Referer carries it: the browser default,
+     strict-origin-when-cross-origin, still hands the origin to another site.
+     The frame's build line links to tunnel.pizza on every shared terminal,
+     and a program's output can print a link to anywhere. linkHandler below
+     opens with noreferrer as well; this makes it the page's rule and not one
+     call's. The CDN tags already say no-referrer each, so they load as they
+     did. The page's own requests, the socket and /alive, carry their routing
+     index in location.search rather than in a Referer, so the tunnel routes
+     them exactly as before; anything added here has to do the same. -->
+<meta name="referrer" content="no-referrer">
 <!-- Named by the terminal itself once one is attached: the frame sets its
      window title, xterm raises it, and the handler below puts it here. Until
      then this is all there is to say. -->
@@ -180,7 +191,11 @@
   //
   // noopener because the container's output reaches this terminal, and an
   // origin that printed its own OSC 8 could otherwise hand itself a handle on
-  // this window.
+  // this window. noreferrer because a Referer would carry this page's
+  // hostname, the tunnel's only credential, to whatever site the link names —
+  // tunnel.pizza itself, for the name in the frame's build line. The feature
+  // makes the new tab's request with no Referer whatever the page's policy
+  // says, and implies noopener besides.
   const term = new Terminal({
     cursorBlink: true,
     convertEol: true,
