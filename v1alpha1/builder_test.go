@@ -33,6 +33,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
@@ -492,6 +493,11 @@ func (f *fakePid) Detach(out *os.File, _ v1.Logger) bool {
 }
 
 func (f *fakeCache) Load(...cache.Option) string { return f.cached }
+
+// String is the file the fake saved, rendered as the real cache renders it.
+func (f *fakeCache) String() string {
+	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking)).String()
+}
 func (f *fakeCache) Save(opts ...cache.Option) {
 	// The run's options, read back off a cache they configure rather than
 	// one that writes.
@@ -613,12 +619,16 @@ type fakeRouter struct {
 	// case can see when the run cancels it.
 	ctx  context.Context
 	stop context.CancelFunc
+	// configured is the real router the run's options build, never routed by
+	// the run: a case can route it itself to see what those options serve.
+	configured *router.RouterImpl
 }
 
 func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL, error) {
 	// The run's options, read back off a router they configure rather than
 	// one that serves.
 	r := router.New(opts...)
+	f.configured = r
 	dialable, front := r.Origins(), r.Handler()
 	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
 	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
@@ -1012,6 +1022,57 @@ func TestRun(t *testing.T) {
 	// The tunnel drains what the edge already sent it for a grace period
 	// after the run ends, and every one of those requests goes through the
 	// router, so the router is down with the tunnel rather than the run.
+	// The router is handed the run's cache and serves a remote copy of the
+	// file the run saved on the control path. Routed here rather than by the
+	// run, against a real origin, to see what the run's options serve.
+	envOf := func(t *testing.T, h *runHarness) (int, string) {
+		t.Helper()
+		if h.router.configured == nil {
+			t.Fatal("the run never asked the router")
+		}
+		origin := httptest.NewServer(http.NotFoundHandler())
+		t.Cleanup(origin.Close)
+		u, _ := url.Parse(origin.URL)
+		r := h.router.configured
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		t.Cleanup(r.Cancel)
+		resp, err := http.Get(strings.TrimSuffix(local.String(), "/") + router.ControlPath + ".env")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	t.Run("the router serves what the run saved", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		want := h.cache.String()
+		if !strings.HasPrefix(want, "LIBTUNNEL_SPEC=") {
+			t.Fatalf("the run saved %q, want a cache file", want)
+		}
+		if code, body := envOf(t, h); code != 200 || body != want {
+			t.Errorf("GET .env = %d %q, want the file the run saved:\n%s", code, body, want)
+		}
+	})
+	t.Run("a run with caching off serves nothing", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.cached = "cached-spec"
+		ctx, cancel := context.WithCancel(t.Context())
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+		_ = h.run(t, ctx, "--no-cache", ":3000")
+		if code, _ := envOf(t, h); code != 404 {
+			t.Errorf("GET .env with --no-cache = %d, want 404", code)
+		}
+	})
+
 	t.Run("the router outlives the run until the tunnel ends", func(t *testing.T) {
 		tun := live(public)
 		h := newRunHarness(t, tun, ":3000", ":4000")

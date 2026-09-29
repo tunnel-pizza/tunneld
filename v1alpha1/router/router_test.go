@@ -13,11 +13,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -222,6 +225,90 @@ func TestControlPath(t *testing.T) {
 	if _, body := get(t, http.DefaultClient, req); body != "pong" {
 		t.Errorf("a lone origin's ping = %q, want pong", body)
 	}
+}
+
+// cacheOf stands in for a run's cache: String is the file it saved.
+type cacheOf string
+
+func (c cacheOf) String() string { return string(c) }
+
+// TestEnv pins ControlPath+".env": absent until WithCache puts it on the mux,
+// then a remote copy of the file the run's cache last saved, byte for byte
+// and asked for fresh on every request; a 404 before anything is saved, and
+// never stored on the way. WithCache applied twice — at New and again for a
+// route — replaces the cache rather than registering the pattern twice, which
+// a ServeMux would panic on.
+func TestEnv(t *testing.T) {
+	serve := func(t *testing.T, r *RouterImpl, opts ...Option) string {
+		t.Helper()
+		u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "A")))}, opts...)...)
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		t.Cleanup(r.Cancel)
+		return strings.TrimSuffix(u.String(), "/") + ControlPath + ".env"
+	}
+	fetch := func(t *testing.T, method, url string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return get(t, http.DefaultClient, req)
+	}
+
+	t.Run("absent without WithCache", func(t *testing.T) {
+		if resp, body := fetch(t, "GET", serve(t, New())); resp.StatusCode != 404 || strings.Contains(body, "|") {
+			t.Errorf("GET .env = %d %q, want a 404 from the router", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("the saved file, as it is", func(t *testing.T) {
+		const saved = "LIBTUNNEL_SPEC='{\"v\":1}'\nTUNNELD_LOG='debug'\n"
+		resp, body := fetch(t, "GET", serve(t, New(WithCache(cacheOf(saved)))))
+		if resp.StatusCode != 200 || body != saved {
+			t.Errorf("GET .env = %d %q, want the saved file", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", got)
+		}
+		if resp, _ := fetch(t, "POST", serve(t, New(WithCache(cacheOf(saved))))); resp.StatusCode != 405 {
+			t.Errorf("POST .env = %d, want 405", resp.StatusCode)
+		}
+	})
+
+	t.Run("a real cache serves the file it wrote", func(t *testing.T) {
+		dir := t.TempDir()
+		shown := listOf(t, echo(t, "shown"))
+		c := cache.New(cache.WithDir(dir))
+		url := serve(t, New(WithCache(c)))
+		if resp, _ := fetch(t, "GET", url); resp.StatusCode != 404 {
+			t.Errorf("GET .env before any save = %d, want 404", resp.StatusCode)
+		}
+		for _, spec := range []string{"saved-spec", "resaved-spec"} {
+			c.Save(cache.WithOrigins(shown), cache.WithSpec(spec), cache.WithTracking(map[string]string{"TUNNELD_LOG": "debug"}))
+			onDisk, err := os.ReadFile(filepath.Join(dir, shown.Key()+".env"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, body := fetch(t, "GET", url); body != string(onDisk) {
+				t.Errorf("GET .env = %q, want the file on disk:\n%s", body, onDisk)
+			}
+		}
+	})
+
+	t.Run("nothing saved is a bare 404", func(t *testing.T) {
+		if resp, body := fetch(t, "GET", serve(t, New(WithCache(cacheOf(""))))); resp.StatusCode != 404 || body != "" {
+			t.Errorf("GET .env with nothing saved = %d %q, want a bare 404", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("applied again, it replaces rather than registers twice", func(t *testing.T) {
+		r := New(WithCache(cacheOf("first\n")))
+		if _, body := fetch(t, "GET", serve(t, r, WithCache(cacheOf("second\n")))); body != "second\n" {
+			t.Errorf("GET .env = %q, want the later cache's file", body)
+		}
+	})
 }
 
 // TestRouteAppliesTheFront pins that what is put in front answers before any

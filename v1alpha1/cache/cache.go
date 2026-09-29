@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/spf13/viper"
@@ -37,7 +38,8 @@ const ext = ".env"
 // place anybody browses by accident, so hiding one inside it hides nothing.
 const dirName = "tunneld"
 
-// Option configures a CacheImpl, at construction or for one Load or Save.
+// Option configures a CacheImpl, at construction or when Load or Save is
+// called.
 type Option = v1.Option[*CacheImpl]
 
 // discard is where a cache with no logger writes: nowhere.
@@ -56,8 +58,10 @@ type CacheImpl struct {
 	// and nothing is cached, which is the same answer an unwritable one gives.
 	dir string
 
-	// What follows is one run's, set by the options below — given to New as
-	// a default, or to Load and Save for that call alone.
+	// What follows is one run's, set by the options below — given to New, or
+	// to Load and Save, which apply them to the cache itself: what a call
+	// sets stays, so a later call that names no origins — the router's,
+	// serving the run's spec — reads the same run's file.
 	//
 	// origins is the run whose file this is: its key names the file.
 	origins v1.Origins
@@ -67,6 +71,10 @@ type CacheImpl struct {
 	// settled on, keyed by the variable that names each.
 	tracking map[string]string
 	log      v1.Logger
+
+	// mu is held by Load and Save for the whole call: the router loads from
+	// its own goroutine while the run saves from another.
+	mu sync.Mutex
 }
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
@@ -150,17 +158,18 @@ func (c *CacheImpl) path(origins v1.Origins) string {
 // of a handoff, which is the one case where the caller knows better than the
 // cache does.
 //
-// opts are this call's, applied over the cache's own on a copy, so what one
-// call is given never reaches the next.
+// opts are applied to the cache itself, as Display's Open applies its own:
+// what they set stays for the next call.
 //
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
 func (c *CacheImpl) Load(opts ...Option) string {
-	call := *c
-	v1.Apply(&call, opts...)
-	log := call.log
-	path := call.path(call.origins)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v1.Apply(c, opts...)
+	log := c.log
+	path := c.path(c.origins)
 	if path == "" {
 		return ""
 	}
@@ -207,39 +216,22 @@ func (c *CacheImpl) Load(opts ...Option) string {
 // longer reads that environment itself: what a run has is the tunnel, and the
 // tunnel is asked.
 //
-// opts are this call's, applied over the cache's own on a copy, as Load's are.
+// opts are applied to the cache itself, as Load's are.
 //
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
 func (c *CacheImpl) Save(opts ...Option) {
-	call := *c
-	v1.Apply(&call, opts...)
-	spec, tracking, log := call.spec, call.tracking, call.log
-	if spec == "" {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v1.Apply(c, opts...)
+	log := c.log
+	body := c.render()
+	if body == "" {
 		log.Debug("nothing to cache: the tunnel has no spec to give")
 		return
 	}
-	lines := []string{assign(ltv1.SpecEnv, spec)}
 
-	// Everything the run settled on, after the one line that does something.
-	// Sorted, so the same run twice writes the same file and a diff between
-	// two of them is about the runs rather than about map iteration.
-	names := make([]string, 0, len(tracking))
-	for name, value := range tracking {
-		// A knob nobody set says nothing about the run, and a file of empty
-		// variables is one nobody reads twice.
-		if value != "" {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		lines = append(lines, assign(name, tracking[name]))
-	}
-
-	body := []byte(strings.Join(lines, "\n") + "\n")
-
-	path := call.path(call.origins)
+	path := c.path(c.origins)
 	if path == "" {
 		log.Debug("nothing to cache into: this machine has no cache directory")
 		return
@@ -253,9 +245,45 @@ func (c *CacheImpl) Save(opts ...Option) {
 		return
 	}
 	// 0600: a spec is the credential for a public hostname.
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		log.Warn("could not cache the tunnel", "path", path, "error", err)
 		return
 	}
 	log.Info("cached the tunnel", "path", path)
+}
+
+// String is the cache file for what the options set: the spec's line, then
+// what the run settled on, one NAME='value' per line. After a Save, that is
+// the file Save wrote, since Save's options stay on the cache — which is what
+// the router serves as a remote copy of it. Empty when there is no spec: a
+// file without the one line that does something is not a cache file.
+func (c *CacheImpl) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.render()
+}
+
+// render is String for a caller already holding mu: Save.
+func (c *CacheImpl) render() string {
+	if c.spec == "" {
+		return ""
+	}
+	lines := []string{assign(ltv1.SpecEnv, c.spec)}
+
+	// Everything the run settled on, after the one line that does something.
+	// Sorted, so the same run twice writes the same file and a diff between
+	// two of them is about the runs rather than about map iteration.
+	names := make([]string, 0, len(c.tracking))
+	for name, value := range c.tracking {
+		// A knob nobody set says nothing about the run, and a file of empty
+		// variables is one nobody reads twice.
+		if value != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		lines = append(lines, assign(name, c.tracking[name]))
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

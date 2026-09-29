@@ -590,6 +590,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
 		router.WithHandler(b.display.Panel(b.multiview, origins, log)),
+		// The run's cached spec on the control path: the cache keeps the
+		// origins it was last loaded under, just below, and saved under once
+		// the tunnel is up. A run with caching off serves none. The spec is
+		// the hostname's credential and nothing guards it yet.
+		router.WithCache(spec),
 		router.WithLog(log),
 	)
 	if err != nil {

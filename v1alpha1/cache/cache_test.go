@@ -69,9 +69,10 @@ func write(t *testing.T, dir string, o v1.Origins, body string) {
 	}
 }
 
-// TestOptions pins where a call's facts come from: what New was given, then
-// what Load or Save is given for that call alone — on a copy, so the cache
-// keeps its own and the next call starts from them again.
+// TestOptions pins that Load and Save apply their options to the cache
+// itself: what New was given is the start, and what a call sets stays — so a
+// later call naming no origins, the router's serving the run's spec, reads
+// the file of the run the last call named.
 func TestOptions(t *testing.T) {
 	if c := cache.New(); c.Origins() != nil || c.Spec() != "" || c.Tracking() != nil {
 		t.Errorf("New() = origins %v, spec %q, tracking %v; want none of them", c.Origins(), c.Spec(), c.Tracking())
@@ -86,14 +87,37 @@ func TestOptions(t *testing.T) {
 		t.Errorf("Load() with New's origins = %q, want what Save wrote under them", got)
 	}
 	c.Save(cache.WithOrigins(other), cache.WithSpec("other-spec"))
-	if c.Origins() != o || c.Spec() != "" {
-		t.Error("a call's options changed the cache's own, want them applied to that call alone")
+	if c.Origins() != other {
+		t.Errorf("Origins() after a save under other origins = %v, want those kept", c.Origins())
+	}
+	if got := c.Load(); got != "other-spec" {
+		t.Errorf("Load() after a save under other origins = %q, want that run's spec", got)
+	}
+	if got := c.Load(cache.WithOrigins(o)); got != envelope {
+		t.Errorf("Load(WithOrigins(o)) = %q, want o's spec", got)
 	}
 	if got := c.Load(); got != envelope {
-		t.Errorf("Load() after a save under other origins = %q, want New's run's spec still", got)
+		t.Errorf("Load() after one naming o = %q, want o's spec kept", got)
 	}
-	if got := c.Load(cache.WithOrigins(other)); got != "other-spec" {
-		t.Errorf("Load(WithOrigins(other)) = %q, want what was saved under them", got)
+}
+
+// TestString pins that String is the file: what Save writes to disk is what
+// String renders for the same spec and tracking, byte for byte, so anything
+// showing a run's cache shows the same thing — and that no spec is no file.
+func TestString(t *testing.T) {
+	c, o, path := fixed(t, "http://localhost:3000")
+	tracking := map[string]string{"TUNNELD_LOG": "debug", "PWD": "/work", "TUNNELD_EMPTY": ""}
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithTracking(tracking), cache.WithLog(discard()))
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := cache.New(cache.WithSpec(envelope), cache.WithTracking(tracking)).String(); got != string(body) {
+		t.Errorf("String() =\n%s\nwant what Save wrote:\n%s", got, body)
+	}
+	if got := cache.New(cache.WithTracking(tracking)).String(); got != "" {
+		t.Errorf("String() with no spec = %q, want nothing", got)
 	}
 }
 

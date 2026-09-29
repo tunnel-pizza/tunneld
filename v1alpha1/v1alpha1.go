@@ -72,10 +72,12 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 //
 // Both take the run's facts as the options they are given, as Route and Open
 // do: the origins whose key names the file, and for Save the spec and the
-// tracking to write, and the run's logger.
+// tracking to write, and the run's logger. String is the file as the cache
+// last saved it, "" before then: what the router serves as a remote copy.
 type Cache interface {
 	Load(opts ...cache.Option) string
 	Save(opts ...cache.Option)
+	String() string
 }
 
 // Pid is how a run is found and handed back from outside it, by the npm
@@ -144,6 +146,7 @@ type noCache struct{}
 
 func (noCache) Load(...cache.Option) string { return "" }
 func (noCache) Save(...cache.Option)        {}
+func (noCache) String() string              { return "" }
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a

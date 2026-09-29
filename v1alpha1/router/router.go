@@ -77,6 +77,24 @@ type RouterImpl struct {
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
 	live *routes
+	// env is what ControlPath+".env" answers from, once WithCache has put it
+	// on the mux. A pointer for the same reason as live.
+	env *env
+}
+
+// Cache is what the router serves a run's cache file from: the file as the
+// cache last saved it, or "" before it has saved one.
+type Cache interface {
+	String() string
+}
+
+// env is the ControlPath+".env" endpoint's state: the cache it serves from,
+// and the once that puts its handler on the mux — a ServeMux panics on a
+// pattern registered twice, and WithCache can be applied more than once.
+type env struct {
+	mu    sync.Mutex
+	cache Cache
+	once  sync.Once
 }
 
 // routes is a router's serving routes, by the function that stops each.
@@ -90,6 +108,11 @@ type routes struct {
 // answers the ControlPath with the router's own endpoints:
 //
 //	GET ControlPath+"ping"   200 "pong": this tunnel reaches this tunneld
+//
+// and, once WithCache has been applied:
+//
+//	GET ControlPath+".env"   200 the run's cached spec, as the cache file's
+//	                         LIBTUNNEL_SPEC line; 404 when nothing is cached
 func New(opts ...Option) *RouterImpl {
 	mux := http.NewServeMux()
 	// Answered here, by tunneld, and never by an origin: a 200 says the edge,
@@ -100,7 +123,7 @@ func New(opts ...Option) *RouterImpl {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, "pong")
 	})
-	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}}, opts...)
+	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{}}, opts...)
 }
 
 // WithOrigins sets the origins to route between: the dialable list, in the
@@ -119,6 +142,40 @@ func WithWebSockets(ix int) Option {
 // nothing, when nil.
 func WithHandler(handler func(http.Handler) http.Handler) Option {
 	return func(r *RouterImpl) { r.handler = handler }
+}
+
+// WithCache puts ControlPath+".env" on the router's mux: a remote copy of
+// the cache file the run last saved, asked of c on every request, and a 404
+// until there is one. Applied again, it replaces the cache rather than
+// registering the endpoint twice.
+//
+// The spec is the credential for the tunnel's public hostname, and this
+// serves it to anybody who can reach the ControlPath. Nothing guards it yet.
+func WithCache(c Cache) Option {
+	return func(r *RouterImpl) {
+		e := r.env
+		e.mu.Lock()
+		e.cache = c
+		e.mu.Unlock()
+		e.once.Do(func() {
+			r.mux.HandleFunc("GET "+ControlPath+".env", func(w http.ResponseWriter, _ *http.Request) {
+				e.mu.Lock()
+				c := e.cache
+				e.mu.Unlock()
+				var saved string
+				if c != nil {
+					saved = c.String()
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				if saved == "" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = io.WriteString(w, saved)
+			})
+		})
+	}
 }
 
 // WithLog sets where the router says what it did. Nil keeps the one it has.
