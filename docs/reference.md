@@ -45,9 +45,9 @@ origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
 
 ### When nothing is listening
 
-`tunneld :3999` with nothing on port 3999 still gets its address: the tunnel
-comes up whether or not the origin has, and a dev server started afterwards
-is served as soon as it answers. The run says so beneath the map:
+Start the app before or after `tunneld :3999`: the address comes up either way
+and serves the app as soon as it answers. Until then, the run tells you what to
+do, beneath the map:
 
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
@@ -57,45 +57,46 @@ start something on localhost:3999: nothing is listening there yet, and visitors 
 Press Ctrl+C to stop the tunnel...
 ```
 
-That line comes from one dial of each `http` and `https` origin once the
-tunnel is up, a second at most; a program or a container is tunneld's own to
-serve and is not dialed. It goes to stderr with the rest of the map.
+tunneld dials each `http` and `https` origin once when the tunnel comes up, for
+a second at most. Program and container origins are its own to serve and are
+not dialed.
 
-A visitor who opens the address in the meantime gets a page from tunneld
-rather than the edge's "Bad gateway": *Nothing’s on port 3999 yet*, and what
-to do about it. Whoever shared the link is told to start something on port
-3999; whoever was sent it is told to ask them to, and to keep the tab open. An
-origin on this machine is named by its port, one elsewhere by its host. It asks again every few seconds — backing off to every ten while it
-waits, and asking nothing while it is hidden — and reloads itself at the same
-URL once the origin answers, a tile in the [multiview panel](#multiview)
-included. It is self-contained: no stylesheet, font or script from anywhere
-else, `noindex`, and no `Referer` on its one link.
+A visitor who arrives first gets tunneld's page, not the edge's "Bad gateway":
 
-What answers is a `503` with `Retry-After: 2` and `Cache-Control: no-store`,
-marked `X-Tunneld-Unreachable: <origin host>` so a script, and the page
-itself, can tell it from an origin's own 503. A 503 rather than a 502:
-Cloudflare's edge replaces a 502 from an origin with a gateway page of its
-own, which says nothing about which hop failed. Only a browser loading a page
-— a `GET` or `HEAD` that accepts `text/html`, for a document or a frame — gets
-the page; a `fetch`, an asset, a `POST`, a WebSocket handshake and `curl` get
-one line:
+- **Nothing’s on port 3999 yet.** An origin on this machine is named by its
+  port, one elsewhere by its host.
+- **Shared this link?** Start something on port 3999. This page picks it up on
+  its own.
+- **Got this link?** Ask whoever shared it to start something on port 3999, and
+  keep this tab open.
+
+The page checks every few seconds, backs off to every ten, pauses while hidden,
+and reloads the same URL once the origin answers, in a tile of the
+[multiview panel](#multiview) too. It loads nothing from elsewhere, is
+`noindex`, and sends no `Referer` on its one link.
+
+The answer is a `503` with `Retry-After: 2` and `Cache-Control: no-store`,
+marked `X-Tunneld-Unreachable: <origin host>` so a script can tell it from the
+origin's own 503. It is a 503 because Cloudflare's edge replaces a 502 with a
+gateway page of its own. A browser loading a page (a `GET` or `HEAD` that
+accepts `text/html`, for a document or a frame) gets the page; a `fetch`, an
+asset, a `POST`, a WebSocket handshake and `curl` get one line:
 
 ```
 nothing on port 3999 yet: start something on it, or ask whoever shared this address to
 ```
 
-Only a dial nothing answers counts: refused, no route, or no answer in time.
-An origin that takes the connection and hangs up without answering is still a
-bare `502`, because something is listening there.
+Only a failed dial counts: refused, no route, or no answer in time. An origin
+that accepts the connection and hangs up still gets a bare `502`, because
+something is listening there.
 
-The first time an origin fails a visitor that way since the run began, or
-since it last answered, the run says so on stderr as well, once per outage:
+When a visitor finds the origin down, the run tells you, once per outage:
 
 ```
 a visitor is waiting on localhost:3999: start something on it, and their page loads it on its own
 ```
 
-Every such request is also logged at `warn` as `origin did not answer`; see
+Each such request is also logged at `warn` as `origin did not answer`; see
 [Logs](#logs).
 
 ## Several origins on one address

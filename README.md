@@ -1,7 +1,7 @@
 # tunneld
 
-**A public URL for what's running on your machine.** A port, a shell, a coding
-agent, a container: one command, no account.
+**Put what's running on your machine on a public URL.** A port, a shell, a
+coding agent, a container: one command, no account.
 
 [![npm](https://img.shields.io/npm/v/tunneld)](https://www.npmjs.com/package/tunneld)
 [![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)
@@ -186,7 +186,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
 | `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
 | `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
-| `--qr` | `TUNNELD_QR` | Also print the address as a QR code, for a phone. |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code too. Scan it with your phone. |
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
@@ -230,17 +230,17 @@ bytes without reading them.
 
 ## Use it from Claude Code
 
-A plugin teaches the agent to put the dev server it just started on a public
-URL when you ask to see it on your phone or send it to somebody, in the
-background, with a word about what the address gives away:
+Install the plugin:
 
 ```
 /plugin marketplace add tunnel-pizza/tunneld
 /plugin install tunneld@tunnel-pizza
 ```
 
-`/tunneld:session` hands the conversation you're in to a public URL, with a QR
-code, so you can carry on from your phone.
+- **Ask Claude to show you the app on your phone**, or to send it to someone. It
+  shares the dev server it started and tells you what the address gives away.
+- **Type `/tunneld:session` to carry on from your phone.** Type `/exit` here,
+  then scan the QR code it shows.
 
 ## Use it from Go
 
