@@ -514,6 +514,20 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			// its root, the way the tunnel engine reached it.
 			r.SetURL(&url.URL{Scheme: origin.Scheme, Host: origin.Host})
 			r.Out.Host = r.In.Host
+			// The forwarding headers, as they arrived. With Rewrite set the
+			// stdlib strips them from the outbound request, and an origin that
+			// builds absolute URLs from X-Forwarded-Proto then falls back to
+			// its own scheme — plain http on a dev server — and an OAuth
+			// redirect_uri comes out http:// against an https:// callback
+			// (#201). They come from cloudflared, the one hop in front of
+			// this, so they are passed on untouched. Not SetXForwarded: that
+			// derives the scheme from this server's own inbound connection,
+			// which is plain http from cloudflared, and would say http again.
+			for _, h := range forwarding {
+				if v, ok := r.In.Header[h]; ok {
+					r.Out.Header[h] = v
+				}
+			}
 		},
 		// An origin that cannot be reached is the one failure here an
 		// operator can act on, so it is said at warn, naming the origin. A
@@ -699,6 +713,10 @@ func navigation(r *http.Request) bool {
 	dest := r.Header.Get("Sec-Fetch-Dest")
 	return dest == "" || dest == "document"
 }
+
+// forwarding is the headers a proxy in front of the origins says where a
+// request came from and how, which Rewrite passes on as they arrived.
+var forwarding = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
 // stickyKey carries an explicit routing pick from Rewrite to ModifyResponse
 // on the outbound request context.

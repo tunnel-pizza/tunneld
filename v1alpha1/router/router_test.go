@@ -439,6 +439,57 @@ func TestEnv(t *testing.T) {
 	})
 }
 
+// TestForwardingHeaders pins what an origin is told about where a request
+// came from: the forwarding headers the proxy in front sent, passed on as they
+// arrived — the stdlib strips them once Rewrite is set, and an origin that
+// builds its URLs from X-Forwarded-Proto then says http to an https visitor
+// (#201). With one origin and with several, and none invented when none came.
+func TestForwardingHeaders(t *testing.T) {
+	// told answers with the forwarding headers it was sent, one per line.
+	told := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, h := range forwarding {
+				fmt.Fprintf(w, "%s=%q\n", h, r.Header.Values(h))
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	sent := map[string]string{
+		"Forwarded":         "for=203.0.113.7;proto=https;host=app.tunneled.pizza",
+		"X-Forwarded-For":   "203.0.113.7",
+		"X-Forwarded-Host":  "app.tunneled.pizza",
+		"X-Forwarded-Proto": "https",
+	}
+	for name, list := range map[string]v1.Origins{
+		"one origin":      listOf(t, told("A")),
+		"several origins": listOf(t, told("A"), told("B")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := route(t, list, -1, nil, discard)
+
+			req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+			for h, v := range sent {
+				req.Header.Set(h, v)
+			}
+			_, body := get(t, http.DefaultClient, req)
+			for h, v := range sent {
+				if want := fmt.Sprintf("%s=%q\n", h, []string{v}); !strings.Contains(body, want) {
+					t.Errorf("the origin was not told %s: %q, got:\n%s", h, v, body)
+				}
+			}
+
+			req, _ = http.NewRequest(http.MethodGet, base+"/", nil)
+			_, body = get(t, http.DefaultClient, req)
+			for _, h := range forwarding {
+				if want := fmt.Sprintf("%s=%q\n", h, []string(nil)); !strings.Contains(body, want) {
+					t.Errorf("with nothing forwarded the origin was told %s anyway:\n%s", h, body)
+				}
+			}
+		})
+	}
+}
+
 // TestRouteAppliesTheFront pins that what is put in front answers before any
 // origin is chosen — the panel's page never reaches an origin — and that a
 // lone origin is still served through it rather than skipped.
