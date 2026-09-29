@@ -164,6 +164,15 @@ type Ender interface {
 	End(ctx context.Context) error
 }
 
+// Noticer says for itself what its page should explain about how the target
+// is served, in place of the explanation built from TTY and Stdin — which
+// names the docker flags a container was started without, and is wrong for a
+// target that has no such flags. Optional the way Repeatable is. An empty
+// notice is nothing to explain.
+type Noticer interface {
+	Notice() string
+}
+
 // Targets opens an origin's reference as a Target. It is the half of the
 // provider contract the binder depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider
@@ -661,7 +670,10 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 		// that is the lever: nothing tunneld can do fixes a container already
 		// running without a TTY, and the reader's next move is to restart it.
 		var notice string
+		noticer, told := s.target.(Noticer)
 		switch {
+		case told:
+			notice = noticer.Notice()
 		case !s.target.TTY() && !s.target.Stdin():
 			notice = "no TTY and no stdin (started without -it) — output only"
 		case !s.target.TTY():

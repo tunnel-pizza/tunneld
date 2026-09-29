@@ -908,21 +908,41 @@ func TestThePageNamesTheOrigin(t *testing.T) {
 	}
 }
 
+func ptr[T any](v T) *T { return &v }
+
+// noticing is a target that says its own notice, as attach.Noticer lets one.
+type noticing struct {
+	*fakeTarget
+	notice string
+}
+
+func (n noticing) Notice() string { return n.notice }
+
 func TestNoticeOnThePage(t *testing.T) {
 	cases := []struct {
 		name  string
 		tty   bool
 		stdin bool
-		want  string // "" means: no notice element at all
+		// told is a notice the target says for itself, when non-nil.
+		told *string
+		want string // "" means: no notice element at all
 	}{
-		{"a full terminal renders no notice", true, true, ""},
-		{"no tty", false, true, "no TTY (started without -t) — no line editing, no resize"},
-		{"no stdin", true, false, "stdin closed (started without -i) — keystrokes go nowhere"},
-		{"neither", false, false, "no TTY and no stdin (started without -it) — output only"},
+		{"a full terminal renders no notice", true, true, nil, ""},
+		{"no tty", false, true, nil, "no TTY (started without -t) — no line editing, no resize"},
+		{"no stdin", true, false, nil, "stdin closed (started without -i) — keystrokes go nowhere"},
+		{"neither", false, false, nil, "no TTY and no stdin (started without -it) — output only"},
+		// A Noticer's own words replace the docker flags, which it has none of;
+		// and saying nothing is saying there is nothing to explain.
+		{"a target's own notice", false, true, ptr("no terminal on this machine"), "no terminal on this machine"},
+		{"a target with nothing to say", false, true, ptr(""), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := serveFake(t, newFakeTarget("api", tc.tty, tc.stdin))
+			var target Target = newFakeTarget("api", tc.tty, tc.stdin)
+			if tc.told != nil {
+				target = noticing{newFakeTarget("api", tc.tty, tc.stdin), *tc.told}
+			}
+			s := serveFake(t, target)
 			resp, err := http.Get(s.URL().String() + "/")
 			if err != nil {
 				t.Fatalf("GET /: %v", err)

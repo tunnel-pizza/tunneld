@@ -31,14 +31,18 @@ func runnable(base string) string {
 	return base
 }
 
-// needsPTY skips a test on a platform with no pseudo-terminals. Windows is the
-// one in the CI matrix: creack/pty compiles there and refuses at run time, so
-// everything below Open's probe is unreachable rather than broken.
+// needsPTY skips a test on a machine with no pseudo-terminals: Windows, the
+// one in the CI matrix, where creack/pty compiles and refuses at run time, or
+// a sandbox with no devpts. Asked the way Open asks, by opening a pair. What
+// such a machine does instead — pipes — is pipes_test.go's.
 func needsPTY(t *testing.T) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("no pseudo-terminals on this platform")
+	master, slave, err := openPTY()
+	if err != nil {
+		t.Skipf("no pseudo-terminals on this machine: %v", err)
 	}
+	_ = slave.Close()
+	_ = master.Close()
 }
 
 // sink is an out or errw for AttachContainer: a buffer that can be closed and

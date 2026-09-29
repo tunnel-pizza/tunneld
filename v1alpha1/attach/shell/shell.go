@@ -92,12 +92,15 @@ func Resolve(s string) (string, bool) {
 type Option = v1.Option[*TargetsImpl]
 
 // TargetsImpl is the default source of targets: programs on this machine's
-// $PATH, run on a pseudo-terminal.
-type TargetsImpl struct{}
+// $PATH, run on a pseudo-terminal — or over pipes, on a machine that has none.
+type TargetsImpl struct {
+	// open opens a pseudo-terminal pair; see openPTY.
+	open opener
+}
 
 // New returns the default source of targets, configured by opts.
 func New(opts ...Option) *TargetsImpl {
-	return v1.Apply(&TargetsImpl{}, opts...)
+	return v1.Apply(&TargetsImpl{open: openPTY}, opts...)
 }
 
 // Verb is v1.ExecScheme and Provider is empty: this provider answers exec://
@@ -107,33 +110,36 @@ func (*TargetsImpl) Verb() string     { return v1.ExecScheme }
 func (*TargetsImpl) Provider() string { return "" }
 
 // Open resolves ref — a command name, or a path to an executable — against
-// this machine, and checks that the machine can give it a terminal.
+// this machine, and asks whether the machine can give it a terminal.
 //
 // Nothing is run here. What the resolution buys is the same thing docker's
 // inspect buys: everything that can fail about the origin fails before the
 // tunnel is minted, rather than as a page that answers an error to whoever was
 // handed the URL. The two failures have different levers, so they are worded
 // apart — a name that resolves to nothing is the origin's fault (fix it, or
-// install the program), and a platform with no pseudo-terminals is not.
+// install the program).
 //
 // The pty probe is a real one: it opens a pair and closes it again, because
-// there is nothing to ask short of trying. On Windows it is what turns
-// "every visit fails" into "this run refuses to start".
-func (*TargetsImpl) Open(_ context.Context, ref string, args []string, log v1.Logger) (attach.Target, error) {
+// there is nothing to ask short of trying. A machine that has none — Windows,
+// a sandbox with a minimal /dev — is not refused: the program is served over
+// pipes instead, and the warning says what that costs.
+func (t *TargetsImpl) Open(_ context.Context, ref string, args []string, log v1.Logger) (attach.Target, error) {
 	path, err := exec.LookPath(ref)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %q names no program this machine can run: %w", v1.ErrInvalidOrigin, ref, err)
 	}
 
-	master, slave, err := pty.Open()
-	if err != nil {
-		return nil, fmt.Errorf("cannot give %q a terminal on this platform: %w", ref, err)
+	target := &TargetImpl{ref: ref, path: path, args: args, log: log, open: t.open}
+	if master, slave, err := t.open(); err != nil {
+		log.Warn("serving a program without a terminal", "program", ref, "reason", err, "cost", pipesNotice)
+		target.pipes = true
+	} else {
+		_ = slave.Close()
+		_ = master.Close()
 	}
-	_ = slave.Close()
-	_ = master.Close()
 
-	log.Debug("resolved a program as an origin", "program", ref, "path", path, "args", args)
-	return &TargetImpl{ref: ref, path: path, args: args, log: log}, nil
+	log.Debug("resolved a program as an origin", "program", ref, "path", path, "args", args, "terminal", !target.pipes)
+	return target, nil
 }
 
 // TargetImpl is one program, resolved but not yet running. The process and its
@@ -146,14 +152,20 @@ type TargetImpl struct {
 	// them — the words after it on the command line.
 	args []string
 	log  *slog.Logger
+	// open opens its terminal, and pipes is there being none to open: the
+	// program is then run over pipes, with tunneld as its line discipline.
+	open  opener
+	pipes bool
 
 	// mu guards the running process and its terminal, which exist only
 	// between an attach starting and either end of it finishing. Close can
 	// arrive from a different goroutine at any point in that window — a
 	// shutdown, or a caller's defer — which is the whole reason for the lock.
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	term   *os.File
+	mu  sync.Mutex
+	cmd *exec.Cmd
+	// term is what closing ends the program's input: its terminal, or over
+	// pipes its stdin.
+	term   io.Closer
 	closed bool
 	// exited closes when the current run's program has exited, for End to
 	// wait on. Replaced per run, under mu, beside cmd and term.
@@ -174,11 +186,21 @@ func (a *TargetImpl) Name() string { return a.ref }
 // the arguments are part of.
 func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 
-// TTY is always true. A program run here is given a pseudo-terminal whether or
-// not it would have had one, because the point of the origin is the terminal:
-// a full-screen program needs one to draw at all, and a line-oriented one is
-// no worse for having it.
-func (a *TargetImpl) TTY() bool { return true }
+// TTY is true wherever the machine has pseudo-terminals. A program run here
+// is given one whether or not it would have had one, because the point of the
+// origin is the terminal: a full-screen program needs one to draw at all, and
+// a line-oriented one is no worse for having it. Over pipes it is false, and
+// the page says so — see Notice.
+func (a *TargetImpl) TTY() bool { return !a.pipes }
+
+// Notice implements attach.Noticer: over pipes, what the page should explain
+// is the machine, not a docker flag.
+func (a *TargetImpl) Notice() string {
+	if a.pipes {
+		return pipesNotice
+	}
+	return ""
+}
 
 // Stdin is always true, for the same reason TTY is: the page is a terminal,
 // and a terminal that cannot be typed into is a log viewer.
@@ -265,6 +287,12 @@ func (a *TargetImpl) stop() error {
 		a.term = nil
 	}
 	if a.cmd != nil && a.cmd.Process != nil {
+		// Over pipes there is no terminal whose closing hangs up what the
+		// program started, so the hangup is sent: a shell's jobs go with it
+		// rather than outliving the viewer who started them.
+		if a.pipes {
+			_ = hangup(a.cmd.Process)
+		}
 		_ = a.cmd.Process.Kill()
 	}
 	a.cmd = nil
@@ -285,14 +313,23 @@ func (a *TargetImpl) stop() error {
 // stdout and stderr are the same file — so there is nothing to demultiplex and
 // nothing to put on a channel of its own.
 func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	if a.pipes {
+		return a.attachPipes(ctx, in, out, errw, resize)
+	}
 	cmd := exec.CommandContext(ctx, a.path, a.args...)
 	// TERM is what makes a full-screen program willing to draw. The value is
 	// the one the page's terminal emulator implements, and the same one the
 	// frame announces to a container.
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
-	term, err := pty.Start(cmd)
+	term, slave, err := a.open()
 	if err != nil {
+		return fmt.Errorf("run %s: %w", a.ref, err)
+	}
+	err = startOn(cmd, slave)
+	_ = slave.Close()
+	if err != nil {
+		_ = term.Close()
 		return fmt.Errorf("run %s: %w", a.ref, err)
 	}
 	// Software flow control off before the program can write a byte, so
