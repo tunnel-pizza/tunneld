@@ -821,6 +821,9 @@ func TestExamples(t *testing.T) {
 		{"multi-origin", "exposes: http://localhost:3000, http://localhost:4000", nil, nil},
 		{"attach", "exposes: attach://dockerd/tunneld-example", nil, nil},
 		{"shell", "exposes: zsh", nil, nil},
+		// Nothing seeded: it clears $SHELL and $PATH and takes the fallback,
+		// so its help says what a run with no origin does.
+		{"noshell", "With no arguments at all, it shares your $SHELL (or bash, sh, or a shell built in).", nil, nil},
 		{"workspace", "exposes: uvx streamlit hello --server.headless true, http+ws://localhost:8501, claude", nil, nil},
 	}
 	for _, tc := range cases {
