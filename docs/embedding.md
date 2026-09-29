@@ -213,17 +213,20 @@ Self-contained programs in [`examples/`](../examples):
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
 | `shell` | A local program's terminal on the public hostname. Runs `zsh`. |
+| `workspace` | A Streamlit app, its process's terminal and a Claude Code session side by side. Needs `uvx` and `claude`. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
 `attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not
-already local, and `shell` runs its program when the first viewer opens the
-page. All four block until interrupted:
+already local, `shell` runs its program when the first viewer opens the
+page, and `workspace` runs `uvx` and `claude`, which have to be installed. All
+five block until interrupted:
 
 ```sh
 make run basic
 make run multi-origin
 make run attach
 make run shell
+make run workspace
 ```
 
 `multi-origin` is the one to try in a browser — it serves a different page on
