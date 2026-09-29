@@ -479,7 +479,7 @@ that drive Linux itself (`mount`, `ip`, `insmod`) do not build. They go at the
 end of the shell's `$PATH`, so a command the machine has is the one that runs
 and these only fill what is missing. Each is tunneld's own executable again,
 under the command's name, from a temporary directory that is removed when the
-shell exits. Not on Windows, where the links they are need an administrator.
+shell exits.
 
 `--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
 `WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
