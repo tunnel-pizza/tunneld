@@ -299,6 +299,10 @@ tunneld is a thin layer over other people's work. Thank you to:
 - **[Elvish](https://elv.sh)** (`src.elv.sh`): the shell built into tunneld,
   the one a run with no origin serves when this machine has no `$SHELL`,
   `bash` or `sh` of its own.
+- **[u-root](https://github.com/u-root/u-root)** (`github.com/u-root/u-root`):
+  the commands that shell brings — `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`,
+  `touch`, `find`, `chmod`, `tar`, `gzip`, `xargs`, `mktemp`, `shasum` and
+  `base64` — for a machine that has none of its own.
 - **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
   `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
   `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded

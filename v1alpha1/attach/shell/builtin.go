@@ -24,9 +24,16 @@ const BuiltinArg = "--tunneld-builtin-shell"
 // its own — and an embedding program's main knows nothing about this. Any
 // binary that links this package answers BuiltinArg the same way, and nothing
 // else changes for it: the check is one comparison of its arguments.
+//
+// The same goes for the shell's commands: this executable run under one of
+// their names, from the directory the shell put on its $PATH, is that command
+// (see commands.go).
 func init() {
 	if len(os.Args) == 2 && os.Args[1] == BuiltinArg {
 		os.Exit(Run())
+	}
+	if newCommand, ok := command(); ok {
+		os.Exit(runCommand(newCommand))
 	}
 }
 
@@ -59,6 +66,15 @@ func Builtin() (string, error) {
 // under the user's state directory: history lives as long as the session,
 // and nothing is left behind on a machine that only ever had a shell because
 // it had none. Elvish's own rc file is read if there is one, as any shell's is.
+//
+// With the core Unix commands — ls, cat, cp, mv and the rest (commands.go) —
+// at the end of $PATH for as long as the shell runs, so a machine with none
+// still has them and a machine with its own keeps using those.
 func Run() int {
+	if remove, err := installCommands(); err != nil {
+		fmt.Fprintf(os.Stderr, "tunneld: no built-in commands: %v\n", err)
+	} else {
+		defer remove()
+	}
 	return prog.Run([3]*os.File{os.Stdin, os.Stdout, os.Stderr}, []string{"elvish"}, &elvish.Program{})
 }

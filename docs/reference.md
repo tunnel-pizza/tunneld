@@ -470,6 +470,15 @@ shell. It has its own line editor (history, completion, the arrow keys) and its
 own language, which is not POSIX: `export`, `$(…)` and `&&` are spelled
 differently. History lasts as long as the session; nothing is stored.
 
+It brings the core commands with it, from [u-root](https://github.com/u-root/u-root):
+`ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `touch`, `find`, `chmod`, `tar`,
+`gzip` (and `gunzip`, `gzcat`), `xargs`, `mktemp`, `shasum` and `base64`. They
+go at the end of the shell's `$PATH`, so a command the machine has is the one
+that runs and these only fill what is missing. Each is tunneld's own executable
+again, under the command's name, from a temporary directory that is removed
+when the shell exits. Not on Windows, where the links they are need an
+administrator.
+
 `--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
 `WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
 did before. That is the setting for a script, and for a program that embeds

@@ -9,8 +9,9 @@
 // like any program. It has a line editor — history, completion, the arrow keys
 // — and a language of its own, which is not POSIX.
 //
-// With $PATH gone, the shell has what it builds in and nothing else: like the
-// machine it stands for, there are no programs on it to run. Any origin passed
+// With $PATH gone, the machine's own programs are gone too, as they would be on
+// the machine it stands for; what runs is what the shell brings — ls, cat, cp
+// and the rest of the core commands, built into tunneld. Any origin passed
 // still replaces the fallback, and every tunneld flag still works:
 //
 //	go run ./examples/noshell --no-cache
