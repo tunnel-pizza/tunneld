@@ -350,7 +350,7 @@ Easy to get wrong from the diff alone:
   the console: it logs every failed dial at warn. `Router.Unanswered` dials
   the http origins once the tunnel is up, and the builder logs what it finds;
   showing either to the person who ran the command is the builder's, from one
-  place, still to do (#206).
+  place, still to do (#209).
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the
