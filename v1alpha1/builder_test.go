@@ -639,6 +639,16 @@ type fakeRouter struct {
 	// configured is the real router the run's options build, never routed by
 	// the run: a case can route it itself to see what those options serve.
 	configured *router.RouterImpl
+	// unanswered is what Unanswered says nothing answered on, dialing
+	// nothing: the dial is the router's, and router_test.go dials it. probed
+	// is the list the run asked about.
+	unanswered []int
+	probed     Origins
+}
+
+func (f *fakeRouter) Unanswered(_ context.Context, origins Origins) []int {
+	f.probed = origins
+	return f.unanswered
 }
 
 func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL, error) {
@@ -1911,6 +1921,95 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 		if got := strings.Count(h.stderr.String(), addr); got != 0 {
 			t.Errorf("%s appears %d times on stderr, want 0:\n%s", addr, got, h.stderr.String())
 		}
+	}
+}
+
+// TestReportSaysWhatNothingListensOn pins the line beneath the map for an
+// origin nothing is listening on once the tunnel is up. The person who ran the
+// command is the one who can start it, and until this only a visitor was told,
+// by the page the address answers with.
+//
+// The dial is the router's, and router_test.go dials a loopback listener and a
+// closed port for it; the fake here answers from a list, so what is pinned is
+// what the run does with the answer: asks about the origins as typed, and says
+// a line per origin named, by host, between the map and the stop hint, on
+// stderr alone.
+func TestReportSaysWhatNothingListensOn(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	line := func(host string) string {
+		return "nothing is listening on " + host + " yet: start it, and the address serves it once it answers\n"
+	}
+	for name, tc := range map[string]struct {
+		unanswered []int
+		said       []string
+	}{
+		"everything answers": {},
+		"one does not":       {unanswered: []int{1}, said: []string{"localhost:4000"}},
+		"none does":          {unanswered: []int{0, 1}, said: []string{"localhost:3000", "localhost:4000"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRunHarness(t, live(public), ":3000", ":4000")
+			h.router.unanswered = tc.unanswered
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+
+			if h.router.probed == nil {
+				t.Fatal("the run never asked the router what answers")
+			}
+			if got, want := urlStrings(h.router.probed.URLs()), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
+				t.Errorf("asked about %q, want the origins as typed %q", got, want)
+			}
+			out := h.stderr.String()
+			if got := strings.Count(out, "nothing is listening"); got != len(tc.said) {
+				t.Errorf("stderr says nothing is listening %d times, want %d:\n%s", got, len(tc.said), out)
+			}
+			for _, host := range tc.said {
+				at := strings.Index(out, line(host))
+				if at < 0 {
+					t.Errorf("stderr does not say %q:\n%s", line(host), out)
+					continue
+				}
+				if at < strings.Index(out, "  -> http://localhost:4000\n") || at > strings.Index(out, stopHint) {
+					t.Errorf("%q is not between the map and the stop hint:\n%s", line(host), out)
+				}
+			}
+			if want := public + "\n"; h.stdout.String() != want {
+				t.Errorf("stdout = %q, want the address alone", h.stdout.String())
+			}
+		})
+	}
+}
+
+// TestAnOriginThatStopsAnsweringIsSaid pins what the run hands the router to
+// say when an origin stops answering: a line on stderr naming an address the
+// operator typed, in the words the report uses for one that never started.
+// Nothing for a served origin, whose address is tunneld's own loopback and
+// fails only while the run tears down — and a served origin is the only kind
+// a console frame is ever drawn for, so a line said here never lands on one.
+func TestAnOriginThatStopsAnsweringIsSaid(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	h := newRunHarness(t, live(public), ":3000", "exec:///usr/bin/htop")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	notice := h.router.configured.Notice()
+	if notice == nil {
+		t.Fatal("the run gave the router nothing to say an origin stopped answering with")
+	}
+
+	before := h.stderr.Len()
+	notice(1)
+	if said := h.stderr.String()[before:]; said != "" {
+		t.Errorf("a served origin's outage said %q, want nothing", said)
+	}
+	notice(0)
+	if said, want := h.stderr.String()[before:], "a visitor found nothing listening on localhost:3000: start it, and the address serves it once it answers\n"; said != want {
+		t.Errorf("an origin's outage said %q, want %q", said, want)
 	}
 }
 

@@ -19,7 +19,7 @@ Deep-link by filename; line numbers will drift.
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
-| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
+| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, and the page for an origin nothing answers on (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
@@ -335,6 +335,22 @@ Easy to get wrong from the diff alone:
   and a path under it never reaches an origin. Only that prefix goes through
   the mux, since a `ServeMux` redirects unclean paths and would rewrite what
   origins are sent.
+- **An origin nothing answers is a 503 with a page, and only a failed dial
+  is.** The router's `ErrorHandler` answers a dial that nothing took —
+  refused, no route, timed out — with `unreachable.html`, or a line of text
+  for anything but a browser loading a page: a 503 with `Retry-After`,
+  `no-store` and `X-Tunneld-Unreachable`. A 503 because the edge paints its
+  own page over an origin's 502, where a 503 is expected through with its
+  body; the marker because the page asks after the origin with a `HEAD` and
+  has to tell tunneld's 503 from the app's own. Anything else stays the bare
+  502 — something is listening — and nothing from the request is read into
+  either answer. The page reloads itself, so the multiview panel leaves it
+  alone: the panel retries a gateway's status, and 503 is not one, which is
+  what keeps two things from reloading one tile. The person who ran the
+  command hears it twice over: `Router.Unanswered` dials the http origins
+  once the tunnel is up, and `router.WithNotice` is told once per outage.
+  Both write to stderr straight, which is safe only because a console frame
+  is drawn for a lone served origin and neither ever names one.
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the

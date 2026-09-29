@@ -596,6 +596,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// the hostname's credential and nothing guards it yet.
 		router.WithCache(spec),
 		router.WithLog(log),
+		// An origin that stops answering, told once per outage, in the words
+		// the report below uses for one that never started. Only an address
+		// the operator typed: a served origin's is tunneld's own loopback,
+		// which fails only while the run tears down, and that is nobody's
+		// news. Which is also why this can write to stderr straight: the
+		// console draws a frame only for a lone served origin, so a line here
+		// never lands on one. Each failed request is on the log besides.
+		router.WithNotice(func(i int) {
+			if u := origins.At(i); u.Scheme == "http" || u.Scheme == "https" {
+				fmt.Fprintf(stderr, "a visitor found nothing listening on %s: start it, and the address serves it once it answers\n", u.Host)
+			}
+		}),
 	)
 	if err != nil {
 		return err
@@ -707,6 +719,19 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
 			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 		}
+	}
+
+	// An origin nothing is listening on is the one thing here the person who
+	// ran this can fix, and until now only a visitor found out: the address
+	// answers with a page saying so, to whoever opens it. So it is said here
+	// too, beneath the map, once the tunnel is up — a dev server started
+	// after the tunnel is the ordinary case, and the line says the address
+	// picks it up by itself. After the addresses rather than among them, so a
+	// dial that takes its full timeout holds back nothing a script is waiting
+	// for; before the launcher is handed the console, so a detached run says
+	// it too.
+	for _, i := range b.router.Unanswered(ctx, origins) {
+		fmt.Fprintf(stderr, "nothing is listening on %s yet: start it, and the address serves it once it answers\n", origins.At(i).Host)
 	}
 
 	// What the provider said with the spec, learned here because Messages

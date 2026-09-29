@@ -363,11 +363,22 @@
   // Where it is missing the frame's loads are counted instead: one up per
   // load the button did not cause, one down per back. In-page routing goes
   // uncounted there, which leaves the button inert rather than wrong.
+  //
+  // A load of the address the frame was already on is not a step either: a
+  // reload adds no entry, and a browser turns a navigation to the current
+  // address into a replacement. Counted, it put a Back on a tile with nothing
+  // behind it — which leaves the panel — every time a page reloaded itself:
+  // tunneld's own page for an origin not up yet, once it answers, or a dev
+  // server's live reload.
   const back = (frame) => {
     const tile = frame.closest('.tile');
     const button = tile.querySelector('[data-back]');
     let depth = 0;
     let expected = false; // the next load is one the button caused
+    let last = null; // the address the frame last loaded, null when unreadable
+    const where = () => {
+      try { return frame.contentWindow.location.href; } catch (e) { return null; }
+    };
     const can = () => {
       try {
         const nav = frame.contentWindow.navigation;
@@ -389,11 +400,14 @@
     try {
       const doc = frame.contentDocument;
       first = !(doc && doc.readyState === 'complete' && frame.contentWindow.location.href !== 'about:blank');
+      if (!first) last = where();
     } catch (e) { first = false; }
     frame.addEventListener('load', () => {
+      const href = where();
       if (first) first = false;
       else if (expected) expected = false;
-      else depth++;
+      else if (href === null || href !== last) depth++;
+      last = href;
       try {
         frame.contentWindow.navigation?.addEventListener('currententrychange', show);
       } catch (e) { /* left the origin: nothing to count */ }
@@ -414,12 +428,19 @@
     button.addEventListener('click', () => reload(frame));
   }
 
-  // Try again, by itself, a frame whose origin did not answer. tunneld
-  // answers an origin it cannot reach with a 502 and no body, and the edge
-  // puts its own gateway page in its place; either way the tile would sit on
-  // that page after the origin came up — one started after the tunnel, or
-  // restarted under it — until somebody pressed ↻. So the panel presses it,
-  // every few seconds, for as long as the answer is a gateway's.
+  // Try again, by itself, a frame whose answer was a gateway's. The edge puts
+  // its own page in place of a tunnel it cannot reach, and tunneld answers a
+  // 502 with no body for an origin that took the connection and hung up;
+  // either way the tile would sit on that page after things came back until
+  // somebody pressed ↻. So the panel presses it, every few seconds, for as
+  // long as the answer is a gateway's.
+  //
+  // An origin nothing is listening on is not one of those. tunneld answers
+  // it with a page of its own, a 503, which asks after the origin itself and
+  // reloads once it answers — and leaves this alone, since a 503 is not a
+  // gateway's status and the page is not blank. One tile, one thing
+  // reloading it: the page, which does the same at the top level where there
+  // is no panel to do it.
   //
   // Only a gateway's statuses, because anything else is the origin's own
   // answer: a 503 is a page the origin chose to serve, and reloading it

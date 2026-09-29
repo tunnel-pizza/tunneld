@@ -16,7 +16,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,9 +124,9 @@ func TestRouteNothingIsAnError(t *testing.T) {
 // New was given, then what Route is given for that route alone — on a copy,
 // so the next route starts from the router's own again.
 func TestOptions(t *testing.T) {
-	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.mux == nil || r.log != discard {
-		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
-			r.Origins(), r.WebSockets(), r.Handler() != nil, r.mux != nil, r.log == discard)
+	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.Notice() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, ws %d, handler set %v, notice set %v, mux made %v, discarding %v; want none, -1, false, false, true, true",
+			r.Origins(), r.WebSockets(), r.Handler() != nil, r.Notice() != nil, r.mux != nil, r.log == discard)
 	}
 	if r := New(WithLog(nil)); r.log != discard {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
@@ -497,31 +500,279 @@ func TestRouteOutlivesItsContextUntilCancelled(t *testing.T) {
 	}
 }
 
-// TestRouteWarnsOfAnOriginItCannotReach pins that an origin that is down is
-// said at warn, naming the origin, rather than only at the edge as a bare 502:
-// tunneld :3000 :4000 with :4000 not up yet, and /?1 used to be a blank page
-// with no line anywhere. The request's own path stays out of the line.
-func TestRouteWarnsOfAnOriginItCannotReach(t *testing.T) {
+// TestRouteAnswersForAnOriginNothingListensOn pins what a visitor gets when
+// nothing answers the dial: a 503 that says so — a page for a browser loading
+// one, a line of text for everything else — rather than the bodiless 502 the
+// edge painted its own "Host Error" page over. tunneld :3999 with nothing
+// listening, and the person who opened the link could not tell whether the
+// tunnel, the edge or the app was down.
+//
+// Every answer carries Retry-After, is never stored, and is marked as
+// tunneld's own so the page can tell it from an origin's own 503. The origin
+// is named from the list, never from the request, and the request's path stays
+// out of the answer and the warning alike.
+func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 	down := echo(t, "B")
 	list := listOf(t, echo(t, "A"), down)
 	down.Close()
+	host := list.At(1).Host
 
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	base := route(t, list, -1, nil, logger)
 
-	req, _ := http.NewRequest("GET", base+"/secret-path?1", nil)
-	resp, _ := get(t, http.DefaultClient, req)
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", resp.StatusCode)
+	// What a browser sends for a page, and what it sends for a frame.
+	const browser = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	ask := func(t *testing.T, method, accept, dest string, upgrade bool) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+"/secret-path?1&q=%3Cb%3Einjected%3C%2Fb%3E", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = "visitor.example"
+		req.Header.Set("Referer", "https://referrer.example/")
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		if dest != "" {
+			req.Header.Set("Sec-Fetch-Dest", dest)
+		}
+		if upgrade {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "websocket")
+		}
+		return get(t, http.DefaultClient, req)
 	}
+
+	for name, tc := range map[string]struct {
+		method, accept, dest string
+		upgrade              bool
+		page                 bool // the page, rather than the line of text
+	}{
+		"a browser loading a page":       {method: "GET", accept: browser, dest: "document", page: true},
+		"a panel's tile":                 {method: "GET", accept: browser, dest: "iframe", page: true},
+		"a HEAD of a page":               {method: "HEAD", accept: browser, dest: "document", page: true},
+		"a client from before Sec-Fetch": {method: "GET", accept: "text/html", page: true},
+		"curl":                           {method: "GET", accept: "*/*"},
+		"nothing accepted in particular": {method: "GET"},
+		"a fetch that takes HTML":        {method: "GET", accept: browser, dest: "empty"},
+		"an image":                       {method: "GET", accept: "image/avif,image/webp,*/*", dest: "image"},
+		"a form's POST":                  {method: "POST", accept: browser, dest: "document"},
+		"a WebSocket handshake":          {method: "GET", accept: browser, upgrade: true},
+		"a WebSocket handshake, a HEAD":  {method: "HEAD", accept: browser, upgrade: true},
+		"a HEAD that does not take HTML": {method: "HEAD", accept: "*/*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := ask(t, tc.method, tc.accept, tc.dest, tc.upgrade)
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503", resp.StatusCode)
+			}
+			for key, want := range map[string]string{
+				"Retry-After":     strconv.Itoa(retryAfter),
+				"Cache-Control":   "no-store",
+				unreachableHeader: host,
+			} {
+				if got := resp.Header.Get(key); got != want {
+					t.Errorf("%s = %q, want %q", key, got, want)
+				}
+			}
+			kind := "text/plain"
+			if tc.page {
+				kind = "text/html"
+			}
+			if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, kind) {
+				t.Errorf("Content-Type = %q, want %s", got, kind)
+			}
+			switch {
+			case tc.method == "HEAD":
+				if body != "" {
+					t.Errorf("a HEAD carried a body: %q", body)
+				}
+			case tc.page:
+				for _, want := range []string{"<title>Nothing is answering yet</title>", "nothing is listening on <code>" + host + "</code> there yet"} {
+					if !strings.Contains(body, want) {
+						t.Errorf("page does not say %q:\n%s", want, body)
+					}
+				}
+			default:
+				if want := "this address is up, but nothing is listening on " + host + " behind it yet\n"; body != want {
+					t.Errorf("body = %q, want %q", body, want)
+				}
+			}
+			for _, sent := range []string{"secret-path", "injected", "visitor.example", "referrer.example"} {
+				if strings.Contains(body, sent) {
+					t.Errorf("the answer carried %q, which the visitor sent", sent)
+				}
+			}
+		})
+	}
+
 	got := logs.String()
-	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, list.At(1).Host) {
-		t.Errorf("log = %q, want a warning naming %s", got, list.At(1).Host)
+	if !strings.Contains(got, "level=WARN") || !strings.Contains(got, host) {
+		t.Errorf("log = %q, want a warning naming %s", got, host)
 	}
 	if strings.Contains(got, "secret-path") {
 		t.Errorf("log = %q, want the request path left out", got)
 	}
+
+	// The page asks nothing of any other host: no stylesheet, font, script
+	// or image to fetch, only the credit's link, which sends no Referer and
+	// hands the page nothing back. And it is kept out of search results.
+	t.Run("the page is self-contained", func(t *testing.T) {
+		_, page := ask(t, "GET", browser, "document", false)
+		for _, want := range []string{
+			`<meta name="robots" content="noindex, nofollow">`,
+			`<meta name="referrer" content="no-referrer">`,
+			`<a href="https://tunnel.pizza/?utm_source=tunneld&amp;utm_medium=unreachable" target="_blank" rel="noopener noreferrer">`,
+		} {
+			if !strings.Contains(page, want) {
+				t.Errorf("page does not carry %s", want)
+			}
+		}
+		for _, fetches := range []string{"<link", " src=", "@import", "url("} {
+			if strings.Contains(page, fetches) {
+				t.Errorf("page fetches something (%q)", fetches)
+			}
+		}
+		if n := strings.Count(page, "https://"); n != 1 {
+			t.Errorf("page names %d addresses, want only the credit's", n)
+		}
+	})
+
+	// Something listening that hangs up before it answers is not "nothing
+	// listening": it stays the bare 502 it was, and a page claiming the
+	// origin is not up would send somebody looking in the wrong place.
+	t.Run("an origin that hangs up is still a bare 502", func(t *testing.T) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { l.Close() })
+		go func() {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				conn.Close()
+			}
+		}()
+		rude := &url.URL{Scheme: "http", Host: l.Addr().String()}
+		base := route(t, origins.New(origins.WithURL(rude)), -1, nil, discard)
+		req, _ := http.NewRequest("GET", base+"/", nil)
+		req.Header.Set("Accept", browser)
+		resp, body := get(t, http.DefaultClient, req)
+		if resp.StatusCode != http.StatusBadGateway || body != "" || resp.Header.Get(unreachableHeader) != "" {
+			t.Errorf("= %d %q, marked %q; want a bare, unmarked 502", resp.StatusCode, body, resp.Header.Get(unreachableHeader))
+		}
+	})
+}
+
+// TestRouteNoticesAnOutageOnce pins WithNotice: told the first time an origin
+// fails a dial since the route began, not again while it stays down, and again
+// once it has answered in between. An origin restarted under a running tunnel
+// is news each time; the page asking every few seconds is not, and neither is
+// an origin that answers.
+func TestRouteNoticesAnOutageOnce(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+
+	var mu sync.Mutex
+	var told []int
+	r := New()
+	u, err := r.Route(t.Context(),
+		WithOrigins(origins.New(origins.WithURL(mustURL(t, echo(t, "A").URL), &url.URL{Scheme: "http", Host: addr}))),
+		WithNotice(func(ix int) {
+			mu.Lock()
+			defer mu.Unlock()
+			told = append(told, ix)
+		}))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	base := strings.TrimSuffix(u.String(), "/")
+	status := func(path string) int {
+		t.Helper()
+		req, _ := http.NewRequest("GET", base+path, nil)
+		resp, _ := get(t, http.DefaultClient, req)
+		return resp.StatusCode
+	}
+	saw := func(want ...int) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		if !slices.Equal(told, want) {
+			t.Errorf("notice told %v, want %v", told, want)
+		}
+	}
+
+	status("/?0")
+	saw()
+	for range 3 {
+		if got := status("/?1"); got != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 with nothing listening", got)
+		}
+	}
+	saw(1)
+
+	// Up again, on the same port, and answering.
+	back, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Skipf("the port was taken in between (%v); nothing to restart on", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})}
+	go func() { _ = srv.Serve(back) }()
+	if got := status("/?1"); got != http.StatusOK {
+		t.Fatalf("status = %d, want 200 once the origin is back", got)
+	}
+	saw(1)
+
+	// And down again: a second outage, told in its turn.
+	srv.Close()
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+	if got := status("/?1"); got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 once the origin is gone again", got)
+	}
+	saw(1, 1)
+}
+
+// TestUnanswered pins the dial behind the run's startup line: an http origin
+// with something listening answers, one without is reported by its index, in
+// order, and an origin tunneld serves itself is not an address and is never
+// dialed. A context that has ended answers nothing, since dials failing then
+// say nothing about the origins.
+func TestUnanswered(t *testing.T) {
+	up := echo(t, "up")
+	gone, alsoGone := echo(t, "gone"), echo(t, "also gone")
+	list := listOf(t, up, gone, up, alsoGone)
+	gone.Close()
+	alsoGone.Close()
+	served := &url.URL{Scheme: "attach", Host: "dockerd", Path: "/api"}
+	list = origins.New(origins.WithURL(append(list.URLs(), served)...))
+
+	if got := New().Unanswered(t.Context(), list); !slices.Equal(got, []int{1, 3}) {
+		t.Errorf("Unanswered() = %v, want [1 3]: the two with nothing listening", got)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := New().Unanswered(ctx, list); got != nil {
+		t.Errorf("Unanswered() with its context ended = %v, want nothing", got)
+	}
+}
+
+// mustURL parses a URL the test built, which cannot fail to parse.
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
 }
 
 // TestRoutePreservesTheHost pins that the Host a request arrived with is the

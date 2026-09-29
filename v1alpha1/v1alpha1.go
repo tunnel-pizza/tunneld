@@ -229,12 +229,20 @@ func WithDisplay(display Display) Option {
 // What it routes is the run's,
 // handed over in the options it takes, as Display's Open is: the dialable
 // origins, the index of the one marked +ws, what the display's Panel answered
-// to put in front, and the run's logger.
+// to put in front, the run's logger, and what to tell when an origin stops
+// answering.
+//
+// Unanswered dials each http and https origin once and says which indexes
+// nothing answered on, so the run can tell whoever started it that the address
+// is up and the thing behind it is not. It is the router's because the router
+// is what dials origins: a failed dial is what it answers visitors with a page
+// for, and what it tells WithNotice about at run time.
 //
 // Cancel takes the router down. Not ctx: the router outlives the run for as
 // long as the tunnel drains, so the caller cancels it once the tunnel is done.
 type Router interface {
 	Route(ctx context.Context, opts ...router.Option) (*url.URL, error)
+	Unanswered(ctx context.Context, origins Origins) []int
 	Cancel()
 }
 

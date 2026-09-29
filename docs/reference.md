@@ -4,7 +4,7 @@ The [README](../README.md) is how to use tunneld. This is how each part of it
 behaves, and why. `tunneld` below is `npx tunneld` if you haven't installed it.
 For embedding tunneld in a Go program, see [embedding.md](./embedding.md).
 
-- [Origins](#origins)
+- [Origins](#origins), and [when nothing is listening](#when-nothing-is-listening)
 - [Several origins on one address](#several-origins-on-one-address), and [WebSockets](#websockets)
 - [Programs](#programs)
 - [Containers](#containers)
@@ -42,6 +42,60 @@ can run is that origin written short, so `tunneld htop` exposes htop rather
 than a hostname that resolves nowhere. See [Programs](#programs). Marking one
 origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
 [WebSockets](#websockets).
+
+### When nothing is listening
+
+`tunneld :3999` with nothing on port 3999 still gets its address: the tunnel
+comes up whether or not the origin has, and a dev server started afterwards
+is served as soon as it answers. The run says so beneath the map:
+
+```
+tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
+https://0t8qsb6pq3.tunneled.pizza/
+  -> http://localhost:3999
+nothing is listening on localhost:3999 yet: start it, and the address serves it once it answers
+Press Ctrl+C to stop the tunnel...
+```
+
+That line comes from one dial of each `http` and `https` origin once the
+tunnel is up, a second at most; a program or a container is tunneld's own to
+serve and is not dialed. It goes to stderr with the rest of the map.
+
+A visitor who opens the address in the meantime gets a page from tunneld
+rather than the edge's "Bad gateway": *Nothing is answering yet*, naming the
+origin, with a word for whoever is sharing it and one for whoever was sent the
+link. It asks again every few seconds — backing off to every ten while it
+waits, and asking nothing while it is hidden — and reloads itself at the same
+URL once the origin answers, a tile in the [multiview panel](#multiview)
+included. It is self-contained: no stylesheet, font or script from anywhere
+else, `noindex`, and no `Referer` on its one link.
+
+What answers is a `503` with `Retry-After: 2` and `Cache-Control: no-store`,
+marked `X-Tunneld-Unreachable: <origin host>` so a script, and the page
+itself, can tell it from an origin's own 503. A 503 rather than a 502:
+Cloudflare's edge replaces a 502 from an origin with a gateway page of its
+own, which says nothing about which hop failed. Only a browser loading a page
+— a `GET` or `HEAD` that accepts `text/html`, for a document or a frame — gets
+the page; a `fetch`, an asset, a `POST`, a WebSocket handshake and `curl` get
+one line:
+
+```
+this address is up, but nothing is listening on localhost:3999 behind it yet
+```
+
+Only a dial nothing answers counts: refused, no route, or no answer in time.
+An origin that takes the connection and hangs up without answering is still a
+bare `502`, because something is listening there.
+
+The first time an origin fails a visitor that way since the run began, or
+since it last answered, the run says so on stderr as well, once per outage:
+
+```
+a visitor found nothing listening on localhost:3999: start it, and the address serves it once it answers
+```
+
+Every such request is also logged at `warn` as `origin did not answer`; see
+[Logs](#logs).
 
 ## Several origins on one address
 
@@ -556,6 +610,12 @@ guess. Anything the provider said with the mint sits in a bar above the
 tiles, the same bar the frame draws, in the colour of how loudly it was said.
 When a browser is opened at all, this is the page it lands on.
 
+A tile whose origin is not up yet shows [tunneld's page saying
+so](#when-nothing-is-listening), which reloads itself once the origin
+answers. A tile showing a gateway's page instead — the edge's, while the
+tunnel between is down — is reloaded by the panel every few seconds until it
+is not.
+
 The panel is served in front of the origin proxy, so it needs no port and no
 origin ever sees the request. It answers **only** the tunnel's own address:
 path `/`, an empty query, and a top-level navigation that did not come from a
@@ -598,11 +658,12 @@ origin. It carries the help text and `tunneld version` too, which is what keeps
 those pipeable.
 
 **stderr** carries everything human: the build banner, the origin each address
-reaches, and the tunnel's own logs at `--log-level`. With the panel on there is
-one address, and every origin it serves is listed beneath it. Whatever the
-provider said with the mint — a note, a warning or a caution — is not printed
-here: it is shown on every terminal frame and above the panel's tiles, where
-the reader is, every run, cached spec or fresh.
+reaches, a line for an origin [nothing is listening
+on](#when-nothing-is-listening), and the tunnel's own logs at `--log-level`.
+With the panel on there is one address, and every origin it serves is listed
+beneath it. Whatever the provider said with the mint — a note, a warning or a
+caution — is not printed here: it is shown on every terminal frame and above
+the panel's tiles, where the reader is, every run, cached spec or fresh.
 
 On a terminal holding both, with `--multiview=false`, that reads as a map:
 
@@ -841,6 +902,12 @@ of them.
 The log view and the file record info and above whatever stderr shows, and
 debug too when `--log-level debug` asks for it. Debug is per request and per
 keystroke, which a file kept by default would grow by with every visitor.
+
+A request an origin does not answer is a `warn` line, `origin did not
+answer`, naming the origin and the dial's error, every time. What stderr
+carries without `--log-level` is the one plain line per outage
+[beneath the map](#when-nothing-is-listening), which is not a log line and is
+not repeated per request.
 
 A detached run points its own stdout and stderr at the same file, so what
 bypasses the logger, a panic's trace included, lands there too. The file is
