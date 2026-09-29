@@ -32,6 +32,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -604,13 +605,20 @@ type fakeRouter struct {
 	dialable Origins
 	ws       int
 	front    func(http.Handler) http.Handler
-	// ctx is the lifetime the run gave the router: what the real one
-	// serves until.
-	ctx context.Context
+	// ctx is the router's lifetime: the run's context detached from its
+	// cancellation, as the real one makes it, and ended only by Cancel — so a
+	// case can see when the run cancels it.
+	ctx  context.Context
+	stop context.CancelFunc
 }
 
-func (f *fakeRouter) Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, _ v1.Logger) (*url.URL, error) {
-	f.ctx, f.dialable, f.ws, f.front = ctx, dialable, ws, front
+func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL, error) {
+	// The run's options, read back off a router they configure rather than
+	// one that serves.
+	r := router.New(opts...)
+	dialable, front := r.Origins(), r.Handler()
+	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
+	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -618,6 +626,12 @@ func (f *fakeRouter) Route(ctx context.Context, dialable Origins, ws int, front 
 		return dialable.At(0), nil
 	}
 	return routed, nil
+}
+
+func (f *fakeRouter) Cancel() {
+	if f.stop != nil {
+		f.stop()
+	}
 }
 
 // fakeIdentity stands in for the identity package: it answers what it was

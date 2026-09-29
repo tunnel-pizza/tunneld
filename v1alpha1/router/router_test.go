@@ -24,9 +24,6 @@ import (
 // The contract this implements is asserted in v1alpha1, which imports this
 // package; naming it here would be the cycle.
 
-// discard is the logger for cases that assert nothing about logs.
-var discard = slog.New(slog.DiscardHandler)
-
 // echo is an origin that answers with its name and the query it was
 // forwarded, which is everything routing can change about a request.
 func echo(t *testing.T, name string) *httptest.Server {
@@ -57,10 +54,12 @@ func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 // none.
 func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
-	u, err := New().Route(t.Context(), list, ws, front, log)
+	r := New()
+	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithHandler(front), WithLog(log))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
+	t.Cleanup(r.Cancel)
 	return strings.TrimSuffix(u.String(), "/")
 }
 
@@ -85,20 +84,120 @@ func get(t *testing.T, client *http.Client, req *http.Request) (*http.Response, 
 // the application's own.
 func TestRouteALoneOriginIsItsOwnAddress(t *testing.T) {
 	list := listOf(t, echo(t, "solo"))
-	got, err := New().Route(t.Context(), list, -1, nil, discard)
+	r := New()
+	got, err := r.Route(t.Context(), WithOrigins(list))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 	if got != list.At(0) {
 		t.Errorf("Route() = %v, want the origin itself (%v)", got, list.At(0))
 	}
+	r.Cancel() // nothing to take down, and safe to call
 }
 
 // TestRouteNothingIsAnError pins that an empty list is refused rather than
-// served: there is nothing a request could reach.
+// served, and so is no list at all: there is nothing a request could reach.
 func TestRouteNothingIsAnError(t *testing.T) {
-	if _, err := New().Route(t.Context(), origins.New(), -1, nil, discard); err == nil {
+	if _, err := New().Route(t.Context(), WithOrigins(origins.New())); err == nil {
 		t.Error("Route() over no origins succeeded, want an error")
+	}
+	if _, err := New().Route(t.Context()); err == nil {
+		t.Error("Route() with no WithOrigins succeeded, want an error")
+	}
+}
+
+// TestOptions pins where a route's facts come from: New's defaults, then what
+// New was given, then what Route is given for that route alone — on a copy,
+// so the next route starts from the router's own again.
+func TestOptions(t *testing.T) {
+	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
+			r.Origins(), r.WebSockets(), r.Handler() != nil, r.mux != nil, r.log == discard)
+	}
+	if r := New(WithLog(nil)); r.log != discard {
+		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
+	}
+
+	a, b := listOf(t, echo(t, "A")), listOf(t, echo(t, "B"))
+	r := New(WithOrigins(a), WithWebSockets(0))
+	if got, err := r.Route(t.Context()); err != nil || got != a.At(0) {
+		t.Errorf("Route() with New's origins = %v, %v; want %v", got, err, a.At(0))
+	}
+	if got, err := r.Route(t.Context(), WithOrigins(b)); err != nil || got != b.At(0) {
+		t.Errorf("Route(WithOrigins(b)) = %v, %v; want %v", got, err, b.At(0))
+	}
+	if r.Origins() != a || r.WebSockets() != 0 {
+		t.Error("a route's options changed the router's own, want them applied to that route alone")
+	}
+	if got, _ := r.Route(t.Context()); got != a.At(0) {
+		t.Errorf("the route after one with its own origins = %v, want New's (%v)", got, a.At(0))
+	}
+}
+
+// TestControlPath pins the prefix tunneld keeps for itself: under it the
+// router's own mux answers, and what it has no pattern for is a 404 rather
+// than an origin's page; everywhere else — paths a mux would clean included —
+// the request reaches an origin exactly as it was sent. A lone origin is not
+// routed, so it has no ControlPath.
+func TestControlPath(t *testing.T) {
+	// pathOf answers with its name and the path it was sent, unclean or not.
+	pathOf := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "%s|%s", name, r.URL.EscapedPath())
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	r := New()
+	u, err := r.Route(t.Context(), WithOrigins(listOf(t, pathOf("A"), pathOf("B"))))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	base := strings.TrimSuffix(u.String(), "/")
+	// A redirect answered is the result, not something to follow.
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	for name, tc := range map[string]struct {
+		method     string
+		path       string
+		wantStatus int
+		wantBody   string
+	}{
+		"ping":                       {"GET", "/_tunneld/ping", 200, "pong"},
+		"ping answers HEAD as GET":   {"HEAD", "/_tunneld/ping", 200, ""},
+		"ping takes no other method": {"POST", "/_tunneld/ping", 405, ""},
+		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 404, ""},
+		"a lookalike prefix is the origin's":      {"GET", "/_tunneldx", 200, "A|/_tunneldx"},
+		"a doubled slash reaches the origin":      {"GET", "/a//b", 200, "A|/a//b"},
+		"a dot segment reaches the origin":        {"GET", "/a/../b", 200, "A|/a/../b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, base+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, body := get(t, noFollow, req)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("%s %s = %d %q, want %d", tc.method, tc.path, resp.StatusCode, body, tc.wantStatus)
+			}
+			if tc.wantBody != "" && body != tc.wantBody {
+				t.Errorf("%s %s = %q, want %q", tc.method, tc.path, body, tc.wantBody)
+			}
+			if tc.wantStatus >= 400 && strings.Contains(body, "|") {
+				t.Errorf("%s %s reached an origin (%q), want the prefix kept from them", tc.method, tc.path, body)
+			}
+			if tc.path == "/_tunneld/ping" && tc.wantStatus == 200 {
+				if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+					t.Errorf("ping Cache-Control = %q, want no-store: every ping is asked of this process", got)
+				}
+			}
+		})
+	}
+	solo := listOf(t, pathOf("solo"))
+	if got, _ := r.Route(t.Context(), WithOrigins(solo)); got != solo.At(0) {
+		t.Errorf("a lone origin = %v, want the origin itself", got)
 	}
 }
 
@@ -124,23 +223,30 @@ func TestRouteAppliesTheFront(t *testing.T) {
 	}
 }
 
-// TestRouteEndsWithTheContext pins the router's lifetime: it serves while its
-// context lives and stops accepting once it ends. Watched on the listener
-// itself, polled to a deadline, since the close runs on a goroutine of its own
-// and a busy runner may take a while to schedule it.
-func TestRouteEndsWithTheContext(t *testing.T) {
+// TestRouteOutlivesItsContextUntilCancelled pins the router's lifetime: it
+// keeps serving after the context it was routed under ends — the tunnel
+// forwarding here drains past the run — and stops accepting once Cancel is
+// called. Watched on the listener itself, polled to a deadline, since the
+// close runs on a goroutine of its own and a busy runner may take a while to
+// schedule it.
+func TestRouteOutlivesItsContextUntilCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	u, err := New().Route(ctx, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
+	r := New()
+	u, err := r.Route(ctx, WithOrigins(listOf(t, echo(t, "A"), echo(t, "B"))))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
+	t.Cleanup(r.Cancel)
+
+	cancel()
+	time.Sleep(50 * time.Millisecond) // long enough for a close tied to ctx to have run
 	resp, err := http.Get(u.String())
 	if err != nil {
-		t.Fatalf("GET while live: %v", err)
+		t.Fatalf("GET after the context ended: %v, want the router still serving", err)
 	}
 	resp.Body.Close()
 
-	cancel()
+	r.Cancel()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		conn, err := net.DialTimeout("tcp", u.Host, time.Second)
@@ -149,7 +255,7 @@ func TestRouteEndsWithTheContext(t *testing.T) {
 		}
 		conn.Close()
 		if time.Now().After(deadline) {
-			t.Fatal("the router still accepts connections after its context ended")
+			t.Fatal("the router still accepts connections after Cancel")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

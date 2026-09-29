@@ -209,12 +209,17 @@ func WithDisplay(display Display) Option {
 // than asked of the tunnel engine, which is handed one URL and knows nothing
 // of origins (#176).
 //
-// Route answers with that URL: the router's own while ctx lives, or the one
-// origin's when there is one and nothing to put in front of it. ws is the
-// index of the origin marked +ws, -1 for none. front wraps the routing, and
-// is what the display's Panel answered — nil for none.
+// Route answers with that URL: the router's own, or the one origin's when
+// there is one and nothing to put in front of it. What it routes is the run's,
+// handed over in the options it takes, as Display's Open is: the dialable
+// origins, the index of the one marked +ws, what the display's Panel answered
+// to put in front, and the run's logger.
+//
+// Cancel takes the router down. Not ctx: the router outlives the run for as
+// long as the tunnel drains, so the caller cancels it once the tunnel is done.
 type Router interface {
-	Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error)
+	Route(ctx context.Context, opts ...router.Option) (*url.URL, error)
+	Cancel()
 }
 
 // WithRouter replaces what stands between the tunnel and the origins. The

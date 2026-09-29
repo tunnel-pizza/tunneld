@@ -27,6 +27,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -518,41 +519,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
-	// Several origins share one hostname, and which one a request reaches is
-	// decided here rather than in the tunnel: the router serves ?n, the +ws
-	// origin, the Referer and the cookie on a loopback address, with the
-	// panel in front of it when there is one, and the tunnel forwards to that
-	// one address. A lone origin with no panel is its own address. Stood up
-	// before the tunnel for the same reason the binding is: it is what the
-	// tunnel is handed.
-	//
-	// The +ws origin is read off the parsed list, which is the origins
-	// package's own type; the dialable list has the same indexes.
-	ws := -1
-	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
-		if i, ok := marked.WebSocket(); ok {
-			ws = i
-		}
-	}
-	// Down with the tunnel rather than with ctx. A tunnel told to stop keeps
-	// answering what the edge already sent it for a grace period, and every
-	// one of those requests comes here; a router closed with ctx would turn
-	// them into refused dials in a program that embeds this and outlives Run.
-	// Until the tunnel exists nothing forwards here, so a return before then
-	// takes the router with it.
-	routing, unroute := context.WithCancel(context.WithoutCancel(ctx))
-	local, err := b.router.Route(routing, dialable, ws, b.display.Panel(b.multiview, origins, log), log)
-	if err != nil {
-		unroute()
-		return err
-	}
-	routed := false
-	defer func() {
-		if !routed {
-			unroute()
-		}
-	}()
-
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -599,6 +565,35 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		log.Debug("received event", "e", e)
 	}
 
+	// Several origins share one hostname, and which one a request reaches is
+	// decided here rather than in the tunnel: the router serves ?n, the +ws
+	// origin, the Referer and the cookie on a loopback address, with the
+	// panel in front of it when there is one, and the tunnel forwards to that
+	// one address. A lone origin with no panel is its own address.
+	//
+	// The +ws origin is read off the parsed list, which is the origins
+	// package's own type; the dialable list has the same indexes.
+	ws := -1
+	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
+		if i, ok := marked.WebSocket(); ok {
+			ws = i
+		}
+	}
+	// Down with the tunnel rather than with ctx: the router outlives the run
+	// while the tunnel drains, so it is cancelled once the tunnel is done. It
+	// is stood up here, immediately before the tunnel it is handed to, so
+	// nothing between the two can return and leave it serving with no tunnel
+	// to end it.
+	local, err := b.router.Route(ctx,
+		router.WithOrigins(dialable),
+		router.WithWebSockets(ws),
+		router.WithHandler(b.display.Panel(b.multiview, origins, log)),
+		router.WithLog(log),
+	)
+	if err != nil {
+		return err
+	}
+
 	// What the cache has is what the mint is hinted with, and nothing when it
 	// has nothing: From("") mints fresh, so there is one call and no branch.
 	// No second attempt on failure either — From asks the edge about a hint
@@ -617,10 +612,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, above.
 		WithLocalURL(local)
-	routed = true
 	go func() {
 		<-tun.Done()
-		unroute()
+		b.router.Cancel()
 	}()
 
 	// Something turning, because the wait below is the long one: minting,
