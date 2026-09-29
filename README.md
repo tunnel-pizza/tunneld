@@ -35,9 +35,9 @@ That address works for anyone, anywhere, over HTTPS. On a desktop a browser tab
 opens on it too. Press Ctrl+C and it's gone. Run the same command from the
 same directory later and you usually get the same address back.
 
-Start your app before or after: the address comes up either way. Until
-something answers on the port, a visitor gets a page asking for it, which loads
-the app on its own once it's up. Nothing to share at all? Run `npx tunneld` on
+Start your app before or after: your address comes up either way. Until
+something answers on your port, a visitor gets a page asking for it, which loads
+your app on its own once it's up. Nothing to share at all? Run `npx tunneld` on
 its own to share your shell.
 
 <details>
@@ -63,7 +63,7 @@ its own to share your shell.
 | 🤖 | `npx tunneld claude --resume` | A coding agent you can keep working with from your phone or another computer. |
 | ✏️ | `npx tunneld nvim` | Your editor, config and plugins included, in a browser tab. |
 | 🪟 | `npx tunneld :3000 :4000` | Two apps on one hostname, side by side in one window. |
-| 🍕 | `npx tunneld :3000 'npm run dev' claude` | `npm run dev`, the app it serves, and a Claude session beside it. |
+| 🍕 | `npx tunneld :3000 'npm run dev' claude` | `npm run dev`, your app, and a Claude session beside it. |
 | 🐳 | `npx tunneld attach://dockerd/web` | A running container's terminal. Compose service names work too. |
 
 Anything that runs in a terminal works: htop, a REPL, Codex, Gemini CLI,
@@ -185,7 +185,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
 | `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
 | `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
-| `--qr` | `TUNNELD_QR` | Print the address as a QR code too, and open no tab. Scan it with your phone. |
+| `--qr` | `TUNNELD_QR` | Print your address as a QR code too, and open no tab. Scan it with your phone. |
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
@@ -236,8 +236,8 @@ Install the plugin:
 /plugin install tunneld@tunnel-pizza
 ```
 
-- **Ask Claude to show you the app on your phone**, or to send it to someone. It
-  shares the dev server it started and tells you what the address gives away.
+- **Ask Claude to put your app on your phone**, or to send it to someone. It
+  shares your dev server and tells you what your address gives away.
 - **Type `/tunneld:session` to carry on from your phone.** Type `/exit` here,
   then scan the QR code it shows.
 
