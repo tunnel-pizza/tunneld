@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -33,15 +34,48 @@ const pipesNotice = "no terminal on this machine — no line editing, no resize,
 var shells = []string{"ash", "bash", "dash", "ksh", "mksh", "sh", "zsh"}
 
 // pipeArgs is what a program is run with over pipes: its own arguments, or -i
-// for a shell that was given none. The name is read off either separator,
-// since the path is the host's.
+// for a shell that was given none.
+//
+// bash also gets --noediting. With -i it runs readline even on a pipe, and
+// readline echoes each line it reads — a second echo after cooked's — and
+// answers Tab by redrawing a line it has no terminal to redraw on. Asked of
+// the program the path resolves to, since sh is bash on many systems; and
+// only of bash, since dash and ash refuse the option.
 func pipeArgs(path string, args []string) []string {
-	name := path[strings.LastIndexAny(path, `/\`)+1:]
-	name = strings.TrimSuffix(name, filepath.Ext(name))
-	if len(args) == 0 && slices.Contains(shells, name) {
-		return []string{"-i"}
+	if len(args) > 0 || !slices.Contains(shells, baseName(path)) {
+		return args
 	}
-	return args
+	resolved := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		resolved = r
+	}
+	if baseName(path) == "bash" || baseName(resolved) == "bash" {
+		return []string{"--noediting", "-i"}
+	}
+	return []string{"-i"}
+}
+
+// baseName is a program's name without its directory or extension, read off
+// either separator, since the path is the host's.
+func baseName(path string) string {
+	name := path[strings.LastIndexAny(path, `/\`)+1:]
+	return strings.TrimSuffix(name, filepath.Ext(name))
+}
+
+// onlcr is what a terminal does to a program's output and a pipe does not:
+// every newline becomes a carriage return and a newline (the ONLCR output
+// setting). Without it a line feed only moves down, and the screen the frame
+// draws from starts each line where the last one ended.
+type onlcr struct{ w io.Writer }
+
+func (o onlcr) Write(p []byte) (int, error) {
+	if bytes.IndexByte(p, '\n') < 0 {
+		return o.w.Write(p)
+	}
+	if _, err := o.w.Write(bytes.ReplaceAll(p, []byte("\n"), []byte("\r\n"))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // pipeWait bounds how long an ended program's output is waited for. A program
@@ -57,7 +91,11 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	// dumb says what the output is going to: no cursor to move, no colors
 	// anybody asked for.
 	cmd.Env = append(os.Environ(), "TERM=dumb")
-	cmd.Stdout, cmd.Stderr = out, errw
+	// Through onlcr, the one piece of a terminal's output processing a
+	// program counts on. out and errw are one writer when the caller passes
+	// one, and stay one — exec gives both streams a single pipe when they
+	// compare equal, so what the program interleaves stays interleaved.
+	cmd.Stdout, cmd.Stderr = onlcr{out}, onlcr{errw}
 	cmd.WaitDelay = pipeWait
 	ownGroup(cmd)
 	stdin, err := cmd.StdinPipe()

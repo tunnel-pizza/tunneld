@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -87,23 +88,69 @@ func TestCooked(t *testing.T) {
 	}
 }
 
-// TestPipeArgs pins which programs are told they are interactive: a shell run
-// bare, and nothing given arguments of its own or that is not a shell.
+// TestPipeArgs pins which programs are told they are interactive — a shell
+// run bare, and nothing given arguments of its own or that is not a shell —
+// and which of those is bash, told to leave line editing to tunneld: by its
+// name, or by the program a link named sh resolves to.
+//
+// Fixtures rather than the host's /bin/sh, which is dash on one machine and
+// bash on the next.
 func TestPipeArgs(t *testing.T) {
-	for _, tc := range []struct {
+	dir := t.TempDir()
+	sh := write(t, dir, "sh", 0o755)
+	bashDir := t.TempDir()
+	bash := write(t, bashDir, "bash", 0o755)
+	linked := filepath.Join(t.TempDir(), "sh")
+	symlinked := runtime.GOOS != "windows" && os.Symlink(bash, linked) == nil
+
+	interactive := []string{"-i"}
+	bashy := []string{"--noediting", "-i"}
+	cases := []struct {
 		path string
 		args []string
 		want []string
 	}{
-		{"/bin/sh", nil, []string{"-i"}},
-		{"/usr/bin/bash", nil, []string{"-i"}},
-		{`C:\Program Files\Git\bin\bash.exe`, nil, []string{"-i"}},
-		{"/bin/sh", []string{"-c", "ls"}, []string{"-c", "ls"}},
+		{sh, nil, interactive},
+		{bash, nil, bashy},
+		{"/usr/bin/bash", nil, bashy},
+		{`C:\Program Files\Git\bin\bash.exe`, nil, bashy},
+		{"/bin/dash", nil, interactive},
+		{sh, []string{"-c", "ls"}, []string{"-c", "ls"}},
+		{bash, []string{"-c", "ls"}, []string{"-c", "ls"}},
 		{"/usr/bin/htop", nil, nil},
 		{"/usr/bin/shasum", nil, nil},
-	} {
+	}
+	if symlinked {
+		cases = append(cases, struct {
+			path string
+			args []string
+			want []string
+		}{linked, nil, bashy})
+	}
+	for _, tc := range cases {
 		if got := pipeArgs(tc.path, tc.args); !slices.Equal(got, tc.want) {
 			t.Errorf("pipeArgs(%q, %q) = %q, want %q", tc.path, tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestOnlcr pins the newline a terminal would have added: every \n a program
+// writes reaches the screen as \r\n, and the write reports the program's own
+// length, not the longer one written.
+func TestOnlcr(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"a\nb\n", "a\r\nb\r\n"},
+		{"no newline", "no newline"},
+		{"\n\n", "\r\n\r\n"},
+		{"", ""},
+	} {
+		var got bytes.Buffer
+		n, err := onlcr{&got}.Write([]byte(tc.in))
+		if err != nil || n != len(tc.in) {
+			t.Errorf("Write(%q) = %d, %v; want %d, nil", tc.in, n, err, len(tc.in))
+		}
+		if got.String() != tc.want {
+			t.Errorf("Write(%q) wrote %q, want %q", tc.in, got.String(), tc.want)
 		}
 	}
 }
@@ -190,14 +237,14 @@ func TestShellOverPipes(t *testing.T) {
 	}
 
 	_, _ = io.WriteString(typed, "echo over-pipes\r")
-	at := await("over-pipes\n", 0)
+	at := await("over-pipes\r\n", 0)
 
 	began := time.Now()
 	_, _ = io.WriteString(typed, "sleep 30\r")
 	time.Sleep(300 * time.Millisecond)
 	_, _ = io.WriteString(typed, "\x03")
 	_, _ = io.WriteString(typed, "echo still-here\r")
-	await("still-here\n", at)
+	await("still-here\r\n", at)
 	if took := time.Since(began); took > 10*time.Second {
 		t.Errorf("Ctrl-C took %s to end sleep 30", took)
 	}
@@ -210,5 +257,57 @@ func TestShellOverPipes(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the shell did not exit")
+	}
+
+	// No newline reached the page bare: a line feed alone moves down without
+	// returning, and the screen staircases.
+	shown := out.String()
+	for i := range len(shown) {
+		if shown[i] == '\n' && (i == 0 || shown[i-1] != '\r') {
+			t.Fatalf("a bare newline at %d in %q", i, shown)
+		}
+	}
+}
+
+// TestBashOverPipes pins bash with its line editing off: tunneld echoes what
+// is typed, so bash must not echo it again, and a Tab is a character in the
+// line rather than a completion redrawn onto a terminal there is none of.
+func TestBashOverPipes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash over pipes is a Unix sandbox's; the Windows path is TestOpenWithoutATerminal's")
+	}
+	targets := &TargetsImpl{open: noPTY}
+	target, err := targets.Open(t.Context(), "bash", nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Skipf("no bash here: %v", err)
+	}
+	defer func() { _ = target.Close() }()
+
+	in, typed := io.Pipe()
+	out := &sink{}
+	resize := make(chan remotecommand.TerminalSize)
+	close(resize)
+	done := make(chan error, 1)
+	go func() {
+		done <- target.AttachContainer(t.Context(), "", "", "", in, out, out, false, resize)
+	}()
+
+	_, _ = io.WriteString(typed, "echo once-$((1+1))\r")
+	_, _ = io.WriteString(typed, "echo tab\tafter\r")
+	_, _ = io.WriteString(typed, "exit\r")
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("bash did not exit; the page shows %q", out.String())
+	}
+
+	shown := out.String()
+	if n := strings.Count(shown, "echo once-$((1+1))"); n != 1 {
+		t.Errorf("the line was echoed %d times in %q, want once", n, shown)
+	}
+	for _, want := range []string{"once-2\r\n", "tab after\r\n"} {
+		if !strings.Contains(shown, want) {
+			t.Errorf("the page shows %q, want %q in it", shown, want)
+		}
 	}
 }

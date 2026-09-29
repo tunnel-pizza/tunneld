@@ -298,7 +298,9 @@ warning at startup and a line on the page say what that costs:
 - **Ctrl-C** interrupts what is running (not on Windows). `Ctrl-D` on an empty
   line ends the program's input.
 - **Shells:** a shell run with no arguments (`sh`, `bash`, `zsh`, …) is started
-  with `-i`, so it prompts and survives `Ctrl-C`.
+  with `-i`, so it prompts and survives `Ctrl-C`. bash, including an `sh` that
+  is a link to it, also gets `--noediting`, so it does not echo each line a
+  second time.
 - **What is lost:** no line editing beyond that, no resize, and no full-screen
   programs.
 
