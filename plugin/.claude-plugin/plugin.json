@@ -1,6 +1,6 @@
 {
   "name": "tunneld",
-  "description": "Put the dev server you just started on a public HTTPS URL with npx tunneld, for a phone, a teammate or a webhook, and say what the address gives away.",
+  "description": "Put the dev server you just started on a public HTTPS URL with npx tunneld, for a phone, a teammate or a webhook, or hand the conversation itself to one with /tunneld:session.",
   "author": {
     "name": "tunnel.pizza",
     "email": "help@tunnel.pizza",

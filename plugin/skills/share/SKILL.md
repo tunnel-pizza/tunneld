@@ -51,6 +51,9 @@ npx tunneld -d :3000
 - stdout carries the public address and nothing else, one per line; the build
   line, what each address reaches, and a summary with the run's `pid` and its
   `log` go to stderr. `addr=$(npx tunneld -d :3000)` captures the address.
+- For a phone, add `--qr`: stderr then carries the address as a QR code too.
+  Copy it into your reply exactly, every line, inside a plain ``` code block
+  with no language after the backticks.
 - A detached run draws no terminal and opens no browser tab. It outlives this
   conversation: tell the user it is still up, and how to stop it.
 - Flags go after `-d` and before the origins. Run again from the same

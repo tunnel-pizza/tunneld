@@ -29,7 +29,7 @@ Deep-link by filename; line numbers will drift.
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
 | The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins, and the plugin's install lines to the marketplace | [`readme_test.go`](./readme_test.go) |
-| The Claude Code marketplace, and its one plugin: a skill that teaches an agent to share a dev server | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), [`plugin/`](./plugin) |
+| The Claude Code marketplace, and its one plugin: a skill that teaches an agent to share a dev server, and `/tunneld:session`, which hands a conversation to a tunnel | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), [`plugin/`](./plugin) |
 | The marketplace held to its plugin, the skill's header, and every flag the skill types | [`marketplace_test.go`](./marketplace_test.go) |
 | Every origin form, the frame, flags and environment in full | [`docs/reference.md`](./docs/reference.md)          |
 | Embedding: the options, `Run`, the `v1` surface, the examples table | [`docs/embedding.md`](./docs/embedding.md)  |
@@ -257,11 +257,11 @@ README says what it is for.
 
 `marketplace_test.go` is the rule once more. `.claude-plugin/marketplace.json`
 is the source, at the root, and its test follows it to the plugin it lists and
-the skill inside that, since no Go file can sit beside those without shipping
-to everyone who installs the plugin. It holds the names to each other, the
-skill to the header a model picks it by, and every flag the skill tells an
-agent to type to the command that has it — or, for `-d` and `-k`, to the
-command's refusal naming the npm launcher.
+the skills inside that, since no Go file can sit beside those without shipping
+to everyone who installs the plugin. It holds the names to each other, each
+skill to the header a model picks it by or is kept from it by, and every flag
+a skill tells an agent to type to the command that has it — or, for `-d` and
+`-k`, to the command's refusal naming the npm launcher.
 
 `v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
 source file that is not Go, so its tests sit beside it under the name

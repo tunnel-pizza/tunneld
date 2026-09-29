@@ -33,6 +33,10 @@ type marketplace struct {
 // tunneld refuses each of them by name, which is what the flag check leans on.
 var launcherWords = regexp.MustCompile(`^-(d|k|kd|dk)$`)
 
+// switches matches what Claude Code reads as a boolean in a skill's header:
+// true and false, and yes, no, on, off, 1 and 0, in any case.
+var switches = regexp.MustCompile(`(?i)^(true|false|yes|no|on|off|1|0)$`)
+
 // flagSpan matches a code span that is a flag and nothing else: `-d`,
 // `--no-cache`, `--identity-providers=`.
 var flagSpan = regexp.MustCompile("`(--?[a-z][a-z-]*)(?:=[^`]*)?`")
@@ -75,6 +79,12 @@ func TestMarketplaceListsThePlugin(t *testing.T) {
 // description at 1,536 characters in the listing, so a trigger past that is
 // one the model never reads. The name is the directory's, so the command is
 // the one the tree says: /tunneld:share for skills/share.
+//
+// A switch in the header is one of the words Claude Code documents as a
+// boolean. `claude plugin validate` passes a misspelt one without a word, and
+// that matters most for disable-model-invocation: /tunneld:session puts this
+// conversation on a public URL, and a true nobody can read is a skill the
+// model may start on its own.
 func TestSkillsSayWhenToUseThem(t *testing.T) {
 	for _, entry := range marketplaceOf(t).Plugins {
 		for _, skill := range skillsOf(t, entry.Source) {
@@ -87,6 +97,11 @@ func TestSkillsSayWhenToUseThem(t *testing.T) {
 				t.Errorf("%s has no description, so no model will pick it", skill)
 			case len(description) > 1536:
 				t.Errorf("%s: description is %d characters, and the listing keeps 1,536", skill, len(description))
+			}
+			for _, key := range []string{"disable-model-invocation", "user-invocable"} {
+				if value, ok := fields[key]; ok && !switches.MatchString(value) {
+					t.Errorf("%s: %s = %q, which Claude Code does not read as true or false", skill, key, value)
+				}
 			}
 		}
 	}

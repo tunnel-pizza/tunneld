@@ -239,6 +239,9 @@ background, with a word about what the address gives away:
 /plugin install tunneld@tunnel-pizza
 ```
 
+`/tunneld:session` hands the conversation you're in to a public URL, with a QR
+code, so you can carry on from your phone.
+
 ## Use it from Go
 
 The command is a builder, so another Go program can mount it under a verb of
