@@ -169,12 +169,11 @@ func TestRefusedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		// With nothing settled anywhere, the last thing tried is $SHELL —
-		// which strippedEnv has removed, so there is genuinely nothing left
-		// and the refusal is reachable. On a machine that has a shell, no
-		// arguments is a valid invocation instead; the cases below turn the
-		// fallback off with a shell present and get this same refusal back.
-		{"no origin at all", nil, "TUNNELD_ORIGINS"},
+		// With nothing settled anywhere and the shell fallback off, there is
+		// nothing to expose. With it on, a bare run always has an origin —
+		// the chain ends at the shell built into tunneld — so no arguments
+		// alone is a valid invocation that opens a tunnel, never a refusal.
+		{"no origin at all", []string{"--shell-fallback=false"}, "TUNNELD_ORIGINS"},
 		// An unusable origin is dropped rather than refused, so a run whose
 		// only origin was unusable is refused for having none — the same
 		// failure as passing nothing at all, and the same lever.
