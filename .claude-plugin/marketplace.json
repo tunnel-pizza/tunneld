@@ -1,0 +1,15 @@
+{
+  "name": "tunnel-pizza",
+  "description": "tunneld for coding agents: put what's running on this machine on a public URL.",
+  "owner": {
+    "name": "tunnel.pizza",
+    "email": "help@tunnel.pizza",
+    "url": "https://tunnel.pizza/"
+  },
+  "plugins": [
+    {
+      "name": "tunneld",
+      "source": "./plugin"
+    }
+  ]
+}

@@ -221,6 +221,17 @@ plane. The one exception is a network that blocks the edge's port 7844: there
 the connection goes through tunnel.pizza's relay, which forwards the encrypted
 bytes without reading them.
 
+## Use it from Claude Code
+
+A plugin teaches the agent to put the dev server it just started on a public
+URL when you ask to see it on your phone or send it to somebody, in the
+background, with a word about what the address gives away:
+
+```
+/plugin marketplace add tunnel-pizza/tunneld
+/plugin install tunneld@tunnel-pizza
+```
+
 ## Use it from Go
 
 The command is a builder, so another Go program can mount it under a verb of
