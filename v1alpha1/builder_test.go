@@ -31,6 +31,7 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/builtin"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -1492,11 +1493,11 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		return path
 	}
 	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: v1.ExecScheme, Path: path}} }
-	builtin, err := shell.Builtin()
+	origin, err := builtin.Origin()
 	if err != nil {
-		t.Fatalf("shell.Builtin() = %v", err)
+		t.Fatalf("builtin.Origin() = %v", err)
 	}
-	builtinURL, _ := url.Parse(builtin)
+	builtinURL, _ := url.Parse(origin)
 
 	for _, tc := range []struct {
 		name     string

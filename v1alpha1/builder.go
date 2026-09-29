@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/builtin"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -1245,7 +1246,7 @@ func (b *BuilderImpl) cached() Origins {
 
 // fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
 // else bash on $PATH, else sh on $PATH, else the one built into tunneld
-// (shell.Builtin), so a run with no origin always has one — a container image
+// (builtin.Origin), so a run with no origin always has one — a container image
 // that sets no $SHELL, a scrubbed CI environment, a $SHELL inherited from a
 // host that names a shell the image does not have.
 //
@@ -1269,7 +1270,7 @@ func fallbackShell(log v1.Logger) (string, bool) {
 		}
 		log.Debug("no shell of that name on $PATH", "shell", name)
 	}
-	origin, err := shell.Builtin()
+	origin, err := builtin.Origin()
 	if err != nil {
 		log.Warn("not exposing a shell", "reason", err)
 		return "", false
