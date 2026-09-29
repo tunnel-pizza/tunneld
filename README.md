@@ -10,7 +10,7 @@ agent, a container: one command, no account.
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](./LICENSE.md)
 
 ```sh
-npx tunneld :3000
+npx tunneld
 ```
 
 <!-- TODO(#180): a screen recording goes here: the frame coming up in a tab,
@@ -35,6 +35,11 @@ That address works for anyone, anywhere, over HTTPS. On a desktop a browser tab
 opens on it too. Press Ctrl+C and it's gone. Run the same command from the
 same directory later and you usually get the same address back.
 
+Nothing listening on the port yet? The address still comes up: a visitor gets a
+page saying so, which reloads itself once the app answers, and the run says
+`nothing is listening on localhost:3000 yet` until you start it. With nothing to
+share at all, `npx tunneld` on its own shares your shell.
+
 <details>
 <summary>Other ways to install</summary>
 
@@ -58,7 +63,7 @@ same directory later and you usually get the same address back.
 | 🤖 | `npx tunneld claude --resume` | A coding agent you can keep working with from your phone or another computer. |
 | ✏️ | `npx tunneld nvim` | Your editor, config and plugins included, in a browser tab. |
 | 🪟 | `npx tunneld :3000 :4000` | Two apps on one hostname, side by side in one window. |
-| 🍕 | `npx tunneld :3000 "next dev" claude` | `next dev`, the app it serves, and a Claude session beside it. |
+| 🍕 | `npx tunneld :3000 'npm run dev' claude` | `npm run dev`, the app it serves, and a Claude session beside it. |
 | 🐳 | `npx tunneld attach://dockerd/web` | A running container's terminal. Compose service names work too. |
 
 Anything that runs in a terminal works: htop, a REPL, Codex, Gemini CLI,
