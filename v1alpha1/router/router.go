@@ -421,7 +421,9 @@ func (r *RouterImpl) Cancel() {
 // WebSocket handshake — the origin declared to own WebSockets (ws, the +ws
 // marker, -1 for none), else a same-host Referer carrying one (an iframe's or
 // page's subresources follow their document URL — per-tab, no shared state),
-// else the sticky Cookie, else origins[0]. The declaration sits above the
+// else a same-host Referer naming a subresource this router already routed
+// (see remembered: a stylesheet's font, a script's import), else the sticky
+// Cookie, else origins[0]. The declaration sits above the
 // cookie deliberately: the cookie is a per-browser guess, the declaration an
 // operator-stated fact, and a fact beats a guess. It sits below an explicit
 // parameter so a page carrying its own index — and every tile of a multiview
@@ -435,6 +437,7 @@ func (r *RouterImpl) Cancel() {
 // The inbound Host is kept: an origin may key on it, and the stdlib default
 // would rewrite it to the origin's own host.
 func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
+	paths := &remembered{origin: map[string]int{}}
 	// index is the origin a request was routed to, found in the list by the
 	// host it was sent to rather than read off the request; -1 for none.
 	index := func(host string) int {
@@ -467,6 +470,12 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 					}
 				}
 				upgrade := r.In.Header.Get("Upgrade") != ""
+				// followed is whether the pick came from the request's own
+				// signals — its index, or a Referer that names one, directly
+				// or through a path already routed — which is what a path is
+				// remembered for. A cookie or the default is a guess, and a
+				// guess remembered would outlive being wrong.
+				followed := explicit
 				if !explicit {
 					switch n, ok := refererIndex(r.In); {
 					case upgrade && ws >= 0:
@@ -475,8 +484,12 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 						// that can route it.
 						ix = ws
 					case ok:
-						ix = n
+						ix, followed = n, true
 					default:
+						if n, ok := paths.of(r.In); ok {
+							ix, followed = n, true
+							break
+						}
 						cookie, err := r.In.Cookie(Cookie)
 						if err == nil {
 							if n, err := strconv.Atoi(cookie.Value); err == nil {
@@ -500,6 +513,9 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 				if ix < 0 || ix >= len(origins) {
 					ix = 0
 				}
+				if followed {
+					paths.keep(r.In, ix)
+				}
 				origin = origins[ix]
 				r.Out.URL.RawQuery = strings.Join(kept, "&")
 				if explicit && navigation(r.In) {
@@ -514,6 +530,20 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			// its root, the way the tunnel engine reached it.
 			r.SetURL(&url.URL{Scheme: origin.Scheme, Host: origin.Host})
 			r.Out.Host = r.In.Host
+			// The forwarding headers, as they arrived. With Rewrite set the
+			// stdlib strips them from the outbound request, and an origin that
+			// builds absolute URLs from X-Forwarded-Proto then falls back to
+			// its own scheme — plain http on a dev server — and an OAuth
+			// redirect_uri comes out http:// against an https:// callback
+			// (#201). They come from cloudflared, the one hop in front of
+			// this, so they are passed on untouched. Not SetXForwarded: that
+			// derives the scheme from this server's own inbound connection,
+			// which is plain http from cloudflared, and would say http again.
+			for _, h := range forwarding {
+				if v, ok := r.In.Header[h]; ok {
+					r.Out.Header[h] = v
+				}
+			}
 		},
 		// An origin that cannot be reached is the one failure here an
 		// operator can act on, so it is said at warn, naming the origin. A
@@ -660,6 +690,62 @@ func redirect(n int, next http.Handler) http.Handler {
 	})
 }
 
+// remembered is the origin each subresource path was routed to, by the
+// request's own signals, so a request whose Referer is that subresource can
+// follow it there. A page's own subresources carry the page's URL as their
+// Referer and route by its ?n; what those subresources load in turn — a font
+// from a stylesheet, an @import, a module a script imports — carries the
+// subresource's URL instead, which has no ?n, and without this fell through
+// to the cookie or origin 0: a stylesheet served by origin 1 whose font was
+// asked of origin 0.
+//
+// Only subresources, and never the root: every tile's document is "/", or a
+// page that redirect gives its own ?n, so a document's path names no origin.
+// Keyed by path alone; two origins serving the same path is the one case this
+// cannot tell apart, and the more recent routing wins. Bounded, since a run
+// may serve for weeks: past maxRemembered an arbitrary path is forgotten for
+// each one kept.
+type remembered struct {
+	mu     sync.Mutex
+	origin map[string]int
+}
+
+// maxRemembered bounds a router's remembered paths.
+var maxRemembered = 4096
+
+// keep remembers which origin r's path was routed to, if r is a subresource.
+func (p *remembered) keep(r *http.Request, ix int) {
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "", "document", "iframe", "frame":
+		return
+	}
+	if r.URL.Path == "/" || r.Header.Get("Upgrade") != "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.origin[r.URL.Path]; !ok && len(p.origin) >= maxRemembered {
+		for path := range p.origin {
+			delete(p.origin, path)
+			break
+		}
+	}
+	p.origin[r.URL.Path] = ix
+}
+
+// of is the origin r's same-host Referer was routed to, when its Referer is a
+// path this router remembers.
+func (p *remembered) of(r *http.Request) (int, bool) {
+	ref, err := url.Parse(r.Header.Get("Referer"))
+	if err != nil || ref.Host != r.Host || ref.Path == "" {
+		return 0, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ix, ok := p.origin[ref.Path]
+	return ix, ok
+}
+
 // refererIndex resolves the routing index from a same-host Referer header:
 // the document URL of the page (or iframe) the request originates from, whose
 // query carries the bare ?n parameter. A cross-host referer never routes.
@@ -699,6 +785,10 @@ func navigation(r *http.Request) bool {
 	dest := r.Header.Get("Sec-Fetch-Dest")
 	return dest == "" || dest == "document"
 }
+
+// forwarding is the headers a proxy in front of the origins says where a
+// request came from and how, which Rewrite passes on as they arrived.
+var forwarding = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
 // stickyKey carries an explicit routing pick from Rewrite to ModifyResponse
 // on the outbound request context.

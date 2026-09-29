@@ -439,6 +439,141 @@ func TestEnv(t *testing.T) {
 	})
 }
 
+// TestForwardingHeaders pins what an origin is told about where a request
+// came from: the forwarding headers the proxy in front sent, passed on as they
+// arrived — the stdlib strips them once Rewrite is set, and an origin that
+// builds its URLs from X-Forwarded-Proto then says http to an https visitor
+// (#201). With one origin and with several, and none invented when none came.
+func TestForwardingHeaders(t *testing.T) {
+	// told answers with the forwarding headers it was sent, one per line.
+	told := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, h := range forwarding {
+				fmt.Fprintf(w, "%s=%q\n", h, r.Header.Values(h))
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	sent := map[string]string{
+		"Forwarded":         "for=203.0.113.7;proto=https;host=app.tunneled.pizza",
+		"X-Forwarded-For":   "203.0.113.7",
+		"X-Forwarded-Host":  "app.tunneled.pizza",
+		"X-Forwarded-Proto": "https",
+	}
+	for name, list := range map[string]v1.Origins{
+		"one origin":      listOf(t, told("A")),
+		"several origins": listOf(t, told("A"), told("B")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			base := route(t, list, -1, nil, discard)
+
+			req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+			for h, v := range sent {
+				req.Header.Set(h, v)
+			}
+			_, body := get(t, http.DefaultClient, req)
+			for h, v := range sent {
+				if want := fmt.Sprintf("%s=%q\n", h, []string{v}); !strings.Contains(body, want) {
+					t.Errorf("the origin was not told %s: %q, got:\n%s", h, v, body)
+				}
+			}
+
+			req, _ = http.NewRequest(http.MethodGet, base+"/", nil)
+			_, body = get(t, http.DefaultClient, req)
+			for _, h := range forwarding {
+				if want := fmt.Sprintf("%s=%q\n", h, []string(nil)); !strings.Contains(body, want) {
+					t.Errorf("with nothing forwarded the origin was told %s anyway:\n%s", h, body)
+				}
+			}
+		})
+	}
+}
+
+// TestRememberedPaths pins how what a subresource loads finds its origin: a
+// font a stylesheet asks for carries the stylesheet's URL as its Referer,
+// which has no ?n, and follows the stylesheet to the origin it was routed to
+// — through an @import and on down. Documents and the root are never
+// remembered, an explicit ?n still wins, memory beats the cookie's guess, and
+// the memory is bounded.
+func TestRememberedPaths(t *testing.T) {
+	base := route(t, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
+	// A redirect answered is the result, not something to follow.
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	fetch := func(t *testing.T, path, referer, dest, cookie string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+		if referer != "" {
+			req.Header.Set("Referer", base+referer)
+		}
+		if dest != "" {
+			req.Header.Set("Sec-Fetch-Dest", dest)
+		}
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: Cookie, Value: cookie})
+		}
+		_, body := get(t, noRedirect, req)
+		return strings.SplitN(body, "|", 2)[0]
+	}
+
+	// The page at /?1 loads a stylesheet, which loads a font and imports
+	// another stylesheet, which loads a font of its own.
+	for _, step := range []struct{ path, referer, dest string }{
+		{"/static/app.css", "/?1", "style"},
+		{"/static/icons.woff2", "/static/app.css", "font"},
+		{"/static/inner.css", "/static/app.css", "style"},
+		{"/static/deep.woff2", "/static/inner.css", "font"},
+	} {
+		if got := fetch(t, step.path, step.referer, step.dest, ""); got != "B" {
+			t.Errorf("%s from %s reached %s, want B: it follows what loaded it", step.path, step.referer, got)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		path, referer, dest, cookie, want string
+	}{
+		"an unknown referer path takes the default":       {"/static/x.png", "/static/never.css", "image", "", "A"},
+		"an explicit ?n beats memory":                     {"/static/icons.woff2?0", "/static/app.css", "font", "", "A"},
+		"memory beats the cookie":                         {"/static/y.png", "/static/app.css", "image", "0", "B"},
+		"a cookie still routes what memory does not know": {"/static/z.png", "/static/never.css", "image", "1", "B"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := fetch(t, tc.path, tc.referer, tc.dest, tc.cookie); got != tc.want {
+				t.Errorf("reached %s, want %s", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("documents and the root are not remembered", func(t *testing.T) {
+		fetch(t, "/?1", "", "iframe", "")
+		fetch(t, "/page?1", "", "document", "")
+		for _, referer := range []string{"/", "/page"} {
+			if got := fetch(t, "/static/w.png", referer, "image", ""); got != "A" {
+				t.Errorf("a subresource of %s reached %s, want the default: a document's path names no origin", referer, got)
+			}
+		}
+	})
+
+	t.Run("bounded", func(t *testing.T) {
+		defer func(n int) { maxRemembered = n }(maxRemembered)
+		maxRemembered = 2
+		p := &remembered{origin: map[string]int{}}
+		for _, path := range []string{"/a.css", "/b.css", "/c.css"} {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Sec-Fetch-Dest", "style")
+			p.keep(req, 1)
+		}
+		if n := len(p.origin); n != 2 {
+			t.Errorf("remembered %d paths, want at most 2", n)
+		}
+		if _, ok := p.origin["/c.css"]; !ok {
+			t.Error("the newest path was dropped, want an older one forgotten for it")
+		}
+	})
+}
+
 // TestRouteAppliesTheFront pins that what is put in front answers before any
 // origin is chosen — the panel's page never reaches an origin — and that a
 // lone origin is still served through it rather than skipped.
