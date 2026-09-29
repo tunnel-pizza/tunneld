@@ -53,7 +53,7 @@ is served as soon as it answers. The run says so beneath the map:
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
 https://0t8qsb6pq3.tunneled.pizza/
   -> http://localhost:3999
-nothing is listening on localhost:3999 yet: start it, and the address serves it once it answers
+start something on localhost:3999: nothing is listening there yet, and visitors see it as soon as it answers
 Press Ctrl+C to stop the tunnel...
 ```
 
@@ -62,9 +62,10 @@ tunnel is up, a second at most; a program or a container is tunneld's own to
 serve and is not dialed. It goes to stderr with the rest of the map.
 
 A visitor who opens the address in the meantime gets a page from tunneld
-rather than the edge's "Bad gateway": *Nothing is answering yet*, naming the
-origin, with a word for whoever is sharing it and one for whoever was sent the
-link. It asks again every few seconds — backing off to every ten while it
+rather than the edge's "Bad gateway": *Nothing’s on port 3999 yet*, and what
+to do about it. Whoever shared the link is told to start something on port
+3999; whoever was sent it is told to ask them to, and to keep the tab open. An
+origin on this machine is named by its port, one elsewhere by its host. It asks again every few seconds — backing off to every ten while it
 waits, and asking nothing while it is hidden — and reloads itself at the same
 URL once the origin answers, a tile in the [multiview panel](#multiview)
 included. It is self-contained: no stylesheet, font or script from anywhere
@@ -80,7 +81,7 @@ the page; a `fetch`, an asset, a `POST`, a WebSocket handshake and `curl` get
 one line:
 
 ```
-this address is up, but nothing is listening on localhost:3999 behind it yet
+nothing on port 3999 yet: start something on it, or ask whoever shared this address to
 ```
 
 Only a dial nothing answers counts: refused, no route, or no answer in time.
@@ -91,7 +92,7 @@ The first time an origin fails a visitor that way since the run began, or
 since it last answered, the run says so on stderr as well, once per outage:
 
 ```
-a visitor found nothing listening on localhost:3999: start it, and the address serves it once it answers
+a visitor is waiting on localhost:3999: start something on it, and their page loads it on its own
 ```
 
 Every such request is also logged at `warn` as `origin did not answer`; see

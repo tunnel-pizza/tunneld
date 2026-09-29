@@ -516,6 +516,10 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 	list := listOf(t, echo(t, "A"), down)
 	down.Close()
 	host := list.At(1).Host
+	// A loopback origin is named by its port, the way a person starting a
+	// server on it says it.
+	_, port, _ := net.SplitHostPort(host)
+	where := "port " + port
 
 	var logs strings.Builder
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -589,13 +593,13 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 					t.Errorf("a HEAD carried a body: %q", body)
 				}
 			case tc.page:
-				for _, want := range []string{"<title>Nothing is answering yet</title>", "nothing is listening on <code>" + host + "</code> there yet"} {
+				for _, want := range []string{"<title>Nothing’s on " + where + " yet</title>", "Start something on " + where + ".", "Ask whoever shared it to start something on " + where} {
 					if !strings.Contains(body, want) {
 						t.Errorf("page does not say %q:\n%s", want, body)
 					}
 				}
 			default:
-				if want := "this address is up, but nothing is listening on " + host + " behind it yet\n"; body != want {
+				if want := "nothing on " + where + " yet: start something on it, or ask whoever shared this address to\n"; body != want {
 					t.Errorf("body = %q, want %q", body, want)
 				}
 			}

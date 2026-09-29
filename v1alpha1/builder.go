@@ -605,7 +605,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// never lands on one. Each failed request is on the log besides.
 		router.WithNotice(func(i int) {
 			if u := origins.At(i); u.Scheme == "http" || u.Scheme == "https" {
-				fmt.Fprintf(stderr, "a visitor found nothing listening on %s: start it, and the address serves it once it answers\n", u.Host)
+				fmt.Fprintf(stderr, "a visitor is waiting on %s: start something on it, and their page loads it on its own\n", u.Host)
 			}
 		}),
 	)
@@ -731,7 +731,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// for; before the launcher is handed the console, so a detached run says
 	// it too.
 	for _, i := range b.router.Unanswered(ctx, origins) {
-		fmt.Fprintf(stderr, "nothing is listening on %s yet: start it, and the address serves it once it answers\n", origins.At(i).Host)
+		fmt.Fprintf(stderr, "start something on %s: nothing is listening there yet, and visitors see it as soon as it answers\n", origins.At(i).Host)
 	}
 
 	// What the provider said with the spec, learned here because Messages

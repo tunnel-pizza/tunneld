@@ -35,10 +35,11 @@ That address works for anyone, anywhere, over HTTPS. On a desktop a browser tab
 opens on it too. Press Ctrl+C and it's gone. Run the same command from the
 same directory later and you usually get the same address back.
 
-Nothing listening on the port yet? The address still comes up: a visitor gets a
-page saying so, which reloads itself once the app answers, and the run says
-`nothing is listening on localhost:3000 yet` until you start it. With nothing to
-share at all, `npx tunneld` on its own shares your shell.
+Start your app before or after: the address comes up either way. Until
+something answers on the port, the run says `start something on
+localhost:3000`, and a visitor gets a page asking the same, which loads the app
+on its own once it's up. Nothing to share at all? Run `npx tunneld` on its own
+to share your shell.
 
 <details>
 <summary>Other ways to install</summary>

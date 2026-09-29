@@ -1937,7 +1937,7 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 func TestReportSaysWhatNothingListensOn(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	line := func(host string) string {
-		return "nothing is listening on " + host + " yet: start it, and the address serves it once it answers\n"
+		return "start something on " + host + ": nothing is listening there yet, and visitors see it as soon as it answers\n"
 	}
 	for name, tc := range map[string]struct {
 		unanswered []int
@@ -2008,7 +2008,7 @@ func TestAnOriginThatStopsAnsweringIsSaid(t *testing.T) {
 		t.Errorf("a served origin's outage said %q, want nothing", said)
 	}
 	notice(0)
-	if said, want := h.stderr.String()[before:], "a visitor found nothing listening on localhost:3000: start it, and the address serves it once it answers\n"; said != want {
+	if said, want := h.stderr.String()[before:], "a visitor is waiting on localhost:3000: start something on it, and their page loads it on its own\n"; said != want {
 		t.Errorf("an origin's outage said %q, want %q", said, want)
 	}
 }

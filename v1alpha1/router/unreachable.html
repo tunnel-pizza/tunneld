@@ -9,7 +9,7 @@
      tunnel's only credential. Its one request of its own, the question
      below, routes by the ?n in the page's own URL, never by a Referer. -->
 <meta name="referrer" content="no-referrer">
-<title>Nothing is answering yet</title>
+<title>Nothing’s on {{.Where}} yet</title>
 <!-- Without script the page still comes back by itself, only slower and by
      reloading whole each time. With script this is inert. -->
 <noscript><meta http-equiv="refresh" content="10"></noscript>
@@ -84,12 +84,11 @@
 </head>
 <body>
 <main>
-  <p class="waiting"><span class="dot" aria-hidden="true"></span>Trying again every few seconds</p>
-  <h1>Nothing is answering yet</h1>
-  <p>This address is live and the machine sharing it is connected, but nothing is listening on <code>{{.Origin}}</code> there yet.</p>
+  <p class="waiting"><span class="dot" aria-hidden="true"></span>Waiting for {{.Where}}</p>
+  <h1>Nothing’s on {{.Where}} yet</h1>
   <div class="who">
-    <p><strong>Sharing it?</strong> Start whatever should be on <code>{{.Origin}}</code>. This page reloads itself once it answers.</p>
-    <p><strong>Sent this link?</strong> It’s up; the app behind it isn’t yet. Leave this open.</p>
+    <p><strong>Shared this link?</strong> Start something on {{.Where}}. This page picks it up on its own.</p>
+    <p><strong>Got this link?</strong> Ask whoever shared it to start something on {{.Where}}, and keep this tab open.</p>
   </div>
 </main>
 <footer>

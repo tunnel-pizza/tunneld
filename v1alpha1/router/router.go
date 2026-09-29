@@ -595,6 +595,18 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 			// same news in a line of text. Either way it is never stored, so a
 			// visit after the origin is up gets the origin.
 			host := origins[ix].Host
+			// What the page and the line tell someone to start something
+			// on: "port 3999" for an origin on this machine, which is how a
+			// person says it and what a dev server is started on, and the
+			// host whole for one elsewhere. Both are a call to act, not a
+			// diagnosis: whoever shared the link starts it, and whoever was
+			// sent it asks them to.
+			where := host
+			if name, port, err := net.SplitHostPort(host); err == nil {
+				if ip := net.ParseIP(name); name == "localhost" || ip != nil && ip.IsLoopback() {
+					where = "port " + port
+				}
+			}
 			h := w.Header()
 			h.Set("Retry-After", strconv.Itoa(retryAfter))
 			h.Set("Cache-Control", "no-store")
@@ -606,9 +618,9 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 				(dest == "" || dest == "document" || dest == "iframe" || dest == "frame") {
 				var page bytes.Buffer
 				err := unreachableTmpl.Execute(&page, struct {
-					Origin, Mark string
-					RetryAfter   int
-				}{host, unreachableHeader, retryAfter})
+					Where, Mark string
+					RetryAfter  int
+				}{where, unreachableHeader, retryAfter})
 				if err == nil {
 					h.Set("Content-Type", "text/html; charset=utf-8")
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -619,7 +631,7 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 			}
 			h.Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "this address is up, but nothing is listening on %s behind it yet\n", host)
+			_, _ = fmt.Fprintf(w, "nothing on %s yet: start something on it, or ask whoever shared this address to\n", where)
 		},
 		// Anything an origin answers ends its outage, whatever the status:
 		// something is listening. With several origins, an explicit top-level
