@@ -16,7 +16,9 @@ package router
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -82,11 +84,21 @@ type RouterImpl struct {
 	env *env
 }
 
-// Cache is what the router serves a run's cache file from: the file as the
-// cache last saved it, or "" before it has saved one.
+// Cache is what the router serves a run's cache file from, and what it
+// authorizes the ControlPath against: the file as the cache last saved it, or
+// "" before it has saved one; the running tunnel's secret, nil before then;
+// and the key the file is named for, "" before the cache knows its run.
 type Cache interface {
 	String() string
+	Secret() []byte
+	Key() string
 }
+
+// CacheKeyHeader is what every response under the ControlPath carries, a
+// refusal included: the run's cache key, the name of the file its spec is
+// saved in, so a caller knows which run answered. Absent only when the cache
+// does not know its run yet.
+const CacheKeyHeader = "X-Cache-Key"
 
 // env is the ControlPath+".env" endpoint's state: the cache it serves from,
 // and the once that puts its handler on the mux — a ServeMux panics on a
@@ -149,8 +161,10 @@ func WithHandler(handler func(http.Handler) http.Handler) Option {
 // until there is one. Applied again, it replaces the cache rather than
 // registering the endpoint twice.
 //
-// The spec is the credential for the tunnel's public hostname, and this
-// serves it to anybody who can reach the ControlPath. Nothing guards it yet.
+// c is also what the ControlPath is authorized against: its secret is the
+// token every request under it but ping has to carry (see authorize). The
+// file holds the credential for the tunnel's public hostname, so it is
+// served only to whoever already has the secret it contains.
 func WithCache(c Cache) Option {
 	return func(r *RouterImpl) {
 		e := r.env
@@ -228,10 +242,10 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 		return nil, fmt.Errorf("router: listen: %w", err)
 	}
 	var h http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log))
-	origins, mux := h, route.mux
+	origins, control := h, route.authorize(route.mux)
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, ControlPath) {
-			mux.ServeHTTP(w, r)
+			control.ServeHTTP(w, r)
 			return
 		}
 		origins.ServeHTTP(w, r)
@@ -254,6 +268,46 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	local := &url.URL{Scheme: "http", Host: l.Addr().String()}
 	log.Info("routing origins", "listen", local.Host, "origins", dialable.Len())
 	return local, nil
+}
+
+// authorize guards the ControlPath: every request under it but ping has to
+// carry "Authorization: token <secret>", the running tunnel's secret as the
+// cache WithCache handed over holds it, base64-encoded — the encoding the
+// spec's own JSON gives it, so whoever holds the spec holds the token. One
+// that does not is a bare 401 before the mux sees it, registered endpoint or
+// not, so nothing under the prefix can be probed without it.
+//
+// Fails closed: with no cache, or no secret yet, nothing but ping answers.
+// Compared in constant time, so the time a refusal takes says nothing about
+// how much of a guess was right.
+func (r *RouterImpl) authorize(next http.Handler) http.Handler {
+	e := r.env
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		e.mu.Lock()
+		c := e.cache
+		e.mu.Unlock()
+		// Every answer under the ControlPath names the run, a refusal too.
+		if c != nil {
+			if key := c.Key(); key != "" {
+				w.Header().Set(CacheKeyHeader, key)
+			}
+		}
+		if req.URL.Path == ControlPath+"ping" {
+			next.ServeHTTP(w, req)
+			return
+		}
+		var secret []byte
+		if c != nil {
+			secret = c.Secret()
+		}
+		want := "token " + base64.StdEncoding.EncodeToString(secret)
+		got := req.Header.Get("Authorization")
+		if len(secret) == 0 || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
 }
 
 // Cancel takes down every route this router has serving: their listeners

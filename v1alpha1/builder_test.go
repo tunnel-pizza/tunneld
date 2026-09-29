@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -404,6 +405,15 @@ func (f *fakeTunnel) Ready() <-chan libtunnel.TunnelV1 {
 
 // Serialize is what the run caches: a spec the next run could hand back to
 // From. A fake's is anything stable and recognisable.
+// Secret is a stand-in secret for the fake tunnel's hostname: nothing reads it
+// but the run, which hands it to the cache.
+func (f *fakeTunnel) Secret() []byte {
+	if f.url == nil {
+		return nil
+	}
+	return []byte("secret-of-" + f.url.Host)
+}
+
 func (f *fakeTunnel) Serialize() string {
 	if f.url == nil {
 		return ""
@@ -454,6 +464,8 @@ type fakeCache struct {
 	// the run said it settled on — written beside it, and nothing reads back.
 	spec     string
 	tracking map[string]string
+	secret   []byte
+	key      string
 	onSave   func()
 	order    *[]string
 }
@@ -494,6 +506,11 @@ func (f *fakePid) Detach(out *os.File, _ v1.Logger) bool {
 
 func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 
+// Secret is the secret the fake was saved with, and Key the key of the
+// origins it was saved under.
+func (f *fakeCache) Secret() []byte { return f.secret }
+func (f *fakeCache) Key() string    { return f.key }
+
 // String is the file the fake saved, rendered as the real cache renders it.
 func (f *fakeCache) String() string {
 	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking)).String()
@@ -502,7 +519,7 @@ func (f *fakeCache) Save(opts ...cache.Option) {
 	// The run's options, read back off a cache they configure rather than
 	// one that writes.
 	c := cache.New(opts...)
-	f.saved, f.spec, f.tracking = true, c.Spec(), c.Tracking()
+	f.saved, f.spec, f.tracking, f.secret, f.key = true, c.Spec(), c.Tracking(), c.Secret(), c.Key()
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}
@@ -1025,7 +1042,7 @@ func TestRun(t *testing.T) {
 	// The router is handed the run's cache and serves a remote copy of the
 	// file the run saved on the control path. Routed here rather than by the
 	// run, against a real origin, to see what the run's options serve.
-	envOf := func(t *testing.T, h *runHarness) (int, string) {
+	envOf := func(t *testing.T, h *runHarness) (int, string, string) {
 		t.Helper()
 		if h.router.configured == nil {
 			t.Fatal("the run never asked the router")
@@ -1039,13 +1056,20 @@ func TestRun(t *testing.T) {
 			t.Fatalf("Route: %v", err)
 		}
 		t.Cleanup(r.Cancel)
-		resp, err := http.Get(strings.TrimSuffix(local.String(), "/") + router.ControlPath + ".env")
+		req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(local.String(), "/")+router.ControlPath+".env", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The token the fake tunnel's secret makes: what an operator
+		// holding the run's spec would send.
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, string(body)
+		return resp.StatusCode, string(body), resp.Header.Get(router.CacheKeyHeader)
 	}
 	t.Run("the router serves what the run saved", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
@@ -1054,12 +1078,19 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
+		if got, want := string(h.cache.secret), "secret-of-foo.tunneled.pizza"; got != want {
+			t.Errorf("the run saved secret %q, want the tunnel's (%q)", got, want)
+		}
 		want := h.cache.String()
 		if !strings.HasPrefix(want, "LIBTUNNEL_SPEC=") {
 			t.Fatalf("the run saved %q, want a cache file", want)
 		}
-		if code, body := envOf(t, h); code != 200 || body != want {
+		code, body, key := envOf(t, h)
+		if code != 200 || body != want {
 			t.Errorf("GET .env = %d %q, want the file the run saved:\n%s", code, body, want)
+		}
+		if key == "" || key != h.cache.key {
+			t.Errorf("GET .env named the run %q, want the key it saved under (%q)", key, h.cache.key)
 		}
 	})
 	t.Run("a run with caching off serves nothing", func(t *testing.T) {
@@ -1068,8 +1099,10 @@ func TestRun(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
 		_ = h.run(t, ctx, "--no-cache", ":3000")
-		if code, _ := envOf(t, h); code != 404 {
-			t.Errorf("GET .env with --no-cache = %d, want 404", code)
+		// No cache is no secret, so the control path refuses before it is
+		// asked what was saved.
+		if code, body, _ := envOf(t, h); code == 200 || body != "" {
+			t.Errorf("GET .env with --no-cache = %d %q, want nothing served", code, body)
 		}
 	})
 

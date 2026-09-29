@@ -6,6 +6,7 @@ package router
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -190,7 +191,7 @@ func TestControlPath(t *testing.T) {
 		"ping":                       {"GET", "/_tunneld/ping", 200, "pong"},
 		"ping answers HEAD as GET":   {"HEAD", "/_tunneld/ping", 200, ""},
 		"ping takes no other method": {"POST", "/_tunneld/ping", 405, ""},
-		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 404, ""},
+		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 401, ""},
 		"a lookalike prefix is the origin's":      {"GET", "/_tunneldx", 200, "A|/_tunneldx"},
 		"a doubled slash reaches the origin":      {"GET", "/a//b", 200, "A|/a//b"},
 		"a dot segment reaches the origin":        {"GET", "/a/../b", 200, "A|/a/../b"},
@@ -227,52 +228,176 @@ func TestControlPath(t *testing.T) {
 	}
 }
 
-// cacheOf stands in for a run's cache: String is the file it saved.
-type cacheOf string
+// cacheOf stands in for a run's cache: String is the file it saved, Secret
+// the secret it saved with.
+type cacheOf struct {
+	file   string
+	secret []byte
+	key    string
+}
 
-func (c cacheOf) String() string { return string(c) }
+func (c cacheOf) String() string { return c.file }
+func (c cacheOf) Secret() []byte { return c.secret }
+func (c cacheOf) Key() string    { return c.key }
 
-// TestEnv pins ControlPath+".env": absent until WithCache puts it on the mux,
-// then a remote copy of the file the run's cache last saved, byte for byte
-// and asked for fresh on every request; a 404 before anything is saved, and
-// never stored on the way. WithCache applied twice — at New and again for a
-// route — replaces the cache rather than registering the pattern twice, which
-// a ServeMux would panic on.
+// runKey is the key cacheOf names its run by in these tests.
+const runKey = "0123456789abcdef"
+
+// tokenOf is the Authorization header that secret authorizes.
+func tokenOf(secret []byte) string {
+	return "token " + base64.StdEncoding.EncodeToString(secret)
+}
+
+// controlOf routes r over one origin and returns the ControlPath URL of
+// path under it.
+func controlOf(t *testing.T, r *RouterImpl, path string, opts ...Option) string {
+	t.Helper()
+	u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "A")))}, opts...)...)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	return strings.TrimSuffix(u.String(), "/") + ControlPath + path
+}
+
+// ask sends method to url with auth as its Authorization header, if any.
+func ask(t *testing.T, method, url, auth string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	return get(t, http.DefaultClient, req)
+}
+
+// TestAuthorize pins what guards the ControlPath: everything under it but
+// ping needs "Authorization: token <base64 secret>", the secret the cache
+// holds; anything else is a bare 401 before the mux is asked, so an
+// unregistered path is no different from a registered one. With no secret,
+// nothing but ping answers — not even to a token of nothing.
+func TestAuthorize(t *testing.T) {
+	secret := []byte("s3cr3t")
+	env := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey})), ".env")
+	nope := strings.TrimSuffix(env, ".env") + "nope"
+	ping := strings.TrimSuffix(env, ".env") + "ping"
+	for name, tc := range map[string]struct {
+		url, auth  string
+		wantStatus int
+	}{
+		"no header":                     {env, "", 401},
+		"another scheme":                {env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
+		"a wrong token":                 {env, tokenOf([]byte("guess")), 401},
+		"the secret unencoded":          {env, "token " + string(secret), 401},
+		"the right token":               {env, tokenOf(secret), 200},
+		"an unregistered path, no auth": {nope, "", 401},
+		"an unregistered path, auth":    {nope, tokenOf(secret), 404},
+		"ping needs nothing":            {ping, "", 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := ask(t, "GET", tc.url, tc.auth)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("GET %s = %d %q, want %d", tc.url, resp.StatusCode, body, tc.wantStatus)
+			}
+			if tc.wantStatus == 401 && body != "" {
+				t.Errorf("a refusal said %q, want a bare 401", body)
+			}
+		})
+	}
+
+	// Over the wire a header's trailing space is trimmed, so "token " never
+	// arrives as itself; asked of the guard directly it does, and a secret of
+	// nothing still authorizes nothing.
+	t.Run("a token of nothing, asked directly", func(t *testing.T) {
+		guard := New(WithCache(cacheOf{"x\n", nil, runKey})).authorize(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("the guard let a token of nothing through")
+		}))
+		req := httptest.NewRequest(http.MethodGet, ControlPath+".env", nil)
+		req.Header.Set("Authorization", "token ")
+		rec := httptest.NewRecorder()
+		guard.ServeHTTP(rec, req)
+		if rec.Code != 401 {
+			t.Errorf("a token of nothing = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("no secret, nothing but ping", func(t *testing.T) {
+		for _, c := range []Option{WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", nil, runKey}), WithLog(nil)} {
+			url := controlOf(t, New(c), ".env")
+			for _, auth := range []string{"", "token ", tokenOf(nil)} {
+				if resp, _ := ask(t, "GET", url, auth); resp.StatusCode != 401 {
+					t.Errorf("GET .env with no secret and %q = %d, want 401", auth, resp.StatusCode)
+				}
+			}
+			if resp, _ := ask(t, "GET", strings.TrimSuffix(url, ".env")+"ping", ""); resp.StatusCode != 200 {
+				t.Errorf("ping with no secret = %d, want 200", resp.StatusCode)
+			}
+		}
+	})
+}
+
+// TestCacheKeyHeader pins X-Cache-Key: every answer under the ControlPath
+// names the run by its cache key — ping, a served endpoint, the mux's own 404,
+// and a refusal too — and only a cache that does not know its run yet names
+// nothing.
+func TestCacheKeyHeader(t *testing.T) {
+	secret := []byte("s3cr3t")
+	base := strings.TrimSuffix(controlOf(t, New(WithCache(cacheOf{"x\n", secret, runKey})), ""), "/")
+	for name, tc := range map[string]struct {
+		path, auth string
+		want       string
+	}{
+		"ping":                         {"/ping", "", runKey},
+		"a served endpoint":            {"/.env", tokenOf(secret), runKey},
+		"the mux's 404":                {"/nope", tokenOf(secret), runKey},
+		"a refusal":                    {"/.env", "", runKey},
+		"a refusal of an unknown path": {"/nope", "", runKey},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, _ := ask(t, "GET", base+tc.path, tc.auth)
+			if got := resp.Header.Get(CacheKeyHeader); got != tc.want {
+				t.Errorf("GET %s (%d): %s = %q, want %q", tc.path, resp.StatusCode, CacheKeyHeader, got, tc.want)
+			}
+		})
+	}
+	t.Run("a cache that does not know its run", func(t *testing.T) {
+		url := strings.TrimSuffix(controlOf(t, New(WithCache(cacheOf{"x\n", secret, ""})), ""), "/") + "/ping"
+		if resp, _ := ask(t, "GET", url, ""); resp.Header.Values(CacheKeyHeader) != nil {
+			t.Errorf("ping named a run the cache does not know: %q", resp.Header.Values(CacheKeyHeader))
+		}
+	})
+}
+
+// TestEnv pins ControlPath+".env", asked with the right token: absent until
+// WithCache puts it on the mux, then a remote copy of the file the run's
+// cache last saved, byte for byte and asked for fresh on every request; a
+// bare 404 before anything is saved, and never stored on the way. WithCache
+// applied twice — at New and again for a route — replaces the cache rather
+// than registering the pattern twice, which a ServeMux would panic on.
 func TestEnv(t *testing.T) {
-	serve := func(t *testing.T, r *RouterImpl, opts ...Option) string {
-		t.Helper()
-		u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "A")))}, opts...)...)
-		if err != nil {
-			t.Fatalf("Route: %v", err)
-		}
-		t.Cleanup(r.Cancel)
-		return strings.TrimSuffix(u.String(), "/") + ControlPath + ".env"
-	}
-	fetch := func(t *testing.T, method, url string) (*http.Response, string) {
-		t.Helper()
-		req, err := http.NewRequest(method, url, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return get(t, http.DefaultClient, req)
-	}
+	secret := []byte("s3cr3t")
+	auth := tokenOf(secret)
 
 	t.Run("absent without WithCache", func(t *testing.T) {
-		if resp, body := fetch(t, "GET", serve(t, New())); resp.StatusCode != 404 || strings.Contains(body, "|") {
-			t.Errorf("GET .env = %d %q, want a 404 from the router", resp.StatusCode, body)
+		// No cache is no secret, so the refusal comes first.
+		if resp, body := ask(t, "GET", controlOf(t, New(), ".env"), auth); resp.StatusCode != 401 || strings.Contains(body, "|") {
+			t.Errorf("GET .env = %d %q, want a 401 from the router", resp.StatusCode, body)
 		}
 	})
 
 	t.Run("the saved file, as it is", func(t *testing.T) {
 		const saved = "LIBTUNNEL_SPEC='{\"v\":1}'\nTUNNELD_LOG='debug'\n"
-		resp, body := fetch(t, "GET", serve(t, New(WithCache(cacheOf(saved)))))
+		c := cacheOf{saved, secret, runKey}
+		resp, body := ask(t, "GET", controlOf(t, New(WithCache(c)), ".env"), auth)
 		if resp.StatusCode != 200 || body != saved {
 			t.Errorf("GET .env = %d %q, want the saved file", resp.StatusCode, body)
 		}
 		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
 			t.Errorf("Cache-Control = %q, want no-store", got)
 		}
-		if resp, _ := fetch(t, "POST", serve(t, New(WithCache(cacheOf(saved))))); resp.StatusCode != 405 {
+		if resp, _ := ask(t, "POST", controlOf(t, New(WithCache(c)), ".env"), auth); resp.StatusCode != 405 {
 			t.Errorf("POST .env = %d, want 405", resp.StatusCode)
 		}
 	})
@@ -281,31 +406,32 @@ func TestEnv(t *testing.T) {
 		dir := t.TempDir()
 		shown := listOf(t, echo(t, "shown"))
 		c := cache.New(cache.WithDir(dir))
-		url := serve(t, New(WithCache(c)))
-		if resp, _ := fetch(t, "GET", url); resp.StatusCode != 404 {
-			t.Errorf("GET .env before any save = %d, want 404", resp.StatusCode)
+		url := controlOf(t, New(WithCache(c)), ".env")
+		if resp, _ := ask(t, "GET", url, auth); resp.StatusCode != 401 {
+			t.Errorf("GET .env before any save = %d, want 401: no secret yet", resp.StatusCode)
 		}
 		for _, spec := range []string{"saved-spec", "resaved-spec"} {
-			c.Save(cache.WithOrigins(shown), cache.WithSpec(spec), cache.WithTracking(map[string]string{"TUNNELD_LOG": "debug"}))
+			c.Save(cache.WithOrigins(shown), cache.WithSpec(spec), cache.WithSecret(secret),
+				cache.WithTracking(map[string]string{"TUNNELD_LOG": "debug"}))
 			onDisk, err := os.ReadFile(filepath.Join(dir, shown.Key()+".env"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, body := fetch(t, "GET", url); body != string(onDisk) {
+			if _, body := ask(t, "GET", url, auth); body != string(onDisk) {
 				t.Errorf("GET .env = %q, want the file on disk:\n%s", body, onDisk)
 			}
 		}
 	})
 
 	t.Run("nothing saved is a bare 404", func(t *testing.T) {
-		if resp, body := fetch(t, "GET", serve(t, New(WithCache(cacheOf(""))))); resp.StatusCode != 404 || body != "" {
+		if resp, body := ask(t, "GET", controlOf(t, New(WithCache(cacheOf{"", secret, runKey})), ".env"), auth); resp.StatusCode != 404 || body != "" {
 			t.Errorf("GET .env with nothing saved = %d %q, want a bare 404", resp.StatusCode, body)
 		}
 	})
 
 	t.Run("applied again, it replaces rather than registers twice", func(t *testing.T) {
-		r := New(WithCache(cacheOf("first\n")))
-		if _, body := fetch(t, "GET", serve(t, r, WithCache(cacheOf("second\n")))); body != "second\n" {
+		r := New(WithCache(cacheOf{"first\n", secret, runKey}))
+		if _, body := ask(t, "GET", controlOf(t, r, ".env", WithCache(cacheOf{"second\n", secret, runKey})), auth); body != "second\n" {
 			t.Errorf("GET .env = %q, want the later cache's file", body)
 		}
 	})

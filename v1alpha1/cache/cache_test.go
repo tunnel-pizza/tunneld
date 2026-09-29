@@ -4,6 +4,7 @@
 package cache_test
 
 import (
+	"encoding/base64"
 	"log/slog"
 	"net/url"
 	"os"
@@ -118,6 +119,48 @@ func TestString(t *testing.T) {
 	}
 	if got := cache.New(cache.WithTracking(tracking)).String(); got != "" {
 		t.Errorf("String() with no spec = %q, want nothing", got)
+	}
+}
+
+// TestSecret pins the tunnel secret's place: the cache keeps what Save was
+// given, in memory only — the file it writes, and String, the remote copy the
+// router serves, never carry it.
+func TestSecret(t *testing.T) {
+	c, o, path := fixed(t, "http://localhost:3000")
+	if c.Secret() != nil {
+		t.Errorf("Secret() before a save = %q, want nil", c.Secret())
+	}
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s3cr3t")), cache.WithLog(discard()))
+	if got := string(c.Secret()); got != "s3cr3t" {
+		t.Errorf("Secret() after a save = %q, want the one Save was given", got)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	for name, text := range map[string]string{"the file": string(body), "String()": c.String()} {
+		if strings.Contains(text, "s3cr3t") || strings.Contains(text, base64.StdEncoding.EncodeToString([]byte("s3cr3t"))) {
+			t.Errorf("%s carries the secret:\n%s", name, text)
+		}
+	}
+}
+
+// TestKey pins that Key is the key of the run the cache is for: nothing
+// before it has been given origins, then theirs, following the last call
+// that named some.
+func TestKey(t *testing.T) {
+	c, o, _ := fixed(t, "http://localhost:3000")
+	if got := c.Key(); got != "" {
+		t.Errorf("Key() before any origins = %q, want nothing", got)
+	}
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
+	if got := c.Key(); got != o.Key() {
+		t.Errorf("Key() after a save = %q, want the origins' (%q)", got, o.Key())
+	}
+	other := run(t, "http://localhost:4000")
+	c.Load(cache.WithOrigins(other))
+	if got := c.Key(); got != other.Key() {
+		t.Errorf("Key() after a load naming other origins = %q, want theirs (%q)", got, other.Key())
 	}
 }
 

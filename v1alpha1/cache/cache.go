@@ -70,7 +70,11 @@ type CacheImpl struct {
 	// tracking is what Save writes beside the spec: the knobs the run
 	// settled on, keyed by the variable that names each.
 	tracking map[string]string
-	log      v1.Logger
+	// secret is the running tunnel's secret: whoever holds it can run the
+	// tunnel. Kept in memory only, never written: the file's spec already
+	// carries it, inside its envelope.
+	secret []byte
+	log    v1.Logger
 
 	// mu is held by Load and Save for the whole call: the router loads from
 	// its own goroutine while the run saves from another.
@@ -116,6 +120,32 @@ func WithSpec(spec string) Option {
 // on, keyed by the variable that names each knob.
 func WithTracking(tracking map[string]string) Option {
 	return func(c *CacheImpl) { c.tracking = tracking }
+}
+
+// WithSecret sets the running tunnel's secret. The cache keeps it in memory
+// and never writes it.
+func WithSecret(secret []byte) Option {
+	return func(c *CacheImpl) { c.secret = secret }
+}
+
+// Key is the key of the run the cache would read or write for now — the name
+// of its file, without the extension — or "" before it has been given
+// origins. Held under the cache's lock, since Save may be changing them.
+func (c *CacheImpl) Key() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.origins == nil {
+		return ""
+	}
+	return c.origins.Key()
+}
+
+// Secret is the tunnel secret the cache was last given, nil before then.
+// Held under the cache's lock, since a request may ask while the run saves.
+func (c *CacheImpl) Secret() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.secret
 }
 
 // WithLog sets where the cache says what it did. Nil keeps the one it has.

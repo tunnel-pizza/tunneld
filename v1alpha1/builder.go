@@ -756,6 +756,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		cache.WithOrigins(origins),
 		cache.WithSpec(tun.Serialize()),
 		cache.WithTracking(tracking),
+		cache.WithSecret(tun.Secret()),
 		cache.WithLog(log),
 	)
 
