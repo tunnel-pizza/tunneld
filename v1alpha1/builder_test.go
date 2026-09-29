@@ -249,12 +249,15 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 		name     string
 		open     *bool
 		terminal bool
+		qr       bool
 		want     bool
 	}{
 		{name: "a pipe is nobody watching", want: false},
 		{name: "a terminal is somebody", terminal: true, want: true},
 		{name: "a caller who declined outranks the terminal", open: ptr(false), terminal: true, want: false},
 		{name: "a caller who insisted outranks the pipe", open: ptr(true), want: true},
+		{name: "--qr is for a phone, so no tab on a terminal", terminal: true, qr: true, want: false},
+		{name: "a caller who insisted outranks --qr", open: ptr(true), qr: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CI", "")
@@ -277,7 +280,11 @@ func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			h.cache.onSave = cancel
 
-			if err := h.run(t, ctx); err != nil {
+			var args []string
+			if tc.qr {
+				args = append(args, "--qr")
+			}
+			if err := h.run(t, ctx, args...); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
 			if got := len(h.display.opened) > 0; got != tc.want {
@@ -1980,35 +1987,32 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 	}
 }
 
-// TestReportSaysWhatNothingListensOn pins the line beneath the map for an
-// origin nothing is listening on once the tunnel is up. The person who ran the
-// command is the one who can start it, and until this only a visitor was told,
-// by the page the address answers with.
+// TestReportLogsWhatNothingListensOn pins what the run does with an origin
+// nothing is listening on once the tunnel is up: it asks the router about the
+// origins as typed, and logs a warning per origin named. It prints nothing to
+// the console for it: that is left to the builder, in one place, later
+// (#206), and stdout stays the address alone.
 //
 // The dial is the router's, and router_test.go dials a loopback listener and a
-// closed port for it; the fake here answers from a list, so what is pinned is
-// what the run does with the answer: asks about the origins as typed, and says
-// a line per origin named, by host, between the map and the stop hint, on
-// stderr alone.
-func TestReportSaysWhatNothingListensOn(t *testing.T) {
+// closed port for it; the fake here answers from a list.
+func TestReportLogsWhatNothingListensOn(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
-	line := func(host string) string {
-		return "start something on " + host + ": nothing is listening there yet, and visitors see it as soon as it answers\n"
-	}
 	for name, tc := range map[string]struct {
 		unanswered []int
-		said       []string
+		args       []string
+		logged     []string
 	}{
-		"everything answers": {},
-		"one does not":       {unanswered: []int{1}, said: []string{"localhost:4000"}},
-		"none does":          {unanswered: []int{0, 1}, said: []string{"localhost:3000", "localhost:4000"}},
+		"everything answers":           {},
+		"one does not, log off":        {unanswered: []int{1}},
+		"one does not, logged at warn": {unanswered: []int{1}, args: []string{"--log-level", "warn"}, logged: []string{"http://localhost:4000"}},
+		"none does, logged at warn":    {unanswered: []int{0, 1}, args: []string{"--log-level", "warn"}, logged: []string{"http://localhost:3000", "http://localhost:4000"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newRunHarness(t, live(public), ":3000", ":4000")
 			h.router.unanswered = tc.unanswered
 			ctx, cancel := context.WithCancel(t.Context())
 			h.cache.onSave = cancel
-			if err := h.run(t, ctx); err != nil {
+			if err := h.run(t, ctx, tc.args...); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
 
@@ -2019,53 +2023,18 @@ func TestReportSaysWhatNothingListensOn(t *testing.T) {
 				t.Errorf("asked about %q, want the origins as typed %q", got, want)
 			}
 			out := h.stderr.String()
-			if got := strings.Count(out, "nothing is listening"); got != len(tc.said) {
-				t.Errorf("stderr says nothing is listening %d times, want %d:\n%s", got, len(tc.said), out)
+			if got := strings.Count(out, "nothing is listening"); got != len(tc.logged) {
+				t.Errorf("stderr mentions nothing listening %d times, want %d:\n%s", got, len(tc.logged), out)
 			}
-			for _, host := range tc.said {
-				at := strings.Index(out, line(host))
-				if at < 0 {
-					t.Errorf("stderr does not say %q:\n%s", line(host), out)
-					continue
-				}
-				if at < strings.Index(out, "  -> http://localhost:4000\n") || at > strings.Index(out, stopHint) {
-					t.Errorf("%q is not between the map and the stop hint:\n%s", line(host), out)
+			for _, origin := range tc.logged {
+				if !strings.Contains(out, "origin="+origin) {
+					t.Errorf("no warning names %s:\n%s", origin, out)
 				}
 			}
 			if want := public + "\n"; h.stdout.String() != want {
 				t.Errorf("stdout = %q, want the address alone", h.stdout.String())
 			}
 		})
-	}
-}
-
-// TestAnOriginThatStopsAnsweringIsSaid pins what the run hands the router to
-// say when an origin stops answering: a line on stderr naming an address the
-// operator typed, in the words the report uses for one that never started.
-// Nothing for a served origin, whose address is tunneld's own loopback and
-// fails only while the run tears down — and a served origin is the only kind
-// a console frame is ever drawn for, so a line said here never lands on one.
-func TestAnOriginThatStopsAnsweringIsSaid(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
-	h := newRunHarness(t, live(public), ":3000", "exec:///usr/bin/htop")
-	ctx, cancel := context.WithCancel(t.Context())
-	h.cache.onSave = cancel
-	if err := h.run(t, ctx); err != nil {
-		t.Fatalf("run() = %v", err)
-	}
-	notice := h.router.configured.Notice()
-	if notice == nil {
-		t.Fatal("the run gave the router nothing to say an origin stopped answering with")
-	}
-
-	before := h.stderr.Len()
-	notice(1)
-	if said := h.stderr.String()[before:]; said != "" {
-		t.Errorf("a served origin's outage said %q, want nothing", said)
-	}
-	notice(0)
-	if said, want := h.stderr.String()[before:], "a visitor is waiting on localhost:3000: start something on it, and their page loads it on its own\n"; said != want {
-		t.Errorf("an origin's outage said %q, want %q", said, want)
 	}
 }
 

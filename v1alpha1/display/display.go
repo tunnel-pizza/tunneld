@@ -29,8 +29,10 @@ import (
 
 	pkgbrowser "github.com/pkg/browser"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"rsc.io/qr"
 )
 
 // Motd is where the panel reads the provider's messages of the day, rendered
@@ -362,6 +364,24 @@ func (*DisplayImpl) URL(enabled bool, public *url.URL, origins v1.Origins) strin
 	shown := *public
 	shown.RawQuery = ""
 	return shown.String()
+}
+
+// QR is addr as a QR code for a phone, in lines of text: the third way to put
+// the tunnel in front of a person, beside a tab and the console, and the one
+// the caller prints, when it chooses, since only it knows where the run's
+// human output stands.
+//
+// qr.M, where the frame draws qr.L. The frame's code goes from a screen
+// straight into a camera; this one is text, and text gets passed on first
+// (pasted into a message, copied into a reply by a model), where a cell can
+// come out wrong, and the code has to absorb what does. M recovers about 15%
+// of the code where L recovers 7%, and costs nothing for an address
+// tunnel.pizza mints: 34 to 37 characters are version 3 at either level, 37
+// cells by 19 rows. Measured with jsQR on a 36-character address, 300 copies
+// with cells changed at random: with ten changed, L read 29% and M 49%; with
+// sixteen, L read 1% and M 34%.
+func (*DisplayImpl) QR(addr string) ([]string, error) {
+	return attach.QRLines(addr, qr.M)
 }
 
 // asTile drops the headers that stop an origin working inside a panel frame:

@@ -33,7 +33,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -108,9 +107,6 @@ type RouterImpl struct {
 	// Nil is nothing in front.
 	handler func(http.Handler) http.Handler
 	log     v1.Logger
-	// notice is told an origin stopped answering, once per outage; nil tells
-	// nobody.
-	notice func(ix int)
 	// mux answers the ControlPath: the router's own endpoints, registered on
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
@@ -241,23 +237,12 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// WithNotice sets what is told an origin stopped answering: its index in the
-// dialable list, once per outage — the first dial to it that fails since the
-// route began, and again only after it has answered in between. Every failed
-// request is on the log besides; this is the one somebody hears about. It is
-// called from the request that failed, so it must not block. Nil, the
-// default, tells nobody.
-func WithNotice(notice func(ix int)) Option {
-	return func(r *RouterImpl) { r.notice = notice }
-}
-
-// Origins, WebSockets, Handler and Notice read back what the options set, for
-// a caller standing in for a router that wants to see what it was handed
+// Origins, WebSockets and Handler read back what the options set, for a
+// caller standing in for a router that wants to see what it was handed
 // without standing one up.
 func (r *RouterImpl) Origins() v1.Origins                      { return r.dialable }
 func (r *RouterImpl) WebSockets() int                          { return r.ws }
 func (r *RouterImpl) Handler() func(http.Handler) http.Handler { return r.handler }
-func (r *RouterImpl) Notice() func(ix int)                     { return r.notice }
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
@@ -330,7 +315,7 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
 	route := *r
 	v1.Apply(&route, opts...)
-	dialable, ws, front, log, notice := route.dialable, route.ws, route.handler, route.log, route.notice
+	dialable, ws, front, log := route.dialable, route.ws, route.handler, route.log
 	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
 	}
@@ -338,7 +323,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	if err != nil {
 		return nil, fmt.Errorf("router: listen: %w", err)
 	}
-	var h http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log, notice))
+	var h http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log))
 	origins, control := h, route.authorize(route.mux)
 	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, ControlPath) {
@@ -449,13 +434,7 @@ func (r *RouterImpl) Cancel() {
 //
 // The inbound Host is kept: an origin may key on it, and the stdlib default
 // would rewrite it to the origin's own host.
-//
-// Each origin is either answering or in an outage, which begins with the
-// first dial to it that fails and ends with anything it answers; notice is
-// told when one begins. An origin starts out answering, so the first failure
-// since the route began is news too.
-func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) http.Handler {
-	down := make([]atomic.Bool, len(origins))
+func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 	// index is the origin a request was routed to, found in the list by the
 	// host it was sent to rather than read off the request; -1 for none.
 	index := func(host string) int {
@@ -547,11 +526,11 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 		// with any line break taken out besides.
 		//
 		// When nothing answered the dial at all — refused, no route, nothing
-		// within the dial's timeout — the visitor gets a page saying so, and
-		// notice is told if this begins an outage. Before, tunneld :3999 with
-		// nothing listening answered a bodiless 502, the edge painted its own
-		// "Bad gateway · Host Error" page over it, and the person who ran the
-		// command heard nothing at all.
+		// within the dial's timeout — the visitor gets a page saying so. The
+		// router says nothing on the console: the warn line is its report,
+		// and what the operator sees is the builder's to show. Before,
+		// tunneld :3999 with nothing listening answered a bodiless 502, and
+		// the edge painted its own "Bad gateway · Host Error" page over it.
 		//
 		// A 503 rather than a 502, because the edge replaces an origin's 502
 		// with its own page and is expected to pass a 503 through with its
@@ -583,9 +562,6 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 			if !unanswered {
 				w.WriteHeader(http.StatusBadGateway)
 				return
-			}
-			if !down[ix].Swap(true) && notice != nil {
-				notice(ix)
 			}
 
 			// The page is for a browser loading one: a GET or HEAD that takes
@@ -631,16 +607,12 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger, notice func(ix int)) ht
 			}
 			h.Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = fmt.Fprintf(w, "nothing on %s yet: start something on it, or ask whoever shared this address to\n", where)
+			_, _ = fmt.Fprintf(w, "nothing is running on %s yet: start a process on it, or ask whoever shared this address to\n", where)
 		},
-		// Anything an origin answers ends its outage, whatever the status:
-		// something is listening. With several origins, an explicit top-level
-		// pick is answered with the sticky cookie besides; Rewrite put the
-		// index on the outbound context for it, and only then.
+		// With several origins, an explicit top-level pick is answered with
+		// the sticky cookie; Rewrite put the index on the outbound context for
+		// it, and only then.
 		ModifyResponse: func(resp *http.Response) error {
-			if ix := index(resp.Request.URL.Host); ix >= 0 {
-				down[ix].Store(false)
-			}
 			if ix, ok := resp.Request.Context().Value(stickyKey{}).(int); ok {
 				cookie := &http.Cookie{Name: Cookie, Value: strconv.Itoa(ix), Path: "/"}
 				resp.Header.Add("Set-Cookie", cookie.String())

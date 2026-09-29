@@ -22,7 +22,6 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
@@ -30,7 +29,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
-	"rsc.io/qr"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -609,18 +607,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// the hostname's credential and nothing guards it yet.
 		router.WithCache(spec),
 		router.WithLog(log),
-		// An origin that stops answering, told once per outage, in the words
-		// the report below uses for one that never started. Only an address
-		// the operator typed: a served origin's is tunneld's own loopback,
-		// which fails only while the run tears down, and that is nobody's
-		// news. Which is also why this can write to stderr straight: the
-		// console draws a frame only for a lone served origin, so a line here
-		// never lands on one. Each failed request is on the log besides.
-		router.WithNotice(func(i int) {
-			if u := origins.At(i); u.Scheme == "http" || u.Scheme == "https" {
-				fmt.Fprintf(stderr, "a visitor is waiting on %s: start something on it, and their page loads it on its own\n", u.Host)
-			}
-		}),
+		// TODO(#206): tell the operator when a visitor finds an origin that
+		// is not listening, once per outage. The router logs every such
+		// request at warn; showing it belongs here in the builder, at a point
+		// where a line cannot land in the middle of a frame, not on the
+		// request's goroutine deep in the router.
 	)
 	if err != nil {
 		return err
@@ -735,16 +726,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 
 	// An origin nothing is listening on is the one thing here the person who
-	// ran this can fix, and until now only a visitor found out: the address
-	// answers with a page saying so, to whoever opens it. So it is said here
-	// too, beneath the map, once the tunnel is up — a dev server started
-	// after the tunnel is the ordinary case, and the line says the address
-	// picks it up by itself. After the addresses rather than among them, so a
-	// dial that takes its full timeout holds back nothing a script is waiting
-	// for; before the launcher is handed the console, so a detached run says
-	// it too.
+	// ran this can fix; a visitor already gets a page saying so. Logged for
+	// now, after the addresses so a slow dial holds back nothing a script is
+	// waiting for.
+	//
+	// TODO(#206): show it to the operator beneath the map, from the builder,
+	// once there is one place that prints the run's human lines.
 	for _, i := range b.router.Unanswered(ctx, origins) {
-		fmt.Fprintf(stderr, "start something on %s: nothing is listening there yet, and visitors see it as soon as it answers\n", origins.At(i).Host)
+		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).Redacted())
 	}
 
 	// What the provider said with the spec, learned here because Messages
@@ -785,24 +774,22 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// and before a detached run's streams move to its log, so the caller a
 	// launcher is holding the prompt for gets it. Not when a frame is about to
 	// take the console: Ctrl+K q is the code there, sized to the pane, and one
-	// printed now would only sit behind it.
+	// printed now would only sit behind it. The code itself is the display's,
+	// which draws it; printing it is the builder's, which knows when.
 	//
-	// qr.M, where the frame draws qr.L. The frame's code goes from a screen
-	// straight into a camera; this one is text, and text gets passed on first
-	// — pasted into a message, copied into a reply by a model — where a cell
-	// can come out wrong, and the code has to absorb what does. M recovers
-	// about 15% of the code where L recovers 7%, and costs nothing for an
-	// address tunnel.pizza mints: 34 to 37 characters are version 3 at either
-	// level, 37 cells by 19 rows. Q and H would cost a version or two more.
-	// Measured with jsQR on a 36-character address, 300 copies with cells
-	// changed at random: with ten changed, L read 29% and M 49%; with
-	// sixteen, L read 1% and M 34%.
+	// And no tab: a run that asked for a code is being opened on a phone, and
+	// a tab on this machine would be a second copy nobody asked for. A caller
+	// who decided with WithOpen still wins.
 	if b.qr && screen == nil {
-		if lines, err := attach.QRLines(addr, qr.M); err != nil {
-			fmt.Fprintf(stderr, "the address could not be drawn as a QR code: %v\n", err)
+		if lines, err := b.display.QR(addr); err != nil {
+			log.Warn("the address could not be drawn as a QR code", "error", err)
 		} else {
 			fmt.Fprintln(stderr, strings.Join(lines, "\n"))
 		}
+	}
+	if b.qr && open == nil {
+		shown := false
+		open = &shown
 	}
 
 	b.display.Open(ctx, log,

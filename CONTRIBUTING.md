@@ -30,7 +30,7 @@ Deep-link by filename; line numbers will drift.
 | What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
 | The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins, and the plugin's install lines to the marketplace | [`readme_test.go`](./readme_test.go) |
 | The Claude Code marketplace, and its one plugin: a skill that teaches an agent to share a dev server, and `/tunneld:session`, which hands a conversation to a tunnel | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), [`plugin/`](./plugin) |
-| The marketplace held to its plugin, the skill's header, and every flag the skill types | [`marketplace_test.go`](./marketplace_test.go) |
+| The plugin held to the marketplace, each skill's header, and every flag a skill types | [`plugin/plugin_test.go`](./plugin/plugin_test.go) |
 | Every origin form, the frame, flags and environment in full | [`docs/reference.md`](./docs/reference.md)          |
 | Embedding: the options, `Run`, the `v1` surface, the examples table | [`docs/embedding.md`](./docs/embedding.md)  |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -255,13 +255,13 @@ is the Acknowledgements section against `go.mod` and against the versions the
 pages load from jsDelivr, so a new dependency fails `make test` until the
 README says what it is for.
 
-`marketplace_test.go` is the rule once more. `.claude-plugin/marketplace.json`
-is the source, at the root, and its test follows it to the plugin it lists and
-the skills inside that, since no Go file can sit beside those without shipping
-to everyone who installs the plugin. It holds the names to each other, each
-skill to the header a model picks it by or is kept from it by, and every flag
-a skill tells an agent to type to the command that has it — or, for `-d` and
-`-k`, to the command's refusal naming the npm launcher.
+`plugin/plugin_test.go` is the rule once more: `plugin.json` and the skills
+are the source, and their test sits beside them. It reads the marketplace one
+level up, since `go test ./...` skips `.claude-plugin/`. It holds the names to
+each other, each skill to the header a model picks it by or is kept from it
+by, and every flag a skill tells an agent to type to the command that has it
+(or, for `-d` and `-k`, to the command's refusal naming the npm launcher). It
+ships with the plugin to everyone who installs it, inert.
 
 `v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
 source file that is not Go, so its tests sit beside it under the name
@@ -346,11 +346,11 @@ Easy to get wrong from the diff alone:
   502 — something is listening — and nothing from the request is read into
   either answer. The page reloads itself, so the multiview panel leaves it
   alone: the panel retries a gateway's status, and 503 is not one, which is
-  what keeps two things from reloading one tile. The person who ran the
-  command hears it twice over: `Router.Unanswered` dials the http origins
-  once the tunnel is up, and `router.WithNotice` is told once per outage.
-  Both write to stderr straight, which is safe only because a console frame
-  is drawn for a lone served origin and neither ever names one.
+  what keeps two things from reloading one tile. The router never writes to
+  the console: it logs every failed dial at warn. `Router.Unanswered` dials
+  the http origins once the tunnel is up, and the builder logs what it finds;
+  showing either to the person who ran the command is the builder's, from one
+  place, still to do (#206).
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the

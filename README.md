@@ -36,10 +36,9 @@ opens on it too. Press Ctrl+C and it's gone. Run the same command from the
 same directory later and you usually get the same address back.
 
 Start your app before or after: the address comes up either way. Until
-something answers on the port, the run says `start something on
-localhost:3000`, and a visitor gets a page asking the same, which loads the app
-on its own once it's up. Nothing to share at all? Run `npx tunneld` on its own
-to share your shell.
+something answers on the port, a visitor gets a page asking for it, which loads
+the app on its own once it's up. Nothing to share at all? Run `npx tunneld` on
+its own to share your shell.
 
 <details>
 <summary>Other ways to install</summary>
@@ -186,7 +185,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
 | `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
 | `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
-| `--qr` | `TUNNELD_QR` | Print the address as a QR code too. Scan it with your phone. |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code too, and open no tab. Scan it with your phone. |
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |

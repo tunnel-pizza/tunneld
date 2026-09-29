@@ -19,7 +19,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -124,9 +123,9 @@ func TestRouteNothingIsAnError(t *testing.T) {
 // New was given, then what Route is given for that route alone — on a copy,
 // so the next route starts from the router's own again.
 func TestOptions(t *testing.T) {
-	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.Notice() != nil || r.mux == nil || r.log != discard {
-		t.Errorf("New() = origins %v, ws %d, handler set %v, notice set %v, mux made %v, discarding %v; want none, -1, false, false, true, true",
-			r.Origins(), r.WebSockets(), r.Handler() != nil, r.Notice() != nil, r.mux != nil, r.log == discard)
+	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
+			r.Origins(), r.WebSockets(), r.Handler() != nil, r.mux != nil, r.log == discard)
 	}
 	if r := New(WithLog(nil)); r.log != discard {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
@@ -593,13 +592,13 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 					t.Errorf("a HEAD carried a body: %q", body)
 				}
 			case tc.page:
-				for _, want := range []string{"<title>Nothing’s on " + where + " yet</title>", "Start something on " + where + ".", "Ask whoever shared it to start something on " + where} {
+				for _, want := range []string{"<title>Nothing is running on " + where + " yet…</title>", "Start a process on " + where + ". This page will automatically refresh.", "Ask whoever shared it to start something on " + where, `data-mark="` + unreachableHeader + `"`} {
 					if !strings.Contains(body, want) {
 						t.Errorf("page does not say %q:\n%s", want, body)
 					}
 				}
 			default:
-				if want := "nothing on " + where + " yet: start something on it, or ask whoever shared this address to\n"; body != want {
+				if want := "nothing is running on " + where + " yet: start a process on it, or ask whoever shared this address to\n"; body != want {
 					t.Errorf("body = %q, want %q", body, want)
 				}
 			}
@@ -670,79 +669,6 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 			t.Errorf("= %d %q, marked %q; want a bare, unmarked 502", resp.StatusCode, body, resp.Header.Get(unreachableHeader))
 		}
 	})
-}
-
-// TestRouteNoticesAnOutageOnce pins WithNotice: told the first time an origin
-// fails a dial since the route began, not again while it stays down, and again
-// once it has answered in between. An origin restarted under a running tunnel
-// is news each time; the page asking every few seconds is not, and neither is
-// an origin that answers.
-func TestRouteNoticesAnOutageOnce(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-
-	var mu sync.Mutex
-	var told []int
-	r := New()
-	u, err := r.Route(t.Context(),
-		WithOrigins(origins.New(origins.WithURL(mustURL(t, echo(t, "A").URL), &url.URL{Scheme: "http", Host: addr}))),
-		WithNotice(func(ix int) {
-			mu.Lock()
-			defer mu.Unlock()
-			told = append(told, ix)
-		}))
-	if err != nil {
-		t.Fatalf("Route: %v", err)
-	}
-	t.Cleanup(r.Cancel)
-	base := strings.TrimSuffix(u.String(), "/")
-	status := func(path string) int {
-		t.Helper()
-		req, _ := http.NewRequest("GET", base+path, nil)
-		resp, _ := get(t, http.DefaultClient, req)
-		return resp.StatusCode
-	}
-	saw := func(want ...int) {
-		t.Helper()
-		mu.Lock()
-		defer mu.Unlock()
-		if !slices.Equal(told, want) {
-			t.Errorf("notice told %v, want %v", told, want)
-		}
-	}
-
-	status("/?0")
-	saw()
-	for range 3 {
-		if got := status("/?1"); got != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want 503 with nothing listening", got)
-		}
-	}
-	saw(1)
-
-	// Up again, on the same port, and answering.
-	back, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Skipf("the port was taken in between (%v); nothing to restart on", err)
-	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {})}
-	go func() { _ = srv.Serve(back) }()
-	if got := status("/?1"); got != http.StatusOK {
-		t.Fatalf("status = %d, want 200 once the origin is back", got)
-	}
-	saw(1)
-
-	// And down again: a second outage, told in its turn.
-	srv.Close()
-	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
-	if got := status("/?1"); got != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 once the origin is gone again", got)
-	}
-	saw(1, 1)
 }
 
 // TestUnanswered pins the dial behind the run's startup line: an http origin

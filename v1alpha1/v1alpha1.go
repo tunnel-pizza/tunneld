@@ -205,6 +205,7 @@ type Display interface {
 	URL(enabled bool, public *url.URL, origins Origins) string
 	Panel(enabled bool, origins Origins, log v1.Logger) func(next http.Handler) http.Handler
 	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
+	QR(addr string) ([]string, error)
 }
 
 // WithDisplay replaces what serves the tunnel's bare address and opens it
@@ -229,14 +230,12 @@ func WithDisplay(display Display) Option {
 // What it routes is the run's,
 // handed over in the options it takes, as Display's Open is: the dialable
 // origins, the index of the one marked +ws, what the display's Panel answered
-// to put in front, the run's logger, and what to tell when an origin stops
-// answering.
+// to put in front, and the run's logger.
 //
 // Unanswered dials each http and https origin once and says which indexes
-// nothing answered on, so the run can tell whoever started it that the address
-// is up and the thing behind it is not. It is the router's because the router
-// is what dials origins: a failed dial is what it answers visitors with a page
-// for, and what it tells WithNotice about at run time.
+// nothing answered on, so the run can report that the address is up and the
+// thing behind it is not. It is the router's because the router is what dials
+// origins: a failed dial is what it answers visitors with a page for.
 //
 // Cancel takes the router down. Not ctx: the router outlives the run for as
 // long as the tunnel drains, so the caller cancels it once the tunnel is done.

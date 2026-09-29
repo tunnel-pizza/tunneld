@@ -9,7 +9,7 @@
      tunnel's only credential. Its one request of its own, the question
      below, routes by the ?n in the page's own URL, never by a Referer. -->
 <meta name="referrer" content="no-referrer">
-<title>Nothing’s on {{.Where}} yet</title>
+<title>Nothing is running on {{.Where}} yet…</title>
 <!-- Without script the page still comes back by itself, only slower and by
      reloading whole each time. With script this is inert. -->
 <noscript><meta http-equiv="refresh" content="10"></noscript>
@@ -82,12 +82,17 @@
   footer a:hover, footer a:focus-visible { text-decoration: underline; }
 </style>
 </head>
-<body>
+<!-- What the script needs from the server rides on the body as data
+     attributes rather than being written into the script: a template action
+     inside a script element is not JavaScript until it is rendered, so an
+     editor reports the file as broken, and the other pages here keep their
+     actions in markup too. -->
+<body data-mark="{{.Mark}}" data-retry-after="{{.RetryAfter}}">
 <main>
   <p class="waiting"><span class="dot" aria-hidden="true"></span>Waiting for {{.Where}}</p>
-  <h1>Nothing’s on {{.Where}} yet</h1>
+  <h1>Nothing is running on {{.Where}} yet…</h1>
   <div class="who">
-    <p><strong>Shared this link?</strong> Start something on {{.Where}}. This page picks it up on its own.</p>
+    <p>Start a process on {{.Where}}. This page will automatically refresh.</p>
     <p><strong>Got this link?</strong> Ask whoever shared it to start something on {{.Where}}, and keep this tab open.</p>
   </div>
 </main>
@@ -118,7 +123,8 @@
   // The wait grows from the answer's Retry-After to a ceiling, so a page
   // left open for an hour is not a request every two seconds.
   (() => {
-    const mark = {{.Mark}}, first = {{.RetryAfter}} * 1000, ceiling = 10000;
+    const { mark, retryAfter } = document.body.dataset;
+    const first = Number(retryAfter) * 1000, ceiling = 10000;
     const gateway = (status) => status === 502 || status === 504 || status === 530 || (status >= 520 && status <= 527);
     let wait = first, timer = 0, asking = false;
     const later = () => {

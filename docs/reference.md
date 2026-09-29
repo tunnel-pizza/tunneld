@@ -46,27 +46,17 @@ origin `http+ws` (or `https+ws`) names the one that owns WebSockets; see
 ### When nothing is listening
 
 Start the app before or after `tunneld :3999`: the address comes up either way
-and serves the app as soon as it answers. Until then, the run tells you what to
-do, beneath the map:
-
-```
-tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
-https://0t8qsb6pq3.tunneled.pizza/
-  -> http://localhost:3999
-start something on localhost:3999: nothing is listening there yet, and visitors see it as soon as it answers
-Press Ctrl+C to stop the tunnel...
-```
+and serves the app as soon as it answers.
 
 tunneld dials each `http` and `https` origin once when the tunnel comes up, for
-a second at most. Program and container origins are its own to serve and are
-not dialed.
+a second at most, and logs one it finds nothing on at `warn`. Program and
+container origins are its own to serve and are not dialed.
 
 A visitor who arrives first gets tunneld's page, not the edge's "Bad gateway":
 
-- **Nothing’s on port 3999 yet.** An origin on this machine is named by its
-  port, one elsewhere by its host.
-- **Shared this link?** Start something on port 3999. This page picks it up on
-  its own.
+- **Nothing is running on port 3999 yet…** An origin on this machine is named
+  by its port, one elsewhere by its host.
+- Start a process on port 3999. This page will automatically refresh.
 - **Got this link?** Ask whoever shared it to start something on port 3999, and
   keep this tab open.
 
@@ -83,20 +73,14 @@ accepts `text/html`, for a document or a frame) gets the page; a `fetch`, an
 asset, a `POST`, a WebSocket handshake and `curl` get one line:
 
 ```
-nothing on port 3999 yet: start something on it, or ask whoever shared this address to
+nothing is running on port 3999 yet: start a process on it, or ask whoever shared this address to
 ```
 
 Only a failed dial counts: refused, no route, or no answer in time. An origin
 that accepts the connection and hangs up still gets a bare `502`, because
 something is listening there.
 
-When a visitor finds the origin down, the run tells you, once per outage:
-
-```
-a visitor is waiting on localhost:3999: start something on it, and their page loads it on its own
-```
-
-Each such request is also logged at `warn` as `origin did not answer`; see
+Each such request is logged at `warn` as `origin did not answer`; see
 [Logs](#logs).
 
 ## Several origins on one address
@@ -737,7 +721,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. The run's log file and the terminal's log view keep info and above regardless, and debug too when this asks for it; see [Logs](#logs). |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
-| `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches: the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `q` is the code. **Default off.** |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `q` is the code. **Default off.** |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:

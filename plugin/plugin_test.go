@@ -1,8 +1,9 @@
-package main
+package plugin
 
 import (
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -12,13 +13,20 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 )
 
-// .claude-plugin/marketplace.json is a source file too: it makes this
-// repository a Claude Code marketplace with one plugin in it, and this is its
-// test file, beside it. What it pins is everything the file leads to — the
-// plugin it names, the skill in that plugin, and the command lines the skill
-// tells an agent to type. A skill is instructions a model follows on somebody
-// else's machine, so a flag it names that the command no longer has is a run
-// that fails there, and nothing here would have said so.
+// This directory is the Claude Code plugin: plugin.json and its skills, which
+// are source files too, and this is their test, beside them. It pins that
+// the repository's marketplace lists this plugin under its own name, that each
+// skill has the header a model picks it by, and that every flag a skill tells
+// an agent to type is one tunneld has. A skill is instructions a model
+// follows on somebody else's machine, so a flag it names that the command no
+// longer has is a run that fails there, and nothing else would say so.
+//
+// The marketplace itself is .claude-plugin/marketplace.json at the root,
+// where no Go file can sit: go test ./... skips a directory whose name starts
+// with a dot. So it is read from here, one level up.
+
+// root is the repository, which the marketplace's paths are relative to.
+const root = ".."
 
 // marketplace is the part of marketplace.json this test reads.
 type marketplace struct {
@@ -60,14 +68,14 @@ func TestMarketplaceListsThePlugin(t *testing.T) {
 		var manifest struct {
 			Name string `json:"name"`
 		}
-		manifestPath := filepath.Join(entry.Source, ".claude-plugin", "plugin.json")
+		manifestPath := filepath.Join(root, entry.Source, ".claude-plugin", "plugin.json")
 		if err := json.Unmarshal([]byte(read(t, manifestPath)), &manifest); err != nil {
 			t.Fatalf("parsing %s: %v", manifestPath, err)
 		}
 		if manifest.Name != entry.Name {
 			t.Errorf("%s names the plugin %q and marketplace.json lists it as %q", manifestPath, manifest.Name, entry.Name)
 		}
-		if len(skillsOf(t, entry.Source)) == 0 {
+		if len(skillsOf(t, filepath.Join(root, entry.Source))) == 0 {
 			t.Errorf("plugin %q has no skills/<name>/SKILL.md, so it gives an agent nothing", entry.Name)
 		}
 	}
@@ -87,7 +95,7 @@ func TestMarketplaceListsThePlugin(t *testing.T) {
 // model may start on its own.
 func TestSkillsSayWhenToUseThem(t *testing.T) {
 	for _, entry := range marketplaceOf(t).Plugins {
-		for _, skill := range skillsOf(t, entry.Source) {
+		for _, skill := range skillsOf(t, filepath.Join(root, entry.Source)) {
 			fields := frontmatter(t, skill)
 			if want := filepath.Base(filepath.Dir(skill)); fields["name"] != want {
 				t.Errorf("%s: name = %q, want %q, its directory", skill, fields["name"], want)
@@ -116,7 +124,7 @@ func TestSkillsSayWhenToUseThem(t *testing.T) {
 func TestSkillsTypeOnlyFlagsThatExist(t *testing.T) {
 	cmd := v1alpha1.New().Command()
 	for _, entry := range marketplaceOf(t).Plugins {
-		for _, skill := range skillsOf(t, entry.Source) {
+		for _, skill := range skillsOf(t, filepath.Join(root, entry.Source)) {
 			named := flagsIn(read(t, skill))
 			if len(named) == 0 {
 				t.Errorf("%s names no flags, so this test pins nothing there", skill)
@@ -145,7 +153,7 @@ func TestSkillsTypeOnlyFlagsThatExist(t *testing.T) {
 func marketplaceOf(t *testing.T) marketplace {
 	t.Helper()
 	var m marketplace
-	if err := json.Unmarshal([]byte(read(t, ".claude-plugin/marketplace.json")), &m); err != nil {
+	if err := json.Unmarshal([]byte(read(t, filepath.Join(root, ".claude-plugin", "marketplace.json"))), &m); err != nil {
 		t.Fatalf("parsing marketplace.json: %v", err)
 	}
 	return m
@@ -214,4 +222,15 @@ func flagsIn(skill string) []string {
 		add(span[1])
 	}
 	return flags
+}
+
+// read is a file's text with its line endings made \n, as a Windows checkout
+// has them \r\n.
+func read(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
 }

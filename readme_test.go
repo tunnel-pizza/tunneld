@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -90,7 +91,15 @@ func TestPluginInstallNamesTheMarketplace(t *testing.T) {
 	module, _, _ := strings.Cut(read(t, "go.mod"), "\n")
 	repo := strings.TrimPrefix(strings.TrimPrefix(module, "module "), "github.com/")
 
-	m := marketplaceOf(t)
+	var m struct {
+		Name    string `json:"name"`
+		Plugins []struct {
+			Name string `json:"name"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal([]byte(read(t, ".claude-plugin/marketplace.json")), &m); err != nil {
+		t.Fatalf("parsing marketplace.json: %v", err)
+	}
 	if len(m.Plugins) == 0 {
 		t.Fatal("marketplace.json lists no plugins, so the README has nothing to install")
 	}
