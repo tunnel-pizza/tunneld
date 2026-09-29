@@ -474,7 +474,7 @@ shell of its own is refused for having no origin.
 
 It brings commands with it: every one of [u-root](https://github.com/u-root/u-root)'s
 that builds for the system — `ls`, `cat`, `grep`, `find`, `tar`, `wget`
-and well over a hundred more on Linux, fewer on macOS and Windows, where the ones
+and well over a hundred more on Linux, fewer on macOS, where the ones
 that drive Linux itself (`mount`, `ip`, `insmod`) do not build. They go at the
 end of the shell's `$PATH`, so a command the machine has is the one that runs
 and these only fill what is missing. Each is tunneld's own executable again,
