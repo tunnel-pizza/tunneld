@@ -1,7 +1,7 @@
 # tunneld
 
 **A public URL for what's running on your machine.** A port, a shell, a coding
-agent, a container: one command, no account, no daemon.
+agent, a container: one command, no account.
 
 [![npm](https://img.shields.io/npm/v/tunneld)](https://www.npmjs.com/package/tunneld)
 [![CI](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tunnel-pizza/tunneld/actions/workflows/ci.yml)

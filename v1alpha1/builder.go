@@ -251,7 +251,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 		// contract, the served schemes and the +ws marker are in the README
 		// and docs/reference.md, where there is room to say why.
 		long := name + ` puts what is running on this machine on a public URL:
-a port, a program, or a container. No account, no daemon.
+a port, a program, or a container. No account.
 
 `
 		examples := [][2]string{
