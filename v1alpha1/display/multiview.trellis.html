@@ -13,17 +13,17 @@
      its page, its scroll and its session through every rearrangement.
      Pinned, with integrity, like the xterm the attach page loads. -->
 <link rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/style.css"
-      integrity="sha384-qMmdHdhfNA4PNPX2ZiioZRN3zfWCmAT/PPjXjNaMaNDNHbMw5wNf4JyX7CLZQDj2"
+      href="https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.3.0/dist/style.css"
+      integrity="sha384-r1cF4F6zPk1OkxDN4TT/hPN0oe172Bg0+xlwTqYkdjRLpysNXmiax1jZXDHoQxHc"
       crossorigin="anonymous"
       referrerpolicy="no-referrer">
 <script type="importmap">
 {
   "imports": {
-    "trellis": "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/index.js"
+    "trellis": "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.3.0/dist/index.js"
   },
   "integrity": {
-    "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.2.0/dist/index.js": "sha384-CWXttq8gmZ0ZGdjOw3ZQkCGlm/CMKqkNkNeqHvSplrqGIESnymhYaJ5wCc5t/oY0"
+    "https://cdn.jsdelivr.net/npm/@danfessler/trellis@0.3.0/dist/index.js": "sha384-j/BNEEEzktZoUmBaOhexoqzVravhBam+zeKSliRRdLt9h2IXW0rSHNdT9Pg+eAw6"
   }
 }
 </script>
@@ -31,6 +31,22 @@
 <style>
   /* The workspace is the page. */
   html, body, #workspace { height: 100%; margin: 0; }
+
+  /* The tray of hidden panels, bottom centre over the workspace, in
+     Trellis's own menu colours. */
+  .tray {
+    position: absolute; left: 50%; bottom: 12px; translate: -50% 0;
+    display: flex; gap: 6px; padding: 6px;
+    background: var(--trellis-menu); border-radius: var(--trellis-radius);
+    box-shadow: var(--trellis-shadow-float);
+  }
+  .tray[hidden] { display: none; }
+  .tray button {
+    font: inherit; font-size: var(--trellis-font-size); color: var(--trellis-text);
+    background: none; border: 0; border-radius: calc(var(--trellis-radius) / 2);
+    padding: 4px 10px; cursor: pointer;
+  }
+  .tray button:hover { background: var(--trellis-menu-hover); }
 </style>
 </head>
 <body>
@@ -59,63 +75,189 @@
   }
   const root = rows.length === 1 ? rows[0] : layout.column(rows);
 
-  // Per view: its frame and what the menu can do with it.
+  // Per view: its frame, what the menu can do with it, and what its tab says.
   const frames = new Map();
 
+  // Free navigation is a viewer's own preference, kept in this browser only.
+  const NAV = "tunneld.multiview.navigation";
+  const stored = (() => { try { return localStorage.getItem(NAV); } catch (e) { return null; } })();
+
+  // Hidden panels wait in a tray at the bottom of the workspace, and fly
+  // there when hidden.
+  const tray = document.createElement("nav");
+  tray.className = "tray";
+  tray.setAttribute("aria-label", "Hidden origins");
+
+  let navMode = stored === "free" ? "free" : "focus";
+  const current = () => navMode;
+
   const frameOf = (v) => ({ src: v.params.route, title: v.params.local });
-  const ws = createWorkspace(document.getElementById("workspace"), {
+  // let, not const: Trellis asks for panel menus while it is being created,
+  // to know which panels have one, before this has been assigned.
+  let ws = null;
+  ws = createWorkspace(document.getElementById("workspace"), {
     label: `${location.host} multiview`,
     theme: "dark",
+    navigation: stored === "free" ? "free" : "focus",
     types: {
       origin: {
         title: (v) => v.params.local,
         iframe: frameOf,
         closable: false,
-        // Back only within the frame's own history, reload where it is now,
-        // its route in a tab of its own — what the grid carried as chips.
+        // Back only within the frame's own history, and its route in a tab of
+        // its own — what the grid carried as chips.
         menu: (v) => {
           const f = frames.get(v.id);
           return [
             { id: "back", label: "Back", disabled: !f?.canGoBack(), run: () => f?.back() },
-            { id: "reload", label: "Reload", run: () => f?.reload() },
             { id: "open", label: "Open in new tab", run: () => window.open(v.params.route, "_blank", "noopener") },
           ];
         },
       },
-      // A terminal draws its own frame, labels and bar.
+      // A terminal draws its own frame, labels and bar, and keeps an ordinary
+      // tab bar all the same: Trellis's overlay strip is a 34px drag handle
+      // over the frame's top two rows, which took the frame's chip and the
+      // first line of output from the pointer and saved no space. Below its
+      // minimum it is drawn smaller rather than laid out smaller: every
+      // viewer of a terminal shares the smallest one's rows and columns, and
+      // a tile dragged small would otherwise shrink the program for all of
+      // them.
       terminal: {
         title: (v) => v.params.local,
         iframe: frameOf,
         closable: false,
+        minSize: { width: 640, height: 320 },
       },
     },
+    // One menu for every panel: what the view type offers, then reload and
+    // the public link, then Trellis's own, then the workspace's.
+    panelMenu: (entries, { view: v }) => {
+      const f = frames.get(v.id);
+      const snap = ws ? ws.getSnapshot() : { framings: [] };
+      return [
+        ...entries.filter((e) => e === "separator" || !["maximize", "float", "dock", "move", "split-right", "split-below", "hide"].includes(e.id)),
+        { id: "reload", label: "Reload", run: () => f?.reload() },
+        { id: "copy", label: "Copy public link", run: () => navigator.clipboard?.writeText(new URL(v.params.route, location.href).href) },
+        "separator",
+        ...entries.filter((e) => e !== "separator" && ["maximize", "float", "dock", "move", "split-right", "split-below", "hide"].includes(e.id)),
+        "separator",
+        {
+          id: "views", label: "Saved views", items: [
+            ...snap.framings.map((fr) => ({ label: fr.name, run: () => ws.navigation.framings.go(fr.id) })),
+            ...(snap.framings.length ? [{ label: "Forget saved views", danger: true, run: () => snap.framings.forEach((fr) => ws.navigation.framings.remove(fr.id)) }] : []),
+            { label: "Save this view", run: () => ws.navigation.framings.save(inView().join(" + ") || "Everything") },
+          ],
+        },
+        {
+          id: "free", label: "Free navigation", checked: current() === "free",
+          run: () => {
+            const next = current() === "free" ? "focus" : "free";
+            ws.update({ navigation: next });
+            navMode = next;
+            try { localStorage.setItem(NAV, next); } catch (e) { /* this browser keeps nothing */ }
+          },
+        },
+        { id: "reset", label: "Reset layout", run: () => ws.reset() },
+      ];
+    },
+    hideToward: () => tray,
     defaultLayout: layout.stage(root),
     // The arrangement is remembered per tunnel, per set of origins: a reload
     // puts the tiles back where they were left.
     persist: {
       key: "tunneld.multiview:" + origins.map((o) => o.Route + "=" + o.Local).join("|"),
-      version: 1,
+      version: 3,
     },
   });
   window.ws = ws; // EXPERIMENT: poke at it from the console
 
+  // The titles of the panels the camera shows now: what a saved view is
+  // called.
+  const inView = () => {
+    const cam = ws.navigation.camera, doc = ws.getDocument(), out = [];
+    for (const { node, rect } of ws.getLayoutRects().values()) {
+      if (node.kind !== "panel") continue;
+      const overlap = Math.min(rect.x + rect.w, cam.x + cam.w) - Math.max(rect.x, cam.x) > 0.01 &&
+                      Math.min(rect.y + rect.h, cam.y + cam.h) - Math.max(rect.y, cam.y) > 0.01;
+      if (overlap) out.push(doc.views[node.selected]?.title ?? node.selected);
+    }
+    return out;
+  };
+
+  // The tray: one button per hidden panel, which brings it back.
+  ws.slots.chrome.append(tray);
+  const renderTray = () => {
+    tray.replaceChildren(...ws.getSnapshot().hidden.map(({ panelId, views }) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = views.map((v) => v.title).join(", ");
+      b.onclick = () => ws.restore(panelId, { from: b });
+      return b;
+    }));
+    tray.hidden = !tray.childElementCount;
+  };
+  ws.subscribe(renderTray);
+  renderTray();
+
   // Wire each frame once: focus on press (in the capture phase, ahead of an
   // origin that cancels mousedown) and dark defaults for a page with no styles.
+  //
+  // Not ws.focus: Trellis focuses a view by calling focus() on its iframe
+  // element a frame later, and that from the parent resets focus inside the
+  // frame to its body — pulling it off the element the press just focused,
+  // xterm's textarea included, so every keystroke after it went nowhere.
+  //
+  // Trellis also marks a view focused, without touching focus inside it,
+  // when the top window blurs onto its frame. Pressing from one frame into
+  // another never blurs the top window again, so the page takes focus back
+  // for a moment first: the frame's focus() then blurs it every time.
+  //
+  // Once per document, and never the initial about:blank: a frame not yet
+  // loaded when this runs has only that placeholder, and a same-origin page
+  // loading into it keeps the placeholder's window, listeners and all — so
+  // wiring it and then wiring again on load attached everything twice, and
+  // forwarded every pinch twice. Not keyed by contentWindow, which is the same
+  // proxy for every page the frame ever shows. Painting and the badges run on
+  // every load regardless.
+  const wired = new WeakSet();
   const wire = ({ view: v, content }) => {
     const frame = content.querySelector("iframe");
     if (!frame || frames.get(v.id)?.frame === frame) return;
+    const ctl = history(frame, v.params.route);
+    frames.set(v.id, ctl);
+    const badge = badges(v, frame, ctl);
     const attach = () => {
       try {
+        const doc = frame.contentDocument;
+        if (!doc || frame.contentWindow.location.href === "about:blank" || wired.has(doc)) throw null;
+        wired.add(doc);
         frame.contentWindow.addEventListener("pointerdown", () => {
+          window.focus();
           frame.contentWindow.focus();
-          ws.focus(v.id);
         }, true);
-      } catch (e) { /* cross-origin: leave the browser's default alone */ }
+        // Under free navigation a pinch zooms the workspace, but one over a
+        // frame is the frame's own event and never reaches Trellis. Every
+        // frame here is same-origin, so it is handed up as the workspace's:
+        // a pinch arrives as a wheel with ctrlKey, and ⌘-wheel is the
+        // workspace's too. A plain wheel stays with the page.
+        frame.contentWindow.addEventListener("wheel", (e) => {
+          if (current() !== "free" || (!e.ctrlKey && !e.metaKey)) return;
+          e.preventDefault();
+          const box = frame.getBoundingClientRect();
+          const scale = box.width / frame.offsetWidth; // drawn smaller below its minimum
+          ws.element.dispatchEvent(new WheelEvent("wheel", {
+            deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+            ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+            clientX: box.left + e.clientX * scale, clientY: box.top + e.clientY * scale,
+            bubbles: true, cancelable: true,
+          }));
+        }, { passive: false });
+      } catch (e) { /* already wired, or cross-origin: leave it alone */ }
       paint(frame);
+      badge.loaded();
     };
     frame.addEventListener("load", attach);
     attach();
-    frames.set(v.id, history(frame, v.params.route));
   };
 
   const paint = (frame) => {
@@ -125,6 +267,53 @@
       if (doc.querySelector('meta[name="color-scheme"], style, link[rel~="stylesheet"], [style]')) return;
       doc.documentElement.style.colorScheme = "dark";
     } catch (e) { /* cross-origin: its colours are its own */ }
+  };
+
+  // What a view's tab says about it, most important first:
+  //
+  //   down      a gateway answered for an http origin: tunneld could not
+  //             reach it (a 502, which the edge may dress as its own page).
+  //             The frame is tried again every few seconds until the origin
+  //             answers, so one started after the tunnel appears by itself.
+  //             Only a gateway's statuses: a 503 is the origin's own page,
+  //             and reloading it forever would lose whatever was done in it.
+  //             A browser that reports no status leaves the body to go on,
+  //             and tunneld's 502 is the page with nothing in it.
+  //   ended     a terminal's program ended, or its socket went ("detached").
+  const RETRY = 3000;
+  const gateway = (status) => status === 502 || status === 504 || status === 530 || (status >= 520 && status <= 527);
+  const badges = (v, frame, ctl) => {
+    const h = ws.view(v.id);
+    let down = false, ended = null, retry = 0, watching = null;
+    const show = () => h?.setBadge(down ? "down" : ended);
+    const loaded = () => {
+      clearTimeout(retry);
+      let doc = null, status = 0;
+      try {
+        doc = frame.contentDocument;
+        status = frame.contentWindow.performance.getEntriesByType("navigation")[0]?.responseStatus ?? 0;
+      } catch (e) { /* cross-origin: nothing to read */ }
+      if (v.type === "origin") {
+        if (!doc || frame.contentWindow.location.href === "about:blank") return;
+        down = status ? gateway(status)
+          : doc.readyState === "complete" && !doc.title && !doc.body?.childNodes.length;
+        if (down) retry = setTimeout(() => ctl.reload(), RETRY);
+        show();
+        return;
+      }
+      // A terminal: watch its overlay.
+      watching?.disconnect();
+      ended = null; show();
+      if (!doc) return;
+      const gone = doc.getElementById("gone"), why = doc.getElementById("why");
+      watching = new MutationObserver(() => {
+        ended = gone && !gone.hidden ? (why?.textContent || "ended") : null;
+        show();
+      });
+      if (gone) watching.observe(gone, { attributes: true, attributeFilter: ["hidden"] });
+      if (why) watching.observe(why, { childList: true, characterData: true, subtree: true });
+    };
+    return { loaded };
   };
 
   // A frame's own history. history.back() on a frame walks the page's joint

@@ -183,13 +183,6 @@
   .ctl:hover, .ctl:focus-visible { background: var(--paper); }
   .ctl[hidden] { display: none; }
 
-  /* The reload's glyph turns while the frame is loading, so a press on a
-     slow origin is seen to have done something; it stops when the frame says
-     it is back. The one motion on the page, and it answers a press. */
-  @keyframes turn { to { transform: rotate(360deg); } }
-  .ctl.busy { animation: turn .8s linear infinite; }
-  @media (prefers-reduced-motion: reduce) { .ctl.busy { animation: none; opacity: .5; } }
-
   /* The screen inside the frame: one row and one column in from the border
      on every side, as the pane sits inside the frame's box — and on the
      same grid as the border, so the page never paints under it. The box
@@ -275,6 +268,12 @@
   //
   // On load rather than once, because a frame that navigates — an origin
   // redirecting, or reconnecting — replaces the window this was attached to.
+  // Once per document, and never the initial about:blank: a frame not yet
+  // loaded when this runs has only that placeholder, and a same-origin page
+  // loading into it keeps the placeholder's window, listeners and all — so
+  // wiring it and then wiring again on load attached everything twice. Not
+  // keyed by contentWindow, which is the same proxy for every page the frame
+  // ever shows: that would wire the first page and no page after it.
   //
   // The same reach into the frame is what keeps a bare page legible. A page
   // with no CSS at all — a bare "hello", anything a stock dev server hands
@@ -296,13 +295,17 @@
       doc.documentElement.style.colorScheme = 'dark';
     } catch (e) { /* cross-origin: its colours are its own */ }
   };
+  const wired = new WeakSet();
   for (const frame of document.querySelectorAll('.tile iframe')) {
     const tile = frame.closest('.tile');
     const wire = () => {
       try {
-        frame.contentWindow.addEventListener(
-          'pointerdown', () => { frame.contentWindow.focus(); activate(tile); }, true);
-        frame.contentWindow.addEventListener('focus', () => activate(tile));
+        const win = frame.contentWindow, doc = frame.contentDocument;
+        if (doc && win.location.href !== 'about:blank' && !wired.has(doc)) {
+          wired.add(doc);
+          win.addEventListener('pointerdown', () => { frame.contentWindow.focus(); activate(tile); }, true);
+          win.addEventListener('focus', () => activate(tile));
+        }
       } catch (e) { /* cross-origin: leave the browser's default alone */ }
       paint(frame);
     };
@@ -342,9 +345,6 @@
   // would at the top level. A frame whose window cannot be read — it left the
   // origin — is pointed at its route again, which is all that can be done.
   const reload = (frame) => {
-    const tile = frame.closest('.tile');
-    const button = tile && tile.querySelector('[data-reload]');
-    if (button) button.classList.add('busy');
     const again = () => { frame.src = frame.getAttribute('src'); };
     let win, href;
     try { win = frame.contentWindow; href = win.location.href; } catch (e) { win = null; }
@@ -412,7 +412,41 @@
   for (const button of document.querySelectorAll('.tile [data-reload]')) {
     const frame = button.closest('.tile').querySelector('iframe');
     button.addEventListener('click', () => reload(frame));
-    frame.addEventListener('load', () => button.classList.remove('busy'));
+  }
+
+  // Try again, by itself, a frame whose origin did not answer. tunneld
+  // answers an origin it cannot reach with a 502 and no body, and the edge
+  // puts its own gateway page in its place; either way the tile would sit on
+  // that page after the origin came up — one started after the tunnel, or
+  // restarted under it — until somebody pressed ↻. So the panel presses it,
+  // every few seconds, for as long as the answer is a gateway's.
+  //
+  // Only a gateway's statuses, because anything else is the origin's own
+  // answer: a 503 is a page the origin chose to serve, and reloading it
+  // forever would throw away whatever the viewer was doing in it. The status
+  // comes from the frame's navigation entry; a browser that does not report
+  // one leaves only the body to go on, and tunneld's own 502 is the page with
+  // nothing in it — a 200 with nothing in it is the origin's to serve.
+  const gateway = (status) => status === 502 || status === 504 || status === 530 || (status >= 520 && status <= 527);
+  const RETRY = 3000;
+  for (const button of document.querySelectorAll('.tile:not(.bare) [data-reload]')) {
+    const frame = button.closest('.tile').querySelector('iframe');
+    let pending = 0;
+    const check = () => {
+      clearTimeout(pending);
+      let down = false;
+      try {
+        const win = frame.contentWindow, doc = frame.contentDocument;
+        if (win.location.href === 'about:blank') return;
+        const status = win.performance.getEntriesByType('navigation')[0]?.responseStatus ?? 0;
+        down = status ? gateway(status)
+          : doc.readyState === 'complete' && !doc.title && !doc.body?.childNodes.length;
+      } catch (e) { return; } // left the origin: not the panel's to retry
+      if (!down) return;
+      pending = setTimeout(() => button.click(), RETRY);
+    };
+    frame.addEventListener('load', check);
+    check(); // a frame whose answer came before this ran
   }
 </script>
 
