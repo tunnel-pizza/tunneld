@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/url"
@@ -53,6 +54,12 @@ func (s *sink) String() string {
 // TestOrigin pins the built-in shell's origin: this executable, as an
 // ordinary exec:// program origin, with Arg as its only argument.
 func TestOrigin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		if origin, err := Origin(); !errors.Is(err, ErrNoTerminal) {
+			t.Errorf("Origin() = %q, %v; want ErrNoTerminal on Windows", origin, err)
+		}
+		return
+	}
 	origin, err := Origin()
 	if err != nil {
 		t.Fatalf("Origin() = %v", err)

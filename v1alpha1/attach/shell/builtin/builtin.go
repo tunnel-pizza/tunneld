@@ -1,10 +1,12 @@
 package builtin
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"src.elv.sh/pkg/prog"
@@ -15,6 +17,9 @@ import (
 // tunneld rather than tunneld: its one argument, and nothing else. Spelled so
 // nothing a person types at tunneld collides with it.
 const Arg = "--tunneld-builtin-shell"
+
+// ErrNoTerminal is Origin's answer on a platform with no pseudo-terminals.
+var ErrNoTerminal = errors.New("the built-in shell needs a pseudo-terminal, which this platform does not have")
 
 // init turns a process started with Arg into the built-in shell before
 // anything else in it runs, and never returns.
@@ -42,7 +47,14 @@ func init() {
 // way any program is — on a pseudo-terminal that is its controlling terminal,
 // which is what makes Ctrl-C reach what it runs — and the only thing that
 // knows it is not a program on disk is init above.
+//
+// Not on Windows, which has no pseudo-terminal to serve it on — and whose
+// C:\... path has no spelling in an exec:// URL besides — so a run there with
+// no shell of its own is refused for having no origin, as it was before.
 func Origin() (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", ErrNoTerminal
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("find this executable to run its built-in shell: %w", err)

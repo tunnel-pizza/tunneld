@@ -1493,11 +1493,14 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		return path
 	}
 	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: v1.ExecScheme, Path: path}} }
-	origin, err := builtin.Origin()
-	if err != nil {
+	// On Windows there is no built-in shell to fall back to, so the chain
+	// ends with nothing, as it did before there was one.
+	var builtinURL *url.URL
+	if origin, err := builtin.Origin(); err == nil {
+		builtinURL, _ = url.Parse(origin)
+	} else if runtime.GOOS != "windows" {
 		t.Fatalf("builtin.Origin() = %v", err)
 	}
-	builtinURL, _ := url.Parse(origin)
 
 	for _, tc := range []struct {
 		name     string
@@ -1551,7 +1554,9 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			case ":3000":
 				want = []*url.URL{{Scheme: "http", Host: "localhost:3000"}}
 			case "builtin":
-				want = []*url.URL{builtinURL}
+				if builtinURL != nil {
+					want = []*url.URL{builtinURL}
+				}
 			default:
 				resolved, ok := shell.Resolve(paths[tc.want])
 				if !ok {

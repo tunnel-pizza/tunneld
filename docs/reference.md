@@ -468,7 +468,9 @@ is tunneld's own executable run again as the shell, so it is served like any
 program, on a pseudo-terminal where Ctrl-C ends what is running and not the
 shell. It has its own line editor (history, completion, the arrow keys) and its
 own language, which is not POSIX: `export`, `$(…)` and `&&` are spelled
-differently. History lasts as long as the session; nothing is stored.
+differently. History lasts as long as the session; nothing is stored. Not on
+Windows, which has no pseudo-terminal to serve it on: there, a run with no
+shell of its own is refused for having no origin.
 
 It brings commands with it: every one of [u-root](https://github.com/u-root/u-root)'s
 that builds for the system — `ls`, `cat`, `grep`, `find`, `tar`, `wget`
