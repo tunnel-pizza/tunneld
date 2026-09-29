@@ -6,119 +6,89 @@ disable-model-invocation: true
 
 # Hand this conversation to a tunnel
 
-The user wants to carry on with this conversation somewhere else. A running
-session belongs to this terminal and cannot move, so hand it over: tunneld
-serves `claude --resume` on this conversation at a public address, and this
-process exits. Carry out the steps in order, each command through the Bash
-tool so the user sees and approves it.
+A running session can't move. Start `claude --resume` on this conversation
+behind a public address instead, and have the user exit this one. Run each
+command through the Bash tool, so the user sees and approves it.
 
-## 1. Say what this does, first
+## 1. Ask first
 
-Before running anything, tell the user plainly: this puts Claude, with their
-permissions, on a public URL. Whoever has the address can drive it, and
-through it a shell on this machine. There is no login in front of it: they
-should send it the way they would send a password, and stop it when done. If
-they don't want that, stop here.
+Say this, in about these words, and wait for a yes:
+
+> This puts this Claude session, with your permissions, on a public URL.
+> Anyone with the link can drive it, and through it a shell on this machine.
+> Go ahead?
 
 ## 2. Start it
 
-On macOS, Linux and WSL (Windows is step 6):
+On macOS, Linux and WSL (Windows is step 5):
 
 ```sh
 cd "${CLAUDE_PROJECT_DIR}" && CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 npx tunneld -d --qr 'claude --resume ${CLAUDE_SESSION_ID}'
 ```
 
-- The project directory, so the resumed session works where this one does.
-- `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`, because tunneld is started from
-  your Bash tool and the `claude` it starts would inherit the marker Claude
-  Code puts on its own subprocesses. Taken for a nested session, it would
-  save no transcript of anything said from the phone.
-- `-d`, the first word, starts tunneld in the background and gives the prompt
-  back once the tunnel is up. The quotes make `claude --resume <id>` one
+- `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`: without it, the `claude` tunneld
+  starts inherits the marker Claude Code puts on its subprocesses, counts as
+  nested, and saves no transcript of what is said from the phone.
+- `-d` must be the first word: tunneld runs in the background and the prompt
+  comes back once the tunnel is up. The quotes make `claude --resume <id>` one
   program with its arguments.
-- stdout carries the address and nothing else. stderr carries what it
-  reaches, then the address as a QR code (from `--qr`), then a summary with
-  the run's `pid`.
-- Nothing starts yet: tunneld runs the program only once the address is first
-  opened.
+- stdout is the address alone. stderr has the origin map, the QR code from
+  `--qr`, then a summary with the run's `pid`.
+- Nothing runs until the address is first opened.
 
-If it answers `already running as pid …`, this conversation is already on a
-tunnel, at the address it was given then: say so, and don't start a second
-one. If the user has lost the address, ending that run with `kill -INT <pid>`
-and starting it again gets it back, usually unchanged. Don't look for it in
-tunneld's cache directory: the files there are the tunnel's credentials.
+`already running as pid …` means this conversation is already on a tunnel: say
+so, and don't start another. If the user lost the address, `kill -INT <pid>`
+and start it again; it usually comes back unchanged. Never read tunneld's
+cache directory: its files are the tunnel's credentials.
 
-## 3. Show it
+## 3. Reply with the steps
 
-In your reply, in this order:
+Reply with these steps, in this order:
 
-1. The address.
-2. The QR code, exactly as stderr printed it: every line, none added, dropped
-   or trimmed, inside a plain ``` code block with no language after the
-   backticks. It is drawn for a dark background; on a light one it comes out
-   inverted, which many phone cameras still read and some do not.
-3. The warning from step 1, again.
+1. **Type `/exit` here first.** The resumed session starts when the link is
+   first opened, so exiting first keeps the conversation in one place.
+2. **Scan this with your phone**, or open `<address>`. Put the QR code in a
+   plain ``` block with no language, exactly as stderr printed it: every line,
+   nothing added, dropped or trimmed.
+3. **Send the link like a password.** Anyone with it drives Claude on this
+   machine.
+4. **Stop it with `kill -INT <pid>`.** It runs until you do. Not
+   `npx tunneld -k`: that ends every tunneld run on this machine.
 
-Never put the address anywhere else: not in a file, a commit, a PR or an
-issue.
+Add one line if step 4 below says this session loses something it relied on.
+The code is drawn for a dark background; if the user says their camera won't
+read it, give them the address to type.
 
-## 4. `/exit` here, then open the link
+Never put the address in a file, a commit, a PR or an issue.
 
-Tell the user to type `/exit` in this session before opening the address.
-The resumed Claude does not exist until the address is first opened, so once
-this one has exited the conversation never has two processes writing to it.
-Opening the link first would.
+## 4. What the resumed session keeps
 
-## 5. Stop it
+- **Keeps:** the conversation, tool calls and results included; the
+  permission mode, except bypass-permissions and plan, which reset to the
+  default, and auto only while the account still qualifies; a `claude --agent`
+  and an active goal; "don't ask again" rules, which live in settings.
+- **Loses:** file-edit approvals; flags this session was launched with, such
+  as `claude --mcp-config`, `claude --settings`, `claude --plugin-dir`,
+  `claude --fallback-model` and `claude --add-dir` (put any it used inside the
+  quotes in step 2); directories added with `/add-dir`; background work still
+  running here.
+- On a Pro or Max plan, a conversation idle for over an hour may open with a
+  choice to resume from a summary.
 
-`kill -INT <pid>`, with the pid from the summary, ends the run and the Claude
-in it the way Ctrl+C would. `npx tunneld -k` ends every tunneld run on this
-machine, including the user's other ones: don't reach for it. The run
-outlives this conversation, so tell the user it is up until they stop it.
+## 5. Windows
 
-## 6. Windows
-
-`-d` is not available on Windows yet (WSL is Linux, and has it), and without
-it the run holds the shell. Give the user the command for a terminal of
-their own, to run after `/exit`:
+`-d` isn't available on Windows yet (WSL has it). Tell the user to type `/exit`,
+then run this in a terminal of their own:
 
 ```sh
 cd "${CLAUDE_PROJECT_DIR}"
 npx tunneld "claude --resume ${CLAUDE_SESSION_ID}"
 ```
 
-It prints the address and puts the session back on their console inside
-tunneld's frame, where Ctrl+K then q shows the QR code. Ctrl+C there does not
-stop tunneld: the frame's Ctrl+K then x does.
-
-## What the resumed session keeps
-
-Claude Code documents what `claude --resume <id>` restores:
-
-- The whole conversation, tool calls and results included.
-- The permission mode it was in, except bypass-permissions and plan mode,
-  which come back as whatever a new session would start in; auto mode only
-  while the account still qualifies for it.
-- An agent it was started with, and an active goal.
-- Approvals saved as "don't ask again" rules for commands and web domains,
-  which live in settings.
-
-It does not keep:
-
-- File-edit approvals, which last only until this session ends.
-- Flags this session was launched with, such as `claude --mcp-config`,
-  `claude --settings`, `claude --plugin-dir`, `claude --fallback-model` or
-  `claude --add-dir`: if it had any, they go inside the quotes in step 2.
-  Directories added with `/add-dir` are not kept either. Settings files are
-  read again, so what is configured there still applies.
-- Background work still running here, which ends with this process and shows
-  as unfinished.
-
-On a Pro or Max plan, a long conversation that has sat idle for over an hour
-may open with a choice to resume from a summary.
+The session comes back inside tunneld's frame: Ctrl+K then q shows the QR
+code, and Ctrl+K then x stops it.
 
 ## Next time
 
-To be on the laptop and the phone at once without a handoff, start Claude
-through tunneld in the first place: `npx tunneld claude`. The console and the
-address are then one session.
+Tell the user: start with `npx tunneld claude`, and the laptop and the phone
+are one session, with no handoff.
