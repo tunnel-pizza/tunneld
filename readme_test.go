@@ -15,9 +15,10 @@ import (
 // day a dependency lands without it. And the two lines that install the
 // Claude Code plugin, which are only worth printing while they work.
 
-// modulePath matches a Go module path in a code span: a dotted host, then at
-// least one path element — `github.com/cnuss/libtunnel`, `rsc.io/qr`.
-var modulePath = regexp.MustCompile("`([a-z0-9][a-z0-9.-]*\\.[a-z]{2,}(?:/[A-Za-z0-9._~-]+)+)`")
+// modulePath matches a Go module path in a code span: a dotted host, then any
+// path elements — `github.com/cnuss/libtunnel`, `rsc.io/qr`, and a module that
+// is its host alone, `src.elv.sh`.
+var modulePath = regexp.MustCompile("`([a-z0-9][a-z0-9.-]*\\.[a-z]{2,}(?:/[A-Za-z0-9._~-]+)*)`")
 
 // pinnedScript matches an npm package pinned at a version in a code span, the
 // way jsDelivr spells one: `@xterm/xterm@6.0.0`.

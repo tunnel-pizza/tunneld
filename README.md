@@ -296,6 +296,14 @@ tunneld is a thin layer over other people's work. Thank you to:
   (`github.com/charmbracelet/x/vt`) and [colorprofile](https://github.com/charmbracelet/colorprofile)
   (`github.com/charmbracelet/colorprofile`). The whole frame is built on them,
   on your console and in a tab.
+- **[Elvish](https://elv.sh)** (`src.elv.sh`): the shell built into tunneld,
+  the one a run with no origin serves when this machine has no `$SHELL`,
+  `bash` or `sh` of its own.
+- **[u-root](https://github.com/u-root/u-root)** (`github.com/u-root/u-root`):
+  the commands that shell brings for a machine that has none of its own —
+  every one of u-root's that builds there, from `ls`, `cat` and `grep` to
+  `wget`, `tar` and `sshd` — rewritten into tunneld by
+  [gobusybox](https://github.com/u-root/gobusybox), u-root's busybox builder.
 - **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
   `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
   `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded
@@ -313,6 +321,7 @@ And the rest of what tunneld requires directly:
 | [`github.com/pkg/browser`](https://github.com/pkg/browser) | Opening the tab. |
 | [`github.com/go-logr/logr`](https://github.com/go-logr/logr), [`k8s.io/klog/v2`](https://github.com/kubernetes/klog) | cri-streaming's logs, routed into tunneld's own. |
 | [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys), [`golang.org/x/term`](https://pkg.go.dev/golang.org/x/term) | The system calls under a program's terminal, and raw mode on your console. |
+| [`github.com/cenkalti/backoff/v4`](https://github.com/cenkalti/backoff), [`github.com/dustin/go-humanize`](https://github.com/dustin/go-humanize), [`github.com/florianl/go-tc`](https://github.com/florianl/go-tc), [`github.com/gliderlabs/ssh`](https://github.com/gliderlabs/ssh), [`github.com/google/go-tpm`](https://github.com/google/go-tpm), [`github.com/google/uuid`](https://github.com/google/uuid), [`github.com/gopacket/gopacket`](https://github.com/gopacket/gopacket), [`github.com/insomniacslk/dhcp`](https://github.com/insomniacslk/dhcp), [`github.com/ishidawataru/sctp`](https://github.com/ishidawataru/sctp), [`github.com/jaypipes/ghw`](https://github.com/jaypipes/ghw), [`github.com/kevinburke/ssh_config`](https://github.com/kevinburke/ssh_config), [`github.com/mdlayher/vsock`](https://github.com/mdlayher/vsock), [`github.com/packetcap/go-pcap`](https://github.com/packetcap/go-pcap), [`github.com/pkg/sftp`](https://github.com/pkg/sftp), [`github.com/ProtonMail/go-crypto`](https://github.com/ProtonMail/go-crypto), [`github.com/rck/unit`](https://github.com/rck/unit), [`github.com/sirupsen/logrus`](https://github.com/sirupsen/logrus), [`github.com/u-root/cpuid`](https://github.com/u-root/cpuid), [`github.com/u-root/gobusybox/src`](https://github.com/u-root/gobusybox), [`github.com/u-root/iscsinl`](https://github.com/u-root/iscsinl), [`github.com/u-root/uio`](https://github.com/u-root/uio), [`github.com/vishvananda/netlink`](https://github.com/vishvananda/netlink), [`github.com/vishvananda/netns`](https://github.com/vishvananda/netns), [`github.com/vtolstov/go-ioctl`](https://github.com/vtolstov/go-ioctl), [`go.bug.st/serial`](https://pkg.go.dev/go.bug.st/serial), [`golang.org/x/crypto`](https://pkg.go.dev/golang.org/x/crypto), [`golang.org/x/exp`](https://pkg.go.dev/golang.org/x/exp), [`golang.org/x/net`](https://pkg.go.dev/golang.org/x/net), [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text), [`golang.org/x/tools`](https://pkg.go.dev/golang.org/x/tools), [`gopkg.in/yaml.v2`](https://pkg.go.dev/gopkg.in/yaml.v2), [`pack.ag/tftp`](https://pkg.go.dev/pack.ag/tftp) | What u-root's commands in the built-in shell import, carried in with them. |
 
 And Go itself. The license notices for the Go standard library and for every
 module a release binary links are in `THIRD_PARTY_LICENSES`, attached to each

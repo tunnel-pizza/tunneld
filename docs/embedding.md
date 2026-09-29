@@ -214,19 +214,22 @@ Self-contained programs in [`examples/`](../examples):
 | `multi-origin` | Two local services behind one hostname, reachable via `?n`. |
 | `attach` | A container's terminal on the public hostname. Starts the container too; needs a Docker daemon. |
 | `shell` | A local program's terminal on the public hostname. Runs `zsh`. |
+| `noshell` | A machine with no shell: clears `$SHELL` and `$PATH`, so a run with no origin falls back to the shell built into tunneld (Elvish). |
 | `workspace` | A Streamlit app, its process's terminal and a Claude Code session side by side. Needs `uvx` and `claude`. |
 
 Each starts the origins it exposes, so nothing else needs to be running —
 `attach` starts its container too, pulling `ghcr.io/cnuss/zsh` if it is not
 already local, `shell` runs its program when the first viewer opens the
-page, and `workspace` runs `uvx` and `claude`, which have to be installed. All
-five block until interrupted:
+page, `noshell` runs tunneld's own built-in shell, needing nothing installed
+and with no `$PATH` to run programs from, and `workspace` runs `uvx` and `claude`, which have to be installed. All six
+block until interrupted:
 
 ```sh
 make run basic
 make run multi-origin
 make run attach
 make run shell
+make run noshell
 make run workspace
 ```
 

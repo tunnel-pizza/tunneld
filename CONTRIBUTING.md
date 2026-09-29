@@ -23,6 +23,7 @@ Deep-link by filename; line numbers will drift.
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v1alpha1/attach/shell/builtin/`](./v1alpha1/attach/shell/builtin) |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |

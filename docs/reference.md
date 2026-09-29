@@ -447,9 +447,10 @@ shell. Anyone with the link has it.
 tunneld
 ```
 
-exposes `$SHELL` — the one origin every machine has, needing no port to be
-listening. It is the ordinary program path, so the terminal is drawn on your
-console as well:
+exposes a shell — the one origin every run can have, needing no port to be
+listening: `$SHELL`, else `bash` on `$PATH`, else `sh` on `$PATH`, else the
+shell built into tunneld. It is the ordinary program path, so the terminal is
+drawn on your console as well:
 
 ```
 https://0t8qsb6pq3.tunneled.pizza/
@@ -457,9 +458,28 @@ https://0t8qsb6pq3.tunneled.pizza/
 ```
 
 An argument, `TUNNELD_ORIGINS`, or a seed from an embedding program all outrank
-it. A `$SHELL` naming a program that is not there is dropped rather than read
-as an address, so what you get is the message about passing an origin and not a
-tunnel to nothing.
+it. A `$SHELL` naming a program that is not there is passed over, with a warning
+naming it, rather than read as an address: a tunnel to nothing is never the
+answer.
+
+The built-in shell is [Elvish](https://elv.sh), for a machine with no shell of
+its own — a container image with no `bash` or `sh`, a scrubbed environment. It
+is tunneld's own executable run again as the shell, so it is served like any
+program, on a pseudo-terminal where Ctrl-C ends what is running and not the
+shell. It has its own line editor (history, completion, the arrow keys) and its
+own language, which is not POSIX: `export`, `$(…)` and `&&` are spelled
+differently. History lasts as long as the session; nothing is stored. Not on
+Windows, which has no pseudo-terminal to serve it on: there, a run with no
+shell of its own is refused for having no origin.
+
+It brings commands with it: every one of [u-root](https://github.com/u-root/u-root)'s
+that builds for the system — `ls`, `cat`, `grep`, `find`, `tar`, `wget`
+and well over a hundred more on Linux, fewer on macOS, where the ones
+that drive Linux itself (`mount`, `ip`, `insmod`) do not build. They go at the
+end of the shell's `$PATH`, so a command the machine has is the one that runs
+and these only fill what is missing. Each is tunneld's own executable again,
+under the command's name, from a temporary directory that is removed when the
+shell exits.
 
 `--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
 `WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
