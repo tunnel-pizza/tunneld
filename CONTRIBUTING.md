@@ -29,9 +29,7 @@ Deep-link by filename; line numbers will drift.
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
-| The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins, and the plugin's install lines to the marketplace | [`readme_test.go`](./readme_test.go) |
-| The Claude Code marketplace, and its one plugin: a skill that teaches an agent to share a dev server, and `/tunneld:session`, which hands a conversation to a tunnel | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), [`plugin/`](./plugin) |
-| The plugin held to the marketplace, each skill's header, and every flag a skill types | [`plugin/plugin_test.go`](./plugin/plugin_test.go) |
+| The Acknowledgements section held to `go.mod` and the pages' jsDelivr pins | [`readme_test.go`](./readme_test.go) |
 | Every origin form, the frame, flags and environment in full | [`docs/reference.md`](./docs/reference.md)          |
 | Embedding: the options, `Run`, the `v1` surface, the examples table | [`docs/embedding.md`](./docs/embedding.md)  |
 | e2e harness + runner                           | [`e2e/e2e_test.go`](./e2e/e2e_test.go)                           |
@@ -255,14 +253,6 @@ files are for code.
 is the Acknowledgements section against `go.mod` and against the versions the
 pages load from jsDelivr, so a new dependency fails `make test` until the
 README says what it is for.
-
-`plugin/plugin_test.go` is the rule once more: `plugin.json` and the skills
-are the source, and their test sits beside them. It reads the marketplace one
-level up, since `go test ./...` skips `.claude-plugin/`. It holds the names to
-each other, each skill to the header a model picks it by or is kept from it
-by, and every flag a skill tells an agent to type to the command that has it
-(or, for `-d` and `-k`, to the command's refusal naming the npm launcher). It
-ships with the plugin to everyone who installs it, inert.
 
 `v1/v1.test.cjs` is the same rule in Node's spelling: `v1/v1.cjs` is the one
 source file that is not Go, so its tests sit beside it under the name

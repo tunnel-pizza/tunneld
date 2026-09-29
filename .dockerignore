@@ -1,14 +1,12 @@
 # The build stage COPYs the whole tree, so anything not needed to compile is
 # context uploaded for nothing — and .git in particular is the difference
 # between a small context and a large one.
-.claude-plugin
 .git
 .github
 .superpowers
 docs
 e2e
 examples
-plugin
 
 # Never let a local secret or an editor's scratch reach the build context; the
 # repo's .gitignore covers these for git, and this covers them for docker.
