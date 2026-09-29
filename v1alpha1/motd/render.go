@@ -148,7 +148,9 @@ func plainText(body string) string {
 }
 
 // newTab customizes goldmark's HTML rendering for the panel: links open in a
-// new tab, since the panel is a page of frames, and raw HTML is escaped
+// new tab, since the panel is a page of frames, with no Referer, since the
+// panel's hostname is the tunnel's only credential and a message's links lead
+// off the tunnel (tunnel.pizza's own, on every mint); and raw HTML is escaped
 // rather than served. goldmark's own "safe" mode drops raw HTML behind an
 // "<!-- raw HTML omitted -->" comment; that hides a message's markup instead
 // of neutralizing it, so a provider's <script> stays visible as inert text.
@@ -169,7 +171,7 @@ func (r *newTab) link(w util.BufWriter, source []byte, node gmast.Node, entering
 		if r.Unsafe || !gmhtml.IsDangerousURL(n.Destination) {
 			_, _ = w.Write(util.EscapeHTML(util.URLEscape(n.Destination, true)))
 		}
-		_, _ = w.WriteString(`" target="_blank" rel="noopener">`)
+		_, _ = w.WriteString(`" target="_blank" rel="noopener noreferrer">`)
 	} else {
 		_, _ = w.WriteString("</a>")
 	}

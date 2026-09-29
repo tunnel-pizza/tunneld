@@ -128,7 +128,7 @@ func TestHTML(t *testing.T) {
 		t.Errorf("Label = %q, want the severity as its heading, WARNING", r[0].Label)
 	}
 	h := string(r[0].HTML)
-	for _, want := range []string{"<strong>careful</strong>", "&lt;script&gt;", `href="https://tunnel.pizza/docs"`, `target="_blank"`, `rel="noopener"`} {
+	for _, want := range []string{"<strong>careful</strong>", "&lt;script&gt;", `href="https://tunnel.pizza/docs"`, `target="_blank"`, `rel="noopener noreferrer"`} {
 		if !strings.Contains(h, want) {
 			t.Errorf("HTML = %q, want it to contain %q", h, want)
 		}
