@@ -607,7 +607,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// the hostname's credential and nothing guards it yet.
 		router.WithCache(spec),
 		router.WithLog(log),
-		// TODO(#206): tell the operator when a visitor finds an origin that
+		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
 		// request at warn; showing it belongs here in the builder, at a point
 		// where a line cannot land in the middle of a frame, not on the
@@ -730,7 +730,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// now, after the addresses so a slow dial holds back nothing a script is
 	// waiting for.
 	//
-	// TODO(#206): show it to the operator beneath the map, from the builder,
+	// TODO(#209): show it to the operator beneath the map, from the builder,
 	// once there is one place that prints the run's human lines.
 	for _, i := range b.router.Unanswered(ctx, origins) {
 		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).Redacted())

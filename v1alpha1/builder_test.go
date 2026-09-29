@@ -1991,7 +1991,7 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 // nothing is listening on once the tunnel is up: it asks the router about the
 // origins as typed, and logs a warning per origin named. It prints nothing to
 // the console for it: that is left to the builder, in one place, later
-// (#206), and stdout stays the address alone.
+// (#209), and stdout stays the address alone.
 //
 // The dial is the router's, and router_test.go dials a loopback listener and a
 // closed port for it; the fake here answers from a list.
