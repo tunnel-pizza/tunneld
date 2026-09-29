@@ -69,6 +69,34 @@ func write(t *testing.T, dir string, o v1.Origins, body string) {
 	}
 }
 
+// TestOptions pins where a call's facts come from: what New was given, then
+// what Load or Save is given for that call alone — on a copy, so the cache
+// keeps its own and the next call starts from them again.
+func TestOptions(t *testing.T) {
+	if c := cache.New(); c.Origins() != nil || c.Spec() != "" || c.Tracking() != nil {
+		t.Errorf("New() = origins %v, spec %q, tracking %v; want none of them", c.Origins(), c.Spec(), c.Tracking())
+	}
+
+	dir := t.TempDir()
+	o, other := run(t, "http://localhost:3000"), run(t, "http://localhost:4000")
+	c := cache.New(cache.WithDir(dir), cache.WithOrigins(o), cache.WithLog(discard()))
+
+	c.Save(cache.WithSpec(envelope))
+	if got := c.Load(); got != envelope {
+		t.Errorf("Load() with New's origins = %q, want what Save wrote under them", got)
+	}
+	c.Save(cache.WithOrigins(other), cache.WithSpec("other-spec"))
+	if c.Origins() != o || c.Spec() != "" {
+		t.Error("a call's options changed the cache's own, want them applied to that call alone")
+	}
+	if got := c.Load(); got != envelope {
+		t.Errorf("Load() after a save under other origins = %q, want New's run's spec still", got)
+	}
+	if got := c.Load(cache.WithOrigins(other)); got != "other-spec" {
+		t.Errorf("Load(WithOrigins(other)) = %q, want what was saved under them", got)
+	}
+}
+
 // TestRoundTrip is the case the whole package exists for: what Save writes,
 // Load reads back byte for byte. The spec is a JSON envelope, so this is
 // what pins the quoting — a value mangled here is a tunnel that cannot be
@@ -76,9 +104,9 @@ func write(t *testing.T, dir string, o v1.Origins, body string) {
 func TestRoundTrip(t *testing.T) {
 
 	c, o, _ := fixed(t, "http://localhost:3000")
-	c.Save(o, envelope, nil, discard())
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
-	if got := c.Load(o, discard()); got != envelope {
+	if got := c.Load(cache.WithOrigins(o), cache.WithLog(discard())); got != envelope {
 		t.Errorf("Load() = %q, want %q", got, envelope)
 	}
 }
@@ -90,28 +118,28 @@ func TestRoundTrip(t *testing.T) {
 func TestTheFileIsNamedForTheRun(t *testing.T) {
 
 	c, three, path := fixed(t, "http://localhost:3000")
-	c.Save(three, envelope, nil, discard())
+	c.Save(cache.WithOrigins(three), cache.WithSpec(envelope), cache.WithLog(discard()))
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("after Save, %s: %v", path, err)
 	}
 
 	// The same project serving something else is a different tunnel, so there
 	// is nothing here for it to resume.
-	if got := c.Load(run(t, "http://localhost:4000"), discard()); got != "" {
+	if got := c.Load(cache.WithOrigins(run(t, "http://localhost:4000")), cache.WithLog(discard())); got != "" {
 		t.Errorf("Load(other origins) = %q, want nothing — that is another run's tunnel", got)
 	}
 
 	// The order they were typed is not what makes a tunnel, so the same two
 	// origins either way round find the same file.
 	c2, both, _ := fixed(t, "http://localhost:3000", "attach://dockerd/api")
-	c2.Save(both, envelope, nil, discard())
+	c2.Save(cache.WithOrigins(both), cache.WithSpec(envelope), cache.WithLog(discard()))
 	reversed := run(t, "attach://dockerd/api", "http://localhost:3000")
-	if got := c2.Load(reversed, discard()); got != envelope {
+	if got := c2.Load(cache.WithOrigins(reversed), cache.WithLog(discard())); got != envelope {
 		t.Errorf("Load(the same origins reversed) = %q, want the spec it saved", got)
 	}
 
 	// And the run that saved it finds its own.
-	if got := c.Load(three, discard()); got != envelope {
+	if got := c.Load(cache.WithOrigins(three), cache.WithLog(discard())); got != envelope {
 		t.Errorf("Load(same origins) = %q, want the spec it saved", got)
 	}
 }
@@ -133,7 +161,7 @@ func TestTheDefaultDirectoryIsUnderTheUsersCache(t *testing.T) {
 	}
 
 	o := run(t, "http://localhost:3000")
-	cache.New().Save(o, envelope, nil, discard())
+	cache.New().Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
 	path := filepath.Join(want, "tunneld", o.Key()+ext)
 	if _, err := os.Stat(path); err != nil {
@@ -150,9 +178,9 @@ func TestSave(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "nested", "cache")
 		c, o := cache.New(cache.WithDir(dir)), run(t, "http://localhost:3000")
 
-		c.Save(o, envelope, nil, discard())
+		c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
-		if got := c.Load(o, discard()); got != envelope {
+		if got := c.Load(cache.WithOrigins(o), cache.WithLog(discard())); got != envelope {
 			t.Errorf("Load() = %q, want the spec written into a new directory", got)
 		}
 	})
@@ -178,7 +206,7 @@ func TestSave(t *testing.T) {
 		t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
 		c, o := cache.New(cache.WithDir(unwritable)), run(t, "http://localhost:3000")
 
-		c.Save(o, envelope, nil, discard())
+		c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
 		if _, err := os.Stat(filepath.Join(unwritable, o.Key()+ext)); err == nil {
 			t.Error("wrote into a directory it could not write to")
@@ -193,7 +221,7 @@ func TestSave(t *testing.T) {
 		}
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, envelope, nil, discard())
+		c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
 		info, err := os.Stat(path)
 		if err != nil {
@@ -209,7 +237,7 @@ func TestSave(t *testing.T) {
 	t.Run("no spec writes no file", func(t *testing.T) {
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, "", nil, discard())
+		c.Save(cache.WithOrigins(o), cache.WithSpec(""), cache.WithLog(discard()))
 
 		if _, err := os.Stat(path); err == nil {
 			t.Error("wrote a file with nothing to put in it")
@@ -222,7 +250,7 @@ func TestSave(t *testing.T) {
 		t.Setenv(ltv1.LogEnv, "debug")
 		c, o, path := fixed(t, "http://localhost:3000")
 
-		c.Save(o, envelope, nil, discard())
+		c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithLog(discard()))
 
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -242,7 +270,7 @@ func TestLoad(t *testing.T) {
 		o := run(t, "http://localhost:3000")
 		write(t, dir, o, "this is not\x00 an env file at all")
 
-		if got := cache.New(cache.WithDir(dir)).Load(o, discard()); got != "" {
+		if got := cache.New(cache.WithDir(dir)).Load(cache.WithOrigins(o), cache.WithLog(discard())); got != "" {
 			t.Errorf("Load() = %q, want nothing from a broken file", got)
 		}
 	})
@@ -253,17 +281,17 @@ func TestLoad(t *testing.T) {
 		o := run(t, "http://localhost:3000")
 		write(t, dir, o, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
 
-		if got := cache.New(cache.WithDir(dir)).Load(o, discard()); got != "" {
+		if got := cache.New(cache.WithDir(dir)).Load(cache.WithOrigins(o), cache.WithLog(discard())); got != "" {
 			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
 
 	t.Run("no directory and no file are both fine", func(t *testing.T) {
 		o := run(t, "http://localhost:3000")
-		if got := cache.New(cache.WithDir("")).Load(o, discard()); got != "" {
+		if got := cache.New(cache.WithDir("")).Load(cache.WithOrigins(o), cache.WithLog(discard())); got != "" {
 			t.Errorf("Load() with no directory = %q, want nothing", got)
 		}
-		if got := cache.New(cache.WithDir(t.TempDir())).Load(o, discard()); got != "" {
+		if got := cache.New(cache.WithDir(t.TempDir())).Load(cache.WithOrigins(o), cache.WithLog(discard())); got != "" {
 			t.Errorf("Load() = %q, want nothing", got)
 		}
 	})
@@ -283,7 +311,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 	// The hostname arrives the way every other tracking line does now — the
 	// run reads it off the tunnel and hands it in — so it sorts among them
 	// rather than leading with the spec.
-	c.Save(o, envelope, map[string]string{
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithTracking(map[string]string{
 		ltv1.HostnameEnv:             "brave-otter.tunneled.pizza",
 		"PWD":                        "/work/project",
 		"TUNNELD_ORIGINS":            "http://localhost:3000",
@@ -292,7 +320,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 		"TUNNELD_MULTIVIEW":          "true",
 		"TUNNELD_IDENTITY_PROVIDERS": "github",
 		"TUNNELD_EMPTY":              "",
-	}, discard())
+	}), cache.WithLog(discard()))
 
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -332,7 +360,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 
 	// And none of it is load-bearing: the next run takes the spec and leaves
 	// everything else on the disk.
-	if got := c.Load(o, discard()); got != envelope {
+	if got := c.Load(cache.WithOrigins(o), cache.WithLog(discard())); got != envelope {
 		t.Errorf("Load() = %q, want the spec and nothing else read back", got)
 	}
 }
@@ -346,11 +374,11 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 func TestSaveSurvivesAQuoteInAValue(t *testing.T) {
 	c, o, path := fixed(t, "http://localhost:3000")
 
-	c.Save(o, envelope, map[string]string{
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithTracking(map[string]string{
 		"CMD": `tunneld http://localhost:3000/?q='x' --log-level debug`,
-	}, discard())
+	}), cache.WithLog(discard()))
 
-	if got := c.Load(o, discard()); got != envelope {
+	if got := c.Load(cache.WithOrigins(o), cache.WithLog(discard())); got != envelope {
 		body, _ := os.ReadFile(path)
 		t.Errorf("Load() = %q, want the spec — a quoted tracking value broke the file:\n%s", got, body)
 	}

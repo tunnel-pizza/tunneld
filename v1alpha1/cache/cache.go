@@ -13,6 +13,7 @@
 package cache
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,8 +37,11 @@ const ext = ".env"
 // place anybody browses by accident, so hiding one inside it hides nothing.
 const dirName = "tunneld"
 
-// Option configures a CacheImpl at construction.
+// Option configures a CacheImpl, at construction or for one Load or Save.
 type Option = v1.Option[*CacheImpl]
+
+// discard is where a cache with no logger writes: nowhere.
+var discard = slog.New(slog.DiscardHandler)
 
 // assign is one line of the file: NAME='value'.
 //
@@ -51,6 +55,18 @@ type CacheImpl struct {
 	// dir is where files go. Empty means this machine has no cache directory
 	// and nothing is cached, which is the same answer an unwritable one gives.
 	dir string
+
+	// What follows is one run's, set by the options below — given to New as
+	// a default, or to Load and Save for that call alone.
+	//
+	// origins is the run whose file this is: its key names the file.
+	origins v1.Origins
+	// spec is what Save writes: the envelope the running tunnel serializes.
+	spec string
+	// tracking is what Save writes beside the spec: the knobs the run
+	// settled on, keyed by the variable that names each.
+	tracking map[string]string
+	log      v1.Logger
 }
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
@@ -62,7 +78,7 @@ type CacheImpl struct {
 // gitignore templates and 752 real ones, the best a name managed was 13% and
 // 26%.
 func New(opts ...Option) *CacheImpl {
-	c := &CacheImpl{}
+	c := &CacheImpl{log: discard}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
 	}
@@ -75,6 +91,40 @@ func New(opts ...Option) *CacheImpl {
 func WithDir(dir string) Option {
 	return func(c *CacheImpl) { c.dir = dir }
 }
+
+// WithOrigins sets the run whose file Load reads and Save writes: its key
+// names the file.
+func WithOrigins(origins v1.Origins) Option {
+	return func(c *CacheImpl) { c.origins = origins }
+}
+
+// WithSpec sets the spec Save writes: the envelope the running tunnel
+// serializes once it is up.
+func WithSpec(spec string) Option {
+	return func(c *CacheImpl) { c.spec = spec }
+}
+
+// WithTracking sets what Save writes beside the spec: what the run settled
+// on, keyed by the variable that names each knob.
+func WithTracking(tracking map[string]string) Option {
+	return func(c *CacheImpl) { c.tracking = tracking }
+}
+
+// WithLog sets where the cache says what it did. Nil keeps the one it has.
+func WithLog(log v1.Logger) Option {
+	return func(c *CacheImpl) {
+		if log != nil {
+			c.log = log
+		}
+	}
+}
+
+// Origins, Spec and Tracking read back what the options set, for a caller
+// standing in for a cache that wants to see what it was handed without
+// touching a disk.
+func (c *CacheImpl) Origins() v1.Origins         { return c.origins }
+func (c *CacheImpl) Spec() string                { return c.spec }
+func (c *CacheImpl) Tracking() map[string]string { return c.tracking }
 
 // path is where this run's spec lives: the key, which names the tunnel, under
 // the directory, which names nothing.
@@ -100,11 +150,17 @@ func (c *CacheImpl) path(origins v1.Origins) string {
 // of a handoff, which is the one case where the caller knows better than the
 // cache does.
 //
+// opts are this call's, applied over the cache's own on a copy, so what one
+// call is given never reaches the next.
+//
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
-	path := c.path(origins)
+func (c *CacheImpl) Load(opts ...Option) string {
+	call := *c
+	v1.Apply(&call, opts...)
+	log := call.log
+	path := call.path(call.origins)
 	if path == "" {
 		return ""
 	}
@@ -138,8 +194,8 @@ func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
 // left to spread across directories and nothing to choose between on the way
 // back in.
 //
-// spec is what the tunnel serializes once it is up, and it has to be asked
-// for then rather than being the one that was replayed. Nothing has to fail
+// The spec, set by WithSpec, is what the tunnel serializes once it is up, and
+// it has to be asked for then rather than being the one that was replayed. Nothing has to fail
 // for the two to differ: a reclaim can hold the hostname and replace the
 // tunnel behind it, and a reservation that lapsed entirely is adopted on
 // whatever hostname was minted in its place — a new name, no error, and a
@@ -151,9 +207,14 @@ func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
 // longer reads that environment itself: what a run has is the tunnel, and the
 // tunnel is asked.
 //
+// opts are this call's, applied over the cache's own on a copy, as Load's are.
+//
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func (c *CacheImpl) Save(origins v1.Origins, spec string, tracking map[string]string, log v1.Logger) {
+func (c *CacheImpl) Save(opts ...Option) {
+	call := *c
+	v1.Apply(&call, opts...)
+	spec, tracking, log := call.spec, call.tracking, call.log
 	if spec == "" {
 		log.Debug("nothing to cache: the tunnel has no spec to give")
 		return
@@ -178,7 +239,7 @@ func (c *CacheImpl) Save(origins v1.Origins, spec string, tracking map[string]st
 
 	body := []byte(strings.Join(lines, "\n") + "\n")
 
-	path := c.path(origins)
+	path := call.path(call.origins)
 	if path == "" {
 		log.Debug("nothing to cache into: this machine has no cache directory")
 		return

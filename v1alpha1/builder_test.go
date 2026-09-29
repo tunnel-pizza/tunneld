@@ -30,6 +30,7 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
@@ -490,9 +491,12 @@ func (f *fakePid) Detach(out *os.File, _ v1.Logger) bool {
 	return f.waiting
 }
 
-func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
-func (f *fakeCache) Save(_ Origins, spec string, tracking map[string]string, _ v1.Logger) {
-	f.saved, f.spec, f.tracking = true, spec, tracking
+func (f *fakeCache) Load(...cache.Option) string { return f.cached }
+func (f *fakeCache) Save(opts ...cache.Option) {
+	// The run's options, read back off a cache they configure rather than
+	// one that writes.
+	c := cache.New(opts...)
+	f.saved, f.spec, f.tracking = true, c.Spec(), c.Tracking()
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}

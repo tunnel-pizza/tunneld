@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -601,7 +602,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// before minting, so a dead cached spec is already a fresh mint by the
 	// time it could fail, and the one failure left is a provider that could
 	// not be reached, which a remint could not reach either.
-	tun := b.newTunnel(spec.Load(origins, log)).
+	tun := b.newTunnel(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))).
 		WithToken(token).
 		// Which tunneld is asking, ahead of the libtunnel comment the mint
 		// adds after it. Always tunneld's, under whatever name an embedding
@@ -746,7 +747,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// back, but the one line somebody opening the file wants first.
 	tracking := b.tracking(origins)
 	tracking[ltv1.HostnameEnv] = public.Hostname()
-	spec.Save(origins, tun.Serialize(), tracking, log)
+	spec.Save(
+		cache.WithOrigins(origins),
+		cache.WithSpec(tun.Serialize()),
+		cache.WithTracking(tracking),
+		cache.WithLog(log),
+	)
 
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C
