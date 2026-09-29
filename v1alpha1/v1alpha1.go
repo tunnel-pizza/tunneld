@@ -69,9 +69,21 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 // name is a hash otherwise says nothing about the run that wrote it, and a
 // cache that fed configuration back into the next run would pin a choice made
 // once into every run afterwards.
+//
+// Both take the run's facts as the options they are given, as Route and Open
+// do: the origins whose key names the file, and for Save the spec and the
+// tracking to write, and the run's logger. String is the file as the cache
+// last saved it, "" before then: what the router serves as a remote copy.
+// Secret is the running tunnel's secret the run last saved with, nil before
+// then: what the router authorizes its control path against. Key is the key
+// of the run the cache is for, "" before it knows: what the router names the
+// run by on every answer from its control path, refusals included.
 type Cache interface {
-	Load(origins Origins, log v1.Logger) string
-	Save(origins Origins, spec string, tracking map[string]string, log v1.Logger)
+	Load(opts ...cache.Option) string
+	Save(opts ...cache.Option)
+	String() string
+	Secret() []byte
+	Key() string
 }
 
 // Pid is how a run is found and handed back from outside it, by the npm
@@ -138,8 +150,11 @@ func WithCache(c Cache) Option {
 // each rather than a branch around a nil.
 type noCache struct{}
 
-func (noCache) Load(Origins, v1.Logger) string                     { return "" }
-func (noCache) Save(Origins, string, map[string]string, v1.Logger) {}
+func (noCache) Load(...cache.Option) string { return "" }
+func (noCache) Save(...cache.Option)        {}
+func (noCache) String() string              { return "" }
+func (noCache) Secret() []byte              { return nil }
+func (noCache) Key() string                 { return "" }
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a
@@ -209,12 +224,18 @@ func WithDisplay(display Display) Option {
 // than asked of the tunnel engine, which is handed one URL and knows nothing
 // of origins (#176).
 //
-// Route answers with that URL: the router's own while ctx lives, or the one
-// origin's when there is one and nothing to put in front of it. ws is the
-// index of the origin marked +ws, -1 for none. front wraps the routing, and
-// is what the display's Panel answered — nil for none.
+// Route answers with that URL, the router's own — a lone origin's run
+// included, so tunneld's /_tunneld/ control path answers on every tunnel.
+// What it routes is the run's,
+// handed over in the options it takes, as Display's Open is: the dialable
+// origins, the index of the one marked +ws, what the display's Panel answered
+// to put in front, and the run's logger.
+//
+// Cancel takes the router down. Not ctx: the router outlives the run for as
+// long as the tunnel drains, so the caller cancels it once the tunnel is done.
 type Router interface {
-	Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error)
+	Route(ctx context.Context, opts ...router.Option) (*url.URL, error)
+	Cancel()
 }
 
 // WithRouter replaces what stands between the tunnel and the origins. The

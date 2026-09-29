@@ -16,9 +16,12 @@ package router
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +29,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -35,62 +39,295 @@ import (
 // stays on the origin somebody chose.
 const Cookie = "tunneld-origin"
 
-// Option configures a RouterImpl at construction.
+// ControlPath is the prefix tunneld keeps for itself on the tunnel hostname:
+// a request under it is answered by the router's mux and never reaches an
+// origin — one it has no pattern for is a 404, not an origin's page. Every
+// other path is the origins', passed through exactly as it was sent.
+//
+// A prefix rather than patterns registered at the root, because a ServeMux
+// cleans the paths it serves, answering "/a//b" or "/a/../b" with a redirect
+// to the clean form; in front of the origins that would rewrite what they are
+// sent. Under this prefix only tunneld's own paths are cleaned.
+const ControlPath = "/_tunneld/"
+
+// Option configures a RouterImpl, at construction or for one Route.
 type Option = v1.Option[*RouterImpl]
 
-// RouterImpl is the default Router. It has no tunables yet; New takes the
-// variadic so adding one changes no caller.
-type RouterImpl struct{}
+// discard is where a router with no logger writes: nowhere.
+var discard = slog.New(slog.DiscardHandler)
 
-// New returns a RouterImpl configured by opts.
-func New(opts ...Option) *RouterImpl {
-	return v1.Apply(&RouterImpl{}, opts...)
+// RouterImpl is the default Router. What it routes is one run's, so every
+// field is set by an option — given to New as a default, or to Route for that
+// route alone.
+type RouterImpl struct {
+	// dialable is the origins a request can reach, in the order the operator
+	// gave them: index n is origin n.
+	dialable v1.Origins
+	// ws is the index of the origin marked +ws, which a WebSocket handshake
+	// with nothing else to route on goes to; -1 for none.
+	ws int
+	// handler wraps the routing handler: the display's panel and its framing
+	// scrub, which answer or reshape a request before any origin is chosen.
+	// Nil is nothing in front.
+	handler func(http.Handler) http.Handler
+	log     v1.Logger
+	// mux answers the ControlPath: the router's own endpoints, registered on
+	// the mux New makes. Shared by every route, since no route registers on
+	// it.
+	mux *http.ServeMux
+
+	// live is what Cancel stops: every route this router has serving. A
+	// pointer, so the copy each Route configures still reaches it.
+	live *routes
+	// env is what ControlPath+".env" answers from, once WithCache has put it
+	// on the mux. A pointer for the same reason as live.
+	env *env
 }
 
-// Route stands a loopback server up in front of dialable and returns the one
-// address the tunnel should forward to. ws is the index of the origin that
-// owns WebSockets, -1 for none. front, when not nil, wraps the routing
-// handler — the panel and the scrub, which answer or reshape a request before
-// any origin is chosen.
+// Cache is what the router serves a run's cache file from, and what it
+// authorizes the ControlPath against: the file as the cache last saved it, or
+// "" before it has saved one; the running tunnel's secret, nil before then;
+// and the key the file is named for, "" before the cache knows its run.
+type Cache interface {
+	String() string
+	Secret() []byte
+	Key() string
+}
+
+// CacheKeyHeader is what every response under the ControlPath carries, a
+// refusal included: the run's cache key, the name of the file its spec is
+// saved in, so a caller knows which run answered. Absent only when the cache
+// does not know its run yet.
+const CacheKeyHeader = "X-Cache-Key"
+
+// env is the ControlPath+".env" endpoint's state: the cache it serves from,
+// and the once that puts its handler on the mux — a ServeMux panics on a
+// pattern registered twice, and WithCache can be applied more than once.
+type env struct {
+	mu    sync.Mutex
+	cache Cache
+	once  sync.Once
+}
+
+// routes is a router's serving routes, by the function that stops each.
+type routes struct {
+	mu    sync.Mutex
+	stops []func()
+}
+
+// New returns a RouterImpl configured by opts: no origins, none owning
+// WebSockets, nothing in front, a logger that discards, and the mux that
+// answers the ControlPath with the router's own endpoints:
 //
-// One origin with nothing in front of it needs no router: its own address is
-// returned and nothing is served, which is the tunnel exactly as it was
-// before there was routing to do.
+//	GET ControlPath+"ping"   200 "pong": this tunnel reaches this tunneld
 //
-// The server lives as long as ctx, which is the caller's to make as long as
-// the tunnel that forwards here: a tunnel drains in-flight requests for a
-// grace period after it is told to stop, and a router closed before then
-// answers them with a refused dial. Upgraded connections — a WebSocket
+// and, once WithCache has been applied:
+//
+//	GET ControlPath+".env"   200 the run's cached spec, as the cache file's
+//	                         LIBTUNNEL_SPEC line; 404 when nothing is cached
+func New(opts ...Option) *RouterImpl {
+	mux := http.NewServeMux()
+	// Answered here, by tunneld, and never by an origin: a 200 says the edge,
+	// the tunnel and the router are all up, whatever state the origins are in.
+	// Not stored anywhere on the way, so every ping is asked of this process.
+	mux.HandleFunc("GET "+ControlPath+"ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "pong")
+	})
+	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{}}, opts...)
+}
+
+// WithOrigins sets the origins to route between: the dialable list, in the
+// operator's order.
+func WithOrigins(dialable v1.Origins) Option {
+	return func(r *RouterImpl) { r.dialable = dialable }
+}
+
+// WithWebSockets sets the origin a WebSocket handshake goes to when nothing
+// else in it routes: the index of the origin marked +ws, -1 for none.
+func WithWebSockets(ix int) Option {
+	return func(r *RouterImpl) { r.ws = ix }
+}
+
+// WithHandler sets what wraps the routing handler — the display's Panel — or
+// nothing, when nil.
+func WithHandler(handler func(http.Handler) http.Handler) Option {
+	return func(r *RouterImpl) { r.handler = handler }
+}
+
+// WithCache puts ControlPath+".env" on the router's mux: a remote copy of
+// the cache file the run last saved, asked of c on every request, and a 404
+// until there is one. Applied again, it replaces the cache rather than
+// registering the endpoint twice.
+//
+// c is also what the ControlPath is authorized against: its secret is the
+// token every request under it but ping has to carry (see authorize). The
+// file holds the credential for the tunnel's public hostname, so it is
+// served only to whoever already has the secret it contains.
+func WithCache(c Cache) Option {
+	return func(r *RouterImpl) {
+		e := r.env
+		e.mu.Lock()
+		e.cache = c
+		e.mu.Unlock()
+		e.once.Do(func() {
+			r.mux.HandleFunc("GET "+ControlPath+".env", func(w http.ResponseWriter, _ *http.Request) {
+				e.mu.Lock()
+				c := e.cache
+				e.mu.Unlock()
+				var saved string
+				if c != nil {
+					saved = c.String()
+				}
+				w.Header().Set("Cache-Control", "no-store")
+				if saved == "" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = io.WriteString(w, saved)
+			})
+		})
+	}
+}
+
+// WithLog sets where the router says what it did. Nil keeps the one it has.
+func WithLog(log v1.Logger) Option {
+	return func(r *RouterImpl) {
+		if log != nil {
+			r.log = log
+		}
+	}
+}
+
+// Origins, WebSockets and Handler read back what the options set, for a caller
+// standing in for a router that wants to see what it was handed without
+// standing one up.
+func (r *RouterImpl) Origins() v1.Origins                      { return r.dialable }
+func (r *RouterImpl) WebSockets() int                          { return r.ws }
+func (r *RouterImpl) Handler() func(http.Handler) http.Handler { return r.handler }
+
+// Route stands a loopback server up in front of the origins and returns the
+// one address the tunnel should forward to.
+//
+// opts are this route's, applied over the router's own on a copy: what New
+// was given stays the default for every route, and one route's origins never
+// leak into the next.
+//
+// Every route is served, a lone origin's with nothing in front of it
+// included, so the ControlPath answers on every tunnel. A lone origin gets
+// none of the routing — a bare numeric parameter is then the application's
+// own — only the pass-through and the control path.
+//
+// The server is down when Cancel is called, not when ctx ends. A tunnel told
+// to stop keeps answering what the edge already sent it for a grace period,
+// and every one of those requests comes through here; a router closed with
+// ctx would turn them into refused dials in a program that embeds tunneld and
+// outlives the run. So ctx lends the requests its values and nothing else, and
+// the caller cancels the router once the tunnel forwarding here is done — or
+// at once, when there never was one. Upgraded connections — a WebSocket
 // through the proxy — are not ended by closing the server, so the requests
-// are based on ctx as well, and the proxy drops the origin side of a socket
-// when its request's context ends.
-func (*RouterImpl) Route(ctx context.Context, dialable v1.Origins, ws int, front func(http.Handler) http.Handler, log v1.Logger) (*url.URL, error) {
-	if dialable.Len() == 0 {
+// are based on the router's lifetime as well, and the proxy drops the origin
+// side of a socket when that ends.
+func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
+	route := *r
+	v1.Apply(&route, opts...)
+	dialable, ws, front, log := route.dialable, route.ws, route.handler, route.log
+	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
 	}
-	if dialable.Len() == 1 && front == nil {
-		return dialable.At(0), nil
-	}
-
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("router: listen: %w", err)
 	}
 	var h http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log))
+	origins, control := h, route.authorize(route.mux)
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, ControlPath) {
+			control.ServeHTTP(w, r)
+			return
+		}
+		origins.ServeHTTP(w, r)
+	})
 	if front != nil {
 		h = front(h)
 	}
+	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
 	srv := &http.Server{
 		Handler:     h,
-		BaseContext: func(net.Listener) context.Context { return ctx },
+		BaseContext: func(net.Listener) context.Context { return routing },
 		ErrorLog:    slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
-	context.AfterFunc(ctx, func() { _ = srv.Close() })
+	context.AfterFunc(routing, func() { _ = srv.Close() })
+	route.live.mu.Lock()
+	route.live.stops = append(route.live.stops, stop)
+	route.live.mu.Unlock()
 	go func() { _ = srv.Serve(l) }()
 
 	local := &url.URL{Scheme: "http", Host: l.Addr().String()}
 	log.Info("routing origins", "listen", local.Host, "origins", dialable.Len())
 	return local, nil
+}
+
+// authorize guards the ControlPath: every request under it but ping has to
+// carry "Authorization: token <secret>", the running tunnel's secret as the
+// cache WithCache handed over holds it, base64-encoded — the encoding the
+// spec's own JSON gives it, so whoever holds the spec holds the token. One
+// that does not is a bare 401 before the mux sees it, registered endpoint or
+// not, so nothing under the prefix can be probed without it.
+//
+// Fails closed: with no cache, or no secret yet, nothing but ping answers.
+// Compared in constant time, so the time a refusal takes says nothing about
+// how much of a guess was right.
+func (r *RouterImpl) authorize(next http.Handler) http.Handler {
+	e := r.env
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		e.mu.Lock()
+		c := e.cache
+		e.mu.Unlock()
+		// Every answer under the ControlPath names the run, a refusal too.
+		if c != nil {
+			if key := c.Key(); key != "" {
+				w.Header().Set(CacheKeyHeader, key)
+			}
+		}
+		if req.URL.Path == ControlPath+"ping" {
+			next.ServeHTTP(w, req)
+			return
+		}
+		var secret []byte
+		if c != nil {
+			secret = c.Secret()
+		}
+		want := "token " + base64.StdEncoding.EncodeToString(secret)
+		got := req.Header.Get("Authorization")
+		if len(secret) == 0 || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+// Cancel takes down every route this router has serving: their listeners
+// close and their requests, upgraded ones included, end. A router that never
+// routed has nothing to stop.
+//
+// Every route, so a router routing twice at once — an embedding program
+// starting a run while the last one's tunnel still drains — is cancelled as
+// one; each run that should outlive another wants a router of its own.
+func (r *RouterImpl) Cancel() {
+	if r.live == nil {
+		return
+	}
+	r.live.mu.Lock()
+	stops := r.live.stops
+	r.live.stops = nil
+	r.live.mu.Unlock()
+	for _, stop := range stops {
+		stop()
+	}
 }
 
 // proxy relays each request to one of origins, relaying the response verbatim

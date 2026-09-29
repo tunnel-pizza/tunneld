@@ -13,10 +13,12 @@
 package cache
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/spf13/viper"
@@ -36,8 +38,12 @@ const ext = ".env"
 // place anybody browses by accident, so hiding one inside it hides nothing.
 const dirName = "tunneld"
 
-// Option configures a CacheImpl at construction.
+// Option configures a CacheImpl, at construction or when Load or Save is
+// called.
 type Option = v1.Option[*CacheImpl]
+
+// discard is where a cache with no logger writes: nowhere.
+var discard = slog.New(slog.DiscardHandler)
 
 // assign is one line of the file: NAME='value'.
 //
@@ -51,6 +57,28 @@ type CacheImpl struct {
 	// dir is where files go. Empty means this machine has no cache directory
 	// and nothing is cached, which is the same answer an unwritable one gives.
 	dir string
+
+	// What follows is one run's, set by the options below — given to New, or
+	// to Load and Save, which apply them to the cache itself: what a call
+	// sets stays, so a later call that names no origins — the router's,
+	// serving the run's spec — reads the same run's file.
+	//
+	// origins is the run whose file this is: its key names the file.
+	origins v1.Origins
+	// spec is what Save writes: the envelope the running tunnel serializes.
+	spec string
+	// tracking is what Save writes beside the spec: the knobs the run
+	// settled on, keyed by the variable that names each.
+	tracking map[string]string
+	// secret is the running tunnel's secret: whoever holds it can run the
+	// tunnel. Kept in memory only, never written: the file's spec already
+	// carries it, inside its envelope.
+	secret []byte
+	log    v1.Logger
+
+	// mu is held by Load and Save for the whole call: the router loads from
+	// its own goroutine while the run saves from another.
+	mu sync.Mutex
 }
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
@@ -62,7 +90,7 @@ type CacheImpl struct {
 // gitignore templates and 752 real ones, the best a name managed was 13% and
 // 26%.
 func New(opts ...Option) *CacheImpl {
-	c := &CacheImpl{}
+	c := &CacheImpl{log: discard}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
 	}
@@ -75,6 +103,66 @@ func New(opts ...Option) *CacheImpl {
 func WithDir(dir string) Option {
 	return func(c *CacheImpl) { c.dir = dir }
 }
+
+// WithOrigins sets the run whose file Load reads and Save writes: its key
+// names the file.
+func WithOrigins(origins v1.Origins) Option {
+	return func(c *CacheImpl) { c.origins = origins }
+}
+
+// WithSpec sets the spec Save writes: the envelope the running tunnel
+// serializes once it is up.
+func WithSpec(spec string) Option {
+	return func(c *CacheImpl) { c.spec = spec }
+}
+
+// WithTracking sets what Save writes beside the spec: what the run settled
+// on, keyed by the variable that names each knob.
+func WithTracking(tracking map[string]string) Option {
+	return func(c *CacheImpl) { c.tracking = tracking }
+}
+
+// WithSecret sets the running tunnel's secret. The cache keeps it in memory
+// and never writes it.
+func WithSecret(secret []byte) Option {
+	return func(c *CacheImpl) { c.secret = secret }
+}
+
+// Key is the key of the run the cache would read or write for now — the name
+// of its file, without the extension — or "" before it has been given
+// origins. Held under the cache's lock, since Save may be changing them.
+func (c *CacheImpl) Key() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.origins == nil {
+		return ""
+	}
+	return c.origins.Key()
+}
+
+// Secret is the tunnel secret the cache was last given, nil before then.
+// Held under the cache's lock, since a request may ask while the run saves.
+func (c *CacheImpl) Secret() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.secret
+}
+
+// WithLog sets where the cache says what it did. Nil keeps the one it has.
+func WithLog(log v1.Logger) Option {
+	return func(c *CacheImpl) {
+		if log != nil {
+			c.log = log
+		}
+	}
+}
+
+// Origins, Spec and Tracking read back what the options set, for a caller
+// standing in for a cache that wants to see what it was handed without
+// touching a disk.
+func (c *CacheImpl) Origins() v1.Origins         { return c.origins }
+func (c *CacheImpl) Spec() string                { return c.spec }
+func (c *CacheImpl) Tracking() map[string]string { return c.tracking }
 
 // path is where this run's spec lives: the key, which names the tunnel, under
 // the directory, which names nothing.
@@ -100,11 +188,18 @@ func (c *CacheImpl) path(origins v1.Origins) string {
 // of a handoff, which is the one case where the caller knows better than the
 // cache does.
 //
+// opts are applied to the cache itself, as Display's Open applies its own:
+// what they set stays for the next call.
+//
 // Nothing here fails a tunnel. An unreadable or malformed file costs the
 // hostname continuity it would have provided, and a fresh mint is the correct
 // behaviour without it.
-func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
-	path := c.path(origins)
+func (c *CacheImpl) Load(opts ...Option) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v1.Apply(c, opts...)
+	log := c.log
+	path := c.path(c.origins)
 	if path == "" {
 		return ""
 	}
@@ -138,8 +233,8 @@ func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
 // left to spread across directories and nothing to choose between on the way
 // back in.
 //
-// spec is what the tunnel serializes once it is up, and it has to be asked
-// for then rather than being the one that was replayed. Nothing has to fail
+// The spec, set by WithSpec, is what the tunnel serializes once it is up, and
+// it has to be asked for then rather than being the one that was replayed. Nothing has to fail
 // for the two to differ: a reclaim can hold the hostname and replace the
 // tunnel behind it, and a reservation that lapsed entirely is adopted on
 // whatever hostname was minted in its place — a new name, no error, and a
@@ -151,34 +246,22 @@ func (c *CacheImpl) Load(origins v1.Origins, log v1.Logger) string {
 // longer reads that environment itself: what a run has is the tunnel, and the
 // tunnel is asked.
 //
+// opts are applied to the cache itself, as Load's are.
+//
 // Nothing here fails a tunnel either. The tunnel is up and serving whether or
 // not the next run gets a head start.
-func (c *CacheImpl) Save(origins v1.Origins, spec string, tracking map[string]string, log v1.Logger) {
-	if spec == "" {
+func (c *CacheImpl) Save(opts ...Option) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v1.Apply(c, opts...)
+	log := c.log
+	body := c.render()
+	if body == "" {
 		log.Debug("nothing to cache: the tunnel has no spec to give")
 		return
 	}
-	lines := []string{assign(ltv1.SpecEnv, spec)}
 
-	// Everything the run settled on, after the one line that does something.
-	// Sorted, so the same run twice writes the same file and a diff between
-	// two of them is about the runs rather than about map iteration.
-	names := make([]string, 0, len(tracking))
-	for name, value := range tracking {
-		// A knob nobody set says nothing about the run, and a file of empty
-		// variables is one nobody reads twice.
-		if value != "" {
-			names = append(names, name)
-		}
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		lines = append(lines, assign(name, tracking[name]))
-	}
-
-	body := []byte(strings.Join(lines, "\n") + "\n")
-
-	path := c.path(origins)
+	path := c.path(c.origins)
 	if path == "" {
 		log.Debug("nothing to cache into: this machine has no cache directory")
 		return
@@ -192,9 +275,45 @@ func (c *CacheImpl) Save(origins v1.Origins, spec string, tracking map[string]st
 		return
 	}
 	// 0600: a spec is the credential for a public hostname.
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		log.Warn("could not cache the tunnel", "path", path, "error", err)
 		return
 	}
 	log.Info("cached the tunnel", "path", path)
+}
+
+// String is the cache file for what the options set: the spec's line, then
+// what the run settled on, one NAME='value' per line. After a Save, that is
+// the file Save wrote, since Save's options stay on the cache — which is what
+// the router serves as a remote copy of it. Empty when there is no spec: a
+// file without the one line that does something is not a cache file.
+func (c *CacheImpl) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.render()
+}
+
+// render is String for a caller already holding mu: Save.
+func (c *CacheImpl) render() string {
+	if c.spec == "" {
+		return ""
+	}
+	lines := []string{assign(ltv1.SpecEnv, c.spec)}
+
+	// Everything the run settled on, after the one line that does something.
+	// Sorted, so the same run twice writes the same file and a diff between
+	// two of them is about the runs rather than about map iteration.
+	names := make([]string, 0, len(c.tracking))
+	for name, value := range c.tracking {
+		// A knob nobody set says nothing about the run, and a file of empty
+		// variables is one nobody reads twice.
+		if value != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		lines = append(lines, assign(name, c.tracking[name]))
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

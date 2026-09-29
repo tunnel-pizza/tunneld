@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -30,8 +31,11 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // execute runs a built command with args, capturing both streams. Every case
@@ -401,6 +405,15 @@ func (f *fakeTunnel) Ready() <-chan libtunnel.TunnelV1 {
 
 // Serialize is what the run caches: a spec the next run could hand back to
 // From. A fake's is anything stable and recognisable.
+// Secret is a stand-in secret for the fake tunnel's hostname: nothing reads it
+// but the run, which hands it to the cache.
+func (f *fakeTunnel) Secret() []byte {
+	if f.url == nil {
+		return nil
+	}
+	return []byte("secret-of-" + f.url.Host)
+}
+
 func (f *fakeTunnel) Serialize() string {
 	if f.url == nil {
 		return ""
@@ -451,6 +464,8 @@ type fakeCache struct {
 	// the run said it settled on — written beside it, and nothing reads back.
 	spec     string
 	tracking map[string]string
+	secret   []byte
+	key      string
 	onSave   func()
 	order    *[]string
 }
@@ -489,9 +504,22 @@ func (f *fakePid) Detach(out *os.File, _ v1.Logger) bool {
 	return f.waiting
 }
 
-func (f *fakeCache) Load(Origins, v1.Logger) string { return f.cached }
-func (f *fakeCache) Save(_ Origins, spec string, tracking map[string]string, _ v1.Logger) {
-	f.saved, f.spec, f.tracking = true, spec, tracking
+func (f *fakeCache) Load(...cache.Option) string { return f.cached }
+
+// Secret is the secret the fake was saved with, and Key the key of the
+// origins it was saved under.
+func (f *fakeCache) Secret() []byte { return f.secret }
+func (f *fakeCache) Key() string    { return f.key }
+
+// String is the file the fake saved, rendered as the real cache renders it.
+func (f *fakeCache) String() string {
+	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking)).String()
+}
+func (f *fakeCache) Save(opts ...cache.Option) {
+	// The run's options, read back off a cache they configure rather than
+	// one that writes.
+	c := cache.New(opts...)
+	f.saved, f.spec, f.tracking, f.secret, f.key = true, c.Spec(), c.Tracking(), c.Secret(), c.Key()
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}
@@ -597,27 +625,40 @@ var routed = &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 
 // fakeRouter stands in for the router package: it records what it was asked
 // to put behind the tunnel and answers with routed, so TestRun never stands
-// up a listener. A lone origin with nothing in front is answered with itself,
-// as the real one does, since that is a run where there is nothing to route.
+// up a listener. A lone origin is routed like any run, as the real one does.
 type fakeRouter struct {
 	err      error
 	dialable Origins
 	ws       int
 	front    func(http.Handler) http.Handler
-	// ctx is the lifetime the run gave the router: what the real one
-	// serves until.
-	ctx context.Context
+	// ctx is the router's lifetime: the run's context detached from its
+	// cancellation, as the real one makes it, and ended only by Cancel — so a
+	// case can see when the run cancels it.
+	ctx  context.Context
+	stop context.CancelFunc
+	// configured is the real router the run's options build, never routed by
+	// the run: a case can route it itself to see what those options serve.
+	configured *router.RouterImpl
 }
 
-func (f *fakeRouter) Route(ctx context.Context, dialable Origins, ws int, front func(http.Handler) http.Handler, _ v1.Logger) (*url.URL, error) {
-	f.ctx, f.dialable, f.ws, f.front = ctx, dialable, ws, front
+func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL, error) {
+	// The run's options, read back off a router they configure rather than
+	// one that serves.
+	r := router.New(opts...)
+	f.configured = r
+	dialable, front := r.Origins(), r.Handler()
+	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
+	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
 	if f.err != nil {
 		return nil, f.err
 	}
-	if dialable.Len() == 1 && front == nil {
-		return dialable.At(0), nil
-	}
 	return routed, nil
+}
+
+func (f *fakeRouter) Cancel() {
+	if f.stop != nil {
+		f.stop()
+	}
 }
 
 // fakeIdentity stands in for the identity package: it answers what it was
@@ -998,6 +1039,73 @@ func TestRun(t *testing.T) {
 	// The tunnel drains what the edge already sent it for a grace period
 	// after the run ends, and every one of those requests goes through the
 	// router, so the router is down with the tunnel rather than the run.
+	// The router is handed the run's cache and serves a remote copy of the
+	// file the run saved on the control path. Routed here rather than by the
+	// run, against a real origin, to see what the run's options serve.
+	envOf := func(t *testing.T, h *runHarness) (int, string, string) {
+		t.Helper()
+		if h.router.configured == nil {
+			t.Fatal("the run never asked the router")
+		}
+		origin := httptest.NewServer(http.NotFoundHandler())
+		t.Cleanup(origin.Close)
+		u, _ := url.Parse(origin.URL)
+		r := h.router.configured
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		t.Cleanup(r.Cancel)
+		req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(local.String(), "/")+router.ControlPath+".env", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The token the fake tunnel's secret makes: what an operator
+		// holding the run's spec would send.
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body), resp.Header.Get(router.CacheKeyHeader)
+	}
+	t.Run("the router serves what the run saved", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if got, want := string(h.cache.secret), "secret-of-foo.tunneled.pizza"; got != want {
+			t.Errorf("the run saved secret %q, want the tunnel's (%q)", got, want)
+		}
+		want := h.cache.String()
+		if !strings.HasPrefix(want, "LIBTUNNEL_SPEC=") {
+			t.Fatalf("the run saved %q, want a cache file", want)
+		}
+		code, body, key := envOf(t, h)
+		if code != 200 || body != want {
+			t.Errorf("GET .env = %d %q, want the file the run saved:\n%s", code, body, want)
+		}
+		if key == "" || key != h.cache.key {
+			t.Errorf("GET .env named the run %q, want the key it saved under (%q)", key, h.cache.key)
+		}
+	})
+	t.Run("a run with caching off serves nothing", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.cached = "cached-spec"
+		ctx, cancel := context.WithCancel(t.Context())
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+		_ = h.run(t, ctx, "--no-cache", ":3000")
+		// No cache is no secret, so the control path refuses before it is
+		// asked what was saved.
+		if code, body, _ := envOf(t, h); code == 200 || body != "" {
+			t.Errorf("GET .env with --no-cache = %d %q, want nothing served", code, body)
+		}
+	})
+
 	t.Run("the router outlives the run until the tunnel ends", func(t *testing.T) {
 		tun := live(public)
 		h := newRunHarness(t, tun, ":3000", ":4000")
@@ -1756,10 +1864,10 @@ func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
 	if strings.Contains(h.stderr.String(), "?arg=") {
 		t.Errorf("stderr shows the arguments' carrier:\n%s", h.stderr.String())
 	}
-	// The tunnel itself was still handed the origin whole; the arguments are
-	// the binder's to read off it.
-	if got := h.tunnels[0].locals; len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
-		t.Errorf("tunnel was given %v, want the origin with its arguments", got)
+	// The router in front of the tunnel was still handed the origin whole;
+	// the arguments are the binder's to read off it.
+	if got := h.router.dialable.URLs(); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
+		t.Errorf("router was given %v, want the origin with its arguments", got)
 	}
 }
 

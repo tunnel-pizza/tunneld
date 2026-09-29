@@ -6,6 +6,7 @@ package router
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,19 +14,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // The contract this implements is asserted in v1alpha1, which imports this
 // package; naming it here would be the cycle.
-
-// discard is the logger for cases that assert nothing about logs.
-var discard = slog.New(slog.DiscardHandler)
 
 // echo is an origin that answers with its name and the query it was
 // forwarded, which is everything routing can change about a request.
@@ -57,10 +58,12 @@ func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 // none.
 func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
-	u, err := New().Route(t.Context(), list, ws, front, log)
+	r := New()
+	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithHandler(front), WithLog(log))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
+	t.Cleanup(r.Cancel)
 	return strings.TrimSuffix(u.String(), "/")
 }
 
@@ -79,27 +82,359 @@ func get(t *testing.T, client *http.Client, req *http.Request) (*http.Response, 
 	return resp, string(body)
 }
 
-// TestRouteALoneOriginIsItsOwnAddress pins that one origin with nothing in
-// front of it is not routed at all: the tunnel is handed the origin itself,
-// exactly as before there was routing to do, and a bare numeric parameter is
-// the application's own.
-func TestRouteALoneOriginIsItsOwnAddress(t *testing.T) {
+// TestRouteALoneOriginIsRouted pins that one origin with nothing in front of
+// it is routed like any other run, so tunneld's control path answers on every
+// tunnel — and that it gets none of the routing: a bare numeric parameter is
+// the application's own and reaches it untouched.
+func TestRouteALoneOriginIsRouted(t *testing.T) {
 	list := listOf(t, echo(t, "solo"))
-	got, err := New().Route(t.Context(), list, -1, nil, discard)
+	r := New()
+	got, err := r.Route(t.Context(), WithOrigins(list))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	if got != list.At(0) {
-		t.Errorf("Route() = %v, want the origin itself (%v)", got, list.At(0))
+	t.Cleanup(r.Cancel)
+	if got.Host == list.At(0).Host {
+		t.Fatalf("Route() = %v, the origin itself; want the router in front of it", got)
+	}
+	base := strings.TrimSuffix(got.String(), "/")
+	for path, want := range map[string]string{"/?1&x": "solo|1&x", "/_tunneld/ping": "pong"} {
+		req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+		if _, body := get(t, http.DefaultClient, req); body != want {
+			t.Errorf("GET %s = %q, want %q", path, body, want)
+		}
 	}
 }
 
 // TestRouteNothingIsAnError pins that an empty list is refused rather than
-// served: there is nothing a request could reach.
+// served, and so is no list at all: there is nothing a request could reach.
 func TestRouteNothingIsAnError(t *testing.T) {
-	if _, err := New().Route(t.Context(), origins.New(), -1, nil, discard); err == nil {
+	if _, err := New().Route(t.Context(), WithOrigins(origins.New())); err == nil {
 		t.Error("Route() over no origins succeeded, want an error")
 	}
+	if _, err := New().Route(t.Context()); err == nil {
+		t.Error("Route() with no WithOrigins succeeded, want an error")
+	}
+}
+
+// TestOptions pins where a route's facts come from: New's defaults, then what
+// New was given, then what Route is given for that route alone — on a copy,
+// so the next route starts from the router's own again.
+func TestOptions(t *testing.T) {
+	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
+			r.Origins(), r.WebSockets(), r.Handler() != nil, r.mux != nil, r.log == discard)
+	}
+	if r := New(WithLog(nil)); r.log != discard {
+		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
+	}
+
+	// Which origin a route reaches is what answers through it.
+	reaches := func(t *testing.T, r *RouterImpl, opts ...Option) string {
+		t.Helper()
+		u, err := r.Route(t.Context(), opts...)
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+		_, body := get(t, http.DefaultClient, req)
+		return body
+	}
+	a, b := listOf(t, echo(t, "A")), listOf(t, echo(t, "B"))
+	r := New(WithOrigins(a), WithWebSockets(0))
+	t.Cleanup(r.Cancel)
+	if got := reaches(t, r); got != "A|" {
+		t.Errorf("Route() with New's origins reaches %q, want A", got)
+	}
+	if got := reaches(t, r, WithOrigins(b)); got != "B|" {
+		t.Errorf("Route(WithOrigins(b)) reaches %q, want B", got)
+	}
+	if r.Origins() != a || r.WebSockets() != 0 {
+		t.Error("a route's options changed the router's own, want them applied to that route alone")
+	}
+	if got := reaches(t, r); got != "A|" {
+		t.Errorf("the route after one with its own origins reaches %q, want New's (A)", got)
+	}
+}
+
+// TestControlPath pins the prefix tunneld keeps for itself: under it the
+// router's own mux answers, and what it has no pattern for is a 404 rather
+// than an origin's page; everywhere else — paths a mux would clean included —
+// the request reaches an origin exactly as it was sent. A lone origin has the
+// ControlPath too.
+func TestControlPath(t *testing.T) {
+	// pathOf answers with its name and the path it was sent, unclean or not.
+	pathOf := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "%s|%s", name, r.URL.EscapedPath())
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	r := New()
+	u, err := r.Route(t.Context(), WithOrigins(listOf(t, pathOf("A"), pathOf("B"))))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	base := strings.TrimSuffix(u.String(), "/")
+	// A redirect answered is the result, not something to follow.
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	for name, tc := range map[string]struct {
+		method     string
+		path       string
+		wantStatus int
+		wantBody   string
+	}{
+		"ping":                       {"GET", "/_tunneld/ping", 200, "pong"},
+		"ping answers HEAD as GET":   {"HEAD", "/_tunneld/ping", 200, ""},
+		"ping takes no other method": {"POST", "/_tunneld/ping", 405, ""},
+		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 401, ""},
+		"a lookalike prefix is the origin's":      {"GET", "/_tunneldx", 200, "A|/_tunneldx"},
+		"a doubled slash reaches the origin":      {"GET", "/a//b", 200, "A|/a//b"},
+		"a dot segment reaches the origin":        {"GET", "/a/../b", 200, "A|/a/../b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, base+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, body := get(t, noFollow, req)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("%s %s = %d %q, want %d", tc.method, tc.path, resp.StatusCode, body, tc.wantStatus)
+			}
+			if tc.wantBody != "" && body != tc.wantBody {
+				t.Errorf("%s %s = %q, want %q", tc.method, tc.path, body, tc.wantBody)
+			}
+			if tc.wantStatus >= 400 && strings.Contains(body, "|") {
+				t.Errorf("%s %s reached an origin (%q), want the prefix kept from them", tc.method, tc.path, body)
+			}
+			if tc.path == "/_tunneld/ping" && tc.wantStatus == 200 {
+				if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+					t.Errorf("ping Cache-Control = %q, want no-store: every ping is asked of this process", got)
+				}
+			}
+		})
+	}
+	u, err = r.Route(t.Context(), WithOrigins(listOf(t, pathOf("solo"))))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, strings.TrimSuffix(u.String(), "/")+"/_tunneld/ping", nil)
+	if _, body := get(t, http.DefaultClient, req); body != "pong" {
+		t.Errorf("a lone origin's ping = %q, want pong", body)
+	}
+}
+
+// cacheOf stands in for a run's cache: String is the file it saved, Secret
+// the secret it saved with.
+type cacheOf struct {
+	file   string
+	secret []byte
+	key    string
+}
+
+func (c cacheOf) String() string { return c.file }
+func (c cacheOf) Secret() []byte { return c.secret }
+func (c cacheOf) Key() string    { return c.key }
+
+// runKey is the key cacheOf names its run by in these tests.
+const runKey = "0123456789abcdef"
+
+// tokenOf is the Authorization header that secret authorizes.
+func tokenOf(secret []byte) string {
+	return "token " + base64.StdEncoding.EncodeToString(secret)
+}
+
+// controlOf routes r over one origin and returns the ControlPath URL of
+// path under it.
+func controlOf(t *testing.T, r *RouterImpl, path string, opts ...Option) string {
+	t.Helper()
+	u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "A")))}, opts...)...)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	return strings.TrimSuffix(u.String(), "/") + ControlPath + path
+}
+
+// ask sends method to url with auth as its Authorization header, if any.
+func ask(t *testing.T, method, url, auth string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	return get(t, http.DefaultClient, req)
+}
+
+// TestAuthorize pins what guards the ControlPath: everything under it but
+// ping needs "Authorization: token <base64 secret>", the secret the cache
+// holds; anything else is a bare 401 before the mux is asked, so an
+// unregistered path is no different from a registered one. With no secret,
+// nothing but ping answers — not even to a token of nothing.
+func TestAuthorize(t *testing.T) {
+	secret := []byte("s3cr3t")
+	env := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey})), ".env")
+	nope := strings.TrimSuffix(env, ".env") + "nope"
+	ping := strings.TrimSuffix(env, ".env") + "ping"
+	for name, tc := range map[string]struct {
+		url, auth  string
+		wantStatus int
+	}{
+		"no header":                     {env, "", 401},
+		"another scheme":                {env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
+		"a wrong token":                 {env, tokenOf([]byte("guess")), 401},
+		"the secret unencoded":          {env, "token " + string(secret), 401},
+		"the right token":               {env, tokenOf(secret), 200},
+		"an unregistered path, no auth": {nope, "", 401},
+		"an unregistered path, auth":    {nope, tokenOf(secret), 404},
+		"ping needs nothing":            {ping, "", 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := ask(t, "GET", tc.url, tc.auth)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("GET %s = %d %q, want %d", tc.url, resp.StatusCode, body, tc.wantStatus)
+			}
+			if tc.wantStatus == 401 && body != "" {
+				t.Errorf("a refusal said %q, want a bare 401", body)
+			}
+		})
+	}
+
+	// Over the wire a header's trailing space is trimmed, so "token " never
+	// arrives as itself; asked of the guard directly it does, and a secret of
+	// nothing still authorizes nothing.
+	t.Run("a token of nothing, asked directly", func(t *testing.T) {
+		guard := New(WithCache(cacheOf{"x\n", nil, runKey})).authorize(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Error("the guard let a token of nothing through")
+		}))
+		req := httptest.NewRequest(http.MethodGet, ControlPath+".env", nil)
+		req.Header.Set("Authorization", "token ")
+		rec := httptest.NewRecorder()
+		guard.ServeHTTP(rec, req)
+		if rec.Code != 401 {
+			t.Errorf("a token of nothing = %d, want 401", rec.Code)
+		}
+	})
+
+	t.Run("no secret, nothing but ping", func(t *testing.T) {
+		for _, c := range []Option{WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", nil, runKey}), WithLog(nil)} {
+			url := controlOf(t, New(c), ".env")
+			for _, auth := range []string{"", "token ", tokenOf(nil)} {
+				if resp, _ := ask(t, "GET", url, auth); resp.StatusCode != 401 {
+					t.Errorf("GET .env with no secret and %q = %d, want 401", auth, resp.StatusCode)
+				}
+			}
+			if resp, _ := ask(t, "GET", strings.TrimSuffix(url, ".env")+"ping", ""); resp.StatusCode != 200 {
+				t.Errorf("ping with no secret = %d, want 200", resp.StatusCode)
+			}
+		}
+	})
+}
+
+// TestCacheKeyHeader pins X-Cache-Key: every answer under the ControlPath
+// names the run by its cache key — ping, a served endpoint, the mux's own 404,
+// and a refusal too — and only a cache that does not know its run yet names
+// nothing.
+func TestCacheKeyHeader(t *testing.T) {
+	secret := []byte("s3cr3t")
+	base := strings.TrimSuffix(controlOf(t, New(WithCache(cacheOf{"x\n", secret, runKey})), ""), "/")
+	for name, tc := range map[string]struct {
+		path, auth string
+		want       string
+	}{
+		"ping":                         {"/ping", "", runKey},
+		"a served endpoint":            {"/.env", tokenOf(secret), runKey},
+		"the mux's 404":                {"/nope", tokenOf(secret), runKey},
+		"a refusal":                    {"/.env", "", runKey},
+		"a refusal of an unknown path": {"/nope", "", runKey},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, _ := ask(t, "GET", base+tc.path, tc.auth)
+			if got := resp.Header.Get(CacheKeyHeader); got != tc.want {
+				t.Errorf("GET %s (%d): %s = %q, want %q", tc.path, resp.StatusCode, CacheKeyHeader, got, tc.want)
+			}
+		})
+	}
+	t.Run("a cache that does not know its run", func(t *testing.T) {
+		url := strings.TrimSuffix(controlOf(t, New(WithCache(cacheOf{"x\n", secret, ""})), ""), "/") + "/ping"
+		if resp, _ := ask(t, "GET", url, ""); resp.Header.Values(CacheKeyHeader) != nil {
+			t.Errorf("ping named a run the cache does not know: %q", resp.Header.Values(CacheKeyHeader))
+		}
+	})
+}
+
+// TestEnv pins ControlPath+".env", asked with the right token: absent until
+// WithCache puts it on the mux, then a remote copy of the file the run's
+// cache last saved, byte for byte and asked for fresh on every request; a
+// bare 404 before anything is saved, and never stored on the way. WithCache
+// applied twice — at New and again for a route — replaces the cache rather
+// than registering the pattern twice, which a ServeMux would panic on.
+func TestEnv(t *testing.T) {
+	secret := []byte("s3cr3t")
+	auth := tokenOf(secret)
+
+	t.Run("absent without WithCache", func(t *testing.T) {
+		// No cache is no secret, so the refusal comes first.
+		if resp, body := ask(t, "GET", controlOf(t, New(), ".env"), auth); resp.StatusCode != 401 || strings.Contains(body, "|") {
+			t.Errorf("GET .env = %d %q, want a 401 from the router", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("the saved file, as it is", func(t *testing.T) {
+		const saved = "LIBTUNNEL_SPEC='{\"v\":1}'\nTUNNELD_LOG='debug'\n"
+		c := cacheOf{saved, secret, runKey}
+		resp, body := ask(t, "GET", controlOf(t, New(WithCache(c)), ".env"), auth)
+		if resp.StatusCode != 200 || body != saved {
+			t.Errorf("GET .env = %d %q, want the saved file", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", got)
+		}
+		if resp, _ := ask(t, "POST", controlOf(t, New(WithCache(c)), ".env"), auth); resp.StatusCode != 405 {
+			t.Errorf("POST .env = %d, want 405", resp.StatusCode)
+		}
+	})
+
+	t.Run("a real cache serves the file it wrote", func(t *testing.T) {
+		dir := t.TempDir()
+		shown := listOf(t, echo(t, "shown"))
+		c := cache.New(cache.WithDir(dir))
+		url := controlOf(t, New(WithCache(c)), ".env")
+		if resp, _ := ask(t, "GET", url, auth); resp.StatusCode != 401 {
+			t.Errorf("GET .env before any save = %d, want 401: no secret yet", resp.StatusCode)
+		}
+		for _, spec := range []string{"saved-spec", "resaved-spec"} {
+			c.Save(cache.WithOrigins(shown), cache.WithSpec(spec), cache.WithSecret(secret),
+				cache.WithTracking(map[string]string{"TUNNELD_LOG": "debug"}))
+			onDisk, err := os.ReadFile(filepath.Join(dir, shown.Key()+".env"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, body := ask(t, "GET", url, auth); body != string(onDisk) {
+				t.Errorf("GET .env = %q, want the file on disk:\n%s", body, onDisk)
+			}
+		}
+	})
+
+	t.Run("nothing saved is a bare 404", func(t *testing.T) {
+		if resp, body := ask(t, "GET", controlOf(t, New(WithCache(cacheOf{"", secret, runKey})), ".env"), auth); resp.StatusCode != 404 || body != "" {
+			t.Errorf("GET .env with nothing saved = %d %q, want a bare 404", resp.StatusCode, body)
+		}
+	})
+
+	t.Run("applied again, it replaces rather than registers twice", func(t *testing.T) {
+		r := New(WithCache(cacheOf{"first\n", secret, runKey}))
+		if _, body := ask(t, "GET", controlOf(t, r, ".env", WithCache(cacheOf{"second\n", secret, runKey})), auth); body != "second\n" {
+			t.Errorf("GET .env = %q, want the later cache's file", body)
+		}
+	})
 }
 
 // TestRouteAppliesTheFront pins that what is put in front answers before any
@@ -124,23 +459,30 @@ func TestRouteAppliesTheFront(t *testing.T) {
 	}
 }
 
-// TestRouteEndsWithTheContext pins the router's lifetime: it serves while its
-// context lives and stops accepting once it ends. Watched on the listener
-// itself, polled to a deadline, since the close runs on a goroutine of its own
-// and a busy runner may take a while to schedule it.
-func TestRouteEndsWithTheContext(t *testing.T) {
+// TestRouteOutlivesItsContextUntilCancelled pins the router's lifetime: it
+// keeps serving after the context it was routed under ends — the tunnel
+// forwarding here drains past the run — and stops accepting once Cancel is
+// called. Watched on the listener itself, polled to a deadline, since the
+// close runs on a goroutine of its own and a busy runner may take a while to
+// schedule it.
+func TestRouteOutlivesItsContextUntilCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
-	u, err := New().Route(ctx, listOf(t, echo(t, "A"), echo(t, "B")), -1, nil, discard)
+	r := New()
+	u, err := r.Route(ctx, WithOrigins(listOf(t, echo(t, "A"), echo(t, "B"))))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
+	t.Cleanup(r.Cancel)
+
+	cancel()
+	time.Sleep(50 * time.Millisecond) // long enough for a close tied to ctx to have run
 	resp, err := http.Get(u.String())
 	if err != nil {
-		t.Fatalf("GET while live: %v", err)
+		t.Fatalf("GET after the context ended: %v, want the router still serving", err)
 	}
 	resp.Body.Close()
 
-	cancel()
+	r.Cancel()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		conn, err := net.DialTimeout("tcp", u.Host, time.Second)
@@ -149,7 +491,7 @@ func TestRouteEndsWithTheContext(t *testing.T) {
 		}
 		conn.Close()
 		if time.Now().After(deadline) {
-			t.Fatal("the router still accepts connections after its context ended")
+			t.Fatal("the router still accepts connections after Cancel")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

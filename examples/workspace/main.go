@@ -28,7 +28,7 @@ func main() {
 
 	// os.Setenv("TRELLIS", "1")
 	cmd := v1alpha1.New(
-		v1alpha1.WithOrigin("http://localhost:8501", "uvx streamlit hello --server.headless true", "claude"),
+		v1alpha1.WithOrigin("uvx streamlit hello --server.headless true", "http+ws://localhost:8501", "claude"),
 		v1alpha1.WithOpen(false),
 	).Command()
 

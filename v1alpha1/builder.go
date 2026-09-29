@@ -23,10 +23,12 @@ import (
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -518,41 +520,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
-	// Several origins share one hostname, and which one a request reaches is
-	// decided here rather than in the tunnel: the router serves ?n, the +ws
-	// origin, the Referer and the cookie on a loopback address, with the
-	// panel in front of it when there is one, and the tunnel forwards to that
-	// one address. A lone origin with no panel is its own address. Stood up
-	// before the tunnel for the same reason the binding is: it is what the
-	// tunnel is handed.
-	//
-	// The +ws origin is read off the parsed list, which is the origins
-	// package's own type; the dialable list has the same indexes.
-	ws := -1
-	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
-		if i, ok := marked.WebSocket(); ok {
-			ws = i
-		}
-	}
-	// Down with the tunnel rather than with ctx. A tunnel told to stop keeps
-	// answering what the edge already sent it for a grace period, and every
-	// one of those requests comes here; a router closed with ctx would turn
-	// them into refused dials in a program that embeds this and outlives Run.
-	// Until the tunnel exists nothing forwards here, so a return before then
-	// takes the router with it.
-	routing, unroute := context.WithCancel(context.WithoutCancel(ctx))
-	local, err := b.router.Route(routing, dialable, ws, b.display.Panel(b.multiview, origins, log), log)
-	if err != nil {
-		unroute()
-		return err
-	}
-	routed := false
-	defer func() {
-		if !routed {
-			unroute()
-		}
-	}()
-
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -599,13 +566,48 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		log.Debug("received event", "e", e)
 	}
 
+	// Several origins share one hostname, and which one a request reaches is
+	// decided here rather than in the tunnel: the router serves ?n, the +ws
+	// origin, the Referer and the cookie on a loopback address, with the
+	// panel in front of it when there is one, and the tunnel forwards to that
+	// one address. A lone origin is routed too — nothing to choose between, but
+	// tunneld's /_tunneld/ control path answers on every tunnel.
+	//
+	// The +ws origin is read off the parsed list, which is the origins
+	// package's own type; the dialable list has the same indexes.
+	ws := -1
+	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
+		if i, ok := marked.WebSocket(); ok {
+			ws = i
+		}
+	}
+	// Down with the tunnel rather than with ctx: the router outlives the run
+	// while the tunnel drains, so it is cancelled once the tunnel is done. It
+	// is stood up here, immediately before the tunnel it is handed to, so
+	// nothing between the two can return and leave it serving with no tunnel
+	// to end it.
+	local, err := b.router.Route(ctx,
+		router.WithOrigins(dialable),
+		router.WithWebSockets(ws),
+		router.WithHandler(b.display.Panel(b.multiview, origins, log)),
+		// The run's cached spec on the control path: the cache keeps the
+		// origins it was last loaded under, just below, and saved under once
+		// the tunnel is up. A run with caching off serves none. The spec is
+		// the hostname's credential and nothing guards it yet.
+		router.WithCache(spec),
+		router.WithLog(log),
+	)
+	if err != nil {
+		return err
+	}
+
 	// What the cache has is what the mint is hinted with, and nothing when it
 	// has nothing: From("") mints fresh, so there is one call and no branch.
 	// No second attempt on failure either — From asks the edge about a hint
 	// before minting, so a dead cached spec is already a fresh mint by the
 	// time it could fail, and the one failure left is a provider that could
 	// not be reached, which a remint could not reach either.
-	tun := b.newTunnel(spec.Load(origins, log)).
+	tun := b.newTunnel(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))).
 		WithToken(token).
 		// Which tunneld is asking, ahead of the libtunnel comment the mint
 		// adds after it. Always tunneld's, under whatever name an embedding
@@ -617,10 +619,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, above.
 		WithLocalURL(local)
-	routed = true
 	go func() {
 		<-tun.Done()
-		unroute()
+		b.router.Cancel()
 	}()
 
 	// Something turning, because the wait below is the long one: minting,
@@ -751,7 +752,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// back, but the one line somebody opening the file wants first.
 	tracking := b.tracking(origins)
 	tracking[ltv1.HostnameEnv] = public.Hostname()
-	spec.Save(origins, tun.Serialize(), tracking, log)
+	spec.Save(
+		cache.WithOrigins(origins),
+		cache.WithSpec(tun.Serialize()),
+		cache.WithTracking(tracking),
+		cache.WithSecret(tun.Secret()),
+		cache.WithLog(log),
+	)
 
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C

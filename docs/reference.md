@@ -128,6 +128,31 @@ with a warning that names both.
 An explicit index still wins over the marker, so a page carrying its own — a
 terminal's page, and every tile of the multiview panel — is unaffected.
 
+### The control path
+
+Every tunnel, one origin or several, keeps `/_tunneld/` for tunneld itself: a
+path under it is answered by tunneld and never reaches an origin. Everything
+else is the origins', passed through exactly as it was sent.
+
+| Path | Auth | Answers |
+| ---- | ---- | ------- |
+| `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
+| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — or a bare `404` before the first save |
+
+Everything but `ping` needs `Authorization: token <secret>`, the running
+tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
+whoever holds the spec holds the token. Without it, or before the run has
+saved, the answer is a bare `401`, whether or not the path exists. A run with
+`--no-cache` saves nothing and so authorizes nothing but `ping`.
+
+Every answer under `/_tunneld/`, a `401` included, carries `X-Cache-Key`: the
+run's cache key, the name of the `<key>.env` its spec is saved in.
+
+```sh
+curl https://<host>/_tunneld/ping
+curl -H "Authorization: token <secret>" https://<host>/_tunneld/.env
+```
+
 ## Programs
 
 An `exec:///<path>` origin runs a program on this machine and exposes its

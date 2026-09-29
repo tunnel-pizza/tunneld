@@ -311,8 +311,8 @@ Easy to get wrong from the diff alone:
   origin 1; `?1=x` is application data the router forwards untouched. See
   `publicURL` in [`v1alpha1/builder.go`](./v1alpha1/builder.go).
 - **Routing is tunneld's, not the tunnel's.** The tunnel is handed one URL —
-  the router's loopback address, or the lone origin's own when there is
-  nothing to route — and every rule that picks an origin lives in
+  the router's loopback address, a lone origin's run included — and every
+  rule that picks an origin lives in
   [`v1alpha1/router`](./v1alpha1/router), with the panel in front of it
   (#176). The `+ws` marker comes off the scheme in the parser and is kept
   as an index on the `origins` type (not on `v1.Origins`, which embedders
@@ -320,7 +320,11 @@ Easy to get wrong from the diff alone:
   check that needs to know about it is a check reading the wrong thing
   (#173). The router lives until the tunnel's `Done`, not the run's
   context: the tunnel drains what the edge sent it for a grace period, and
-  each of those requests comes through the router.
+  each of those requests comes through the router. `/_tunneld/` is tunneld's
+  own (`router.ControlPath`): the router's mux answers it — `ping` today —
+  and a path under it never reaches an origin. Only that prefix goes through
+  the mux, since a `ServeMux` redirects unclean paths and would rewrite what
+  origins are sent.
 - **The panel answers the tunnel's bare address, and every condition narrowing
   that is load-bearing.** `Display.Panel` answers only path `/`,
   an *empty* query, a top-level document, and no same-host referer. Drop the

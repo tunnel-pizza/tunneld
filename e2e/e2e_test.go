@@ -821,7 +821,7 @@ func TestExamples(t *testing.T) {
 		{"multi-origin", "exposes: http://localhost:3000, http://localhost:4000", nil, nil},
 		{"attach", "exposes: attach://dockerd/tunneld-example", nil, nil},
 		{"shell", "exposes: zsh", nil, nil},
-		{"workspace", "exposes: http://localhost:8501, uvx streamlit hello --server.headless true, claude", nil, nil},
+		{"workspace", "exposes: uvx streamlit hello --server.headless true, http+ws://localhost:8501, claude", nil, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
