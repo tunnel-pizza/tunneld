@@ -324,6 +324,13 @@ that understands OSC 8 opens it in a tab of its own. The frame has nothing to
 show there until the tunnel is up, because a container is bound before the
 tunnel exists.
 
+The build along the bottom starts with tunneld's name, and that is a link too,
+to tunnel.pizza, so whoever you sent the address to can find out what is
+serving it. Its query says it came from a frame and which release drew it,
+and nothing about the tunnel, the origin or your machine. The page opens every
+link with no `Referer` and no `opener`: the hostname is the tunnel's only
+secret, and a `Referer` would carry it to whatever site a link names.
+
 Centred along the top is whatever the terminal calls itself. A terminal carries
 a title and a subtitle and they are not the same thing — a prompt framework
 sets the title to the running command's whole line and the subtitle to its name

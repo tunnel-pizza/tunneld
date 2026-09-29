@@ -1187,6 +1187,10 @@ func (f frame) where() string {
 // banner is the build this is running, along the bottom. It is what a bug
 // report needs and nobody thinks to ask for, so it sits where it can be read
 // without being in the way.
+//
+// Drawn as it was handed over, hyperlink included: the default names tunneld
+// as a link home, which is how a page somebody was sent says what served it
+// without a row of chrome to say so. See WithBanner.
 func (f frame) banner() string {
 	if f.sess.banner == "" {
 		return ""

@@ -377,7 +377,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithBinder(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			// Built here, before a flag has been parsed: no run to name yet.
-			attach.WithBanner(VersionLine(nil)),
+			attach.WithBanner(frameLine()),
 			attach.WithLogs(log),
 			attach.WithMotd(board),
 		)),

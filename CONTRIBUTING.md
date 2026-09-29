@@ -536,12 +536,18 @@ Two things there will bite if you change them without knowing why:
   build information, and none of it changes while the process runs. So it
   arrives through `attach.WithBanner` at construction, where the address has to
   arrive later through `Announcer`.
-- **A hyperlink needs both ends.** The frame marks its address with OSC 8, and
-  `index.html` sets xterm's `linkHandler` — without one xterm underlines the
-  link and does nothing when it is clicked, which is worse than not marking it.
-  The handler opens with `noopener,noreferrer`, because the container's output
+- **A hyperlink needs both ends.** The frame marks its address with OSC 8, the
+  build line arrives with tunneld's name marked the same way (a link to
+  tunnel.pizza, built by `frameLine` in the root), and `index.html` sets
+  xterm's `linkHandler` — without one xterm underlines the link and does
+  nothing when it is clicked, which is worse than not marking it. The handler
+  opens with `noopener,noreferrer`: noopener because the container's output
   reaches this terminal and an origin that printed its own OSC 8 would
-  otherwise be handed a reference to the window.
+  otherwise be handed a reference to the window, and noreferrer because a
+  Referer carries the page's hostname, the tunnel's only credential, to
+  whatever site the link names. The page's `<meta name="referrer">` says the
+  same for everything it loads, which costs nothing only because its own
+  requests route by the `?n` in `location.search`, never by a Referer.
 - **The page needs the WebGL renderer, and it is not an optimization.** xterm's
   DOM renderer draws every cell as text in a clipped row, which a full-screen
   program's box drawing does not survive: at the page's font size U+2502

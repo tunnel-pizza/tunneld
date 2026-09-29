@@ -308,6 +308,10 @@ func WithMotd(motd Motd) Option {
 // build information — none of it knowable from a subpackage, and all of it
 // fixed for the life of the process, so it is configuration and not an
 // announcement.
+//
+// It is drawn as styled text, so it can carry an OSC 8 hyperlink the way the
+// frame's own address does; the default marks tunneld's name in it as a link
+// to tunnel.pizza.
 func WithBanner(banner string) Option {
 	return func(b *BinderImpl) { b.banner = banner }
 }
