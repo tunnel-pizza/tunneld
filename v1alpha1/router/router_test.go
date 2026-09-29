@@ -695,16 +695,6 @@ func TestUnanswered(t *testing.T) {
 	}
 }
 
-// mustURL parses a URL the test built, which cannot fail to parse.
-func mustURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	u, err := url.Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return u
-}
-
 // TestRoutePreservesTheHost pins that the Host a request arrived with is the
 // one the origin sees: an origin may key on it, and the stdlib default would
 // rewrite it to the origin's own address.
