@@ -78,21 +78,28 @@ func get(t *testing.T, client *http.Client, req *http.Request) (*http.Response, 
 	return resp, string(body)
 }
 
-// TestRouteALoneOriginIsItsOwnAddress pins that one origin with nothing in
-// front of it is not routed at all: the tunnel is handed the origin itself,
-// exactly as before there was routing to do, and a bare numeric parameter is
-// the application's own.
-func TestRouteALoneOriginIsItsOwnAddress(t *testing.T) {
+// TestRouteALoneOriginIsRouted pins that one origin with nothing in front of
+// it is routed like any other run, so tunneld's control path answers on every
+// tunnel — and that it gets none of the routing: a bare numeric parameter is
+// the application's own and reaches it untouched.
+func TestRouteALoneOriginIsRouted(t *testing.T) {
 	list := listOf(t, echo(t, "solo"))
 	r := New()
 	got, err := r.Route(t.Context(), WithOrigins(list))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	if got != list.At(0) {
-		t.Errorf("Route() = %v, want the origin itself (%v)", got, list.At(0))
+	t.Cleanup(r.Cancel)
+	if got.Host == list.At(0).Host {
+		t.Fatalf("Route() = %v, the origin itself; want the router in front of it", got)
 	}
-	r.Cancel() // nothing to take down, and safe to call
+	base := strings.TrimSuffix(got.String(), "/")
+	for path, want := range map[string]string{"/?1&x": "solo|1&x", "/_tunneld/ping": "pong"} {
+		req, _ := http.NewRequest(http.MethodGet, base+path, nil)
+		if _, body := get(t, http.DefaultClient, req); body != want {
+			t.Errorf("GET %s = %q, want %q", path, body, want)
+		}
+	}
 }
 
 // TestRouteNothingIsAnError pins that an empty list is refused rather than
@@ -118,27 +125,39 @@ func TestOptions(t *testing.T) {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
 	}
 
+	// Which origin a route reaches is what answers through it.
+	reaches := func(t *testing.T, r *RouterImpl, opts ...Option) string {
+		t.Helper()
+		u, err := r.Route(t.Context(), opts...)
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+		_, body := get(t, http.DefaultClient, req)
+		return body
+	}
 	a, b := listOf(t, echo(t, "A")), listOf(t, echo(t, "B"))
 	r := New(WithOrigins(a), WithWebSockets(0))
-	if got, err := r.Route(t.Context()); err != nil || got != a.At(0) {
-		t.Errorf("Route() with New's origins = %v, %v; want %v", got, err, a.At(0))
+	t.Cleanup(r.Cancel)
+	if got := reaches(t, r); got != "A|" {
+		t.Errorf("Route() with New's origins reaches %q, want A", got)
 	}
-	if got, err := r.Route(t.Context(), WithOrigins(b)); err != nil || got != b.At(0) {
-		t.Errorf("Route(WithOrigins(b)) = %v, %v; want %v", got, err, b.At(0))
+	if got := reaches(t, r, WithOrigins(b)); got != "B|" {
+		t.Errorf("Route(WithOrigins(b)) reaches %q, want B", got)
 	}
 	if r.Origins() != a || r.WebSockets() != 0 {
 		t.Error("a route's options changed the router's own, want them applied to that route alone")
 	}
-	if got, _ := r.Route(t.Context()); got != a.At(0) {
-		t.Errorf("the route after one with its own origins = %v, want New's (%v)", got, a.At(0))
+	if got := reaches(t, r); got != "A|" {
+		t.Errorf("the route after one with its own origins reaches %q, want New's (A)", got)
 	}
 }
 
 // TestControlPath pins the prefix tunneld keeps for itself: under it the
 // router's own mux answers, and what it has no pattern for is a 404 rather
 // than an origin's page; everywhere else — paths a mux would clean included —
-// the request reaches an origin exactly as it was sent. A lone origin is not
-// routed, so it has no ControlPath.
+// the request reaches an origin exactly as it was sent. A lone origin has the
+// ControlPath too.
 func TestControlPath(t *testing.T) {
 	// pathOf answers with its name and the path it was sent, unclean or not.
 	pathOf := func(name string) *httptest.Server {
@@ -195,9 +214,13 @@ func TestControlPath(t *testing.T) {
 			}
 		})
 	}
-	solo := listOf(t, pathOf("solo"))
-	if got, _ := r.Route(t.Context(), WithOrigins(solo)); got != solo.At(0) {
-		t.Errorf("a lone origin = %v, want the origin itself", got)
+	u, err = r.Route(t.Context(), WithOrigins(listOf(t, pathOf("solo"))))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, strings.TrimSuffix(u.String(), "/")+"/_tunneld/ping", nil)
+	if _, body := get(t, http.DefaultClient, req); body != "pong" {
+		t.Errorf("a lone origin's ping = %q, want pong", body)
 	}
 }
 

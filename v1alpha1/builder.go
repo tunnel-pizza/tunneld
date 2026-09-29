@@ -569,7 +569,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// decided here rather than in the tunnel: the router serves ?n, the +ws
 	// origin, the Referer and the cookie on a loopback address, with the
 	// panel in front of it when there is one, and the tunnel forwards to that
-	// one address. A lone origin with no panel is its own address.
+	// one address. A lone origin is routed too — nothing to choose between, but
+	// tunneld's /_tunneld/ control path answers on every tunnel.
 	//
 	// The +ws origin is read off the parsed list, which is the origins
 	// package's own type; the dialable list has the same indexes.

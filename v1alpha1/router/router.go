@@ -144,9 +144,10 @@ func (r *RouterImpl) Handler() func(http.Handler) http.Handler { return r.handle
 // was given stays the default for every route, and one route's origins never
 // leak into the next.
 //
-// One origin with nothing in front of it needs no router: its own address is
-// returned and nothing is served, which is the tunnel exactly as it was
-// before there was routing to do — and so no ControlPath either.
+// Every route is served, a lone origin's with nothing in front of it
+// included, so the ControlPath answers on every tunnel. A lone origin gets
+// none of the routing — a bare numeric parameter is then the application's
+// own — only the pass-through and the control path.
 //
 // The server is down when Cancel is called, not when ctx ends. A tunnel told
 // to stop keeps answering what the edge already sent it for a grace period,
@@ -165,10 +166,6 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
 	}
-	if dialable.Len() == 1 && front == nil {
-		return dialable.At(0), nil
-	}
-
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("router: listen: %w", err)
@@ -203,9 +200,8 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 }
 
 // Cancel takes down every route this router has serving: their listeners
-// close and their requests, upgraded ones included, end. A router with none —
-// never routed, or routed a lone origin it did not stand in front of — has
-// nothing to stop.
+// close and their requests, upgraded ones included, end. A router that never
+// routed has nothing to stop.
 //
 // Every route, so a router routing twice at once — an embedding program
 // starting a run while the last one's tunnel still drains — is cancelled as

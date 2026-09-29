@@ -598,8 +598,7 @@ var routed = &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 
 // fakeRouter stands in for the router package: it records what it was asked
 // to put behind the tunnel and answers with routed, so TestRun never stands
-// up a listener. A lone origin with nothing in front is answered with itself,
-// as the real one does, since that is a run where there is nothing to route.
+// up a listener. A lone origin is routed like any run, as the real one does.
 type fakeRouter struct {
 	err      error
 	dialable Origins
@@ -621,9 +620,6 @@ func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL
 	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
 	if f.err != nil {
 		return nil, f.err
-	}
-	if dialable.Len() == 1 && front == nil {
-		return dialable.At(0), nil
 	}
 	return routed, nil
 }
@@ -1770,10 +1766,10 @@ func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
 	if strings.Contains(h.stderr.String(), "?arg=") {
 		t.Errorf("stderr shows the arguments' carrier:\n%s", h.stderr.String())
 	}
-	// The tunnel itself was still handed the origin whole; the arguments are
-	// the binder's to read off it.
-	if got := h.tunnels[0].locals; len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
-		t.Errorf("tunnel was given %v, want the origin with its arguments", got)
+	// The router in front of the tunnel was still handed the origin whole;
+	// the arguments are the binder's to read off it.
+	if got := h.router.dialable.URLs(); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
+		t.Errorf("router was given %v, want the origin with its arguments", got)
 	}
 }
 

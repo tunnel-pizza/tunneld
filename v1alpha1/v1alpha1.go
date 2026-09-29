@@ -209,8 +209,9 @@ func WithDisplay(display Display) Option {
 // than asked of the tunnel engine, which is handed one URL and knows nothing
 // of origins (#176).
 //
-// Route answers with that URL: the router's own, or the one origin's when
-// there is one and nothing to put in front of it. What it routes is the run's,
+// Route answers with that URL, the router's own — a lone origin's run
+// included, so tunneld's /_tunneld/ control path answers on every tunnel.
+// What it routes is the run's,
 // handed over in the options it takes, as Display's Open is: the dialable
 // origins, the index of the one marked +ws, what the display's Panel answered
 // to put in front, and the run's logger.
