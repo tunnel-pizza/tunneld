@@ -1669,9 +1669,8 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	//
 	// A Unix promise only: a Windows absolute path is C:\..., which has no
 	// spelling inside an exec:// URL — url.URL escapes the separators either
-	// way round. It costs nothing there, because a platform with no
-	// pseudo-terminals refuses a program origin at startup regardless, and the
-	// binder reads the path off the URL rather than off its printed form.
+	// way round. It costs nothing there, because the binder reads the path off
+	// the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
 		again, err := url.Parse(got.At(2).String())
 		if err != nil {

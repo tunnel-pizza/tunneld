@@ -22,7 +22,7 @@ Deep-link by filename; line numbers will drift.
 | Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, and the page for an origin nothing answers on (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `Resolve`, pty settings | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Local-program provider, `Resolve`, pty settings, and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v1alpha1/attach/shell/builtin/`](./v1alpha1/attach/shell/builtin) |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
@@ -840,14 +840,16 @@ Two things there will bite if you change them without knowing why:
   run's `done` close, waits for the restart to finish and carries on if the
   session now has a different `done`. `attach.Ender` is what makes a target
   restartable alongside `Repeatable`: the shell provider implements it as
-  `SIGTERM` to the program's process group (`pty.Start` gives it a session of
-  its own, so the group is its pid), then `SIGKILL` after `endGrace`. The
-  group matters for a child that ignores the hangup the terminal sends when
-  its leader exits — `shell_test.go` pins that with a `trap '' HUP` child.
+  `SIGTERM` to the program's session (`startOn`, and `ownGroup` over pipes,
+  give it a session of its own), then `SIGKILL` after `endGrace`. The session
+  matters for a child that ignores the hangup the terminal sends when its
+  leader exits — `shell_test.go` pins that with a `trap '' HUP` child — and for
+  a shell's jobs, which bash puts in process groups of their own even over
+  pipes, where a group signal never reaches them.
 - **A run is told its size when it starts, whether or not anything changed.**
   `negotiate` only speaks when the window moves, and the viewer who asks for a
   restart is the size the session already settled on — so a second run would
-  sit at whatever `pty.Start` made, which is nothing, and a full-screen program
+  sit at whatever `startOn` made, which is nothing, and a full-screen program
   with no room draws an empty screen. `stream` pushes `paneOf(s.size)` at every
   run for that reason.
 - **A provider stops reading the resize channel when its attach ends.** The

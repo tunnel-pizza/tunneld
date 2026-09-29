@@ -104,9 +104,16 @@ func TestBuiltinOnATerminal(t *testing.T) {
 		t.Fatalf("Open() = %v", err)
 	}
 	defer func() { _ = target.Close() }()
+	if !target.TTY() {
+		t.Skip("no pseudo-terminals on this machine; the shell would be served over pipes")
+	}
 
-	// Elvish's prompt ends in "> " after the working directory.
-	const prompt = "> "
+	// Elvish's prompt ends in "> " after the working directory, or "# " for
+	// root — which a sandbox often is.
+	prompt := "> "
+	if os.Geteuid() == 0 {
+		prompt = "# "
+	}
 	in, typed := io.Pipe()
 	out := &sink{}
 	resize := make(chan remotecommand.TerminalSize)

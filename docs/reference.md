@@ -288,8 +288,19 @@ frames itself as `exec:///usr/bin/htop`, and mixes freely with the rest:
 tunneld :3000 attach://dockerd/my-container htop
 ```
 
-A machine with no pseudo-terminals refuses at startup, with the reason, rather
-than minting a hostname in front of a page that cannot work.
+**A machine with no pseudo-terminals** still runs the program. Where
+`/dev/ptmx` is missing but devpts is mounted, as in some sandboxes, tunneld opens
+`/dev/pts/ptmx` instead and nothing changes. Where there are none at all
+(Windows, or a sandbox with no devpts), the program is served over pipes, and a
+warning at startup and a line on the page say what that costs:
+- **Typing:** tunneld does the job of the missing terminal. Your keys are echoed,
+  Enter sends the line, and Backspace and `Ctrl-U` edit it.
+- **Ctrl-C** interrupts what is running (not on Windows). `Ctrl-D` on an empty
+  line ends the program's input.
+- **Shells:** a shell run with no arguments (`sh`, `bash`, `zsh`, …) is started
+  with `-i`, so it prompts and survives `Ctrl-C`.
+- **What is lost:** no line editing beyond that, no resize, and no full-screen
+  programs.
 
 ## Containers
 
