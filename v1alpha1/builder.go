@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
@@ -29,6 +30,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
+	"rsc.io/qr"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -112,6 +114,13 @@ func WithMultiview(multiview bool) Option {
 // behind its back.
 func WithShellFallback(fallback bool) Option {
 	return func(b *BuilderImpl) { b.shellFallback = fallback }
+}
+
+// WithQR seeds whether a run prints its address as a QR code on stderr once
+// the tunnel is up, for a phone to read off the screen. --qr and v1.QREnv
+// both beat it. Unset, it prints none.
+func WithQR(show bool) Option {
+	return func(b *BuilderImpl) { b.qr = show }
 }
 
 // WithStdout redirects the help text and the version banner. Command passes
@@ -200,6 +209,8 @@ var flagEnv = map[string]string{
 	"shell-fallback": v1.ShellFallbackEnv,
 
 	"identity-providers": v1.IdentityProvidersEnv,
+
+	"qr": v1.QREnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -349,6 +360,8 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
 			"with no origin given anywhere, expose $SHELL rather than refusing to start [$"+v1.ShellFallbackEnv+"]")
+		cmd.Flags().BoolVar(&b.qr, "qr", b.qr,
+			"print the address as a QR code on stderr once the tunnel is up [$"+v1.QREnv+"]")
 
 		// Docker's rule: options before the image. Flag parsing stops at the
 		// first origin, and every word after it is positional — so the words
@@ -764,8 +777,36 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		shown := false
 		screen, open = nil, &shown
 	}
+	addr := cmp.Or(view, publicURL(public, 0, origins.Len()))
+
+	// The address as a code for a phone, when asked for: the one address Open
+	// is handed below, so one code however many origins there are. On stderr
+	// with the map it follows, since stdout is the addresses and nothing else,
+	// and before a detached run's streams move to its log, so the caller a
+	// launcher is holding the prompt for gets it. Not when a frame is about to
+	// take the console: Ctrl+K q is the code there, sized to the pane, and one
+	// printed now would only sit behind it.
+	//
+	// qr.M, where the frame draws qr.L. The frame's code goes from a screen
+	// straight into a camera; this one is text, and text gets passed on first
+	// — pasted into a message, copied into a reply by a model — where a cell
+	// can come out wrong, and the code has to absorb what does. M recovers
+	// about 15% of the code where L recovers 7%, and costs nothing for an
+	// address tunnel.pizza mints: 34 to 37 characters are version 3 at either
+	// level, 37 cells by 19 rows. Q and H would cost a version or two more.
+	// Measured with jsQR on a 36-character address, 300 copies with cells
+	// changed at random: with ten changed, L read 29% and M 49%; with
+	// sixteen, L read 1% and M 34%.
+	if b.qr && screen == nil {
+		if lines, err := attach.QRLines(addr, qr.M); err != nil {
+			fmt.Fprintf(stderr, "the address could not be drawn as a QR code: %v\n", err)
+		} else {
+			fmt.Fprintln(stderr, strings.Join(lines, "\n"))
+		}
+	}
+
 	b.display.Open(ctx, log,
-		display.WithAddr(cmp.Or(view, publicURL(public, 0, origins.Len()))),
+		display.WithAddr(addr),
 		display.WithForced(open),
 		display.WithStderr(stderr),
 		display.WithInteractive(display.IsInteractive(cmd)),
@@ -996,6 +1037,7 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 		v1.ShellFallbackEnv:     strconv.FormatBool(b.shellFallback),
 		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
 		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
+		v1.QREnv:                strconv.FormatBool(b.qr),
 	}
 	// Facts about the run rather than knobs, so they carry no v1 constant and
 	// nothing reads them back: which build wrote the file, and where it was

@@ -11,7 +11,10 @@ import (
 // reader the standard had in mind, so it gets all four.
 const quiet = 4
 
-// qrLines renders text as a QR code in half-block cells, two modules to a row.
+// QRLines renders text as a QR code in half-block cells, two modules to a row,
+// at the error-correction level the caller picks: the frame and a run's
+// --qr draw the same address for different readers, and which one can
+// afford the larger code is theirs to say. Exported for that second caller.
 //
 // Light modules are drawn and dark ones are left to the background, so the
 // frame's usual white-on-black is the code the right way round rather than
@@ -23,8 +26,11 @@ const quiet = 4
 // modules and a terminal cell is half as wide as it is tall: drawn a cell per
 // module it is twice as tall as it is wide, and a camera has to be told which
 // way to squint. Two modules per cell is very nearly square.
-func qrLines(text string) ([]string, error) {
-	code, err := qr.Encode(text, qr.L)
+//
+// Plain text, no escapes: every cell is one of four runes, so the lines read
+// the same printed to a terminal, piped to a file or pasted into a message.
+func QRLines(text string, level qr.Level) ([]string, error) {
+	code, err := qr.Encode(text, level)
 	if err != nil {
 		return nil, err
 	}

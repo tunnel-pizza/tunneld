@@ -422,6 +422,10 @@ type BuilderImpl struct {
 	// process environment to find out what a run will do.
 	shellFallback bool
 
+	// qr is whether the run prints its address as a QR code on stderr once
+	// the tunnel is up. Flag-backed like the rest; off unless asked for.
+	qr bool
+
 	// pid is how the run is found and handed back from outside it, for the
 	// npm launcher; nil, the default, is neither. See WithPid.
 	pid Pid

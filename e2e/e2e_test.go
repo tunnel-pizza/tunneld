@@ -135,7 +135,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--shell-fallback", "tunneld [flags] [origin ...]", "tunneld :3000"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--shell-fallback", "--qr", "tunneld [flags] [origin ...]", "tunneld :3000"}},
 	}
 
 	for _, tc := range cases {

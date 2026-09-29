@@ -241,6 +241,12 @@ const (
 	// it is running on.
 	ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
 
+	// QREnv names whether a run prints its address as a QR code on stderr
+	// once the tunnel is up — the mirror of --qr, which beats it. Any value
+	// strconv.ParseBool accepts works. stdout is untouched either way: it
+	// carries the addresses and nothing else.
+	QREnv = "TUNNELD_QR"
+
 	// IdentityProvidersEnv names the identity providers to look for a mint
 	// credential with, comma-separated and in order — the mirror of
 	// --identity-providers, which beats it. Empty turns the lookup off.

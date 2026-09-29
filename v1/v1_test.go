@@ -23,6 +23,7 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.IdentityProvidersEnv, "TUNNELD_IDENTITY_PROVIDERS"},
 		{v1.DefaultIdentityProviders, "github,anthropic"},
 		{v1.NotifyPidEnv, "TUNNELD_NOTIFY_PID"},
+		{v1.QREnv, "TUNNELD_QR"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
