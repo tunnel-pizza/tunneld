@@ -229,10 +229,10 @@ bytes without reading them.
 
 ## Use it from Claude Code
 
-Install the plugin:
+Install the plugin from the [tunnel.pizza marketplace](https://github.com/tunnel-pizza/marketplace):
 
 ```
-/plugin marketplace add tunnel-pizza/tunneld
+/plugin marketplace add tunnel-pizza/marketplace
 /plugin install tunneld@tunnel-pizza
 ```
 

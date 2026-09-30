@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"regexp"
 	"slices"
@@ -12,8 +11,7 @@ import (
 // README.md is a source file too, the one a person reads first, and this is
 // its test file, beside it. What it pins is the Acknowledgements section: a
 // list only worth keeping while it is true, and a list kept by hand drifts the
-// day a dependency lands without it. And the two lines that install the
-// Claude Code plugin, which are only worth printing while they work.
+// day a dependency lands without it.
 
 // modulePath matches a Go module path in a code span: a dotted host, then any
 // path elements — `github.com/cnuss/libtunnel`, `rsc.io/qr`, and a module that
@@ -79,38 +77,6 @@ func TestAcknowledgementsPinWhatThePagesLoad(t *testing.T) {
 	for _, pin := range credited {
 		if !slices.Contains(loaded, pin) {
 			t.Errorf("README.md's Acknowledgements credits %s, which no page loads", pin)
-		}
-	}
-}
-
-// TestPluginInstallNamesTheMarketplace pins the README's two lines for Claude
-// Code to what they install: the marketplace is added from this repository,
-// read off go.mod's module path, and installed from as <plugin>@<marketplace>,
-// which are the names marketplace.json gives. Renaming either leaves a second
-// line that fails on every machine it is pasted into.
-func TestPluginInstallNamesTheMarketplace(t *testing.T) {
-	module, _, _ := strings.Cut(read(t, "go.mod"), "\n")
-	repo := strings.TrimPrefix(strings.TrimPrefix(module, "module "), "github.com/")
-
-	var m struct {
-		Name    string `json:"name"`
-		Plugins []struct {
-			Name string `json:"name"`
-		} `json:"plugins"`
-	}
-	if err := json.Unmarshal([]byte(read(t, ".claude-plugin/marketplace.json")), &m); err != nil {
-		t.Fatalf("parsing marketplace.json: %v", err)
-	}
-	if len(m.Plugins) == 0 {
-		t.Fatal("marketplace.json lists no plugins, so the README has nothing to install")
-	}
-	readme := read(t, "README.md")
-	for _, want := range []string{
-		"/plugin marketplace add " + repo + "\n",
-		"/plugin install " + m.Plugins[0].Name + "@" + m.Name + "\n",
-	} {
-		if !strings.Contains(readme, want) {
-			t.Errorf("README.md does not say %q", strings.TrimSpace(want))
 		}
 	}
 }
