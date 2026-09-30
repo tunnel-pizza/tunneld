@@ -361,6 +361,8 @@ type fakeTunnel struct {
 	// messages is what Messages hands back: what the provider said with the
 	// spec, as libtunnel would carry it.
 	messages []string
+	// ctx is what WithContext was handed: the context the tunnel lives on.
+	ctx context.Context
 }
 
 // live is a tunnel that comes up on public and stays up until the test says
@@ -451,10 +453,13 @@ func (f *fakeTunnel) Cancel(cause ...error) {
 	f.end()
 }
 
-func (f *fakeTunnel) Err() error                                     { return f.err }
-func (f *fakeTunnel) Done() <-chan libtunnel.TunnelV1                { return f.done }
-func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1     { return f }
-func (f *fakeTunnel) WithContext(context.Context) libtunnel.TunnelV1 { return f }
+func (f *fakeTunnel) Err() error                                 { return f.err }
+func (f *fakeTunnel) Done() <-chan libtunnel.TunnelV1            { return f.done }
+func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1 { return f }
+func (f *fakeTunnel) WithContext(ctx context.Context) libtunnel.TunnelV1 {
+	f.ctx = ctx
+	return f
+}
 func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.TunnelV1 {
 	f.listen = fn
 	return f
@@ -922,6 +927,22 @@ func TestRun(t *testing.T) {
 		}
 		if got, want := h.tunnels[0].headers, []string{"User-Agent: " + UserAgent()}; !slices.Equal(got, want) {
 			t.Errorf("headers = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the tunnel's context lives while it is up, and ends with the run", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		atSave := errors.New("never saved")
+		h.cache.onSave = func() { atSave = h.tunnels[0].ctx.Err(); cancel() }
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if atSave != nil {
+			t.Errorf("the tunnel's context at the save = %v, want it live", atSave)
+		}
+		if h.tunnels[0].ctx.Err() == nil {
+			t.Error("the tunnel's context outlived the run")
 		}
 	})
 
@@ -2169,7 +2190,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 		t.Skipf("no pty to draw on: %v", err)
 	}
 	t.Cleanup(func() { tty.Close(); ptmx.Close() })
-	t.Setenv(openEnv, "false")
+	t.Setenv("OPEN", "false") // the hammer: see run.openEnv
 
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
@@ -2292,42 +2313,6 @@ func TestLogger(t *testing.T) {
 				t.Errorf("the log reached os.Stderr instead of the command's writer:\n%s", leaked)
 			}
 		})
-	}
-}
-
-// TestPublicURL pins the routing contract: with more than one origin every
-// address carries a bare ?i, the parameter the tunnel's proxy consumes — the
-// default origin included, since a plain URL routes by referer and cookie and
-// so stops reaching origin 0 once a browser has visited ?1. A valued parameter
-// ("?1=x") would be application data and route nowhere, so the bareness is
-// half the assertion and the explicit ?0 is the other half.
-//
-// A lone origin has nothing to route between and gets the plain URL. The
-// tunnel URL itself must survive unmodified either way, since every later call
-// derives from it.
-func TestPublicURL(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.pizza/")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cases := []struct {
-		name string
-		i, n int
-		want string
-	}{
-		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
-		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
-		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
-		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
-	}
-	for _, tc := range cases {
-		if got := publicURL(public, tc.i, tc.n); got != tc.want {
-			t.Errorf("%s: publicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
-		}
-	}
-	if public.RawQuery != "" {
-		t.Errorf("publicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
 	}
 }
 

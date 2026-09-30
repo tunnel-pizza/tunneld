@@ -31,6 +31,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
 )
 
 // Option configures a BuilderImpl at construction. The nine builder options
@@ -307,6 +308,18 @@ type Motd interface {
 	Learn(raw []string, log v1.Logger)
 }
 
+// Run is one run's tunnel, from its spec to its end: minted from the spec,
+// brought up and put in front of everybody — the addresses, the map, the bound
+// origins told where they answer from, the provider's messages, the browser
+// or the console, the save, a waiting launcher handed back — and waited on
+// until the run is over. Everything the run settled before its first tunnel,
+// and every collaborator a tunnel is shown through, is handed over with the
+// call. Nil for a run told to stop; the tunnel's error when it fails to come
+// up or ends on its own.
+type Run interface {
+	Run(ctx context.Context, opts ...run.Option) error
+}
+
 // WithMotd replaces what keeps and renders the provider's messages of the day.
 // The default is motd.New(), shared into the binder and the display; a
 // replacement is shared the same way by whoever builds it:
@@ -317,6 +330,12 @@ type Motd interface {
 //	    v1alpha1.WithBinder(attach.New(attach.WithMotd(board), …)))
 func WithMotd(m Motd) Option {
 	return func(b *BuilderImpl) { b.motd = m }
+}
+
+// WithRun replaces what takes a run's tunnel from its spec to its end. The
+// default is run.New().
+func WithRun(r Run) Option {
+	return func(b *BuilderImpl) { b.run = r }
 }
 
 // WithBinder replaces what stands a loopback origin in for a container or a
@@ -343,6 +362,7 @@ var (
 	_ Router     = (*router.RouterImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 	_ Motd       = (*motd.MotdImpl)(nil)
+	_ Run        = (*run.RunImpl)(nil)
 	_ Log        = (*logs.LogImpl)(nil)
 )
 
@@ -378,6 +398,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
+		WithRun(run.New()),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
 		WithDisplay(display.New(display.WithMotd(board))),
@@ -471,6 +492,9 @@ type BuilderImpl struct {
 
 	// motd keeps what the provider said with the spec for every surface.
 	motd Motd
+
+	// run takes each run's tunnel from its spec to its end.
+	run Run
 
 	// Command assembles once; subsequent calls return the cached command.
 	commandOnce sync.Once

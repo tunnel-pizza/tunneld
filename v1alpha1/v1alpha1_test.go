@@ -72,6 +72,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
 		{"router", New(WithOrigin(":3000"), WithRouter(nil))},
 		{"motd", New(WithOrigin(":3000"), WithMotd(nil))},
+		{"run", New(WithOrigin(":3000"), WithRun(nil))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := execute(t, tc.b)
