@@ -135,7 +135,7 @@ windows:
 # builds its own package tree in a temporary directory with a stand-in
 # binary, so none needs a Go build or touches the real cache directory.
 test:
-	go test . ./v1/... ./v1alpha1/...
+	go test . ./v1/... ./v1alpha1/... ./v0exp1/...
 	node --test v1/v1.test.cjs
 
 # The unit packages under the race detector — the same lane CI runs, runnable
@@ -150,7 +150,7 @@ test:
 # not find a race if there were one. The live row would also mint a second
 # tunnel to re-check what the e2e lane already did.
 race:
-	CGO_ENABLED=1 go test -race . ./v1/... ./v1alpha1/...
+	CGO_ENABLED=1 go test -race . ./v1/... ./v1alpha1/... ./v0exp1/...
 
 # End-to-end: the harness builds the tunneld binary and every example binary and
 # drives them. -count=1 disables go test caching, since the harness builds those
