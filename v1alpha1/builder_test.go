@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -361,6 +362,12 @@ type fakeTunnel struct {
 	// messages is what Messages hands back: what the provider said with the
 	// spec, as libtunnel would carry it.
 	messages []string
+	// ctx is what WithContext was handed: the context the tunnel lives on.
+	// Like a real tunnel, it ends when that does — unless it lingers, still
+	// draining, until the test ends it.
+	ctx     context.Context
+	lingers bool
+	ending  sync.Once
 }
 
 // live is a tunnel that comes up on public and stays up until the test says
@@ -386,8 +393,10 @@ func dead(cause error) *fakeTunnel {
 // The real Done hands out a fresh channel per call; this one shares a single
 // channel, which is all a run needs — it holds one.
 func (f *fakeTunnel) end() {
-	f.done <- f
-	close(f.done)
+	f.ending.Do(func() {
+		f.done <- f
+		close(f.done)
+	})
 }
 
 func (f *fakeTunnel) URL() *url.URL {
@@ -451,10 +460,19 @@ func (f *fakeTunnel) Cancel(cause ...error) {
 	f.end()
 }
 
-func (f *fakeTunnel) Err() error                                     { return f.err }
-func (f *fakeTunnel) Done() <-chan libtunnel.TunnelV1                { return f.done }
-func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1     { return f }
-func (f *fakeTunnel) WithContext(context.Context) libtunnel.TunnelV1 { return f }
+func (f *fakeTunnel) Err() error                                 { return f.err }
+func (f *fakeTunnel) Done() <-chan libtunnel.TunnelV1            { return f.done }
+func (f *fakeTunnel) WithLogger(*slog.Logger) libtunnel.TunnelV1 { return f }
+func (f *fakeTunnel) WithContext(ctx context.Context) libtunnel.TunnelV1 {
+	f.ctx = ctx
+	if !f.lingers {
+		go func() {
+			<-ctx.Done()
+			f.end()
+		}()
+	}
+	return f
+}
 func (f *fakeTunnel) WithEventListener(fn func(libtunnel.Event)) libtunnel.TunnelV1 {
 	f.listen = fn
 	return f
@@ -479,7 +497,13 @@ type fakeCache struct {
 	key      string
 	onSave   func()
 	order    *[]string
+	// specs is what Spec hands out, nil for a cache that never has a new
+	// spec. Like the real one, each Save lands the saved spec on it too.
+	specs chan string
 }
+
+// Spec is every spec the fake takes, as the real cache hands them on.
+func (f *fakeCache) Spec() <-chan string { return f.specs }
 
 // fakePid records a run's registration in the order of effects, and says a
 // launcher was waiting when waiting is set.
@@ -522,15 +546,34 @@ func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 func (f *fakeCache) Secret() []byte { return f.secret }
 func (f *fakeCache) Key() string    { return f.key }
 
-// String is the file the fake saved, rendered as the real cache renders it.
-func (f *fakeCache) String() string {
-	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking)).String()
+// String is the file the fake saved, rendered as the real cache renders it,
+// and Handlers the real cache's endpoints serving that file.
+func (f *fakeCache) String() string { return f.real().String() }
+func (f *fakeCache) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
+	return f.real().Handlers(path)
+}
+
+// real is a cache holding what the fake saved, touching no disk.
+func (f *fakeCache) real() *cache.CacheImpl {
+	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking))
 }
 func (f *fakeCache) Save(opts ...cache.Option) {
 	// The run's options, read back off a cache they configure rather than
 	// one that writes.
 	c := cache.New(opts...)
-	f.saved, f.spec, f.tracking, f.secret, f.key = true, c.Spec(), c.Tracking(), c.Secret(), c.Key()
+	f.spec = ""
+	select {
+	case f.spec = <-c.Spec():
+	default:
+	}
+	f.saved, f.tracking, f.secret, f.key = true, c.Tracking(), c.Secret(), c.Key()
+	if f.specs != nil {
+		select {
+		case <-f.specs:
+		default:
+		}
+		f.specs <- f.spec
+	}
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}
@@ -576,8 +619,10 @@ type fakeBinder struct {
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}
-	// announced is what Announce was handed.
-	announced []string
+	// announced is what Announce was handed last, and announcedAll every
+	// address it was handed, in order.
+	announced    []string
+	announcedAll []string
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -590,6 +635,8 @@ type fakeBinder struct {
 	// mirror having started rather than on what it displaced. Atomic because
 	// console.Show draws on a goroutine of its own.
 	showed atomic.Bool
+	// shows counts the frames drawn: a respec keeps the one that is up.
+	shows atomic.Int32
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
@@ -611,6 +658,7 @@ type mirrorableBinder struct{ *fakeBinder }
 // what happened while it was drawing.
 func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	m.showed.Store(true)
+	m.shows.Add(1)
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -624,6 +672,7 @@ func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 // an interface a caller has to go looking for.
 func (f *fakeBinder) Announce(public []string) {
 	f.announced = public
+	f.announcedAll = append(f.announcedAll, public...)
 	if f.onAnnounce != nil {
 		f.onAnnounce()
 	}
@@ -913,6 +962,168 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	t.Run("the tunnel's context lives while it is up, and ends with the run", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		atSave := errors.New("never saved")
+		h.cache.onSave = func() { atSave = h.tunnels[0].ctx.Err(); cancel() }
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if atSave != nil {
+			t.Errorf("the tunnel's context at the save = %v, want it live", atSave)
+		}
+		if h.tunnels[0].ctx.Err() == nil {
+			t.Error("the tunnel's context outlived the run")
+		}
+	})
+
+	// A new spec while the run waits — a PATCH to the control path, or any
+	// other spec the cache takes — is a new tunnel: the one up is stopped
+	// and drained, the next is minted from the spec, and everything a tunnel
+	// that comes up does happens again.
+	t.Run("a new spec replaces the tunnel, and it is all shown again", func(t *testing.T) {
+		const second = "https://bar.tunneled.pizza/"
+		first, next := live(public), live(second)
+		h := newRunHarness(t, first, ":3000")
+		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
+		h.tunnels = append(h.tunnels, next)
+		next.order = &h.order
+		h.cache.specs = make(chan string, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		saves := 0
+		var firstAtSecondSave error
+		h.cache.onSave = func() {
+			saves++
+			if saves == 1 {
+				// Arrives once the run has passed over its own save, the way a
+				// PATCH turned away with a 429 would once it tried again.
+				go func() { h.cache.specs <- "patched" }()
+				return
+			}
+			firstAtSecondSave = first.ctx.Err()
+			cancel()
+		}
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v, want nil after a signal", err)
+		}
+		if want := []string{"", "patched"}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want the cached spec then the new one", h.specs)
+		}
+		if firstAtSecondSave == nil {
+			t.Error("the first tunnel was still live when the second came up, want it stopped first")
+		}
+		if want := []string{public, second}; !slices.Equal(h.display.opened, want) {
+			t.Errorf("opened %q, want each tunnel's address in turn", h.display.opened)
+		}
+		if want := []string{"url", "open", "save", "url", "open", "save"}; !slices.Equal(h.order, want) {
+			t.Errorf("effects in order %v, want each tunnel shown and saved", h.order)
+		}
+		if want := public + "\n" + second + "\n"; h.stdout.String() != want {
+			t.Errorf("stdout = %q, want both tunnels' addresses in turn", h.stdout.String())
+		}
+		if want := next.Serialize(); h.cache.spec != want {
+			t.Errorf("cached spec = %q, want the second tunnel's %q", h.cache.spec, want)
+		}
+	})
+
+	t.Run("the run's own save is not a new spec", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.specs = make(chan string, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		// The save lands its spec on the channel; the signal waits until the
+		// run has taken it off, so a run that mistook it for a new one has
+		// already minted again by then.
+		h.cache.onSave = func() {
+			go func() {
+				for len(h.cache.specs) > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				time.Sleep(20 * time.Millisecond)
+				cancel()
+			}()
+		}
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if want := []string{""}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want once: the run's own save is the tunnel it has", h.specs)
+		}
+	})
+
+	t.Run("the spec sent back as saved keeps the tunnel, and says so", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.specs = make(chan string, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		// Once the run has passed over its own save, the same spec twice more —
+		// what a caller replaying the cache file sends — and then the signal.
+		h.cache.onSave = func() {
+			go func() {
+				for range 2 {
+					for len(h.cache.specs) > 0 {
+						time.Sleep(time.Millisecond)
+					}
+					h.cache.specs <- h.cache.spec
+				}
+				for len(h.cache.specs) > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				time.Sleep(20 * time.Millisecond)
+				cancel()
+			}()
+		}
+		if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if want := []string{""}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want once", h.specs)
+		}
+		const kept = "the spec sent is the one this tunnel already has; keeping the tunnel"
+		if n := strings.Count(h.stderr.String(), kept); n != 2 {
+			t.Errorf("%q logged %d times, want twice: once per replay, never for the run's own save", kept, n)
+		}
+	})
+
+	t.Run("a new spec whose tunnel never comes up ends the run", func(t *testing.T) {
+		cause := errors.New("the edge refused the spec")
+		h := newRunHarness(t, live(public), ":3000")
+		h.tunnels = append(h.tunnels, dead(cause))
+		h.cache.specs = make(chan string, 1)
+		h.cache.onSave = func() { go func() { h.cache.specs <- "bad" }() }
+		if err := h.run(t, t.Context()); !errors.Is(err, cause) {
+			t.Errorf("run() = %v, want the new tunnel's %v", err, cause)
+		}
+		if want := []string{"", "bad"}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want the new spec tried", h.specs)
+		}
+	})
+
+	t.Run("a signal while a new spec waits is a clean stop", func(t *testing.T) {
+		first := live(public)
+		first.lingers = true // still draining when the signal lands
+		h := newRunHarness(t, first, ":3000")
+		h.cache.specs = make(chan string, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = func() {
+			go func() {
+				h.cache.specs <- "patched"
+				// The run is draining the first tunnel for the new spec; the
+				// signal lands before it is done.
+				for first.ctx.Err() == nil {
+					time.Sleep(time.Millisecond)
+				}
+				cancel()
+				first.end()
+			}()
+		}
+		if err := h.run(t, ctx); err != nil {
+			t.Errorf("run() = %v, want nil: a signal is a clean stop", err)
+		}
+		if want := []string{""}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want nothing minted after the signal", h.specs)
+		}
+	})
+
 	t.Run("a run is registered while it runs, and only when asked", func(t *testing.T) {
 		for _, on := range []bool{true, false} {
 			h := newRunHarness(t, live(public), ":3000")
@@ -1182,6 +1393,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("the router outlives the run until the tunnel ends", func(t *testing.T) {
 		tun := live(public)
+		tun.lingers = true
 		h := newRunHarness(t, tun, ":3000", ":4000")
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel
@@ -2137,6 +2349,89 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	}
 }
 
+// TestMirroringOutlivesARespec pins what a new spec does to a console the
+// first tunnel drew a frame on: the frame stays — it shows the origins, which
+// a new spec does not change — so it is not drawn again, and the spinner that
+// greets a tunnel coming up stays off the console the frame owns, and so do
+// the new address and the map: the frame was told them. The first tunnel, with
+// nothing drawn yet, still gets its spinner and its report.
+//
+// A real pty for the command's stdin and stdout, as in
+// TestMirroringTellsTheBrowser, read from its other end to see what reached
+// the terminal; stderr stays a buffer, which is where the spinner and the map
+// write, so what they drew can be read back.
+func TestMirroringOutlivesARespec(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to draw on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	var mu sync.Mutex
+	var screen bytes.Buffer
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(b)
+			mu.Lock()
+			screen.Write(b[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	const public, second = "https://foo.tunneled.pizza/", "https://bar.tunneled.pizza/"
+	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
+	next := live(second)
+	next.order = &h.order
+	h.tunnels = append(h.tunnels, next)
+	h.binder.mirrors = true
+	h.console = tty
+	h.cache.specs = make(chan string, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	saves, mark := 0, 0
+	h.cache.onSave = func() {
+		saves++
+		if saves == 1 {
+			mark = h.stderr.Len()
+			go func() { h.cache.specs <- "patched" }()
+			return
+		}
+		cancel()
+	}
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if want := []string{"", "patched"}; !slices.Equal(h.specs, want) {
+		t.Fatalf("minted from %q, want a respec", h.specs)
+	}
+	const spinner = "Creating tunnel..."
+	if !strings.Contains(h.stderr.String()[:mark], spinner) {
+		t.Errorf("no spinner before the first tunnel was up, want one: nothing was drawn yet")
+	}
+	if after := h.stderr.String()[mark:]; strings.Contains(after, spinner) || strings.Contains(after, "  -> ") {
+		t.Errorf("stderr after the respec = %q, want no spinner and no map over the frame", after)
+	}
+	time.Sleep(50 * time.Millisecond) // what the run wrote, through the pty
+	mu.Lock()
+	drawn := screen.String()
+	mu.Unlock()
+	if !strings.Contains(drawn, "foo.tunneled.pizza") {
+		t.Errorf("terminal = %q, want the first tunnel's address, printed before the frame", drawn)
+	}
+	if strings.Contains(drawn, "bar.tunneled.pizza") {
+		t.Errorf("terminal = %q, want the second tunnel's address kept off the frame", drawn)
+	}
+	if want := []string{public, second}; !slices.Equal(h.binder.announcedAll, want) {
+		t.Errorf("announced %q, want each tunnel's address told to the frame", h.binder.announcedAll)
+	}
+	if n := h.binder.shows.Load(); n != 1 {
+		t.Errorf("frames drawn = %d, want 1: the respec keeps the one that is up", n)
+	}
+}
+
 // TestOpenFalseShowsNothing covers the hammer. OPEN=false is a run told to
 // show itself nowhere: the console keeps its scrollback and no tab is
 // launched, which is what somebody watching the run's own log lines is asking
@@ -2157,7 +2452,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 		t.Skipf("no pty to draw on: %v", err)
 	}
 	t.Cleanup(func() { tty.Close(); ptmx.Close() })
-	t.Setenv(openEnv, "false")
+	t.Setenv("OPEN", "false") // the hammer: see run.openEnv
 
 	const public = "https://foo.tunneled.pizza/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
@@ -2280,42 +2575,6 @@ func TestLogger(t *testing.T) {
 				t.Errorf("the log reached os.Stderr instead of the command's writer:\n%s", leaked)
 			}
 		})
-	}
-}
-
-// TestPublicURL pins the routing contract: with more than one origin every
-// address carries a bare ?i, the parameter the tunnel's proxy consumes — the
-// default origin included, since a plain URL routes by referer and cookie and
-// so stops reaching origin 0 once a browser has visited ?1. A valued parameter
-// ("?1=x") would be application data and route nowhere, so the bareness is
-// half the assertion and the explicit ?0 is the other half.
-//
-// A lone origin has nothing to route between and gets the plain URL. The
-// tunnel URL itself must survive unmodified either way, since every later call
-// derives from it.
-func TestPublicURL(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.pizza/")
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-
-	cases := []struct {
-		name string
-		i, n int
-		want string
-	}{
-		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
-		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
-		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
-		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
-	}
-	for _, tc := range cases {
-		if got := publicURL(public, tc.i, tc.n); got != tc.want {
-			t.Errorf("%s: publicURL(_, %d, %d) = %q, want %q", tc.name, tc.i, tc.n, got, tc.want)
-		}
-	}
-	if public.RawQuery != "" {
-		t.Errorf("publicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
 	}
 }
 

@@ -230,15 +230,24 @@ func TestControlPath(t *testing.T) {
 	}
 }
 
-// cacheOf stands in for a run's cache: String is the file it saved, Secret
-// the secret it saved with.
+// cacheOf stands in for a run's cache: its one endpoint, GET path+".env", answers
+// with the file it saved, and a cache with no file has no endpoints at all;
+// Secret is the secret it saved with. What the real cache's endpoints say is
+// the cache package's to pin; here it is only which cache is answering.
 type cacheOf struct {
 	file   string
 	secret []byte
 	key    string
 }
 
-func (c cacheOf) String() string { return c.file }
+func (c cacheOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
+	if c.file == "" {
+		return nil
+	}
+	return map[string]func(http.ResponseWriter, *http.Request){
+		"GET " + path + ".env": func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, c.file) },
+	}
+}
 func (c cacheOf) Secret() []byte { return c.secret }
 func (c cacheOf) Key() string    { return c.key }
 
@@ -372,12 +381,13 @@ func TestCacheKeyHeader(t *testing.T) {
 	})
 }
 
-// TestEnv pins ControlPath+".env", asked with the right token: absent until
-// WithCache puts it on the mux, then a remote copy of the file the run's
-// cache last saved, byte for byte and asked for fresh on every request; a
-// bare 404 before anything is saved, and never stored on the way. WithCache
+// TestEnv pins the cache's endpoints under the ControlPath, asked with the
+// right token: absent until WithCache puts them on the mux, then answered by
+// the cache, under the method it registered them for — a real cache's .env
+// is the file it last saved, asked for fresh on every request. WithCache
 // applied twice — at New and again for a route — replaces the cache rather
-// than registering the pattern twice, which a ServeMux would panic on.
+// than registering the pattern twice, which a ServeMux would panic on, and an
+// endpoint the replacing cache does not have is a bare 404.
 func TestEnv(t *testing.T) {
 	secret := []byte("s3cr3t")
 	auth := tokenOf(secret)
@@ -389,15 +399,11 @@ func TestEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("the saved file, as it is", func(t *testing.T) {
+	t.Run("the cache answers, under its method", func(t *testing.T) {
 		const saved = "LIBTUNNEL_SPEC='{\"v\":1}'\nTUNNELD_LOG='debug'\n"
 		c := cacheOf{saved, secret, runKey}
-		resp, body := ask(t, "GET", controlOf(t, New(WithCache(c)), ".env"), auth)
-		if resp.StatusCode != 200 || body != saved {
-			t.Errorf("GET .env = %d %q, want the saved file", resp.StatusCode, body)
-		}
-		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
-			t.Errorf("Cache-Control = %q, want no-store", got)
+		if resp, body := ask(t, "GET", controlOf(t, New(WithCache(c)), ".env"), auth); resp.StatusCode != 200 || body != saved {
+			t.Errorf("GET .env = %d %q, want the cache's answer", resp.StatusCode, body)
 		}
 		if resp, _ := ask(t, "POST", controlOf(t, New(WithCache(c)), ".env"), auth); resp.StatusCode != 405 {
 			t.Errorf("POST .env = %d, want 405", resp.StatusCode)
@@ -425,16 +431,21 @@ func TestEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("nothing saved is a bare 404", func(t *testing.T) {
-		if resp, body := ask(t, "GET", controlOf(t, New(WithCache(cacheOf{"", secret, runKey})), ".env"), auth); resp.StatusCode != 404 || body != "" {
-			t.Errorf("GET .env with nothing saved = %d %q, want a bare 404", resp.StatusCode, body)
-		}
-	})
-
 	t.Run("applied again, it replaces rather than registers twice", func(t *testing.T) {
 		r := New(WithCache(cacheOf{"first\n", secret, runKey}))
 		if _, body := ask(t, "GET", controlOf(t, r, ".env", WithCache(cacheOf{"second\n", secret, runKey})), auth); body != "second\n" {
 			t.Errorf("GET .env = %q, want the later cache's file", body)
+		}
+	})
+
+	t.Run("replaced by a cache without it, it is a bare 404", func(t *testing.T) {
+		r := New(WithCache(cacheOf{"first\n", secret, runKey}))
+		resp, body := ask(t, "GET", controlOf(t, r, ".env", WithCache(cacheOf{"", secret, runKey})), auth)
+		if resp.StatusCode != 404 || body != "" {
+			t.Errorf("GET .env = %d %q, want a bare 404", resp.StatusCode, body)
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q, want no-store", got)
 		}
 	})
 }

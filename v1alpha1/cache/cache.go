@@ -13,12 +13,21 @@
 package cache
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/spf13/viper"
@@ -79,6 +88,13 @@ type CacheImpl struct {
 	// mu is held by Load and Save for the whole call: the router loads from
 	// its own goroutine while the run saves from another.
 	mu sync.Mutex
+
+	// specs is every spec the cache takes, as Spec hands them on: each
+	// WithSpec, and each LIBTUNNEL_SPEC a PATCH sends. Room for one waiting,
+	// and nobody blocks on it: WithSpec replaces one still waiting with its
+	// own, the latest being the one that matters, and a PATCH that finds one
+	// waiting is refused rather than dropped.
+	specs chan string
 }
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
@@ -90,7 +106,7 @@ type CacheImpl struct {
 // gitignore templates and 752 real ones, the best a name managed was 13% and
 // 26%.
 func New(opts ...Option) *CacheImpl {
-	c := &CacheImpl{log: discard}
+	c := &CacheImpl{log: discard, specs: make(chan string, 1)}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
 	}
@@ -111,9 +127,20 @@ func WithOrigins(origins v1.Origins) Option {
 }
 
 // WithSpec sets the spec Save writes: the envelope the running tunnel
-// serializes once it is up.
+// serializes once it is up. It is handed on to Spec as well, in place of
+// one still waiting there.
 func WithSpec(spec string) Option {
-	return func(c *CacheImpl) { c.spec = spec }
+	return func(c *CacheImpl) {
+		c.spec = spec
+		select {
+		case <-c.specs:
+		default:
+		}
+		select {
+		case c.specs <- spec:
+		default:
+		}
+	}
 }
 
 // WithTracking sets what Save writes beside the spec: what the run settled
@@ -157,12 +184,15 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, Spec and Tracking read back what the options set, for a caller
-// standing in for a cache that wants to see what it was handed without
-// touching a disk.
+// Origins and Tracking read back what the options set, for a caller standing
+// in for a cache that wants to see what it was handed without touching a disk.
 func (c *CacheImpl) Origins() v1.Origins         { return c.origins }
-func (c *CacheImpl) Spec() string                { return c.spec }
 func (c *CacheImpl) Tracking() map[string]string { return c.tracking }
+
+// Spec is every spec the cache takes, as it takes them: each WithSpec — so
+// each Save given one — and each LIBTUNNEL_SPEC a PATCH to .env sends. It
+// holds one at a time, and nothing is waiting on it until something reads.
+func (c *CacheImpl) Spec() <-chan string { return c.specs }
 
 // path is where this run's spec lives: the key, which names the tunnel, under
 // the directory, which names nothing.
@@ -291,6 +321,157 @@ func (c *CacheImpl) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.render()
+}
+
+// Handlers is what the cache answers under path — the router's control path,
+// which the router owns — by the ServeMux pattern each is registered under
+// there. The router guards them and names the run on every answer; what each
+// says is the cache's.
+//
+//	path+".env"   the cache file (dotenvHandler)
+func (c *CacheImpl) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
+	return map[string]func(http.ResponseWriter, *http.Request){
+		path + ".env": c.dotenvHandler(),
+	}
+}
+
+// logger is the one Load or Save was last given, read under the lock they set
+// it under: a request asks from its own goroutine.
+func (c *CacheImpl) logger() v1.Logger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.log
+}
+
+// dotenvHandler answers GET with String, the cache file as the run last saved
+// it, and 404 when nothing is saved yet. PATCH reads its body as variables
+// (parseDotenv) and refuses one that does not parse, 400, or is too big, 413;
+// one that does keeps only the variables in MUTABLE_VARS, and its
+// LIBTUNNEL_SPEC, if it has one, is handed on to Spec: a 200, or a 429 when
+// one is already being applied, asking to be tried again in a second. Any other method
+// is a 405 naming GET.
+//
+// No answer is stored anywhere on the way: the file changes with every save,
+// and a stale copy of a credential is one more place it lives.
+func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		switch r.Method {
+		case http.MethodGet:
+			saved := c.String()
+			if saved == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, saved)
+		case http.MethodPatch:
+			// Every patch says on the log what became of it: it arrives from
+			// outside, and a change to the run nobody can see happen is one
+			// nobody can account for. Names only, never values: the spec is
+			// the hostname's credential.
+			log := c.logger()
+			vars, err := parseDotenv(http.MaxBytesReader(w, r.Body, maxDotenv))
+			if err != nil {
+				if tooBig := new(http.MaxBytesError); errors.As(err, &tooBig) {
+					log.Info("refused a patch to .env", "reason", "the body is too big", "limit", maxDotenv)
+					http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+					return
+				}
+				log.Info("refused a patch to .env", "reason", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			// Only what a caller may change: the rest of the file is the
+			// run's to say.
+			var ignored []string
+			maps.DeleteFunc(vars, func(name, _ string) bool {
+				if !MUTABLE_VARS[name] {
+					ignored = append(ignored, name)
+				}
+				return !MUTABLE_VARS[name]
+			})
+			slices.Sort(ignored)
+			spec, ok := vars[ltv1.SpecEnv]
+			if !ok {
+				log.Info("a patch to .env changed nothing", "ignored", ignored)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			select {
+			case c.specs <- spec:
+				log.Info("a patch to .env brought a spec; handing it to the run", "ignored", ignored)
+				w.WriteHeader(http.StatusOK)
+			default:
+				log.Info("refused a patch to .env", "reason", "a patch is already being applied")
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "a patch is already being applied", http.StatusTooManyRequests)
+			}
+		default:
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// maxDotenv is the most a PATCH body may be: a cache file is one spec and a
+// handful of knobs, a few kilobytes, so this is room to spare and no more.
+const maxDotenv = 64 << 10
+
+// MUTABLE_VARS is every variable a PATCH may change: the handler keeps these
+// from what parseDotenv read and drops the rest.
+var MUTABLE_VARS = map[string]bool{ltv1.SpecEnv: true}
+
+// dotenvName is what a variable may be called: a letter or an underscore, then
+// letters, digits and underscores — a name a shell can export.
+var dotenvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// parseDotenv reads body as a file of variables, one NAME=value a line, the
+// way the cache writes them: blank lines and # comments are skipped, a line
+// may end \r\n (bufio.ScanLines drops the \r), and one pair of matching quotes
+// around a value, ' or ", is taken off — so what GET answers is a body PATCH
+// takes.
+//
+// Sanitized rather than trusted, since it arrives over the network: a line
+// with no '=', a name a shell could not export, a name given twice, and a value
+// that is not UTF-8 or carries a control character are each refused, naming
+// the line. Nothing past the first refusal is read.
+func parseDotenv(body io.Reader) (map[string]string, error) {
+	vars := map[string]string{}
+	sc := bufio.NewScanner(body)
+	// A line one byte longer than the body may be, so a body too big is
+	// always refused as one, and never as a line too long.
+	sc.Buffer(nil, maxDotenv+1)
+	for n := 1; sc.Scan(); n++ {
+		line := sc.Text()
+		if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("line %d: no '=' in it", n)
+		}
+		if !dotenvName.MatchString(name) {
+			return nil, fmt.Errorf("line %d: %q is not a variable name", n, name)
+		}
+		if _, twice := vars[name]; twice {
+			return nil, fmt.Errorf("line %d: %s is set twice", n, name)
+		}
+		if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') && value[len(value)-1] == value[0] {
+			value = value[1 : len(value)-1]
+		}
+		if !utf8.ValidString(value) {
+			return nil, fmt.Errorf("line %d: %s is not UTF-8", n, name)
+		}
+		if strings.ContainsFunc(value, unicode.IsControl) {
+			return nil, fmt.Errorf("line %d: %s holds a control character", n, name)
+		}
+		vars[name] = value
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return vars, nil
 }
 
 // render is String for a caller already holding mu: Save.

@@ -55,7 +55,8 @@ func New(opts ...Option) *MotdImpl {
 
 // Learn takes the messages as libtunnel hands them over. One that does not
 // parse is warned about by its index and dropped; the rest are kept in order.
-// Written once per run, and read by every renderer.
+// Written once per tunnel — the messages ride its spec, so a new spec
+// replaces what the last one said — and read by every renderer.
 func (m *MotdImpl) Learn(raw []string, log v1.Logger) {
 	parsed := make([]Message, 0, len(raw))
 	for i, s := range raw {

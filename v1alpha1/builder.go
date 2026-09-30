@@ -26,10 +26,10 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -241,6 +241,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			{"router", b.router == nil},
 			{"motd", b.motd == nil},
 			{"log", b.log == nil},
+			{"run", b.run == nil},
 		} {
 			if c.missing {
 				err := fmt.Errorf("builder has no %s: construct it with New", c.name)
@@ -457,7 +458,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	if err := b.applyEnv(cmd); err != nil {
 		return err
 	}
-	stdout := cmd.OutOrStdout()
 	stderr := cmd.ErrOrStderr()
 
 	// The logger: resolve the tunnel's log sink from the level the
@@ -567,17 +567,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// the mint is anonymous, as every mint was before this existed.
 	token := b.identity.Token(ctx, b.identityProviders, log)
 
-	// Events: the tunnel's lifecycle, logged. Nothing is decided here any
-	// more. A tunnel the edge has disowned is ended by libtunnel itself — its
-	// edge watcher asks while the tunnel is short of connections, and the
-	// edge's refusal cancels the tunnel with the reason — so Done fires, Err
-	// carries it, and the bottom of this function returns it. There used to
-	// be a counter here folding gone verdicts into that decision, from when
-	// libtunnel only reported and never acted.
-	listen := func(e libtunnel.Event) {
-		log.Debug("received event", "e", e)
-	}
-
 	// Several origins share one hostname, and which one a request reaches is
 	// decided here rather than in the tunnel: the router serves ?n, the +ws
 	// origin, the Referer and the cookie on a loopback address, with the
@@ -593,11 +582,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			ws = i
 		}
 	}
-	// Down with the tunnel rather than with ctx: the router outlives the run
-	// while the tunnel drains, so it is cancelled once the tunnel is done. It
-	// is stood up here, immediately before the tunnel it is handed to, so
-	// nothing between the two can return and leave it serving with no tunnel
-	// to end it.
+	// The router lasts the run, not one tunnel: the run cancels it once it is
+	// over and its tunnel has drained. It is stood up here, immediately before
+	// the tunnel it is handed to, so nothing between the two can return and
+	// leave it serving with no tunnel to end it.
 	local, err := b.router.Route(ctx,
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
@@ -618,241 +606,35 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return err
 	}
 
-	// What the cache has is what the mint is hinted with, and nothing when it
-	// has nothing: From("") mints fresh, so there is one call and no branch.
-	// No second attempt on failure either — From asks the edge about a hint
-	// before minting, so a dead cached spec is already a fresh mint by the
-	// time it could fail, and the one failure left is a provider that could
-	// not be reached, which a remint could not reach either.
-	tun := b.newTunnel(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))).
-		WithToken(token).
-		// Which tunneld is asking, ahead of the libtunnel comment the mint
-		// adds after it. Always tunneld's, under whatever name an embedding
-		// program mounts the command as: it is this code minting.
-		WithHeader("User-Agent", UserAgent()).
-		WithLogger(log).
-		WithContext(ctx).
-		WithEventListener(listen).
-		// One address, whatever the run exposes: which origin a request
-		// reaches is decided in front of them, above.
-		WithLocalURL(local)
-	go func() {
-		<-tun.Done()
-		b.router.Cancel()
-	}()
-
-	// Something turning, because the wait below is the long one: minting,
-	// dialing the edge, and the public URL answering from here, which is
-	// seconds of a program that has printed its version and gone quiet.
-	//
-	// On stderr with the banner it follows, never stdout: that stream is one
-	// public address per origin and nothing else, and a spinner in it is a
-	// carriage return where a script expected a URL.
-	//
-	// Only when somebody is watching, and only when nothing else is writing
-	// there. A log line lands on top of a spinner, so a run with its logger
-	// on gets the lines instead — they say more than a spinner does, and they
-	// are what the operator asked for.
-	//
-	// On Ready rather than URL, because URL is the value and a spinner wants
-	// the channel: Ready hands out one per call, delivering once and closing,
-	// so this waiter and the URL below both see the tunnel come up — or both
-	// see it fail, since Ready closes when a tunnel ends as surely as it
-	// delivers when one comes up.
-	if display.IsInteractive(cmd) && b.logLevel == "" {
-		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
-	}
-
-	// URL blocks until the public URL is verified to work from here — the
-	// edge's route registered and answering, which is the moment an address
-	// is worth handing to anybody — and is nil if the tunnel, or the context
-	// this run gave it, ends first. Err is why.
-	public := tun.URL()
-	if public == nil {
-		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
-	}
-
-	// A bound container is served before the tunnel exists —
-	// the binding is what the tunnel is handed to proxy to — so
-	// this is the first moment anything down there can be told
-	// where it answers from outside. Each origin gets its own
-	// address rather than the bare one, because with several of
-	// them it is the routing parameter that reaches this one.
-	addresses := make([]string, origins.Len())
-	for i := range addresses {
-		addresses[i] = publicURL(public, i, origins.Len())
-	}
-	bound.Announce(addresses)
-
-	// The panel's address when there is a panel, "" when there is
-	// not: the browser answers the question, and everything below
-	// reads the answer.
-	view := b.display.URL(b.multiview, public, origins)
-
-	// The report: write the human-readable map to stderr, a line
-	// per public address with the origins it reaches indented
-	// beneath it. With a panel that is one address and every
-	// origin; without, one address per origin.
-	//
-	// Nothing goes to stdout. It used to carry one bare URL per
-	// origin as a machine interface, which meant every address
-	// printed twice wherever the two streams landed together — a
-	// terminal, a container's logs — and the de-duplication that
-	// hid it could only see the case where one file descriptor was
-	// literally the other. Under Docker they are two pipes that
-	// merge downstream, so it never fired where it was needed most.
-	// The banner is already on stderr by the time this runs: it was
-	// printed above, before minting, so it survives a mint that
-	// fails.
-	//
-	// Nothing waits here for the address to answer. Ready delivered
-	// on the public URL verified from this machine, so every line
-	// below names an address a script can read and use in the same
-	// breath.
-	// Every public address gets a line, with what it reaches
-	// indented beneath. A panel is the case where one address
-	// reaches them all; otherwise each origin has an address of its
-	// own. One shape either way, and no column to keep aligned as
-	// hostnames change length.
-	if view != "" {
-		fmt.Fprintf(stdout, "%s\n", view)
-		for _, origin := range origins.URLs() {
-			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
-		}
-	} else {
-		for i, origin := range origins.URLs() {
-			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
-			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
-		}
-	}
-
-	// An origin nothing is listening on is the one thing here the person who
-	// ran this can fix; a visitor already gets a page saying so. Logged for
-	// now, after the addresses so a slow dial holds back nothing a script is
-	// waiting for.
-	//
-	// TODO(#209): show it to the operator beneath the map, from the builder,
-	// once there is one place that prints the run's human lines.
-	for _, i := range b.router.Unanswered(ctx, origins) {
-		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).Redacted())
-	}
-
-	// What the provider said with the spec, learned here because Messages
-	// resolves the spec, which URL returning has already done. Every run,
-	// cached or fresh — the messages ride the envelope with the spec they
-	// came with. Nothing is printed for it: stderr is the map and the logs,
-	// and the frame and the panel are where the provider's word is read.
-	b.motd.Learn(tun.Messages(), log)
-
-	// Putting the tunnel in front of a person is the browser package's, both
-	// ways it can be done: a tab, or the console this was started from. What
-	// is reported here is only what it cannot see for itself.
-	//
-	// Whether there is a console at all is the console package's answer, not
-	// this function's: it is handed the bound origins and this command's own
-	// streams and says nil when there is nothing to draw or nowhere to draw
-	// it. One page, never a fan of tabs — the panel when there is one, since
-	// it reaches every origin, and otherwise the default origin itself.
-	//
-	// Reported after the addresses, so what a person came for is on the
-	// screen before a frame takes it, and left behind when that frame ends: a
-	// detach gives the console back and the tunnel goes on without it.
-	// OPEN=false is the hammer, and it is spelled as the two facts Open
-	// already takes rather than as a gate around the call: there is no console
-	// to draw on, and the caller has decided against a tab. How a run is shown
-	// stays one switch in display, and the hint below still fires — from here
-	// this is a run with no screen, which is exactly what it is.
-	screen, open := b.console.For(bound, cmd), b.open
-	if os.Getenv(openEnv) == "false" {
-		shown := false
-		screen, open = nil, &shown
-	}
-	addr := cmp.Or(view, publicURL(public, 0, origins.Len()))
-
-	// The address as a code for a phone, when asked for: the one address Open
-	// is handed below, so one code however many origins there are. On stderr
-	// with the map it follows, since stdout is the addresses and nothing else,
-	// and before a detached run's streams move to its log, so the caller a
-	// launcher is holding the prompt for gets it. Not when a frame is about to
-	// take the console: Ctrl+K q is the code there, sized to the pane, and one
-	// printed now would only sit behind it. The code itself is the display's,
-	// which draws it; printing it is the builder's, which knows when.
-	//
-	// And no tab: a run that asked for a code is being opened on a phone, and
-	// a tab on this machine would be a second copy nobody asked for. A caller
-	// who decided with WithOpen still wins.
-	if b.qr && screen == nil {
-		if lines, err := b.display.QR(addr); err != nil {
-			log.Warn("the address could not be drawn as a QR code", "error", err)
-		} else {
-			fmt.Fprintln(stderr, strings.Join(lines, "\n"))
-		}
-	}
-	if b.qr && open == nil {
-		shown := false
-		open = &shown
-	}
-
-	b.display.Open(ctx, log,
-		display.WithAddr(addr),
-		display.WithForced(open),
-		display.WithStderr(stderr),
-		display.WithInteractive(display.IsInteractive(cmd)),
-		display.WithScreen(screen),
+	// A spec becomes a tunnel, the tunnel comes up and is shown, and the run
+	// waits on it — the run's, start to end. What was settled above is handed
+	// over with it, and so is everything a tunnel is shown through.
+	return b.run.Run(ctx,
+		run.WithSpec(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))),
+		run.WithTunnel(b.newTunnel),
+		run.WithToken(token),
+		run.WithUserAgent(UserAgent()),
+		run.WithLocalURL(local),
+		run.WithLog(log),
+		run.WithCommand(cmd),
+		run.WithOrigins(origins),
+		run.WithBound(bound),
+		run.WithCache(spec),
+		run.WithTracking(b.tracking(origins)),
+		run.WithDisplay(b.display),
+		run.WithMultiview(b.multiview),
+		run.WithConsole(b.console),
+		run.WithMotd(b.motd),
+		run.WithRouter(b.router),
+		run.WithPid(b.pid),
+		run.WithLogs(b.log),
+		run.WithQR(b.qr),
+		run.WithOpen(b.open),
+		// A log line lands on top of a spinner, so a run with its logger on
+		// gets the lines instead.
+		run.WithSpinner(b.logLevel == ""),
+		run.WithHint(stopHint),
 	)
-	// After the URL is live, so what gets cached is a tunnel that
-	// came up rather than one that was merely asked for.
-	// The hostname beside the rest of what the run settled on: never read
-	// back, but the one line somebody opening the file wants first.
-	tracking := b.tracking(origins)
-	tracking[ltv1.HostnameEnv] = public.Hostname()
-	spec.Save(
-		cache.WithOrigins(origins),
-		cache.WithSpec(tun.Serialize()),
-		cache.WithTracking(tracking),
-		cache.WithSecret(tun.Secret()),
-		cache.WithLog(log),
-	)
-
-	// A launcher waiting to hand the console back gets it now, after the
-	// save, so the file it reads to say what is running is there. Ctrl-C
-	// there will not reach this run, so it gets no hint saying so.
-	// Its stdout and stderr go to the run's log file, so what bypasses the
-	// logger — a panic's trace — is still somewhere; the logger itself stops
-	// showing lines there, since the file already keeps them.
-	detached := b.pid != nil && b.pid.Detach(b.log.File(), log)
-	if detached {
-		b.log.Detach()
-	}
-	if screen == nil && !detached {
-		// Nothing is going to be drawn here. The addresses are up, the run
-		// blocks from now on, and the signal is the only thing left on this
-		// side of it.
-		fmt.Fprintln(stderr, stopHint)
-	}
-
-	// A viewer asking to end the run is the third way this stops, beside a
-	// signal and the tunnel failing. Nothing is wrong when it happens, so it
-	// reads as a clean exit — the deferred teardown below takes the origins,
-	// the programs they started and the tunnel with it.
-	select {
-	case <-ctx.Done():
-	case <-tun.Done():
-	case <-bound.Done():
-		log.Info("a viewer asked this run to end; stopping")
-		return nil
-	}
-
-	// A signal cancels ctx, and cancelling ctx ends the tunnel too, so both
-	// arms above are ready at once and the race would otherwise decide what
-	// an operator is shown. The signal is checked first: a tunnel that came
-	// up and was then told to stop is a clean exit, whatever the teardown
-	// has to say for itself. Anything else is the tunnel's own verdict —
-	// the edge disowning it arrives here as Cancel's cause.
-	if ctx.Err() != nil {
-		return nil
-	}
-	return tun.Err()
 }
 
 // applyEnv copies environment values onto the flags the command line did not
@@ -1203,23 +985,6 @@ func isOrigin(word string) bool {
 	return strings.Contains(word, "://")
 }
 
-// label is an origin as a person reads it: a program without its arguments.
-//
-// The arguments ride the origin as a query because that is how they travel —
-// argv, the environment and a seed all spell them the same way — but a query
-// is a carrier, not a label. What the map says a tunnel reaches is the
-// program; how it was started is in the cache file beside the spec, and in
-// the key that names the file. An http origin's query is part of its address
-// and stays.
-func label(u *url.URL) string {
-	if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
-		bare := *u
-		bare.RawQuery = ""
-		return bare.String()
-	}
-	return u.String()
-}
-
 // arguments reports whether a served origin's query is a program's arguments
 // and nothing else — the one query a served origin is allowed to carry.
 func arguments(u *url.URL) bool {
@@ -1492,48 +1257,8 @@ func (b *BuilderImpl) Origins() Origins {
 	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
 }
 
-// openEnv is the hammer, and the one thing about how a run is shown that is
-// typed rather than derived: OPEN=false shows this run nothing. No frame takes
-// the console and no tab is launched, so the log lines keep the stderr they
-// would otherwise have been muted for — which is the whole of why it exists,
-// since the frame is drawn over exactly the output somebody reaching for it is
-// trying to read.
-//
-// No flag, no TUNNELD_ mirror, and no row in the README. Every other variable
-// this reads is one half of a knob an operator is meant to find; this is a way
-// out of the console for the case the console is in the way, and a knob that
-// turns the product off is not a feature of it. The bare word is the cost of
-// being quick to type, and only the exact value "false" swings it: an OPEN
-// that some other program left in the environment is overwhelmingly unlikely
-// to be spelled that way, and anything this does not recognise leaves the
-// derived decision alone.
-const openEnv = "OPEN"
-
 // stopHint is what a console with nothing left to draw is told. The addresses
 // are printed, the tunnel is up, and from here the run is a block on a signal
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
-
-// publicURL is the address origin i answers on, out of n origins: the tunnel's
-// URL with a bare ?i routing parameter. Bare is load-bearing — a valued
-// parameter ("?1=x") is application data the proxy forwards, while the bare
-// form is the routing directive it consumes and strips before the request
-// reaches the origin.
-//
-// The default origin is explicit too, as ?0, whenever there is more than one.
-// A bare URL routes by the referring page and then by the sticky cookie, so
-// once a browser has visited ?1 a plain address no longer reaches origin 0 —
-// only an explicit index clears a previous choice. An address that stops
-// working after someone clicks around is worse than a longer one.
-//
-// A lone origin has nothing to route between, so n of 1 gives the plain URL
-// and no parameter at all.
-func publicURL(public *url.URL, i, n int) string {
-	if n <= 1 {
-		return public.String()
-	}
-	routed := *public
-	routed.RawQuery = strconv.Itoa(i)
-	return routed.String()
-}
