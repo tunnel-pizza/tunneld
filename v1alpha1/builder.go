@@ -21,9 +21,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/builtin"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -1246,9 +1246,11 @@ func (b *BuilderImpl) cached() Origins {
 
 // fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
 // else bash on $PATH, else sh on $PATH, else the one built into tunneld
-// (builtin.Origin), so a run with no origin always has one — a container image
-// that sets no $SHELL, a scrubbed CI environment, a $SHELL inherited from a
-// host that names a shell the image does not have.
+// (v0exp1.Experimental().Builtin().Origin), so a run with no origin always has
+// one — a container image that sets no $SHELL, a scrubbed CI environment, a
+// $SHELL inherited from a host that names a shell the image does not have.
+// The built-in one is an experiment, and a nil Builtin is that experiment
+// turned off: the chain then ends at sh, as it did before there was one.
 //
 // Each shell passed over says why on the log, and the one chosen says which it
 // is: a shell nobody named is the one choice here somebody will want
@@ -1269,6 +1271,11 @@ func fallbackShell(log v1.Logger) (string, bool) {
 			return path, true
 		}
 		log.Debug("no shell of that name on $PATH", "shell", name)
+	}
+	builtin := v0exp1.Experimental().Builtin()
+	if builtin == nil {
+		log.Warn("not exposing a shell", "reason", "there is none on this machine, and the built-in one is turned off")
+		return "", false
 	}
 	origin, err := builtin.Origin()
 	if err != nil {

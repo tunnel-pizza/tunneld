@@ -28,10 +28,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/builtin"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -1493,13 +1493,16 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		return path
 	}
 	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: v1.ExecScheme, Path: path}} }
-	// On Windows there is no built-in shell to fall back to, so the chain
-	// ends with nothing, as it did before there was one.
+	// On Windows there is no built-in shell to fall back to, and with the
+	// experiment turned off there is none anywhere, so the chain ends with
+	// nothing, as it did before there was one.
 	var builtinURL *url.URL
-	if origin, err := builtin.Origin(); err == nil {
-		builtinURL, _ = url.Parse(origin)
-	} else if runtime.GOOS != "windows" {
-		t.Fatalf("builtin.Origin() = %v", err)
+	if builtin := v0exp1.Experimental().Builtin(); builtin != nil {
+		if origin, err := builtin.Origin(); err == nil {
+			builtinURL, _ = url.Parse(origin)
+		} else if runtime.GOOS != "windows" {
+			t.Fatalf("v0exp1.Experimental().Builtin().Origin() = %v", err)
+		}
 	}
 
 	for _, tc := range []struct {
