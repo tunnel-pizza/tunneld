@@ -16,11 +16,14 @@ package run
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -342,7 +345,10 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// so this waiter and the URL below both see the tunnel come up — or both
 	// see it fail, since Ready closes when a tunnel ends as surely as it
 	// delivers when one comes up.
-	if display.IsInteractive(cmd) && r.spinner {
+	//
+	// Not while a frame an earlier tunnel drew is up: the console is the
+	// frame's, and a spinner there animates over it.
+	if display.IsInteractive(cmd) && r.spinner && r.screen == nil {
 		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
 	}
 
@@ -397,15 +403,22 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// reaches them all; otherwise each origin has an address of its
 	// own. One shape either way, and no column to keep aligned as
 	// hostnames change length.
-	if view != "" {
-		fmt.Fprintf(stdout, "%s\n", view)
-		for _, origin := range origins.URLs() {
-			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
-		}
-	} else {
-		for i, origin := range origins.URLs() {
-			fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
-			fmt.Fprintf(stderr, "  -> %s\n", label(origin))
+	//
+	// Not while a frame an earlier tunnel drew is up. A frame is drawn only
+	// on a console that is both streams, so no script is reading these; the
+	// lines would land on the frame, and the frame has the new addresses
+	// already — Announce told it, above.
+	if r.screen == nil {
+		if view != "" {
+			fmt.Fprintf(stdout, "%s\n", view)
+			for _, origin := range origins.URLs() {
+				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
+			}
+		} else {
+			for i, origin := range origins.URLs() {
+				fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
+				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
+			}
 		}
 	}
 
@@ -537,7 +550,10 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 // ends first.
 //
 // saved is the spec up saved for tun. The cache hands on every spec it takes,
-// that one included, and it is this tunnel already: it is passed over.
+// that one included, and it is this tunnel already: it is passed over. The
+// save lands it once, ahead of anything a caller sends, so the first is the
+// save's own and passes quietly; one sent again is somebody asking for the
+// tunnel the run already has, and the log says it was kept.
 func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string) (next string, respec bool, err error) {
 	bound, log := r.bound, r.log
 	var specs <-chan string
@@ -549,12 +565,18 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it
 	// reads as a clean exit — the builder's deferred teardown takes the origins,
 	// the programs they started and the tunnel with it.
+	own := true
 	for waiting := true; waiting; {
 		select {
 		case spec := <-specs:
-			if spec != saved {
+			if !sameSpec(spec, saved) {
+				log.Info("a new spec arrived for the run")
 				return spec, true, nil
 			}
+			if !own {
+				log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+			}
+			own = false
 		case <-ctx.Done():
 			waiting = false
 		case <-tun.Done():
@@ -575,6 +597,35 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 		return "", false, nil
 	}
 	return "", false, tun.Err()
+}
+
+// sameSpec reports whether a and b are one spec: equal as JSON — the same
+// envelope, whatever its spacing or the order of its keys, numbers compared
+// as written rather than as floats — or, when either is not JSON, equal as
+// strings. A spec sent back as it was saved, reformatted on the way, is still
+// the tunnel the run already has.
+func sameSpec(a, b string) bool {
+	x, errA := decodeSpec(a)
+	y, errB := decodeSpec(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return reflect.DeepEqual(x, y)
+}
+
+// decodeSpec is a spec as JSON, with its numbers kept as they were written. A
+// trailing value after the first is not one spec, and is an error.
+func decodeSpec(spec string) (any, error) {
+	dec := json.NewDecoder(strings.NewReader(spec))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	if dec.More() {
+		return nil, errors.New("more than one JSON value")
+	}
+	return v, nil
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

@@ -42,3 +42,34 @@ func TestPublicURL(t *testing.T) {
 		t.Errorf("publicURL mutated its argument: RawQuery = %q, want empty", public.RawQuery)
 	}
 }
+
+// TestSameSpec pins what counts as the spec a tunnel already has: the same
+// JSON, however it is spaced or its keys ordered, with numbers compared as
+// written — and anything that is not JSON compared as it is.
+func TestSameSpec(t *testing.T) {
+	const saved = `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0","port":7844}}`
+	for _, tc := range []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"byte for byte", saved, saved, true},
+		{"keys reordered", saved, `{"spec":{"port":7844,"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"backend":"cloudflare"}`, true},
+		{"spaced out", saved, "{ \"backend\" : \"cloudflare\",\n \"spec\": {\"hostname\":\"0tk.tunneled.pizza\", \"secret\":\"c2VjcmV0\", \"port\": 7844} }\n", true},
+		{"another secret", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"b3RoZXI=","port":7844}}`, false},
+		{"a key missing", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"}}`, false},
+		{"a number as written", `{"n":1}`, `{"n":1.0}`, false},
+		{"numbers past a float's precision", `{"n":9007199254740993}`, `{"n":9007199254740992}`, false},
+		{"empty against a spec", "", saved, false},
+		{"not JSON, equal", "patched", "patched", true},
+		{"not JSON, different", "patched", "other", false},
+		{"two values are not one spec", saved + saved, saved, false},
+	} {
+		if got := sameSpec(tc.a, tc.b); got != tc.want {
+			t.Errorf("%s: sameSpec = %v, want %v", tc.name, got, tc.want)
+		}
+		if got := sameSpec(tc.b, tc.a); got != tc.want {
+			t.Errorf("%s, swapped: sameSpec = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

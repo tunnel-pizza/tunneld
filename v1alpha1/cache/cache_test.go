@@ -198,9 +198,15 @@ func TestHandlers(t *testing.T) {
 	}
 	// What a PATCH hands on is its LIBTUNNEL_SPEC alone, quotes off; a PATCH
 	// without one hands on nothing.
-	sent := cache.New()
+	var logged strings.Builder
+	sent := cache.New(cache.WithLog(slog.New(slog.NewTextHandler(&logged, nil))))
 	if w := askOf(sent, http.MethodPatch, "TUNNELD_LOG=debug\nLIBTUNNEL_SPEC='{\"v\":1}'\n"); w.Code != http.StatusOK {
 		t.Errorf("PATCH .env with a spec = %d %q, want 200", w.Code, w.Body)
+	}
+	// Said on the log, with what was ignored — and never the spec itself,
+	// which is the hostname's credential.
+	if got := logged.String(); !strings.Contains(got, "handing it to the run") || !strings.Contains(got, "TUNNELD_LOG") || strings.Contains(got, `"v":1`) || strings.Contains(got, `v\":1`) {
+		t.Errorf("log after a PATCH = %q, want it said and what was ignored named, the spec nowhere", got)
 	}
 	select {
 	case got := <-sent.Spec():

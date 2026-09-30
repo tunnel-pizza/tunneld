@@ -619,8 +619,10 @@ type fakeBinder struct {
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}
-	// announced is what Announce was handed.
-	announced []string
+	// announced is what Announce was handed last, and announcedAll every
+	// address it was handed, in order.
+	announced    []string
+	announcedAll []string
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -633,6 +635,8 @@ type fakeBinder struct {
 	// mirror having started rather than on what it displaced. Atomic because
 	// console.Show draws on a goroutine of its own.
 	showed atomic.Bool
+	// shows counts the frames drawn: a respec keeps the one that is up.
+	shows atomic.Int32
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
@@ -654,6 +658,7 @@ type mirrorableBinder struct{ *fakeBinder }
 // what happened while it was drawing.
 func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	m.showed.Store(true)
+	m.shows.Add(1)
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -667,6 +672,7 @@ func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 // an interface a caller has to go looking for.
 func (f *fakeBinder) Announce(public []string) {
 	f.announced = public
+	f.announcedAll = append(f.announcedAll, public...)
 	if f.onAnnounce != nil {
 		f.onAnnounce()
 	}
@@ -1042,6 +1048,39 @@ func TestRun(t *testing.T) {
 		}
 		if want := []string{""}; !slices.Equal(h.specs, want) {
 			t.Errorf("minted from %q, want once: the run's own save is the tunnel it has", h.specs)
+		}
+	})
+
+	t.Run("the spec sent back as saved keeps the tunnel, and says so", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.specs = make(chan string, 1)
+		ctx, cancel := context.WithCancel(t.Context())
+		// Once the run has passed over its own save, the same spec twice more —
+		// what a caller replaying the cache file sends — and then the signal.
+		h.cache.onSave = func() {
+			go func() {
+				for range 2 {
+					for len(h.cache.specs) > 0 {
+						time.Sleep(time.Millisecond)
+					}
+					h.cache.specs <- h.cache.spec
+				}
+				for len(h.cache.specs) > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				time.Sleep(20 * time.Millisecond)
+				cancel()
+			}()
+		}
+		if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		if want := []string{""}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want once", h.specs)
+		}
+		const kept = "the spec sent is the one this tunnel already has; keeping the tunnel"
+		if n := strings.Count(h.stderr.String(), kept); n != 2 {
+			t.Errorf("%q logged %d times, want twice: once per replay, never for the run's own save", kept, n)
 		}
 	})
 
@@ -2307,6 +2346,89 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	}
 	if strings.Contains(h.stderr.String(), "█") {
 		t.Errorf("stderr carries a code under the frame:\n%s", h.stderr.String())
+	}
+}
+
+// TestMirroringOutlivesARespec pins what a new spec does to a console the
+// first tunnel drew a frame on: the frame stays — it shows the origins, which
+// a new spec does not change — so it is not drawn again, and the spinner that
+// greets a tunnel coming up stays off the console the frame owns, and so do
+// the new address and the map: the frame was told them. The first tunnel, with
+// nothing drawn yet, still gets its spinner and its report.
+//
+// A real pty for the command's stdin and stdout, as in
+// TestMirroringTellsTheBrowser, read from its other end to see what reached
+// the terminal; stderr stays a buffer, which is where the spinner and the map
+// write, so what they drew can be read back.
+func TestMirroringOutlivesARespec(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skipf("no pty to draw on: %v", err)
+	}
+	t.Cleanup(func() { tty.Close(); ptmx.Close() })
+	var mu sync.Mutex
+	var screen bytes.Buffer
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(b)
+			mu.Lock()
+			screen.Write(b[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	const public, second = "https://foo.tunneled.pizza/", "https://bar.tunneled.pizza/"
+	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
+	next := live(second)
+	next.order = &h.order
+	h.tunnels = append(h.tunnels, next)
+	h.binder.mirrors = true
+	h.console = tty
+	h.cache.specs = make(chan string, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	saves, mark := 0, 0
+	h.cache.onSave = func() {
+		saves++
+		if saves == 1 {
+			mark = h.stderr.Len()
+			go func() { h.cache.specs <- "patched" }()
+			return
+		}
+		cancel()
+	}
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if want := []string{"", "patched"}; !slices.Equal(h.specs, want) {
+		t.Fatalf("minted from %q, want a respec", h.specs)
+	}
+	const spinner = "Creating tunnel..."
+	if !strings.Contains(h.stderr.String()[:mark], spinner) {
+		t.Errorf("no spinner before the first tunnel was up, want one: nothing was drawn yet")
+	}
+	if after := h.stderr.String()[mark:]; strings.Contains(after, spinner) || strings.Contains(after, "  -> ") {
+		t.Errorf("stderr after the respec = %q, want no spinner and no map over the frame", after)
+	}
+	time.Sleep(50 * time.Millisecond) // what the run wrote, through the pty
+	mu.Lock()
+	drawn := screen.String()
+	mu.Unlock()
+	if !strings.Contains(drawn, "foo.tunneled.pizza") {
+		t.Errorf("terminal = %q, want the first tunnel's address, printed before the frame", drawn)
+	}
+	if strings.Contains(drawn, "bar.tunneled.pizza") {
+		t.Errorf("terminal = %q, want the second tunnel's address kept off the frame", drawn)
+	}
+	if want := []string{public, second}; !slices.Equal(h.binder.announcedAll, want) {
+		t.Errorf("announced %q, want each tunnel's address told to the frame", h.binder.announcedAll)
+	}
+	if n := h.binder.shows.Load(); n != 1 {
+		t.Errorf("frames drawn = %d, want 1: the respec keeps the one that is up", n)
 	}
 }
 

@@ -335,6 +335,14 @@ func (c *CacheImpl) Handlers(path string) map[string]func(http.ResponseWriter, *
 	}
 }
 
+// logger is the one Load or Save was last given, read under the lock they set
+// it under: a request asks from its own goroutine.
+func (c *CacheImpl) logger() v1.Logger {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.log
+}
+
 // dotenvHandler answers GET with String, the cache file as the run last saved
 // it, and 404 when nothing is saved yet. PATCH reads its body as variables
 // (parseDotenv) and refuses one that does not parse, 400, or is too big, 413;
@@ -358,27 +366,44 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = io.WriteString(w, saved)
 		case http.MethodPatch:
+			// Every patch says on the log what became of it: it arrives from
+			// outside, and a change to the run nobody can see happen is one
+			// nobody can account for. Names only, never values: the spec is
+			// the hostname's credential.
+			log := c.logger()
 			vars, err := parseDotenv(http.MaxBytesReader(w, r.Body, maxDotenv))
 			if err != nil {
 				if tooBig := new(http.MaxBytesError); errors.As(err, &tooBig) {
+					log.Info("refused a patch to .env", "reason", "the body is too big", "limit", maxDotenv)
 					http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 					return
 				}
+				log.Info("refused a patch to .env", "reason", err)
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			// Only what a caller may change: the rest of the file is the
 			// run's to say.
-			maps.DeleteFunc(vars, func(name, _ string) bool { return !MUTABLE_VARS[name] })
+			var ignored []string
+			maps.DeleteFunc(vars, func(name, _ string) bool {
+				if !MUTABLE_VARS[name] {
+					ignored = append(ignored, name)
+				}
+				return !MUTABLE_VARS[name]
+			})
+			slices.Sort(ignored)
 			spec, ok := vars[ltv1.SpecEnv]
 			if !ok {
+				log.Info("a patch to .env changed nothing", "ignored", ignored)
 				w.WriteHeader(http.StatusOK)
 				return
 			}
 			select {
 			case c.specs <- spec:
+				log.Info("a patch to .env brought a spec; handing it to the run", "ignored", ignored)
 				w.WriteHeader(http.StatusOK)
 			default:
+				log.Info("refused a patch to .env", "reason", "a patch is already being applied")
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "a patch is already being applied", http.StatusTooManyRequests)
 			}
