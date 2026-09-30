@@ -21,7 +21,10 @@ import (
 // TestDetach pins what a detached run does once its addresses are out: the
 // run's stdout and stderr stop being the caller's — so a caller reading them
 // to the end gets there while the run goes on — the launcher gets SIGUSR2, and
-// what the run says afterwards lands in the file it was given.
+// what the run says afterwards lands in the file it was given. A second
+// Detach — a run whose tunnel was replaced comes up again — hands nothing back
+// and signals nothing: the launcher is gone, and its pid may be somebody
+// else's by then.
 //
 // Detach moves this process's own descriptors, so it runs in a child: this
 // test binary again, told by the environment to be the run, with this
@@ -39,6 +42,7 @@ func TestDetach(t *testing.T) {
 		if !p.Detach(out, slog.New(slog.NewTextHandler(os.Stderr, nil))) {
 			os.Exit(2)
 		}
+		fmt.Printf("second Detach = %v\n", p.Detach(out, slog.New(slog.NewTextHandler(os.Stderr, nil))))
 		fmt.Println("after, on stdout")
 		fmt.Fprintln(os.Stderr, "after, on stderr")
 		time.Sleep(3 * time.Second)
@@ -100,11 +104,19 @@ func TestDetach(t *testing.T) {
 	for {
 		body, _ := os.ReadFile(logs[0])
 		if strings.Contains(string(body), "after, on stdout\n") && strings.Contains(string(body), "after, on stderr\n") {
+			if !strings.Contains(string(body), "second Detach = false\n") {
+				t.Errorf("%s = %q, want a second Detach to hand nothing back", logs[0], body)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s = %q, want what the run said afterwards", logs[0], body)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-signals:
+		t.Error("a second SIGUSR2 from the run, want the launcher signalled once")
+	case <-time.After(200 * time.Millisecond):
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
@@ -40,9 +41,11 @@ type Option = v1.Option[*RunImpl]
 // discard is where a run with no logger writes: nowhere.
 var discard = slog.New(slog.DiscardHandler)
 
-// Cache is where a tunnel that came up is saved.
+// Cache is where a tunnel that came up is saved, and where a new spec for the
+// run arrives: every spec the cache takes, the run's own saves included.
 type Cache interface {
 	Save(opts ...cache.Option)
+	Spec() <-chan string
 }
 
 // Display is how a tunnel is shown: the panel's address, when there is a
@@ -123,6 +126,11 @@ type RunImpl struct {
 	open    *bool
 	spinner bool
 	hint    string
+
+	// screen is the console a frame was drawn on for an earlier tunnel of
+	// this call, nil when none was: that frame is still up, showing the same
+	// origins, so a later tunnel keeps it rather than drawing another.
+	screen console.Screen
 }
 
 // New returns a RunImpl configured by opts: a logger that discards, a spinner
@@ -209,27 +217,60 @@ func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
 
-// Run is one run's tunnel, from its spec to its end: mint, up, wait. It
-// returns nil for a run told to stop — a signal, or a viewer asking — and the
-// tunnel's error when it fails to come up or ends on its own.
+// Run is one run's tunnel, from its spec to its end: mint, up, wait — and
+// again from the top whenever a new spec arrives while it waits, the tunnel
+// it has stopped and drained before the next is minted. It returns nil for a
+// run told to stop — a signal, or a viewer asking — and the tunnel's error
+// when one fails to come up or ends on its own.
 func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 	run := *r
 	v1.Apply(&run, opts...)
 
-	tun, stop := run.mint(ctx, run.spec)
-	defer stop()
 	// The router outlives the run while its tunnel drains — a request still
 	// in flight through the tunnel is still being answered by it — so it
-	// comes down once both are over.
+	// comes down once the run is over and whichever tunnel is live then has
+	// drained.
+	var mu sync.Mutex
+	var live libtunnel.TunnelV1
 	go func() {
 		<-ctx.Done()
-		<-tun.Done()
+		mu.Lock()
+		tun := live
+		mu.Unlock()
+		if tun != nil {
+			<-tun.Done()
+		}
 		run.router.Cancel()
 	}()
-	if err := run.up(ctx, tun); err != nil {
-		return err
+
+	spec := run.spec
+	for {
+		tun, stop := run.mint(ctx, spec)
+		mu.Lock()
+		live = tun
+		mu.Unlock()
+		saved, err := run.up(ctx, tun)
+		if err != nil {
+			stop()
+			return err
+		}
+		next, respec, err := run.wait(ctx, tun, saved)
+		if !respec {
+			stop()
+			return err
+		}
+
+		// A new spec is a new tunnel: this one ends, and drains, before the
+		// next is minted from it — one tunnel at a time, and never two
+		// holding the same hostname.
+		run.log.Info("a new spec arrived; replacing the tunnel")
+		stop()
+		<-tun.Done()
+		if ctx.Err() != nil {
+			return nil
+		}
+		spec = next
 	}
-	return run.wait(ctx, tun)
 }
 
 // mint makes spec into the run's tunnel — the stop that ends it and nothing
@@ -277,9 +318,9 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 // up waits for tun to come up and puts it in front of everybody: the addresses
 // on stdout, the map on stderr, the bound origins told where they answer from,
 // the provider's messages learned, the browser or the console opened, the spec
-// saved, a waiting launcher handed back, the stop hint. A tunnel that never
-// comes up is the error.
-func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
+// saved, a waiting launcher handed back, the stop hint. It answers with the
+// spec it saved; a tunnel that never comes up is the error.
+func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error) {
 	cmd, log, origins, bound, spec := r.cmd, r.log, r.origins, r.bound, r.cache
 	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
@@ -311,7 +352,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
 	// this run gave it, ends first. Err is why.
 	public := tun.URL()
 	if public == nil {
-		return cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
+		return "", cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
 
 	// A bound container is served before the tunnel exists —
@@ -404,7 +445,14 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
 	// to draw on, and the caller has decided against a tab. How a run is shown
 	// stays one switch in display, and the hint below still fires — from here
 	// this is a run with no screen, which is exactly what it is.
-	screen, open := r.console.For(bound, cmd), r.open
+	//
+	// A frame an earlier tunnel drew is still up and showing the same origins,
+	// so it is kept: nothing is opened again, and no hint is printed under it.
+	showing := r.screen != nil
+	screen, open := r.screen, r.open
+	if !showing {
+		screen = r.console.For(bound, cmd)
+	}
 	if os.Getenv(openEnv) == "false" {
 		shown := false
 		screen, open = nil, &shown
@@ -435,13 +483,16 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
 		open = &shown
 	}
 
-	r.display.Open(ctx, log,
-		display.WithAddr(addr),
-		display.WithForced(open),
-		display.WithStderr(stderr),
-		display.WithInteractive(display.IsInteractive(cmd)),
-		display.WithScreen(screen),
-	)
+	if !showing {
+		r.display.Open(ctx, log,
+			display.WithAddr(addr),
+			display.WithForced(open),
+			display.WithStderr(stderr),
+			display.WithInteractive(display.IsInteractive(cmd)),
+			display.WithScreen(screen),
+		)
+	}
+	r.screen = screen
 	// After the URL is live, so what gets cached is a tunnel that
 	// came up rather than one that was merely asked for.
 	// The hostname beside the rest of what the run settled on: never read
@@ -451,9 +502,10 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
 		tracking = map[string]string{}
 	}
 	tracking[ltv1.HostnameEnv] = public.Hostname()
+	saved := tun.Serialize()
 	spec.Save(
 		cache.WithOrigins(origins),
-		cache.WithSpec(tun.Serialize()),
+		cache.WithSpec(saved),
 		cache.WithTracking(tracking),
 		cache.WithSecret(tun.Secret()),
 		cache.WithLog(log),
@@ -476,25 +528,41 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) error {
 		fmt.Fprintln(stderr, r.hint)
 	}
 
-	return nil
+	return saved, nil
 }
 
-// wait blocks until the run is over, and says how it ended: nil for a
+// wait blocks until the run is over or a new spec arrives for it. A new spec
+// is next, with respec true. Otherwise it says how the run ended: nil for a
 // signal or a viewer asking it to end, and the tunnel's own verdict when it
 // ends first.
-func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1) error {
+//
+// saved is the spec up saved for tun. The cache hands on every spec it takes,
+// that one included, and it is this tunnel already: it is passed over.
+func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string) (next string, respec bool, err error) {
 	bound, log := r.bound, r.log
+	var specs <-chan string
+	if r.cache != nil {
+		specs = r.cache.Spec()
+	}
 
 	// A viewer asking to end the run is the third way this stops, beside a
 	// signal and the tunnel failing. Nothing is wrong when it happens, so it
 	// reads as a clean exit — the builder's deferred teardown takes the origins,
 	// the programs they started and the tunnel with it.
-	select {
-	case <-ctx.Done():
-	case <-tun.Done():
-	case <-bound.Done():
-		log.Info("a viewer asked this run to end; stopping")
-		return nil
+	for waiting := true; waiting; {
+		select {
+		case spec := <-specs:
+			if spec != saved {
+				return spec, true, nil
+			}
+		case <-ctx.Done():
+			waiting = false
+		case <-tun.Done():
+			waiting = false
+		case <-bound.Done():
+			log.Info("a viewer asked this run to end; stopping")
+			return "", false, nil
+		}
 	}
 
 	// A signal cancels ctx, and cancelling ctx ends the tunnel too, so both
@@ -504,9 +572,9 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1) error {
 	// has to say for itself. Anything else is the tunnel's own verdict —
 	// the edge disowning it arrives here as Cancel's cause.
 	if ctx.Err() != nil {
-		return nil
+		return "", false, nil
 	}
-	return tun.Err()
+	return "", false, tun.Err()
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

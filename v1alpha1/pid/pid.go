@@ -195,6 +195,11 @@ func same(f *os.File, path string) bool {
 //
 // A run that cannot move its streams still signals: the launcher exits either
 // way, and the caller's streams stay held until the run ends, which is logged.
+//
+// Once only. The launcher exits on the signal, so a second Detach — a run
+// whose tunnel was replaced comes up again — has nobody to hand back to, and a
+// pid signalled again may belong to another process by then: SIGUSR2 ends one
+// that has not asked for it.
 func (p *PidImpl) Detach(out *os.File, log v1.Logger) bool {
 	if p.parent == 0 {
 		return false
@@ -217,5 +222,6 @@ func (p *PidImpl) Detach(out *os.File, log v1.Logger) bool {
 	if err := notify(p.parent); err != nil {
 		log.Warn("cannot tell the launcher this run is up", "pid", p.parent, "error", err)
 	}
+	p.parent = 0
 	return true
 }

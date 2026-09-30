@@ -79,7 +79,9 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 // default cache's .env there is String, served as a remote copy. Secret is the running tunnel's secret the run last saved with, nil before
 // then: what the router authorizes its control path against. Key is the key
 // of the run the cache is for, "" before it knows: what the router names the
-// run by on every answer from its control path, refusals included.
+// run by on every answer from its control path, refusals included. Spec is
+// every spec the cache takes, the run's own saves among them: a new one while
+// the run waits is a new tunnel.
 type Cache interface {
 	Load(opts ...cache.Option) string
 	Save(opts ...cache.Option)
@@ -87,6 +89,7 @@ type Cache interface {
 	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Secret() []byte
 	Key() string
+	Spec() <-chan string
 }
 
 // Pid is how a run is found and handed back from outside it, by the npm
@@ -161,6 +164,9 @@ func (noCache) Handlers(string) map[string]func(http.ResponseWriter, *http.Reque
 }
 func (noCache) Secret() []byte { return nil }
 func (noCache) Key() string    { return "" }
+
+// Spec is never a new spec: a run with caching off keeps its tunnel.
+func (noCache) Spec() <-chan string { return nil }
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a
