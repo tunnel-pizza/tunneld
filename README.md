@@ -227,20 +227,6 @@ plane. The one exception is a network that blocks the edge's port 7844: there
 the connection goes through tunnel.pizza's relay, which forwards the encrypted
 bytes without reading them.
 
-## Use it from Claude Code
-
-Install the plugin from the [tunnel.pizza marketplace](https://github.com/tunnel-pizza/marketplace):
-
-```
-/plugin marketplace add tunnel-pizza/marketplace
-/plugin install tunneld@tunnel-pizza
-```
-
-- **Ask Claude to put your app on your phone**, or to send it to someone. It
-  shares your dev server and tells you what your address gives away.
-- **Type `/tunneld:session` to carry on from your phone.** Type `/exit` here,
-  then scan the QR code it shows.
-
 ## Use it from Go
 
 The command is a builder, so another Go program can mount it under a verb of
