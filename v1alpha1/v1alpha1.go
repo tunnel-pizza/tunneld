@@ -73,8 +73,9 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 // Both take the run's facts as the options they are given, as Route and Open
 // do: the origins whose key names the file, and for Save the spec and the
 // tracking to write, and the run's logger. String is the file as the cache
-// last saved it, "" before then: what the router serves as a remote copy.
-// Secret is the running tunnel's secret the run last saved with, nil before
+// last saved it, "" before then. Handlers is what the cache answers under a
+// path, by ServeMux pattern — the router hands it its control path — and the
+// default cache's .env there is String, served as a remote copy. Secret is the running tunnel's secret the run last saved with, nil before
 // then: what the router authorizes its control path against. Key is the key
 // of the run the cache is for, "" before it knows: what the router names the
 // run by on every answer from its control path, refusals included.
@@ -82,6 +83,7 @@ type Cache interface {
 	Load(opts ...cache.Option) string
 	Save(opts ...cache.Option)
 	String() string
+	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Secret() []byte
 	Key() string
 }
@@ -153,8 +155,11 @@ type noCache struct{}
 func (noCache) Load(...cache.Option) string { return "" }
 func (noCache) Save(...cache.Option)        {}
 func (noCache) String() string              { return "" }
-func (noCache) Secret() []byte              { return nil }
-func (noCache) Key() string                 { return "" }
+func (noCache) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) {
+	return nil
+}
+func (noCache) Secret() []byte { return nil }
+func (noCache) Key() string    { return "" }
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a

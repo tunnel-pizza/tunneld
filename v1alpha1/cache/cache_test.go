@@ -6,6 +6,8 @@ package cache_test
 import (
 	"encoding/base64"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -119,6 +121,89 @@ func TestString(t *testing.T) {
 	}
 	if got := cache.New(cache.WithTracking(tracking)).String(); got != "" {
 		t.Errorf("String() with no spec = %q, want nothing", got)
+	}
+}
+
+// TestHandlers pins what the cache answers under the path it is given:
+// path+".env" is String, the file as the run last saved it, byte for byte and
+// asked for fresh on every GET; a bare 404 before anything is saved; for
+// PATCH, a 400 naming the line for a body that does not parse, a 413 for one
+// too big, a 200 for one that does, the file GET answered included, and a 429
+// with Retry-After for a second while the first is still being applied; a 405 naming GET for
+// any other method; and never stored on the way, any of them.
+func TestHandlers(t *testing.T) {
+	c, o, path := fixed(t, "http://localhost:3000")
+	askOf := func(c *cache.CacheImpl, method, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		h := c.Handlers("/under/")["/under/.env"]
+		if h == nil {
+			t.Fatalf("Handlers(%q) = %v, want /under/.env among them", "/under/", c.Handlers("/under/"))
+		}
+		w := httptest.NewRecorder()
+		h(w, httptest.NewRequest(method, "/under/.env", strings.NewReader(body)))
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", method, got)
+		}
+		return w
+	}
+	ask := func(method, body string) *httptest.ResponseRecorder { t.Helper(); return askOf(c, method, body) }
+	get := func() *httptest.ResponseRecorder { t.Helper(); return ask(http.MethodGet, "") }
+	// patch asks a cache of its own, so no row finds another's patch waiting.
+	patch := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		return askOf(cache.New(), http.MethodPatch, body)
+	}
+
+	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		if w := ask(method, ""); w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != http.MethodGet {
+			t.Errorf("%s .env = %d, Allow %q; want 405, Allow GET", method, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	for _, tc := range []struct {
+		name, body string
+		want       int
+		says       string // what a refusal's body names
+	}{
+		{"empty", "", http.StatusOK, ""},
+		{"a variable", "TUNNELD_LOG=debug\n", http.StatusOK, ""},
+		{"quoted, blank lines, comments, CRLF", "# a comment\r\n\r\nA='single'\r\nB=\"double\"\r\nC=\r\n_d9=x", http.StatusOK, ""},
+		{"no =", "TUNNELD_LOG\n", http.StatusBadRequest, "line 1: no '='"},
+		{"a name a shell cannot export", "OK=1\n9LIVES=x\n", http.StatusBadRequest, "line 2: \"9LIVES\""},
+		{"a space before the =", "NAME =x\n", http.StatusBadRequest, "line 1: \"NAME \""},
+		{"an empty name", "=x\n", http.StatusBadRequest, "line 1: \"\""},
+		{"a name twice", "A=1\nA=2\n", http.StatusBadRequest, "line 2: A is set twice"},
+		{"a control character", "A=x\x1by\n", http.StatusBadRequest, "line 1: A holds a control character"},
+		{"a tab", "A=x\ty\n", http.StatusBadRequest, "line 1: A holds a control character"},
+		{"not UTF-8", "A=\xff\n", http.StatusBadRequest, "line 1: A is not UTF-8"},
+		{"too big", "A=" + strings.Repeat("x", 64<<10) + "\n", http.StatusRequestEntityTooLarge, ""},
+	} {
+		w := patch(tc.body)
+		if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.says) {
+			t.Errorf("PATCH .env, %s = %d %q; want %d naming %q", tc.name, w.Code, w.Body, tc.want, tc.says)
+		}
+	}
+	waiting := cache.New()
+	if w := askOf(waiting, http.MethodPatch, "LIBTUNNEL_SPEC=first\n"); w.Code != http.StatusOK {
+		t.Errorf("first PATCH .env = %d %q, want 200", w.Code, w.Body)
+	}
+	if w := askOf(waiting, http.MethodPatch, "LIBTUNNEL_SPEC=second\n"); w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") != "1" {
+		t.Errorf("second PATCH .env, the first unapplied = %d %q, Retry-After %q; want 429, Retry-After 1", w.Code, w.Body, w.Header().Get("Retry-After"))
+	}
+	if w := get(); w.Code != http.StatusNotFound || w.Body.Len() != 0 {
+		t.Errorf("GET .env before a save = %d %q, want a bare 404", w.Code, w.Body)
+	}
+	for _, spec := range []string{envelope, "resaved"} {
+		c.Save(cache.WithOrigins(o), cache.WithSpec(spec), cache.WithTracking(map[string]string{"TUNNELD_LOG": "debug"}), cache.WithLog(discard()))
+		onDisk, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if w := get(); w.Code != http.StatusOK || w.Body.String() != string(onDisk) {
+			t.Errorf("GET .env = %d %q, want the file on disk:\n%s", w.Code, w.Body, onDisk)
+		}
+		if w := patch(string(onDisk)); w.Code != http.StatusOK {
+			t.Errorf("PATCH .env with what GET answered = %d %q, want 200", w.Code, w.Body)
+		}
 	}
 }
 

@@ -115,17 +115,18 @@ type RouterImpl struct {
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
 	live *routes
-	// env is what ControlPath+".env" answers from, once WithCache has put it
-	// on the mux. A pointer for the same reason as live.
+	// env is what the cache's endpoints under ControlPath answer from, once
+	// WithCache has put them on the mux. A pointer for the same reason as live.
 	env *env
 }
 
-// Cache is what the router serves a run's cache file from, and what it
-// authorizes the ControlPath against: the file as the cache last saved it, or
-// "" before it has saved one; the running tunnel's secret, nil before then;
-// and the key the file is named for, "" before the cache knows its run.
+// Cache is what the router serves a run's cache endpoints from, and what it
+// authorizes the ControlPath against: the handlers the cache answers with
+// under a path, by ServeMux pattern; the running tunnel's secret, nil
+// before then; and the key the file is named for, "" before the cache knows
+// its run.
 type Cache interface {
-	String() string
+	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Secret() []byte
 	Key() string
 }
@@ -136,13 +137,13 @@ type Cache interface {
 // does not know its run yet.
 const CacheKeyHeader = "X-Cache-Key"
 
-// env is the ControlPath+".env" endpoint's state: the cache it serves from,
-// and the once that puts its handler on the mux — a ServeMux panics on a
-// pattern registered twice, and WithCache can be applied more than once.
+// env is the cache endpoints' state: the cache they serve from, and the
+// patterns already on the mux — a ServeMux panics on a pattern registered
+// twice, and WithCache can be applied more than once.
 type env struct {
-	mu    sync.Mutex
-	cache Cache
-	once  sync.Once
+	mu         sync.Mutex
+	cache      Cache
+	registered map[string]bool
 }
 
 // routes is a router's serving routes, by the function that stops each.
@@ -157,7 +158,8 @@ type routes struct {
 //
 //	GET ControlPath+"ping"   200 "pong": this tunnel reaches this tunneld
 //
-// and, once WithCache has been applied:
+// and, once WithCache has been applied, whatever the cache's Handlers answer —
+// the default cache's being:
 //
 //	GET ControlPath+".env"   200 the run's cached spec, as the cache file's
 //	                         LIBTUNNEL_SPEC line; 404 when nothing is cached
@@ -192,10 +194,11 @@ func WithHandler(handler func(http.Handler) http.Handler) Option {
 	return func(r *RouterImpl) { r.handler = handler }
 }
 
-// WithCache puts ControlPath+".env" on the router's mux: a remote copy of
-// the cache file the run last saved, asked of c on every request, and a 404
-// until there is one. Applied again, it replaces the cache rather than
-// registering the endpoint twice.
+// WithCache puts c's Handlers under ControlPath on the router's mux —
+// the default cache's .env being a remote copy of the file the run last
+// saved. Which cache answers is asked on every request, so applied again, it
+// replaces the cache rather than registering an endpoint twice; a pattern the
+// cache answering does not have is a 404.
 //
 // c is also what the ControlPath is authorized against: its secret is the
 // token every request under it but ping has to carry (see authorize). The
@@ -205,26 +208,35 @@ func WithCache(c Cache) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()
+		defer e.mu.Unlock()
 		e.cache = c
-		e.mu.Unlock()
-		e.once.Do(func() {
-			r.mux.HandleFunc("GET "+ControlPath+".env", func(w http.ResponseWriter, _ *http.Request) {
+		if c == nil {
+			return
+		}
+		for pattern := range c.Handlers(ControlPath) {
+			if e.registered[pattern] {
+				continue
+			}
+			if e.registered == nil {
+				e.registered = map[string]bool{}
+			}
+			e.registered[pattern] = true
+			r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
 				e.mu.Lock()
 				c := e.cache
 				e.mu.Unlock()
-				var saved string
+				var h func(http.ResponseWriter, *http.Request)
 				if c != nil {
-					saved = c.String()
+					h = c.Handlers(ControlPath)[pattern]
 				}
-				w.Header().Set("Cache-Control", "no-store")
-				if saved == "" {
+				if h == nil {
+					w.Header().Set("Cache-Control", "no-store")
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				_, _ = io.WriteString(w, saved)
+				h(w, req)
 			})
-		})
+		}
 	}
 }
 

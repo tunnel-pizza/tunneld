@@ -522,9 +522,16 @@ func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 func (f *fakeCache) Secret() []byte { return f.secret }
 func (f *fakeCache) Key() string    { return f.key }
 
-// String is the file the fake saved, rendered as the real cache renders it.
-func (f *fakeCache) String() string {
-	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking)).String()
+// String is the file the fake saved, rendered as the real cache renders it,
+// and Handlers the real cache's endpoints serving that file.
+func (f *fakeCache) String() string { return f.real().String() }
+func (f *fakeCache) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
+	return f.real().Handlers(path)
+}
+
+// real is a cache holding what the fake saved, touching no disk.
+func (f *fakeCache) real() *cache.CacheImpl {
+	return cache.New(cache.WithSpec(f.spec), cache.WithTracking(f.tracking))
 }
 func (f *fakeCache) Save(opts ...cache.Option) {
 	// The run's options, read back off a cache they configure rather than
