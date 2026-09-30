@@ -593,11 +593,10 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			ws = i
 		}
 	}
-	// Down with the tunnel rather than with ctx: the router outlives the run
-	// while the tunnel drains, so it is cancelled once the tunnel is done. It
-	// is stood up here, immediately before the tunnel it is handed to, so
-	// nothing between the two can return and leave it serving with no tunnel
-	// to end it.
+	// The router lasts the run, not one tunnel: it is cancelled once the run is
+	// over and its tunnel has drained, below. It is stood up here, immediately
+	// before the tunnel it is handed to, so nothing between the two can return
+	// and leave it serving with no tunnel to end it.
 	local, err := b.router.Route(ctx,
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
@@ -624,6 +623,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// before minting, so a dead cached spec is already a fresh mint by the
 	// time it could fail, and the one failure left is a provider that could
 	// not be reached, which a remint could not reach either.
+	//
+	// The tunnel gets a context of its own under the run's: ending it ends
+	// this tunnel and nothing else.
+	tctx, stop := context.WithCancel(ctx)
+	defer stop()
 	tun := b.newTunnel(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))).
 		WithToken(token).
 		// Which tunneld is asking, ahead of the libtunnel comment the mint
@@ -631,12 +635,16 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// program mounts the command as: it is this code minting.
 		WithHeader("User-Agent", UserAgent()).
 		WithLogger(log).
-		WithContext(ctx).
+		WithContext(tctx).
 		WithEventListener(listen).
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, above.
 		WithLocalURL(local)
+	// The router outlives the run while its tunnel drains — a request still
+	// in flight through the tunnel is still being answered by it — so it
+	// comes down once both are over.
 	go func() {
+		<-ctx.Done()
 		<-tun.Done()
 		b.router.Cancel()
 	}()
