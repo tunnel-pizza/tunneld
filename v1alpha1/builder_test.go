@@ -537,7 +537,12 @@ func (f *fakeCache) Save(opts ...cache.Option) {
 	// The run's options, read back off a cache they configure rather than
 	// one that writes.
 	c := cache.New(opts...)
-	f.saved, f.spec, f.tracking, f.secret, f.key = true, c.Spec(), c.Tracking(), c.Secret(), c.Key()
+	f.spec = ""
+	select {
+	case f.spec = <-c.Spec():
+	default:
+	}
+	f.saved, f.tracking, f.secret, f.key = true, c.Tracking(), c.Secret(), c.Key()
 	if f.order != nil {
 		*f.order = append(*f.order, "save")
 	}

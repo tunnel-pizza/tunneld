@@ -89,10 +89,12 @@ type CacheImpl struct {
 	// its own goroutine while the run saves from another.
 	mu sync.Mutex
 
-	// patches is where a PATCH hands what it may change, MUTABLE_VARS only,
-	// to whatever applies it. Room for one waiting: a PATCH never blocks on
-	// it, and one that finds it full is refused rather than dropped.
-	patches chan map[string]string
+	// specs is every spec the cache takes, as Spec hands them on: each
+	// WithSpec, and each LIBTUNNEL_SPEC a PATCH sends. Room for one waiting,
+	// and nobody blocks on it: WithSpec replaces one still waiting with its
+	// own, the latest being the one that matters, and a PATCH that finds one
+	// waiting is refused rather than dropped.
+	specs chan string
 }
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
@@ -104,7 +106,7 @@ type CacheImpl struct {
 // gitignore templates and 752 real ones, the best a name managed was 13% and
 // 26%.
 func New(opts ...Option) *CacheImpl {
-	c := &CacheImpl{log: discard, patches: make(chan map[string]string, 1)}
+	c := &CacheImpl{log: discard, specs: make(chan string, 1)}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
 	}
@@ -125,9 +127,20 @@ func WithOrigins(origins v1.Origins) Option {
 }
 
 // WithSpec sets the spec Save writes: the envelope the running tunnel
-// serializes once it is up.
+// serializes once it is up. It is handed on to Spec as well, in place of
+// one still waiting there.
 func WithSpec(spec string) Option {
-	return func(c *CacheImpl) { c.spec = spec }
+	return func(c *CacheImpl) {
+		c.spec = spec
+		select {
+		case <-c.specs:
+		default:
+		}
+		select {
+		case c.specs <- spec:
+		default:
+		}
+	}
 }
 
 // WithTracking sets what Save writes beside the spec: what the run settled
@@ -171,12 +184,15 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, Spec and Tracking read back what the options set, for a caller
-// standing in for a cache that wants to see what it was handed without
-// touching a disk.
+// Origins and Tracking read back what the options set, for a caller standing
+// in for a cache that wants to see what it was handed without touching a disk.
 func (c *CacheImpl) Origins() v1.Origins         { return c.origins }
-func (c *CacheImpl) Spec() string                { return c.spec }
 func (c *CacheImpl) Tracking() map[string]string { return c.tracking }
+
+// Spec is every spec the cache takes, as it takes them: each WithSpec — so
+// each Save given one — and each LIBTUNNEL_SPEC a PATCH to .env sends. It
+// holds one at a time, and nothing is waiting on it until something reads.
+func (c *CacheImpl) Spec() <-chan string { return c.specs }
 
 // path is where this run's spec lives: the key, which names the tunnel, under
 // the directory, which names nothing.
@@ -322,9 +338,9 @@ func (c *CacheImpl) Handlers(path string) map[string]func(http.ResponseWriter, *
 // dotenvHandler answers GET with String, the cache file as the run last saved
 // it, and 404 when nothing is saved yet. PATCH reads its body as variables
 // (parseDotenv) and refuses one that does not parse, 400, or is too big, 413;
-// one that does keeps only the variables in MUTABLE_VARS and is handed on to
-// patches, a 200, or a 429 when one is already being applied, asking to be
-// tried again in a second. Any other method
+// one that does keeps only the variables in MUTABLE_VARS, and its
+// LIBTUNNEL_SPEC, if it has one, is handed on to Spec: a 200, or a 429 when
+// one is already being applied, asking to be tried again in a second. Any other method
 // is a 405 naming GET.
 //
 // No answer is stored anywhere on the way: the file changes with every save,
@@ -354,8 +370,13 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// Only what a caller may change: the rest of the file is the
 			// run's to say.
 			maps.DeleteFunc(vars, func(name, _ string) bool { return !MUTABLE_VARS[name] })
+			spec, ok := vars[ltv1.SpecEnv]
+			if !ok {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			select {
-			case c.patches <- vars:
+			case c.specs <- spec:
 				w.WriteHeader(http.StatusOK)
 			default:
 				w.Header().Set("Retry-After", "1")
