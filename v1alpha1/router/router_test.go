@@ -431,6 +431,35 @@ func TestEnv(t *testing.T) {
 		}
 	})
 
+	t.Run("a real cache's grant PATCHes once, through the router", func(t *testing.T) {
+		shown := listOf(t, echo(t, "shown"))
+		var applied []string
+		c := cache.New(cache.WithDir(t.TempDir()), cache.WithMutable(v1.WWWAuthenticateEnv,
+			func(string) error { return nil }, func(v string) { applied = append(applied, v) }))
+		c.Save(cache.WithOrigins(shown), cache.WithSpec("spec"), cache.WithSecret(secret))
+		url := controlOf(t, New(WithCache(c)), ".env")
+		resp, _ := ask(t, "GET", url, auth)
+		grant := resp.Header.Get(v1.GrantHeader)
+		if grant == "" {
+			t.Fatal("GET .env with the secret issued no grant")
+		}
+		patch := func() int {
+			req, err := http.NewRequest("PATCH", url, strings.NewReader(v1.WWWAuthenticateEnv+"="))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+grant)
+			resp, _ := get(t, http.DefaultClient, req)
+			return resp.StatusCode
+		}
+		if code := patch(); code != 204 || len(applied) != 1 {
+			t.Errorf("grant PATCH = %d, applied %q; want 204, once", code, applied)
+		}
+		if code := patch(); code != 401 || len(applied) != 1 {
+			t.Errorf("the grant again = %d, applied %q; want 401, nothing more", code, applied)
+		}
+	})
+
 	t.Run("applied again, it replaces rather than registers twice", func(t *testing.T) {
 		r := New(WithCache(cacheOf{"first\n", secret, runKey}))
 		if _, body := ask(t, "GET", controlOf(t, r, ".env", WithCache(cacheOf{"second\n", secret, runKey})), auth); body != "second\n" {

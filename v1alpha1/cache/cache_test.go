@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -732,6 +733,27 @@ func TestGrants(t *testing.T) {
 	c.Save(cache.WithSecret([]byte("new")))
 	if c.Grant(g) {
 		t.Error("a grant survived a new secret")
+	}
+}
+
+// TestGrantsExpire pins a grant's minute: live just before, gone just after,
+// and a PATCH with an expired one is the bodyless 401 a used one is.
+func TestGrantsExpire(t *testing.T) {
+	c, _ := mutableCache(t)
+	now := time.Now()
+	cache.WithClock(func() time.Time { return now })(c)
+	grant := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	now = now.Add(time.Minute)
+	if !c.Grant(grant) {
+		t.Error("a grant expired at its minute, want live until after it")
+	}
+	now = now.Add(time.Second)
+	if c.Grant(grant) {
+		t.Error("a grant outlived its minute")
+	}
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Body.Len() != 0 {
+		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
 	}
 }
 

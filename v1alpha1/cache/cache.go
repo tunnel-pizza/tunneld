@@ -202,6 +202,16 @@ func WithSavedSpec(spec string) Option {
 	return func(c *CacheImpl) { c.spec = spec }
 }
 
+// WithClock sets what the cache reads the time from, for a grant's minute.
+// Nil keeps the one it has (time.Now unless set).
+func WithClock(now func() time.Time) Option {
+	return func(c *CacheImpl) {
+		if now != nil {
+			c.now = now
+		}
+	}
+}
+
 // WithTracking sets what Save writes beside the spec: what the run settled
 // on, keyed by the variable that names each knob.
 func WithTracking(tracking map[string]string) Option {
