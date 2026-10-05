@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -53,6 +54,11 @@ func (s *server) exec(ctx context.Context, _ *sdk.CallToolRequest, in execIn) (*
 	if err != nil {
 		return nil, execOut{}, err
 	}
+	ctx, done, err := s.begin(ctx)
+	if err != nil {
+		return nil, execOut{}, err
+	}
+	defer done()
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(clampTimeout(in.TimeoutMs))*time.Millisecond)
 	defer cancel()
 	// A nil reader when there is nothing to send: the program's stdin is then
@@ -64,6 +70,12 @@ func (s *server) exec(ctx context.Context, _ *sdk.CallToolRequest, in execIn) (*
 	out, errb := newCapped(maxOutput), newCapped(maxOutput)
 	start := time.Now()
 	exit, err := o.Spawner.Spawn(ctx, in.Argv, stdin, out, errb)
+	// A timeout is -1 on every platform: a kill is a signal on Unix and an
+	// exit of 1 on Windows, and an agent has to be able to tell a timeout
+	// from a program that exited 1.
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		exit = -1
+	}
 	s.log.Debug("mcp exec", "origin", in.N, "argv", in.Argv, "exit", exit, "took", time.Since(start), "error", err)
 	if err != nil {
 		return nil, execOut{}, err

@@ -1,8 +1,15 @@
 package mcp
 
 import (
+	"context"
+	"io"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestOrigins pins the list: index, the origin as shown, and the kind,
@@ -107,5 +114,93 @@ func TestCapped(t *testing.T) {
 	}
 	if got := c.take(); got != "a\uFFFDbc" || c.truncated || c.text() != "" {
 		t.Errorf("take() = %q, then truncated %v and %q left; want everything once", got, c.truncated, c.text())
+	}
+}
+
+// heldSpawner runs until its context ends, says when it has started, and
+// takes a moment to go once told, as a real process does past its signal.
+// A second call returns at once: only the first is held.
+type heldSpawner struct {
+	started, gone chan struct{}
+	calls         atomic.Int32
+}
+
+func (h *heldSpawner) Spawn(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) (int, error) {
+	if h.calls.Add(1) > 1 {
+		return 0, nil
+	}
+	close(h.started)
+	<-ctx.Done()
+	time.Sleep(100 * time.Millisecond)
+	close(h.gone)
+	return -1, nil
+}
+
+// TestCloseEndsAnExec pins that closing the handler ends a command still
+// running and returns only once it has gone, whatever its timeout: nothing
+// an agent started outlives the run.
+func TestCloseEndsAnExec(t *testing.T) {
+	sp := &heldSpawner{started: make(chan struct{}), gone: make(chan struct{})}
+	server, closer := newServer([]Origin{{Kind: KindProgram, Spawner: sp}}, slog.New(slog.DiscardHandler))
+	ct, st := sdk.NewInMemoryTransports()
+	ss, err := server.Connect(t.Context(), st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "test", Version: "0"}, nil).Connect(t.Context(), ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	go func() {
+		_, _ = cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "exec", Arguments: map[string]any{"n": 0, "argv": []string{"hang"}, "timeout_ms": maxTimeoutMs}})
+	}()
+	select {
+	case <-sp.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the exec never started")
+	}
+	done := make(chan struct{})
+	go func() { _ = closer.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+	select {
+	case <-sp.gone:
+	default:
+		t.Error("Close returned while the exec's process was still going")
+	}
+	var refused string
+	if res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: "exec", Arguments: map[string]any{"n": 0, "argv": []string{"x"}}}); err == nil && res.IsError {
+		refused = res.Content[0].(*sdk.TextContent).Text
+	}
+	if refused != "the run is ending" {
+		t.Errorf("an exec after Close = %q, want it refused", refused)
+	}
+}
+
+// killedWithOne is a program the platform reports as exiting 1 when it is
+// killed, as TerminateProcess does on Windows.
+type killedWithOne struct{}
+
+func (killedWithOne) Spawn(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) (int, error) {
+	<-ctx.Done()
+	return 1, nil
+}
+
+// TestExecTimeoutIsMinusOneEverywhere pins the timeout's exit code to the
+// tool rather than the platform: an agent can tell a timeout from a program
+// that exited 1 on any machine tunneld runs on.
+func TestExecTimeoutIsMinusOneEverywhere(t *testing.T) {
+	cs := connect(t, []Origin{{Kind: KindProgram, Spawner: killedWithOne{}}})
+	var got execOut
+	if msg := call(t, cs, "exec", map[string]any{"n": 0, "argv": []string{"hang"}, "timeout_ms": 50}, &got); msg != "" {
+		t.Fatal(msg)
+	}
+	if got.ExitCode != -1 {
+		t.Errorf("a timed-out exec = %+v, want exit -1 whatever the platform said", got)
 	}
 }

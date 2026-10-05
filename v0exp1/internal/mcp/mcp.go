@@ -10,10 +10,12 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -48,6 +50,46 @@ type server struct {
 	origins  []Origin
 	log      *slog.Logger
 	sessions *sessions
+
+	// mu guards closed and the Add on execs, so Close's Wait never races a
+	// command starting.
+	mu     sync.Mutex
+	closed bool
+	// execs is every exec still running, for Close to wait on.
+	execs sync.WaitGroup
+}
+
+// errEnding is every tool's answer once the handler has closed.
+var errEnding = errors.New("the run is ending")
+
+// begin is an exec starting: its context, which ends with the run's as well
+// as the request's, and the done it must call; errEnding once Close has run.
+func (s *server) begin(ctx context.Context) (context.Context, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, nil, errEnding
+	}
+	s.execs.Add(1)
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(s.sessions.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+		s.execs.Done()
+	}, nil
+}
+
+// Close ends every session and every command still running, and returns
+// once their processes have gone: nothing an agent started outlives the run.
+// Callable more than once.
+func (s *server) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	err := s.sessions.Close()
+	s.execs.Wait()
+	return err
 }
 
 // Handler answers the MCP endpoint for these origins, index n being origin
@@ -75,7 +117,7 @@ func Handler(origins []Origin, log *slog.Logger) (http.Handler, io.Closer) {
 }
 
 // newServer builds the SDK server with every tool registered. The closer
-// ends the sessions.
+// ends the sessions and the commands still running.
 func newServer(origins []Origin, log *slog.Logger) (*sdk.Server, io.Closer) {
 	s := &server{origins: origins, log: log, sessions: newSessions(origins, log)}
 	srv := sdk.NewServer(&sdk.Implementation{Name: "tunneld", Version: "0"}, &sdk.ServerOptions{
@@ -90,7 +132,7 @@ func newServer(origins []Origin, log *slog.Logger) (*sdk.Server, io.Closer) {
 	sdk.AddTool(srv, &sdk.Tool{Name: "session_write", Description: "Send stdin to a session."}, s.sessions.write)
 	sdk.AddTool(srv, &sdk.Tool{Name: "session_read", Description: "Read what a session has printed since the last read, waiting up to timeout_ms for something."}, s.sessions.read)
 	sdk.AddTool(srv, &sdk.Tool{Name: "session_close", Description: "End a session and its process."}, s.sessions.close)
-	return srv, s.sessions
+	return srv, s
 }
 
 // origin answers origin n, or the tool error for an index off the list or an

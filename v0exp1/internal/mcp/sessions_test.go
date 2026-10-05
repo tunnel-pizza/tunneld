@@ -191,3 +191,23 @@ func TestCloseWaitsForTheProcesses(t *testing.T) {
 		t.Error("open after Close started a session")
 	}
 }
+
+// TestSessionReportsAZeroExit pins that the exit code is said when it is 0
+// too: {"exited": true} alone leaves an agent to guess whether it succeeded.
+func TestSessionReportsAZeroExit(t *testing.T) {
+	cs := connect(t, []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{}}})
+	var opened sessionOpenOut
+	if msg := call(t, cs, "session_open", map[string]any{"n": 0}, &opened); msg != "" {
+		t.Fatal(msg)
+	}
+	var got map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for got["exited"] != true && time.Now().Before(deadline) {
+		if msg := call(t, cs, "session_read", map[string]any{"id": opened.ID, "timeout_ms": 200}, &got); msg != "" {
+			t.Fatal(msg)
+		}
+	}
+	if code, ok := got["exit_code"]; !ok || code != float64(0) {
+		t.Errorf("session_read = %v, want exit_code 0 said outright", got)
+	}
+}

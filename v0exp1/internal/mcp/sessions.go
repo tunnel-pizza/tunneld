@@ -148,7 +148,7 @@ type sessionReadOut struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
 	Exited   bool   `json:"exited"`
-	ExitCode int    `json:"exit_code,omitempty"`
+	ExitCode int    `json:"exit_code" jsonschema:"the process's exit code once exited is true, -1 when a signal ended it"`
 }
 
 // open is the session_open tool: a process on origin n, its id to call it by.
@@ -160,7 +160,7 @@ func (t *sessions) open(_ context.Context, _ *sdk.CallToolRequest, in sessionOpe
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.ctx.Err() != nil {
-		return nil, sessionOpenOut{}, fmt.Errorf("the run is ending")
+		return nil, sessionOpenOut{}, errEnding
 	}
 	if len(t.table) >= maxSessions {
 		return nil, sessionOpenOut{}, fmt.Errorf("%d sessions are open, the most this run allows; close one", maxSessions)
