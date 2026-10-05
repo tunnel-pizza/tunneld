@@ -665,9 +665,9 @@ func decodeSpec(spec string) (any, error) {
 }
 
 // messagesOnly reports whether next is saved with only its messages changed:
-// the same backend, the same credential (compared as JSON), and every other
-// field beside it equal, metadata today and whatever libtunnel adds there
-// later. That is the provider rewording what it says about this tunnel, not
+// the same backend and hostname, the same credential (compared as JSON), and
+// every other field beside it equal, metadata today and whatever libtunnel
+// adds there later. That is the provider rewording what it says about this tunnel, not
 // a new tunnel, so the run learns it without a reconnect. Not JSON, or any
 // other difference, is not.
 func messagesOnly(next, saved string) ([]string, bool) {
@@ -677,6 +677,13 @@ func messagesOnly(next, saved string) ([]string, bool) {
 	}
 	sb, sspec, saside, err := ltv1alpha1.DecodeSpec(saved)
 	if err != nil || nb != sb || !sameSpec(string(nspec), string(sspec)) {
+		return nil, false
+	}
+	// The envelope's own hostname, which DecodeSpec leaves out.
+	var nh, sh struct {
+		Hostname string `json:"hostname"`
+	}
+	if json.Unmarshal([]byte(next), &nh) != nil || json.Unmarshal([]byte(saved), &sh) != nil || nh != sh {
 		return nil, false
 	}
 	if slices.Equal(naside.Messages, saside.Messages) {
