@@ -3297,3 +3297,24 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 		})
 	}
 }
+
+// TestDotenvServesNoHash pins the builder's wiring of the password's
+// redaction: a run's .env, as served, says the challenge in public form and
+// never carries the hash, so nobody reading it (tunnel.pizza included)
+// receives the password's hash.
+func TestDotenvServesNoHash(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+	h := newRunHarness(t, live(public), ":3000")
+	t.Setenv(v1.WWWAuthenticateEnv, pw)
+	ctx, cancel := context.WithCancel(t.Context())
+	v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+	_ = h.run(t, ctx, "--no-cache", ":3000")
+	serve := h.b.runCache.Handlers(router.ControlPath)[router.ControlPath+".env"]
+	rec := httptest.NewRecorder()
+	serve(rec, httptest.NewRequest("GET", router.ControlPath+".env", nil))
+	body := rec.Body.String()
+	if rec.Code != 200 || strings.Contains(body, "pbkdf2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
+		t.Errorf("GET .env = %d %q, want the public form and no hash", rec.Code, body)
+	}
+}

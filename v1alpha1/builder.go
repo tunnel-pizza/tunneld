@@ -599,7 +599,20 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		cache.WithMutable(v1.WWWAuthenticateEnv,
 			func(v string) error { _, err := auth.Parse(v); return err },
 			func(v string) { _ = b.auth.Set(v) }),
-		cache.WithPublic(b.auth.Public))
+		cache.WithPublic(b.auth.Public),
+		// Served, .env says the challenge in public form: the hash stays in
+		// the file on disk and never goes to whoever reads .env.
+		cache.WithRedact(v1.WWWAuthenticateEnv, func(v string) string {
+			cs, err := auth.Parse(v)
+			if err != nil {
+				return "(set)"
+			}
+			public := make([]string, len(cs))
+			for i, c := range cs {
+				public[i] = c.Public("")
+			}
+			return strings.Join(public, ", ")
+		}))
 
 	// The password: the environment if the variable is set at all (set and
 	// empty is a deliberate Public), else the file's line if it has one

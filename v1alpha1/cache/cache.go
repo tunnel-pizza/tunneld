@@ -110,6 +110,9 @@ type CacheImpl struct {
 	mutables map[string]mutableVar
 	// public is the challenges in their public form, for a grant's answer.
 	public func(host string) []string
+	// redacts is how a mutable reads when .env is served rather than saved:
+	// the file on disk keeps the value, a reader gets this.
+	redacts map[string]func(string) string
 	// grants is every outstanding grant, by SHA-256 of the token; grantOrder
 	// is issue order, for forgetting the oldest.
 	grants     map[[32]byte]grant
@@ -151,6 +154,7 @@ func New(opts ...Option) *CacheImpl {
 		specs:    make(chan string, 1),
 		mutable:  map[string]string{},
 		mutables: map[string]mutableVar{},
+		redacts:  map[string]func(string) string{},
 		grants:   map[[32]byte]grant{},
 		now:      time.Now,
 	}
@@ -214,6 +218,13 @@ func WithSecret(secret []byte) Option {
 // registered is refused rather than stored unapplied.
 func WithMutable(name string, validate func(string) error, apply func(string)) Option {
 	return func(c *CacheImpl) { c.mutables[name] = mutableVar{validate, apply} }
+}
+
+// WithRedact sets how name reads when .env is served: the password's hash
+// stays in the file on disk, so a restart is protected, and never goes to
+// whoever reads .env, tunnel.pizza included.
+func WithRedact(name string, redact func(string) string) Option {
+	return func(c *CacheImpl) { c.redacts[name] = redact }
 }
 
 // WithPublic sets how the challenges read in public, for a grant's answer.
@@ -504,14 +515,16 @@ func (c *CacheImpl) logger() v1.Logger {
 // and a stale copy of a credential is one more place it lives.
 func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
+		// no-transform: a hop that compresses would also weaken the ETag,
+		// and If-Match compares strongly.
+		w.Header().Set("Cache-Control", "no-store, no-transform")
 		switch r.Method {
 		case http.MethodGet:
 			// Every read by the secret's holder carries a grant: what that
 			// holder may hand the owner's browser so it can PATCH this file
 			// once, without ever holding the secret itself.
 			c.mu.Lock()
-			saved := c.render()
+			saved := c.served()
 			var token string
 			if saved != "" {
 				token = c.issueGrant()
@@ -551,7 +564,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// A read-then-write caller (tunnel.pizza's messages sync) names the
 			// file it read; if a respec replaced it in between, writing back
 			// what was read would send the old credential as a new spec.
-			if want := r.Header.Get("If-Match"); want != "" && want != etag(c.render()) {
+			if want := r.Header.Get("If-Match"); want != "" && want != etag(c.served()) {
 				log.Info("refused a patch to .env", "reason", "the file changed since it was read")
 				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
 				return
@@ -644,7 +657,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				return
 			}
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			_, _ = io.WriteString(w, c.render())
+			_, _ = io.WriteString(w, c.served())
 		default:
 			w.Header().Set("Allow", http.MethodGet)
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -719,7 +732,14 @@ func parseDotenv(body io.Reader) (map[string]string, error) {
 }
 
 // render is String for a caller already holding mu: Save.
-func (c *CacheImpl) render() string {
+func (c *CacheImpl) render() string { return c.renderFor(false) }
+
+// served is the file as .env hands it out: every mutable with a redaction
+// registered (WithRedact) in its redacted form. Callers hold mu.
+func (c *CacheImpl) served() string { return c.renderFor(true) }
+
+// renderFor writes the file, as saved or, served, with mutables redacted.
+func (c *CacheImpl) renderFor(served bool) string {
 	if c.spec == "" {
 		return ""
 	}
@@ -747,10 +767,14 @@ func (c *CacheImpl) render() string {
 	// as a bare line, since present-and-empty is a choice (public) that a
 	// file without the line could not tell from never having chosen.
 	for _, name := range slices.Sorted(maps.Keys(c.mutable)) {
-		if c.mutable[name] == "" {
+		value := c.mutable[name]
+		if redact, ok := c.redacts[name]; served && ok && value != "" {
+			value = redact(value)
+		}
+		if value == "" {
 			lines = append(lines, name+"=")
 		} else {
-			lines = append(lines, assign(name, c.mutable[name]))
+			lines = append(lines, assign(name, value))
 		}
 	}
 	return strings.Join(lines, "\n") + "\n"
