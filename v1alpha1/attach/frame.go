@@ -188,6 +188,16 @@ type frame struct {
 	selecting bool
 	selected  bool
 
+	// clip is the chip the last copy left — "copied", or why it was not —
+	// shown until a key, a wheel or another click, as a selection is.
+	clip string
+
+	// getenv is the environment of the terminal this frame is drawn on, for
+	// how a copy reaches its clipboard (see osc52): the process's own on the
+	// console, which is the viewer's terminal there, and nil in a tab, where
+	// the terminal is the browser's.
+	getenv func(string) string
+
 	// linger is this frame staying on the screen after the run ends, until a
 	// key, rather than quitting with it. Set for the console: a tab has the
 	// page to say "ended" and offer a way back, and a console has nothing
@@ -280,7 +290,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		// A selection is in view coordinates and the wheel moves the view.
-		f.selected, f.selecting = false, false
+		f.selected, f.selecting, f.clip = false, false, ""
 		return f.wheeled(msg), nil
 
 	case tea.MouseClickMsg:
@@ -297,7 +307,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		// Pasting is being present, the same as typing below.
-		f.scrolled, f.selected = false, false
+		f.scrolled, f.selected, f.clip = false, false, ""
 		// A paste is one message, not a burst of keystrokes: the frame's own
 		// renderer turns bracketed paste on in the viewer's terminal, so the
 		// browser wraps what was pasted and the decoder hands it over whole.
@@ -330,7 +340,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// scrolled back to the live screen, and still goes where it was
 		// going, so what the key did is what they see next. A selection is
 		// spent the same way: it was copied when the button came up.
-		f.scrolled, f.selected = false, false
+		f.scrolled, f.selected, f.clip = false, false, ""
 		// The log view is the frame's, so every key belongs to it: escape
 		// leaves, and anything else is somebody reading rather than typing at
 		// a terminal they cannot see.
@@ -470,7 +480,7 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	if m.Button != tea.MouseLeft {
 		return f
 	}
-	f.selected, f.selecting = false, false
+	f.selected, f.selecting, f.clip = false, false, ""
 	if !uv.Pos(m.X, m.Y).In(f.pane()) {
 		return f
 	}
@@ -480,11 +490,9 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	return f
 }
 
-// released finishes a selection and copies it. The copy is OSC 52 to this
-// viewer's terminal, which is the only clipboard a frame on a console can
-// reach; a terminal that does not honour it leaves the selection drawn and
-// the text where it was. A press with no drag under it selects nothing and
-// copies nothing, so a click is still just a click.
+// released finishes a selection and copies it (see copy). A press with no
+// drag under it selects nothing and copies nothing, so a click is still just
+// a click.
 func (f frame) released(m tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
 	if !f.selecting {
 		return f, nil
@@ -495,11 +503,20 @@ func (f frame) released(m tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
 		return f, nil
 	}
 	f.selected = true
-	text := f.sel.text(f.composed())
-	if text == "" {
+	return f.copy(f.sel.text(f.composed()))
+}
+
+// copy sends text to this viewer's clipboard: OSC 52 to their terminal, the
+// only clipboard a frame on a console can reach, written by the frame itself
+// so it can be wrapped for a multiplexer and left unsent when too long (see
+// osc52). The chip says which, since the terminal never answers.
+func (f frame) copy(text string) (frame, tea.Cmd) {
+	seq, chip := osc52(text, f.getenv)
+	f.clip = chip
+	if seq == "" {
 		return f, nil
 	}
-	return f, tea.SetClipboard(text)
+	return f, tea.Raw(seq)
 }
 
 // onPane translates a window position into pane coordinates, clamped to the
@@ -1236,12 +1253,12 @@ func (f frame) back() string {
 	return ""
 }
 
-// copied is the chip saying the highlighted text went to the clipboard, or
-// nothing when nothing is selected. The only acknowledgement a terminal gives
-// for OSC 52 is none, so this is it.
+// copied is the chip the last copy left (see copy), or nothing. The only
+// acknowledgement a terminal gives for OSC 52 is none, so this says what was
+// known before sending: that it went, went through tmux, or was too large.
 func (f frame) copied() string {
-	if f.selected {
-		return copyStyle.Styled(" copied ")
+	if f.clip != "" {
+		return copyStyle.Styled(" " + f.clip + " ")
 	}
 	return ""
 }

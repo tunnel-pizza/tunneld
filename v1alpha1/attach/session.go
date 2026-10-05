@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -717,7 +718,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height, linger: true},
+		frame{sess: s, v: v, width: width, height: height, linger: true, getenv: os.Getenv},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),

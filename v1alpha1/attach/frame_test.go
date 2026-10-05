@@ -1623,8 +1623,8 @@ func TestDraggingSelectsAndCopies(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("release produced no command, want the copy")
 	}
-	if msg := cmd(); !strings.Contains(fmt.Sprintf("%T", msg), "lipboard") {
-		t.Errorf("release produced %T, want a clipboard message", msg)
+	if msg, ok := cmd().(tea.RawMsg); !ok || !strings.HasPrefix(fmt.Sprint(msg.Msg), "\x1b]52;c;") {
+		t.Errorf("release produced %#v, want an OSC 52 write", cmd())
 	}
 	if got := h.f.sel.text(h.f.composed()); got != "hello world\nsecond" {
 		t.Errorf("selected text = %q, want the two rows in stream order", got)
@@ -1639,6 +1639,46 @@ func TestDraggingSelectsAndCopies(t *testing.T) {
 	h.reached(t, "x")
 	if h.f.selected || reversed(h.f.View().Content) {
 		t.Error("the selection outlived a keystroke")
+	}
+}
+
+// TestACopyInsideTmuxIsWrappedAndSaysSo pins a console inside tmux: the copy
+// goes in tmux's passthrough, since tmux drops a bare OSC 52 from an
+// application, and the chip says the copy needs allow-passthrough rather than
+// claiming it landed.
+func TestACopyInsideTmuxIsWrappedAndSaysSo(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.getenv = func(k string) string {
+		return map[string]string{"TMUX": "/tmp/tmux-501/default,1,0"}[k]
+	}
+	if _, err := h.s.em.WriteString("hello"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	pane := h.f.pane()
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseLeft})
+	cmd := h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 4, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("release produced no command, want the copy")
+	}
+	if msg, ok := cmd().(tea.RawMsg); !ok || !strings.HasPrefix(fmt.Sprint(msg.Msg), "\x1bPtmux;") {
+		t.Errorf("release produced %#v, want tmux's passthrough", cmd())
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "allow-passthrough") {
+		t.Errorf("bottom border = %q, want it saying the copy needs allow-passthrough", bottom)
+	}
+}
+
+// TestACopyTooLargeIsNotSent pins the cap: a copy longer than a terminal will
+// take is not sent to be dropped, and the chip says so instead of "copied".
+func TestACopyTooLargeIsNotSent(t *testing.T) {
+	h := newFrameHarness(t)
+	f, cmd := h.f.copy(strings.Repeat("a", 60000))
+	h.f = f
+	if cmd != nil {
+		t.Errorf("a copy past the cap produced %#v, want nothing sent", cmd())
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "too large to copy") || strings.Contains(bottom, " copied ") {
+		t.Errorf("bottom border = %q, want it saying the copy was too large", bottom)
 	}
 }
 
