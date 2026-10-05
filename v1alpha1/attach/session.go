@@ -912,11 +912,15 @@ func (s *session) bannerRows() int {
 }
 
 // followMotd waits on the motd's changes for the life of the session, taking
-// a fresh channel after each close so it never spins on a closed one.
+// a fresh channel after each close so it never spins on a closed one. The
+// fresh one is taken before the change is handled, not after: a change that
+// lands while the last is still being applied closes it, and is seen.
 func (s *session) followMotd(ctx context.Context, m interface{ Changed() <-chan struct{} }) {
+	ch := m.Changed()
 	for {
 		select {
-		case <-m.Changed():
+		case <-ch:
+			ch = m.Changed()
 			s.motdChanged()
 		case <-ctx.Done():
 			return
