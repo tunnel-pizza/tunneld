@@ -24,12 +24,14 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
+	ltv1alpha1 "github.com/cnuss/libtunnel/v1alpha1"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
@@ -134,6 +136,9 @@ type RunImpl struct {
 	// this call, nil when none was: that frame is still up, showing the same
 	// origins, so a later tunnel keeps it rather than drawing another.
 	screen console.Screen
+	// authenticate is the tunnel's challenges in public form, realm left
+	// out, read at every mint; nil or empty says nothing.
+	authenticate func() []string
 }
 
 // New returns a RunImpl configured by opts: a logger that discards, a spinner
@@ -219,6 +224,13 @@ func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
 
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
+
+// WithAuthenticate is the tunnel's challenges in public form, realm left out,
+// read at every mint: the provider leaves "publicly accessible" out of the
+// messages for a tunnel that is not. Nil, or nothing, says nothing.
+func WithAuthenticate(public func() []string) Option {
+	return func(r *RunImpl) { r.authenticate = public }
+}
 
 // Run is one run's tunnel, from its spec to its end: mint, up, wait — and
 // again from the top whenever a new spec arrives while it waits, the tunnel
@@ -315,6 +327,14 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, by the router.
 		WithLocalURL(local)
+	// What the gate says, so the mint's messages match it: a protected tunnel
+	// is not "publicly accessible". The client's own word, deciding only a
+	// banner the client itself shows. Nothing at all when public.
+	if r.authenticate != nil {
+		if public := r.authenticate(); len(public) > 0 {
+			tun = tun.WithHeader(v1.AuthenticateHeader, strings.Join(public, ", "))
+		}
+	}
 	return tun, stop
 }
 
@@ -545,7 +565,9 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 }
 
 // wait blocks until the run is over or a new spec arrives for it. A new spec
-// is next, with respec true. Otherwise it says how the run ended: nil for a
+// is next, with respec true, unless it differs from the tunnel's only in its
+// messages (messagesOnly): those are learned and saved in place, and the run
+// keeps waiting. Otherwise it says how the run ended: nil for a
 // signal or a viewer asking it to end, and the tunnel's own verdict when it
 // ends first.
 //
@@ -569,14 +591,26 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 	for waiting := true; waiting; {
 		select {
 		case spec := <-specs:
-			if !sameSpec(spec, saved) {
-				log.Info("a new spec arrived for the run")
-				return spec, true, nil
+			if sameSpec(spec, saved) {
+				if !own {
+					log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+				}
+				own = false
+				continue
 			}
-			if !own {
-				log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+			if messages, ok := messagesOnly(spec, saved); ok {
+				// The provider rewording what it says about this tunnel (the
+				// "publicly accessible" warning following a password): learned
+				// live, saved, and the tunnel kept. A respec would reconnect
+				// every visitor, and replay the spec through the mint.
+				r.motd.Learn(messages, log)
+				r.cache.Save(cache.WithSpec(spec))
+				saved, own = spec, true // the save echoes back; pass it quietly
+				log.Info("the provider's messages changed", "count", len(messages))
+				continue
 			}
-			own = false
+			log.Info("a new spec arrived for the run")
+			return spec, true, nil
 		case <-ctx.Done():
 			waiting = false
 		case <-tun.Done():
@@ -626,6 +660,32 @@ func decodeSpec(spec string) (any, error) {
 		return nil, errors.New("more than one JSON value")
 	}
 	return v, nil
+}
+
+// messagesOnly reports whether next is saved with only its messages changed:
+// the same backend, the same credential (compared as JSON), and every other
+// field beside it equal, metadata today and whatever libtunnel adds there
+// later. That is the provider rewording what it says about this tunnel, not
+// a new tunnel, so the run learns it without a reconnect. Not JSON, or any
+// other difference, is not.
+func messagesOnly(next, saved string) ([]string, bool) {
+	nb, nspec, naside, err := ltv1alpha1.DecodeSpec(next)
+	if err != nil {
+		return nil, false
+	}
+	sb, sspec, saside, err := ltv1alpha1.DecodeSpec(saved)
+	if err != nil || nb != sb || !sameSpec(string(nspec), string(sspec)) {
+		return nil, false
+	}
+	if slices.Equal(naside.Messages, saside.Messages) {
+		return nil, false
+	}
+	messages := naside.Messages
+	naside.Messages, saside.Messages = nil, nil
+	if !reflect.DeepEqual(naside, saside) {
+		return nil, false
+	}
+	return messages, true
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

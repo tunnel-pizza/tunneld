@@ -185,7 +185,7 @@ else is the origins', passed through exactly as it was sent.
 | Path | Auth | Answers |
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
-| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — or a bare `404` before the first save |
+| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` in its public form (`Basic charset="UTF-8"`, realm and hash left out; the file on disk keeps them), or a bare `404` before the first save |
 
 Everything but `ping` needs `Authorization: token <secret>`, the running
 tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
@@ -406,6 +406,10 @@ it last said.
 A narrow window drops what it cannot hold, in order: the build first, then the
 counts, and the keys last. Above the frame, centred and one row each, sit the
 messages the provider sent with the mint, as text with their links by name.
+They can change while the run is up: a spec sent to `/_tunneld/.env` that
+differs from the running one only in its messages is taken in place, with no
+reconnect, and every frame redraws (and resizes, when the number of rows
+changes). An open multiview panel picks the change up on its next load.
 
 Every key reaches the program or the container except one:
 
@@ -988,7 +992,10 @@ directory comes up protected; Public is written as a bare
 Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
 
 - with the tunnel secret (`Authorization: token <secret>`), as for any
-  variable, answered `200` with the file; or
+  variable, answered `200` with the file as `GET` serves it. A protected
+  run's file comes back with the password in its public form, which is not
+  a challenge `PATCH` takes (no `pw`): to write the whole file back, leave
+  that line out; or
 - with a **grant**: every `GET /_tunneld/.env` made with the secret answers an
   `X-Tunneld-Grant`, a single-use token good for a minute that may change only
   `TUNNELD_WWW_AUTHENTICATE`, never the spec. tunnel.pizza hands it to the
@@ -999,7 +1006,15 @@ Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
   (`https://<provider>`) and no other.
 
 A PATCH is all or nothing: a value that does not parse is a `400` and changes
-nothing. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
+nothing. `GET /_tunneld/.env` answers an `ETag`; a PATCH carrying `If-Match`
+that names a file other than the current one is a `412` that changes nothing,
+so a caller that read the file and writes it back cannot overwrite a newer
+one.
+
+Every mint tells the provider what the tunnel's gate is:
+`X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
+realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
+publicly accessible." out of a protected tunnel's messages. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
 as a visitor would see it, absent when the tunnel is public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so

@@ -465,3 +465,148 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// changingMotd is a banner that can change under a session, as the real motd
+// does when a messages-only spec arrives.
+type changingMotd struct {
+	rows    []string
+	changed chan struct{}
+}
+
+func (m *changingMotd) Lines(int) []string       { return m.rows }
+func (m *changingMotd) Changed() <-chan struct{} { return m.changed }
+
+// TestMotdChangeResizesThePane pins the live banner: a change that alters
+// the banner's height renegotiates the pane (shrinking or growing it) and
+// wakes every viewer; one that keeps the height only wakes them.
+func TestMotdChangeResizesThePane(t *testing.T) {
+	m := &changingMotd{rows: []string{"WARNING public"}, changed: make(chan struct{})}
+	s := &session{
+		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight-1),
+		viewers: map[*viewer]struct{}{},
+		size:    size(80, 24),
+		motd:    m,
+		resize:  make(chan remotecommand.TerminalSize, 1),
+	}
+	v := &viewer{wake: make(chan struct{}, 1), size: size(80, 24)}
+	s.viewers[v] = struct{}{}
+
+	m.rows = nil // Public → Password: the warning goes
+	s.motdChanged()
+	if h := s.em.Height(); h != 24-chromeHeight {
+		t.Errorf("pane height = %d after the banner went, want %d", h, 24-chromeHeight)
+	}
+	select {
+	case got := <-s.resize:
+		if got != size(80-chromeWidth, 24-chromeHeight) {
+			t.Errorf("target resized to %v", got)
+		}
+	default:
+		t.Error("the target was not told the new size")
+	}
+	select {
+	case <-v.wake:
+	default:
+		t.Error("the viewer was not woken")
+	}
+
+	s.motdChanged() // same height again: a wake, no resize
+	select {
+	case got := <-s.resize:
+		t.Errorf("an unchanged banner resized the target to %v", got)
+	default:
+	}
+	select {
+	case <-v.wake:
+	default:
+		t.Error("an unchanged banner did not wake the viewer")
+	}
+}
+
+// swappingMotd closes and replaces its channel on each change, as the real
+// motd does, may be changed from another goroutine, and says when it is read.
+type swappingMotd struct {
+	mu      sync.Mutex
+	rows    []string
+	changed chan struct{}
+	asked   chan struct{} // a Changed call
+	read    chan struct{} // a Lines call
+}
+
+func signal(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
+}
+
+func (m *swappingMotd) Lines(int) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	signal(m.read)
+	return m.rows
+}
+
+func (m *swappingMotd) Changed() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	signal(m.asked)
+	return m.changed
+}
+
+func (m *swappingMotd) learn(rows []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rows = rows
+	close(m.changed)
+	m.changed = make(chan struct{})
+}
+
+// TestFollowMotdSeesAChangeDuringTheLast pins followMotd against a change
+// that lands while the previous one is still being applied: the banner
+// changes again after the first change's height was read and before the
+// target took it, and the pane must still end at the second change's height.
+func TestFollowMotdSeesAChangeDuringTheLast(t *testing.T) {
+	m := &swappingMotd{
+		rows:    []string{"WARNING public"},
+		changed: make(chan struct{}),
+		asked:   make(chan struct{}, 1),
+		read:    make(chan struct{}, 1),
+	}
+	s := &session{
+		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight-1),
+		viewers: map[*viewer]struct{}{},
+		size:    size(80, 24),
+		motd:    m,
+		resize:  make(chan remotecommand.TerminalSize), // unbuffered, as in a run
+	}
+	s.viewers[&viewer{wake: make(chan struct{}, 1), size: size(80, 24)}] = struct{}{}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go s.followMotd(ctx, m)
+	wait := func(c chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-c:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("followMotd never %s", what)
+		}
+	}
+	wait(m.asked, "asked for the change channel")
+
+	m.learn(nil) // Public → Password
+	wait(m.read, "read the banner")
+	// The first apply now waits on the target; the next change lands meanwhile.
+	m.learn([]string{"WARNING public"})
+
+	for i, want := range []uint16{24 - chromeHeight, 24 - chromeHeight - 1} {
+		select {
+		case got := <-s.resize:
+			if got != size(80-chromeWidth, want) {
+				t.Fatalf("resize %d = %v, want height %d", i+1, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("change %d was never applied", i+1)
+		}
+	}
+}

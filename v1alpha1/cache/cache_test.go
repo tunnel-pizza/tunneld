@@ -157,8 +157,8 @@ func TestHandlers(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		h(w, httptest.NewRequest(method, "/under/.env", strings.NewReader(body)))
-		if got := w.Header().Get("Cache-Control"); got != "no-store" {
-			t.Errorf("%s: Cache-Control = %q, want no-store", method, got)
+		if got := w.Header().Get("Cache-Control"); got != "no-store, no-transform" {
+			t.Errorf("%s: Cache-Control = %q, want no-store, no-transform", method, got)
 		}
 		return w
 	}
@@ -689,7 +689,7 @@ func TestGrants(t *testing.T) {
 	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
 	get := call(c, "GET", "", "")
 	grant := get.Header().Get(v1.GrantHeader)
-	if grant == "" || get.Header().Get("Cache-Control") != "no-store" {
+	if grant == "" || !strings.Contains(get.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("GET .env issued no grant (%q) or is cacheable", grant)
 	}
 	if !c.Grant(grant) || !c.Grant(grant) {
@@ -755,5 +755,74 @@ func TestInMemoryCache(t *testing.T) {
 	}
 	if rec := call(c, "GET", "", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), authValue) {
 		t.Errorf("in-memory GET = %d %q", rec.Code, rec.Body)
+	}
+}
+
+// TestETag pins the read-then-write guard tunnel.pizza's sync relies on: GET
+// names the file, a PATCH naming another one is a 412 that applies nothing,
+// so a sync that lost a race with a respec cannot send the old credential
+// back.
+func TestETag(t *testing.T) {
+	c, applied := mutableCache(t)
+	tag := call(c, "GET", "", "").Header().Get("ETag")
+	if !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) || len(tag) < 10 {
+		t.Fatalf("ETag = %q, want a quoted hash", tag)
+	}
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	patchIf := func(ifMatch string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
+		req.Header.Set("If-Match", ifMatch)
+		rec := httptest.NewRecorder()
+		c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
+		return rec
+	}
+	if rec := patchIf(`"not-the-file"`); rec.Code != 412 || len(*applied) != 0 {
+		t.Errorf("stale If-Match = %d, applied %q; want 412, nothing", rec.Code, *applied)
+	}
+	if rec := patchIf(tag); rec.Code != 200 || len(*applied) != 1 {
+		t.Errorf("fresh If-Match = %d, applied %d; want 200, one", rec.Code, len(*applied))
+	}
+	if next := call(c, "GET", "", "").Header().Get("ETag"); next == tag {
+		t.Error("the ETag did not change with the file")
+	}
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"="); rec.Code != 200 {
+		t.Errorf("no If-Match = %d, want 200 as before", rec.Code)
+	}
+}
+
+// TestServedFileHidesThePassword pins what .env hands its reader: the
+// password variable in its redacted form, never the hash, in a GET and in a
+// PATCH's answer alike, while the file on disk keeps the hash so a restart
+// is still protected. The ETag names what is served, so If-Match works on
+// what a reader actually read. And no hop may transform it (a compressing
+// edge would weaken the ETag).
+func TestServedFileHidesThePassword(t *testing.T) {
+	c, o, path := fixed(t, "http://localhost:3000")
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s")),
+		cache.WithMutable(v1.WWWAuthenticateEnv, func(string) error { return nil }, func(string) {}),
+		cache.WithRedact(v1.WWWAuthenticateEnv, func(string) string { return `Basic charset="UTF-8"` }))
+	<-c.Spec()
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	patch := call(c, "PATCH", "", line)
+	if patch.Code != 200 || strings.Contains(patch.Body.String(), "pbkdf2") {
+		t.Errorf("PATCH answered %d with the hash: %q", patch.Code, patch.Body)
+	}
+	get := call(c, "GET", "", "")
+	if strings.Contains(get.Body.String(), "pbkdf2") || !strings.Contains(get.Body.String(), v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
+		t.Errorf("GET .env = %q, want the redacted form", get.Body)
+	}
+	if cc := get.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") || !strings.Contains(cc, "no-transform") {
+		t.Errorf("Cache-Control = %q, want no-store and no-transform", cc)
+	}
+	disk, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(disk), "pbkdf2") {
+		t.Errorf("the file on disk lost the hash (%v):\n%s", err, disk)
+	}
+	req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
+	req.Header.Set("If-Match", get.Header().Get("ETag"))
+	rec := httptest.NewRecorder()
+	c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
+	if rec.Code != 200 {
+		t.Errorf("If-Match with the ETag of what GET served = %d, want 200", rec.Code)
 	}
 }

@@ -363,6 +363,9 @@ type fakeTunnel struct {
 	// messages is what Messages hands back: what the provider said with the
 	// spec, as libtunnel would carry it.
 	messages []string
+	// serialized, when set, is what Serialize hands back: a real envelope,
+	// for a case about envelopes.
+	serialized string
 	// ctx is what WithContext was handed: the context the tunnel lives on.
 	// Like a real tunnel, it ends when that does — unless it lingers, still
 	// draining, until the test ends it.
@@ -436,6 +439,9 @@ func (f *fakeTunnel) Secret() []byte {
 }
 
 func (f *fakeTunnel) Serialize() string {
+	if f.serialized != "" {
+		return f.serialized
+	}
 	if f.url == nil {
 		return ""
 	}
@@ -3202,5 +3208,113 @@ func TestWWWAuthenticateIsEnvironmentOnly(t *testing.T) {
 		if env == v1.WWWAuthenticateEnv {
 			t.Error("flagEnv names the variable")
 		}
+	}
+}
+
+// TestRunLearnsAMessagesOnlySpec pins the provider rewording what it says
+// about a running tunnel (the "publicly accessible" warning following a
+// password): learned and saved in place, with no stop and no mint, and the
+// save's own echo through the spec channel passed over quietly.
+func TestRunLearnsAMessagesOnlySpec(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
+	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["tip"]}`
+	tun := live(public)
+	tun.serialized = env
+	h := newRunHarness(t, tun, ":3000")
+	h.cache.specs = make(chan string, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	saves := 0
+	h.cache.onSave = func() {
+		saves++
+		if saves == 1 {
+			go func() {
+				for len(h.cache.specs) > 0 { // the run takes its own save first
+					time.Sleep(time.Millisecond)
+				}
+				h.cache.specs <- quieter
+			}()
+			return
+		}
+		// The messages-only save. Its echo lands on the channel too; give
+		// the run a moment to pass it over, then end.
+		go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+	}
+	if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if len(h.specs) != 1 {
+		t.Errorf("minted %d times (%q), want once: no respec", len(h.specs), h.specs)
+	}
+	if !slices.Equal(h.motd.learned, []string{"tip"}) {
+		t.Errorf("motd learned %q, want the new messages", h.motd.learned)
+	}
+	if h.cache.spec != quieter {
+		t.Errorf("cached spec = %q, want the new envelope", h.cache.spec)
+	}
+	if strings.Contains(h.stderr.String(), "already has") {
+		t.Errorf("the save's own echo was logged as a resend:\n%s", h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "the provider's messages changed") {
+		t.Errorf("no log line for the change:\n%s", h.stderr.String())
+	}
+}
+
+// TestEveryMintSaysTheVisibility pins X-Tunneld-Authenticate on the mint
+// request: the gate's public challenges, realm left out, when the tunnel is
+// protected, and no header at all when it is public, so a provider treats a
+// public run exactly as before.
+func TestEveryMintSaysTheVisibility(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+	for name, tc := range map[string]struct {
+		env  string // "" leaves the variable unset
+		want []string
+	}{
+		"protected": {pw, []string{v1.AuthenticateHeader + `: Basic charset="UTF-8"`}},
+		"public":    {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tun := live(public)
+			h := newRunHarness(t, tun, ":3000")
+			if tc.env != "" {
+				t.Setenv(v1.WWWAuthenticateEnv, tc.env)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			var got []string
+			for _, hd := range tun.headers {
+				if strings.HasPrefix(hd, v1.AuthenticateHeader+":") {
+					got = append(got, hd)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("mint headers %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDotenvServesNoHash pins the builder's wiring of the password's
+// redaction: a run's .env, as served, says the challenge in public form and
+// never carries the hash, so nobody reading it (tunnel.pizza included)
+// receives the password's hash.
+func TestDotenvServesNoHash(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+	h := newRunHarness(t, live(public), ":3000")
+	t.Setenv(v1.WWWAuthenticateEnv, pw)
+	ctx, cancel := context.WithCancel(t.Context())
+	v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+	_ = h.run(t, ctx, "--no-cache", ":3000")
+	serve := h.b.runCache.Handlers(router.ControlPath)[router.ControlPath+".env"]
+	rec := httptest.NewRecorder()
+	serve(rec, httptest.NewRequest("GET", router.ControlPath+".env", nil))
+	body := rec.Body.String()
+	if rec.Code != 200 || strings.Contains(body, "pbkdf2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
+		t.Errorf("GET .env = %d %q, want the public form and no hash", rec.Code, body)
 	}
 }
