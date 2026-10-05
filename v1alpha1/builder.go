@@ -24,6 +24,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -240,6 +241,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			{"binder", b.binder == nil},
 			{"router", b.router == nil},
 			{"motd", b.motd == nil},
+			{"auth", b.auth == nil},
 			{"log", b.log == nil},
 			{"run", b.run == nil},
 		} {
@@ -538,9 +540,16 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// so a run started with --no-cache does not leave an embedder's builder
 	// without a cache for the next one.
 	spec := b.cache
-	if b.noCache || spec == nil {
+	switch {
+	case spec == nil:
 		spec = noCache{}
+	case b.noCache:
+		// --no-cache is about the hostname, not the control path: an
+		// in-memory cache keeps the spec, the secret and .env for this run
+		// and writes nothing, so a password still works.
+		spec = cache.New(cache.WithDir(""))
 	}
+	b.runCache = spec
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
@@ -582,6 +591,34 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			ws = i
 		}
 	}
+	// Loaded here, before anything is routed, because the cache file is one
+	// of the places the password comes from, and the password has to be in
+	// place before a visitor can reach anything. The variable is registered
+	// with the cache so a PATCH to .env checks and applies it the same way.
+	loaded := spec.Load(cache.WithOrigins(origins), cache.WithLog(log),
+		cache.WithMutable(v1.WWWAuthenticateEnv,
+			func(v string) error { _, err := auth.Parse(v); return err },
+			func(v string) { _ = b.auth.Set(v) }),
+		cache.WithPublic(b.auth.Public))
+
+	// The password: the environment if the variable is set at all (set and
+	// empty is a deliberate Public), else the file's line if it has one
+	// (present and empty, likewise), else unset, which is public today and
+	// what a provider default will fill. LookupEnv rather than viper, which
+	// would read set-and-empty as unset. A value that does not parse stops
+	// the run: a password the operator asked for and silently did not get is
+	// worse than not starting.
+	value, set := os.LookupEnv(v1.WWWAuthenticateEnv)
+	if !set {
+		value, set = spec.Mutable(v1.WWWAuthenticateEnv)
+	}
+	if set {
+		if err := b.auth.Set(value); err != nil {
+			return fmt.Errorf("%s: %w", v1.WWWAuthenticateEnv, err)
+		}
+		spec.SetMutable(v1.WWWAuthenticateEnv, value)
+	}
+
 	// The router lasts the run, not one tunnel: the run cancels it once it is
 	// over and its tunnel has drained. It is stood up here, immediately before
 	// the tunnel it is handed to, so nothing between the two can return and
@@ -591,10 +628,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithWebSockets(ws),
 		router.WithHandler(b.display.Panel(b.multiview, origins, log)),
 		// The run's cached spec on the control path: the cache keeps the
-		// origins it was last loaded under, just below, and saved under once
-		// the tunnel is up. A run with caching off serves none. The spec is
-		// the hostname's credential and nothing guards it yet.
+		// origins it was loaded under, above, and saved under once the
+		// tunnel is up. The tunnel secret guards it, and a grant the cache
+		// issues may PATCH the password, from the provider's origin.
 		router.WithCache(spec),
+		router.WithAuth(b.auth),
+		router.WithAllowOrigin(router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider))),
 		router.WithLog(log),
 		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
@@ -610,7 +649,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// waits on it — the run's, start to end. What was settled above is handed
 	// over with it, and so is everything a tunnel is shown through.
 	return b.run.Run(ctx,
-		run.WithSpec(spec.Load(cache.WithOrigins(origins), cache.WithLog(log))),
+		run.WithSpec(loaded),
 		run.WithTunnel(b.newTunnel),
 		run.WithToken(token),
 		run.WithUserAgent(UserAgent()),

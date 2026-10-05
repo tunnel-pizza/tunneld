@@ -33,6 +33,7 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
@@ -500,6 +501,41 @@ type fakeCache struct {
 	// specs is what Spec hands out, nil for a cache that never has a new
 	// spec. Like the real one, each Save lands the saved spec on it too.
 	specs chan string
+	// mutable is what the fake's file says; recorded is what SetMutable kept.
+	mutable  map[string]string
+	recorded map[string]string
+}
+
+// Mutable is what the fake's file says about name.
+func (f *fakeCache) Mutable(name string) (string, bool) { v, ok := f.mutable[name]; return v, ok }
+
+// SetMutable records what the builder settled, for a case to read back.
+func (f *fakeCache) SetMutable(name, value string) {
+	if f.recorded == nil {
+		f.recorded = map[string]string{}
+	}
+	f.recorded[name] = value
+}
+
+// fakeAuth is the real auth, recording each value Set and whether the router
+// had been configured yet when it was: the password must be in place before
+// anything can be routed to.
+type fakeAuth struct {
+	*auth.AuthImpl
+	router         *fakeRouter
+	sets           []string
+	setBeforeRoute bool
+}
+
+func (f *fakeAuth) Set(v string) error {
+	if err := f.AuthImpl.Set(v); err != nil {
+		return err
+	}
+	f.sets = append(f.sets, v)
+	if f.router != nil && f.router.configured == nil {
+		f.setBeforeRoute = true
+	}
+	return nil
 }
 
 // Spec is every spec the fake takes, as the real cache hands them on.
@@ -778,6 +814,7 @@ type runHarness struct {
 	binder  *fakeBinder
 	router  *fakeRouter
 	motd    *fakeMotd
+	auth    *fakeAuth
 	order   []string
 	stdout  bytes.Buffer
 	stderr  bytes.Buffer
@@ -795,12 +832,17 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	// The provider travels by environment and the run sets it; blanked so a
 	// case can read back exactly what this run set.
 	t.Setenv(ltv1.CloudflareProviderEnv, "")
+	// Unset by default: a developer's shell must not protect a case's run.
+	// t.Setenv records the original for cleanup; the Unsetenv then holds.
+	t.Setenv(v1.WWWAuthenticateEnv, "")
+	os.Unsetenv(v1.WWWAuthenticateEnv)
 	h := &runHarness{tunnels: []*fakeTunnel{tun}}
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
 	h.binder = &fakeBinder{}
 	h.router = &fakeRouter{}
 	h.motd = &fakeMotd{}
+	h.auth = &fakeAuth{AuthImpl: auth.New(), router: h.router}
 	tun.order = &h.order
 	h.b = New(
 		WithOrigin(urls...),
@@ -821,6 +863,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		WithBinder(h.binder),
 		WithRouter(h.router),
 		WithMotd(h.motd),
+		WithAuth(h.auth),
 	)
 	return h
 }
@@ -1381,16 +1424,22 @@ func TestRun(t *testing.T) {
 			t.Errorf("GET .env named the run %q, want the key it saved under (%q)", key, h.cache.key)
 		}
 	})
-	t.Run("a run with caching off serves nothing", func(t *testing.T) {
+	t.Run("a run with caching off serves its .env from memory", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		h.cache.cached = "cached-spec"
 		ctx, cancel := context.WithCancel(t.Context())
 		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
 		_ = h.run(t, ctx, "--no-cache", ":3000")
-		// No cache is no secret, so the control path refuses before it is
-		// asked what was saved.
-		if code, body, _ := envOf(t, h); code == 200 || body != "" {
-			t.Errorf("GET .env with --no-cache = %d %q, want nothing served", code, body)
+		// --no-cache is about the hostname, not the control path: the run
+		// keeps its spec in memory, so .env answers (and a password can be
+		// set), while the file the cache would write is never touched and
+		// the cached spec is never replayed.
+		code, body, _ := envOf(t, h)
+		if code != 200 || !strings.HasPrefix(body, "LIBTUNNEL_SPEC=") || strings.Contains(body, "cached-spec") {
+			t.Errorf("GET .env with --no-cache = %d %q, want this run's spec from memory", code, body)
+		}
+		if h.cache.saved {
+			t.Error("--no-cache saved to the on-disk cache")
 		}
 	})
 
@@ -3060,6 +3109,98 @@ func TestFieldsSplitLikeAShell(t *testing.T) {
 	} {
 		if got := fields(tc.in); !slices.Equal(got, tc.want) {
 			t.Errorf("fields(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestRunSettlesThePassword pins where a run's password comes from and when:
+// the environment if the variable is set at all, else the cache file's line
+// if it has one, set on auth before anything is routed, and recorded for the
+// file. An invalid value stops the run, naming the variable.
+func TestRunSettlesThePassword(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+
+	runTo := func(t *testing.T, h *runHarness) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+	}
+
+	t.Run("the environment beats the cache, and is set before routing", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		t.Setenv(v1.WWWAuthenticateEnv, pw)
+		h.cache.mutable = map[string]string{v1.WWWAuthenticateEnv: ""}
+		runTo(t, h)
+		if h.auth.Value() != pw || !h.auth.setBeforeRoute {
+			t.Errorf("auth = %q, set before route %v; want the environment's, before", h.auth.Value(), h.auth.setBeforeRoute)
+		}
+		if h.cache.recorded[v1.WWWAuthenticateEnv] != pw {
+			t.Errorf("recorded %q", h.cache.recorded)
+		}
+	})
+	t.Run("set and empty in the environment is public, over a cached password", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		t.Setenv(v1.WWWAuthenticateEnv, "")
+		h.cache.mutable = map[string]string{v1.WWWAuthenticateEnv: pw}
+		runTo(t, h)
+		if h.auth.Value() != "" || len(h.auth.sets) != 1 {
+			t.Errorf("auth = %q after %q, want public, set deliberately", h.auth.Value(), h.auth.sets)
+		}
+	})
+	t.Run("a cached password applies when the environment says nothing", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.mutable = map[string]string{v1.WWWAuthenticateEnv: pw}
+		runTo(t, h)
+		if h.auth.Value() != pw {
+			t.Errorf("auth = %q, want the cached password", h.auth.Value())
+		}
+	})
+	t.Run("a cached empty line stays public", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		h.cache.mutable = map[string]string{v1.WWWAuthenticateEnv: ""}
+		runTo(t, h)
+		if h.auth.Value() != "" || h.cache.recorded[v1.WWWAuthenticateEnv] != "" {
+			t.Errorf("auth = %q", h.auth.Value())
+		}
+	})
+	t.Run("an invalid value in the environment stops the run, naming it", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		t.Setenv(v1.WWWAuthenticateEnv, "Basic nope")
+		err := h.run(t, t.Context())
+		if err == nil || !strings.Contains(err.Error(), v1.WWWAuthenticateEnv) {
+			t.Errorf("err = %v, want one naming %s", err, v1.WWWAuthenticateEnv)
+		}
+	})
+	t.Run("--no-cache runs on an in-memory cache, not noCache", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000")
+		ctx, cancel := context.WithCancel(t.Context())
+		v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+		_ = h.run(t, ctx, "--no-cache", ":3000")
+		if _, ok := h.b.runCache.(*cache.CacheImpl); !ok {
+			t.Errorf("runCache = %T, want *cache.CacheImpl (in memory)", h.b.runCache)
+		}
+	})
+}
+
+// TestWWWAuthenticateIsEnvironmentOnly pins that no command line can set a
+// password: no flag, nothing in --help, nothing in flagEnv.
+func TestWWWAuthenticateIsEnvironmentOnly(t *testing.T) {
+	cmd := New().Command()
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if strings.Contains(strings.ToLower(f.Name), "auth") || strings.Contains(f.Usage, v1.WWWAuthenticateEnv) {
+			t.Errorf("flag %q reaches the password", f.Name)
+		}
+	})
+	if strings.Contains(cmd.UsageString(), v1.WWWAuthenticateEnv) {
+		t.Error("--help mentions the variable")
+	}
+	for _, env := range flagEnv {
+		if env == v1.WWWAuthenticateEnv {
+			t.Error("flagEnv names the variable")
 		}
 	}
 }
