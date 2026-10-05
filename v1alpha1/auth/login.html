@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>{{.Host}}</title>
+<style>
+  /* Everything is here, in unreachable.html's palette: no font, stylesheet
+     or image is fetched, so the page asks nothing of any other host. */
+  :root {
+    --paper: #fafaf9;
+    --ink: #1c1917;
+    --muted: #57534e;
+    --rule: #e7e5e4;
+    --well: #f0efed;
+    --live: #c2410c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0c0a09;
+      --ink: #e7e5e4;
+      --muted: #a8a29e;
+      --rule: #292524;
+      --well: #1c1917;
+      --live: #fb923c;
+    }
+  }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    box-sizing: border-box;
+    min-height: 100vh;
+    margin: 0;
+    padding: 2rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    font: 1rem/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  form { width: 100%; max-width: 22rem; margin: 0 auto; display: grid; gap: .75rem; }
+  h1 { margin: 0; font-size: 1.125rem; font-weight: 600; word-break: break-all; }
+  p { margin: 0; color: var(--muted); font-size: .9375rem; }
+  .error { color: var(--live); }
+  input, button {
+    font: inherit;
+    padding: .625rem .75rem;
+    border-radius: .5rem;
+    border: 1px solid var(--rule);
+    background: var(--well);
+    color: var(--ink);
+  }
+  button { background: var(--ink); color: var(--paper); border-color: var(--ink); cursor: pointer; }
+</style>
+</head>
+<body>
+<form method="post" action="/_tunneld/login">
+  <h1>{{.Host}}</h1>
+  <p>This tunnel is password protected.</p>
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <input type="text" name="username" value="{{.Host}}" autocomplete="username" readonly hidden>
+  <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
+  <input type="hidden" name="next" value="{{.Next}}">
+  <button type="submit">Continue</button>
+</form>
+</body>
+</html>
