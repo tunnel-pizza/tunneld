@@ -146,7 +146,7 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if _, pw, ok := r.BasicAuth(); ok {
-			good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, pw, s.verifyAny)
+			good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, s.value, pw, s.verifyAny)
 			if retry > 0 {
 				refuse(w, http.StatusTooManyRequests, "Retry-After", strconv.Itoa(retry))
 				return
@@ -278,7 +278,7 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 			a.render(w, r, http.StatusServiceUnavailable, next, "This tunnel is still starting. Try again in a moment.")
 			return
 		}
-		good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, r.PostForm.Get("password"), s.verifyAny)
+		good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, s.value, r.PostForm.Get("password"), s.verifyAny)
 		a.log.Info("a login", "ok", good, "held", retry > 0)
 		switch {
 		case retry > 0:

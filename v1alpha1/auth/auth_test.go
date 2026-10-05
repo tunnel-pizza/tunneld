@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -211,5 +212,36 @@ func TestLogin(t *testing.T) {
 	}
 	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" {
 		t.Errorf("login with nothing set: %d %q, want 303 /app", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// newVector is a second password's hash, for rotating to.
+const newVector = "$pbkdf2-sha256$i=100000$dHVubmVsLnBpenphL3YwMg$SwD1pS+RqRBIgMZ4nJP7ZDAi5GjNdYnIu59/gU6LefI"
+
+// TestRotationRevokesAnInFlightPassword pins that rotating a password revokes
+// the old one even when a request verified it while Set ran: that check's
+// answer belongs to the old value, not to whatever the value is when it lands
+// in the verified cache.
+func TestRotationRevokesAnInFlightPassword(t *testing.T) {
+	a := protected(t)
+	key := cookieKey([]byte("s3cr3t"))
+	old := a.state.Load()
+	if err := a.Set(`Basic pw="` + newVector + `"`); err != nil {
+		t.Fatal(err)
+	}
+	// The request that loaded the old state finishes now, after Set emptied
+	// the cache, and records what it verified.
+	if ok, _ := a.guard.check(context.Background(), "", key, old.value, password, old.verifyAny); !ok {
+		t.Fatal("the in-flight check did not verify against the old value")
+	}
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.SetBasicAuth("", password)
+	if rec := serve(a.Handler(origin()), req); rec.Code != 401 || rec.Header().Get("Set-Cookie") != "" {
+		t.Errorf("the old password after rotation = %d, cookie %q; want 401 and none", rec.Code, rec.Header().Get("Set-Cookie"))
+	}
+	req = httptest.NewRequest("GET", "/x", nil)
+	req.SetBasicAuth("", "new-password-123")
+	if rec := serve(a.Handler(origin()), req); rec.Code != 200 {
+		t.Errorf("the new password = %d, want 200", rec.Code)
 	}
 }

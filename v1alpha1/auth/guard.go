@@ -47,7 +47,8 @@ func newGuard(now func() time.Time) *guard {
 	}
 }
 
-// forget empties the verified cache: on every Set and on a new secret.
+// forget empties the verified cache, on every Set. A new secret needs no
+// forget: the ids are keyed by the cookie key, which the secret derives.
 func (g *guard) forget() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -58,10 +59,17 @@ func (g *guard) forget() {
 // the answer is a 429 rather than a verdict: 1 when no slot came free within
 // a second, 60 when ip has failed too often. key is the cookie key; with none
 // (no secret yet) nothing is cached, since there is nothing to key it with.
-func (g *guard) check(ctx context.Context, ip string, key []byte, password string, verify func(string) bool) (ok bool, retryAfter int) {
+//
+// scope is the value verify checks against, and is part of what the cache
+// remembers: a check that verified the old password while Set ran, and lands
+// after Set emptied the cache, records a verdict about the old value that no
+// request against the new one can find.
+func (g *guard) check(ctx context.Context, ip string, key []byte, scope, password string, verify func(string) bool) (ok bool, retryAfter int) {
 	var id string
 	if key != nil {
 		m := hmac.New(sha256.New, key)
+		m.Write([]byte(scope))
+		m.Write([]byte{0})
 		m.Write([]byte(password))
 		id = hex.EncodeToString(m.Sum(nil))
 		g.mu.Lock()
