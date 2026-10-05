@@ -27,15 +27,34 @@ func (a *TargetImpl) Spawn(ctx context.Context, argv []string, stdin io.Reader, 
 	cmd := exec.CommandContext(ctx, a.path, argv...)
 	// dumb, as over pipes: no cursor to move, no colors anybody asked for.
 	cmd.Env = append(os.Environ(), "TERM=dumb")
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = pipeWait
 	ownGroup(cmd)
 	cmd.Cancel = func() error {
 		_ = hangup(cmd.Process)
 		return kill(cmd.Process)
 	}
+	// stdin is copied here rather than by exec, as attachPipes does. Handed
+	// a reader, exec waits for its own copy of it before Wait returns, and a
+	// session's reader is a pipe that ends only when the session closes it:
+	// a program that exited, or was killed, would never be reported. This
+	// copy is abandoned instead, and ends when the reader does.
+	var in io.WriteCloser
+	if stdin != nil {
+		w, err := cmd.StdinPipe()
+		if err != nil {
+			return -1, err
+		}
+		in = w
+	}
 	if err := cmd.Start(); err != nil {
 		return -1, err
+	}
+	if in != nil {
+		go func() {
+			_, _ = io.Copy(in, stdin)
+			_ = in.Close()
+		}()
 	}
 	err := cmd.Wait()
 	var ee *exec.ExitError

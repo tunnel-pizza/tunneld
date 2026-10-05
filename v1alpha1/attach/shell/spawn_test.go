@@ -98,3 +98,65 @@ func TestSpawnStartFailureIsAnError(t *testing.T) {
 		t.Fatal("Spawn of a missing program returned no error")
 	}
 }
+
+// spawnBounded runs Spawn on a goroutine and gives it until within to
+// return; past that it closes stdin to free a hung Wait and fails, so a
+// regression is a red row rather than a hung suite.
+func spawnBounded(t *testing.T, target *TargetImpl, ctx context.Context, argv []string, stdin *io.PipeReader, within time.Duration) int {
+	t.Helper()
+	type result struct {
+		exit int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		exit, err := target.Spawn(ctx, argv, stdin, io.Discard, io.Discard)
+		done <- result{exit, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Spawn: %v", r.err)
+		}
+		return r.exit
+	case <-time.After(within):
+		_ = stdin.Close()
+		<-done
+		t.Fatalf("Spawn did not return within %v of its program ending while stdin stayed open", within)
+		return 0
+	}
+}
+
+// TestSpawnDoesNotWaitOnAnOpenStdin pins what a session hands Spawn: a pipe
+// that reaches EOF only when the session closes it. A program that exits on
+// its own, or is ended by its context, is still reported promptly — neither
+// can be held hostage by a reader nobody is writing to.
+func TestSpawnDoesNotWaitOnAnOpenStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the rows run sh")
+	}
+	t.Run("the program exits on its own", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		if exit := spawnBounded(t, spawnable(t, "sh"), t.Context(), []string{"-c", "exit 4"}, pr, pipeWait+3*time.Second); exit != 4 {
+			t.Errorf("exit = %d, want 4", exit)
+		}
+	})
+	t.Run("the context ends the program", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+		defer cancel()
+		if exit := spawnBounded(t, spawnable(t, "sh"), ctx, []string{"-c", "sleep 30"}, pr, pipeWait+3*time.Second); exit != -1 {
+			t.Errorf("exit = %d, want -1", exit)
+		}
+	})
+	t.Run("what arrives on the pipe reaches the program", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		go func() { _, _ = io.WriteString(pw, "exit 6\n") }()
+		defer pw.Close()
+		if exit := spawnBounded(t, spawnable(t, "sh"), t.Context(), nil, pr, pipeWait+3*time.Second); exit != 6 {
+			t.Errorf("exit = %d, want the 6 the script said", exit)
+		}
+	})
+}
