@@ -465,3 +465,60 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// changingMotd is a banner that can change under a session, as the real motd
+// does when a messages-only spec arrives.
+type changingMotd struct {
+	rows    []string
+	changed chan struct{}
+}
+
+func (m *changingMotd) Lines(int) []string       { return m.rows }
+func (m *changingMotd) Changed() <-chan struct{} { return m.changed }
+
+// TestMotdChangeResizesThePane pins the live banner: a change that alters
+// the banner's height renegotiates the pane (shrinking or growing it) and
+// wakes every viewer; one that keeps the height only wakes them.
+func TestMotdChangeResizesThePane(t *testing.T) {
+	m := &changingMotd{rows: []string{"WARNING public"}, changed: make(chan struct{})}
+	s := &session{
+		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight-1),
+		viewers: map[*viewer]struct{}{},
+		size:    size(80, 24),
+		motd:    m,
+		resize:  make(chan remotecommand.TerminalSize, 1),
+	}
+	v := &viewer{wake: make(chan struct{}, 1), size: size(80, 24)}
+	s.viewers[v] = struct{}{}
+
+	m.rows = nil // Public → Password: the warning goes
+	s.motdChanged()
+	if h := s.em.Height(); h != 24-chromeHeight {
+		t.Errorf("pane height = %d after the banner went, want %d", h, 24-chromeHeight)
+	}
+	select {
+	case got := <-s.resize:
+		if got != size(80-chromeWidth, 24-chromeHeight) {
+			t.Errorf("target resized to %v", got)
+		}
+	default:
+		t.Error("the target was not told the new size")
+	}
+	select {
+	case <-v.wake:
+	default:
+		t.Error("the viewer was not woken")
+	}
+
+	s.motdChanged() // same height again: a wake, no resize
+	select {
+	case got := <-s.resize:
+		t.Errorf("an unchanged banner resized the target to %v", got)
+	default:
+	}
+	select {
+	case <-v.wake:
+	default:
+		t.Error("an unchanged banner did not wake the viewer")
+	}
+}

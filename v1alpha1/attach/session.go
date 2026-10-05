@@ -227,6 +227,13 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, mo
 
 	s.watch()
 
+	// A motd that can change (the real one can, mid-run, when the provider's
+	// messages are updated) is followed; attach.Motd itself stays Lines, so
+	// a banner that never changes needs nothing more.
+	if c, ok := motd.(interface{ Changed() <-chan struct{} }); ok {
+		go s.followMotd(ctx, c)
+	}
+
 	s.mu.Lock()
 	s.stream()
 	s.mu.Unlock()
@@ -890,9 +897,9 @@ func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.Termina
 }
 
 // bannerRows is how many rows the messages of the day take on top of the box:
-// one each, since Lines returns one row per message whatever the width, and
-// the count is fixed once viewers are connected. That is what makes it the
-// same for every viewer, and what lets the pane's size stay one negotiation.
+// one each, since Lines returns one row per message whatever the width. It is
+// the same for every viewer, which lets the pane's size stay one negotiation;
+// when the messages change mid-run, motdChanged negotiates again.
 //
 // The count is the session's, not any one frame's. A viewer embedded in the
 // panel draws no bar, and simply has this many spare rows around its box:
@@ -902,6 +909,30 @@ func (s *session) bannerRows() int {
 		return 0
 	}
 	return len(s.motd.Lines(0))
+}
+
+// followMotd waits on the motd's changes for the life of the session, taking
+// a fresh channel after each close so it never spins on a closed one.
+func (s *session) followMotd(ctx context.Context, m interface{ Changed() <-chan struct{} }) {
+	for {
+		select {
+		case <-m.Changed():
+			s.motdChanged()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// motdChanged is one change: the banner's height is part of the pane's size,
+// so the pane is settled again (shrinking or growing it, as a window resize
+// would, and telling the target), and every viewer redraws.
+func (s *session) motdChanged() {
+	s.mu.Lock()
+	pane := s.negotiate()
+	s.mu.Unlock()
+	s.apply(context.Background(), pane)
+	s.wakeAll()
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:

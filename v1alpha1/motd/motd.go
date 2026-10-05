@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 
@@ -46,17 +47,23 @@ type Option = v1.Option[*MotdImpl]
 // surface that shows it.
 type MotdImpl struct {
 	messages atomic.Pointer[[]Message]
+
+	// changed is closed by the next Learn, then replaced: how a reader that
+	// draws the messages learns they are different now.
+	mu      sync.Mutex
+	changed chan struct{}
 }
 
 // New returns a MotdImpl that has learned nothing yet, configured by opts.
 func New(opts ...Option) *MotdImpl {
-	return v1.Apply(&MotdImpl{}, opts...)
+	return v1.Apply(&MotdImpl{changed: make(chan struct{})}, opts...)
 }
 
 // Learn takes the messages as libtunnel hands them over. One that does not
 // parse is warned about by its index and dropped; the rest are kept in order.
-// Written once per tunnel — the messages ride its spec, so a new spec
-// replaces what the last one said — and read by every renderer.
+// Each Learn replaces what the last said, whether a new spec brought them or
+// the provider reworded them for the running tunnel (a messages-only spec),
+// and closes Changed so every renderer redraws.
 func (m *MotdImpl) Learn(raw []string, log v1.Logger) {
 	parsed := make([]Message, 0, len(raw))
 	for i, s := range raw {
@@ -68,6 +75,18 @@ func (m *MotdImpl) Learn(raw []string, log v1.Logger) {
 		parsed = append(parsed, msg)
 	}
 	m.messages.Store(&parsed)
+	m.mu.Lock()
+	close(m.changed)
+	m.changed = make(chan struct{})
+	m.mu.Unlock()
+}
+
+// Changed is a channel the next Learn closes. Take a fresh one after each
+// close: any number of readers can wait on it without registering.
+func (m *MotdImpl) Changed() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.changed
 }
 
 // Messages is what was learned, in order; nil before Learn.

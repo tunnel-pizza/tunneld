@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func dataURL(markdown string) string {
@@ -89,5 +90,42 @@ func TestLearnKeepsWhatParsesInOrder(t *testing.T) {
 	m.Learn(nil, log)
 	if got := m.Messages(); len(got) != 0 {
 		t.Errorf("Learn(nil) left %+v, want none", got)
+	}
+}
+
+// TestChanged pins how a reader learns of a change: Changed closes on the
+// next Learn, every reader holding it wakes, and the channel after is fresh.
+func TestChanged(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	m := New()
+	first := m.Changed()
+	select {
+	case <-first:
+		t.Fatal("Changed is closed before anything was learned")
+	default:
+	}
+	readers := make(chan struct{}, 3)
+	for range 3 {
+		go func() { <-first; readers <- struct{}{} }()
+	}
+	m.Learn([]string{"data:text/markdown;base64,PiBbIXdhcm5pbmddIHB1YmxpYw=="}, log)
+	for range 3 {
+		select {
+		case <-readers:
+		case <-time.After(time.Second):
+			t.Fatal("a reader did not wake")
+		}
+	}
+	second := m.Changed()
+	select {
+	case <-second:
+		t.Fatal("the next channel is already closed")
+	default:
+	}
+	m.Learn(nil, log)
+	select {
+	case <-second:
+	case <-time.After(time.Second):
+		t.Fatal("the second Learn did not close the next channel")
 	}
 }
