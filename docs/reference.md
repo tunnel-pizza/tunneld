@@ -1009,7 +1009,8 @@ A PATCH is all or nothing: a value that does not parse is a `400` and changes
 nothing. `GET /_tunneld/.env` answers an `ETag`; a PATCH carrying `If-Match`
 that names a file other than the current one is a `412` that changes nothing,
 so a caller that read the file and writes it back cannot overwrite a newer
-one.
+one. `If-Match` takes `*`, a list, and the tag weakened (`W/"…"`), as a
+compressing hop would return it.
 
 Every mint tells the provider what the tunnel's gate is:
 `X-Tunneld-Authenticate` with the challenge as a visitor would see it (no

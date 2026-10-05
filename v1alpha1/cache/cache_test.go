@@ -800,6 +800,31 @@ func TestETag(t *testing.T) {
 	}
 }
 
+// TestIfMatchForms pins the If-Match forms a PATCH takes beside the bare tag
+// GET answered: "*" (RFC 9110: the file exists), the tag in a list, and the
+// tag come back weakened (W/), since a hop that compressed the response
+// would weaken it and the tag is still this server's own name for the file.
+func TestIfMatchForms(t *testing.T) {
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	for name, form := range map[string]func(tag string) string{
+		"any":      func(string) string { return "*" },
+		"listed":   func(tag string) string { return `"not-the-file", ` + tag },
+		"weakened": func(tag string) string { return "W/" + tag },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, applied := mutableCache(t)
+			tag := call(c, "GET", "", "").Header().Get("ETag")
+			req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
+			req.Header.Set("If-Match", form(tag))
+			rec := httptest.NewRecorder()
+			c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
+			if rec.Code != 200 || len(*applied) != 1 {
+				t.Errorf("If-Match %q = %d, applied %d; want 200, one", form(tag), rec.Code, len(*applied))
+			}
+		})
+	}
+}
+
 // TestServedFileHidesThePassword pins what .env hands its reader: the
 // password variable in its redacted form, never the hash, in a GET and in a
 // PATCH's answer alike, while the file on disk keeps the hash so a restart

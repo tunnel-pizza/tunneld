@@ -572,7 +572,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// A read-then-write caller (tunnel.pizza's messages sync) names the
 			// file it read; if a respec replaced it in between, writing back
 			// what was read would send the old credential as a new spec.
-			if want := r.Header.Get("If-Match"); want != "" && want != etag(c.served()) {
+			if want := r.Header.Get("If-Match"); want != "" && !ifMatch(want, c.served()) {
 				log.Info("refused a patch to .env", "reason", "the file changed since it was read")
 				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
 				return
@@ -677,6 +677,23 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 func etag(file string) string {
 	sum := sha256.Sum256([]byte(file))
 	return `"` + base64.RawURLEncoding.EncodeToString(sum[:]) + `"`
+}
+
+// ifMatch reports whether an If-Match header names file: "*" for any file
+// there is (RFC 9110), or a list holding its tag. A tag that comes back
+// weakened (W/) still matches: a hop that compressed the response weakens
+// it, and it is still this server's own name for the same bytes.
+func ifMatch(header, file string) bool {
+	if strings.TrimSpace(header) == "*" {
+		return file != ""
+	}
+	want := etag(file)
+	for tag := range strings.SplitSeq(header, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(tag), "W/") == want {
+			return true
+		}
+	}
+	return false
 }
 
 // maxDotenv is the most a PATCH body may be: a cache file is one spec and a
