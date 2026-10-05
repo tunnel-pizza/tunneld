@@ -1503,7 +1503,7 @@ func TestDoneReachesTheBinder(t *testing.T) {
 	// The second origin's viewer asks. One channel for all of them, because
 	// what they are asking for is the process.
 	servers := closer.(bound)
-	servers[1].srv.session.endRun()
+	servers.origins[1].srv.session.endRun()
 
 	select {
 	case <-asked:
@@ -1601,10 +1601,10 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 	if !ok {
 		t.Fatalf("closer is %T, want the bound list", closer)
 	}
-	if len(servers) != 2 {
-		t.Fatalf("bound %d servers, want the two containers", len(servers))
+	if len(servers.origins) != 2 {
+		t.Fatalf("bound %d servers, want the two containers", len(servers.origins))
 	}
-	for _, o := range servers {
+	for _, o := range servers.origins {
 		want := fmt.Sprintf("https://example.test/?%d", o.at)
 		if got := o.srv.session.announced(); got != want {
 			t.Errorf("the server at index %d was told %q, want %q", o.at, got, want)
@@ -1613,9 +1613,9 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 
 	// And a caller with fewer addresses than origins leaves them unset rather
 	// than reaching for one that is not there.
-	short := bound{{at: 9, srv: servers[0].srv}}
+	short := bound{origins: []boundOrigin{{at: 9, srv: servers.origins[0].srv}}}
 	short.Announce([]string{"https://example.test/?0"})
-	if got := servers[0].srv.session.announced(); got == "https://example.test/?0" {
+	if got := servers.origins[0].srv.session.announced(); got == "https://example.test/?0" {
 		t.Error("an index past the addresses given took the first one, want it left alone")
 	}
 }
@@ -1780,5 +1780,54 @@ func TestRestartIsNothingForAContainer(t *testing.T) {
 	case <-s.session.ended():
 		t.Error("restart ended a container's run")
 	default:
+	}
+}
+
+// spawningTarget is a stub target that can also spawn, for the one thing
+// Bind has to get right about it: which index it lands on.
+type spawningTarget struct {
+	Target
+	spawned [][]string
+}
+
+func (s *spawningTarget) Spawn(_ context.Context, argv []string, _ io.Reader, _, _ io.Writer) (int, error) {
+	s.spawned = append(s.spawned, argv)
+	return 7, nil
+}
+
+// spawningTargets is stubTargets with one reference, db, opened as a target
+// that can spawn.
+type spawningTargets struct {
+	*stubTargets
+	can *spawningTarget
+}
+
+func (s *spawningTargets) Open(ctx context.Context, ref string, args []string, log *slog.Logger) (Target, error) {
+	target, err := s.stubTargets.Open(ctx, ref, args, log)
+	if err != nil || ref != "db" {
+		return target, err
+	}
+	s.can.Target = target
+	return s.can, nil
+}
+
+// TestSpawnersKeepTheOriginsOrder pins that Bound.Spawners has one slot per
+// shown origin, nil for an address and for a target that cannot spawn, and
+// the target's own spawner where it can — at the index the origin had.
+func TestSpawnersKeepTheOriginsOrder(t *testing.T) {
+	can := &spawningTarget{}
+	targets := &spawningTargets{stubTargets: &stubTargets{}, can: can}
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
+	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+	got := closer.Spawners()
+	if len(got) != 3 || got[0] != nil || got[1] != nil || got[2] == nil {
+		t.Fatalf("Spawners() = %v, want [nil nil spawner]", got)
+	}
+	if exit, _ := got[2].Spawn(t.Context(), []string{"true"}, nil, io.Discard, io.Discard); exit != 7 {
+		t.Errorf("Spawn through Bound = %d, want the target's 7", exit)
 	}
 }

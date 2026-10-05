@@ -689,7 +689,12 @@ type fakeBinder struct {
 	showed atomic.Bool
 	// shows counts the frames drawn: a respec keeps the one that is up.
 	shows atomic.Int32
+	// spawners is what Spawners hands back: one slot per origin the run
+	// shows, as the real binder answers.
+	spawners []attach.Spawner
 }
+
+func (f *fakeBinder) Spawners() []attach.Spawner { return f.spawners }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
 	// Carrying Mirror is how the real binder says a run has exactly one
