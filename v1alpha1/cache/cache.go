@@ -496,7 +496,9 @@ func (c *CacheImpl) logger() v1.Logger {
 // the secret the answer is a 200 carrying the file, as GET would; with a
 // grant, which is used up once something was applied, a 204 carrying the
 // public challenges (v1.AuthenticateHeader) and never the file, which holds
-// the spec. Any other method is a 405 naming GET.
+// the spec. GET answers an ETag naming the file, and a PATCH with If-Match
+// that names another is a 412 that applies nothing. Any other method is a
+// 405 naming GET.
 //
 // No answer is stored anywhere on the way: the file changes with every save,
 // and a stale copy of a credential is one more place it lives.
@@ -520,6 +522,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				return
 			}
 			w.Header().Set(v1.GrantHeader, token)
+			w.Header().Set("ETag", etag(saved))
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = io.WriteString(w, saved)
 		case http.MethodPatch:
@@ -545,6 +548,14 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// written below, since WithSpec only runs inside Save, under it.
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			// A read-then-write caller (tunnel.pizza's messages sync) names the
+			// file it read; if a respec replaced it in between, writing back
+			// what was read would send the old credential as a new spec.
+			if want := r.Header.Get("If-Match"); want != "" && want != etag(c.render()) {
+				log.Info("refused a patch to .env", "reason", "the file changed since it was read")
+				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
+				return
+			}
 			bearer, granted := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 			var g grant
 			if granted {
@@ -639,6 +650,12 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	}
+}
+
+// etag names a file by its content, for If-Match.
+func etag(file string) string {
+	sum := sha256.Sum256([]byte(file))
+	return `"` + base64.RawURLEncoding.EncodeToString(sum[:]) + `"`
 }
 
 // maxDotenv is the most a PATCH body may be: a cache file is one spec and a

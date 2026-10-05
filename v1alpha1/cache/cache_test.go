@@ -757,3 +757,35 @@ func TestInMemoryCache(t *testing.T) {
 		t.Errorf("in-memory GET = %d %q", rec.Code, rec.Body)
 	}
 }
+
+// TestETag pins the read-then-write guard tunnel.pizza's sync relies on: GET
+// names the file, a PATCH naming another one is a 412 that applies nothing,
+// so a sync that lost a race with a respec cannot send the old credential
+// back.
+func TestETag(t *testing.T) {
+	c, applied := mutableCache(t)
+	tag := call(c, "GET", "", "").Header().Get("ETag")
+	if !strings.HasPrefix(tag, `"`) || !strings.HasSuffix(tag, `"`) || len(tag) < 10 {
+		t.Fatalf("ETag = %q, want a quoted hash", tag)
+	}
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	patchIf := func(ifMatch string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
+		req.Header.Set("If-Match", ifMatch)
+		rec := httptest.NewRecorder()
+		c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
+		return rec
+	}
+	if rec := patchIf(`"not-the-file"`); rec.Code != 412 || len(*applied) != 0 {
+		t.Errorf("stale If-Match = %d, applied %q; want 412, nothing", rec.Code, *applied)
+	}
+	if rec := patchIf(tag); rec.Code != 200 || len(*applied) != 1 {
+		t.Errorf("fresh If-Match = %d, applied %d; want 200, one", rec.Code, len(*applied))
+	}
+	if next := call(c, "GET", "", "").Header().Get("ETag"); next == tag {
+		t.Error("the ETag did not change with the file")
+	}
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"="); rec.Code != 200 {
+		t.Errorf("no If-Match = %d, want 200 as before", rec.Code)
+	}
+}
