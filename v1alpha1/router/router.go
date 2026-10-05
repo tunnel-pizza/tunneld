@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,15 +103,20 @@ type RouterImpl struct {
 	// ws is the index of the origin marked +ws, which a WebSocket handshake
 	// with nothing else to route on goes to; -1 for none.
 	ws int
-	// handler wraps the routing handler: the display's panel and its framing
+	// wrap wraps the routing handler: the display's panel and its framing
 	// scrub, which answer or reshape a request before any origin is chosen.
 	// Nil is nothing in front.
-	handler func(http.Handler) http.Handler
-	log     v1.Logger
+	wrap func(http.Handler) http.Handler
+	log  v1.Logger
 	// mux answers the ControlPath: the router's own endpoints, registered on
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
 	mux *http.ServeMux
+	// mounted is every pattern WithHandler put on the mux, in order, and
+	// mountErr the first pattern that was not the control path's: an option
+	// cannot refuse, so Route does, with this.
+	mounted  []string
+	mountErr error
 
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
@@ -206,10 +212,39 @@ func WithWebSockets(ix int) Option {
 	return func(r *RouterImpl) { r.ws = ix }
 }
 
-// WithHandler sets what wraps the routing handler — the display's Panel — or
+// WithWrap sets what wraps the routing handler — the display's Panel — or
 // nothing, when nil.
-func WithHandler(handler func(http.Handler) http.Handler) Option {
-	return func(r *RouterImpl) { r.handler = handler }
+func WithWrap(wrap func(http.Handler) http.Handler) Option {
+	return func(r *RouterImpl) { r.wrap = wrap }
+}
+
+// WithHandler puts h on the router's mux at pattern, which must be under
+// ControlPath: that prefix is the mux's and authorize's, and every other path
+// is an origin's. So whatever answers there is behind the tunnel secret
+// without asking for it. The same pattern twice keeps the first; a pattern
+// outside the control path is refused when the router routes, since an
+// option has no error to return.
+func WithHandler(pattern string, h http.Handler) Option {
+	return func(r *RouterImpl) {
+		if !strings.HasPrefix(pattern, ControlPath) {
+			if r.mountErr == nil {
+				r.mountErr = fmt.Errorf("router: a handler at %q is outside the control path", pattern)
+			}
+			return
+		}
+		e := r.env
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.registered[pattern] {
+			return
+		}
+		if e.registered == nil {
+			e.registered = map[string]bool{}
+		}
+		e.registered[pattern] = true
+		r.mux.Handle(pattern, h)
+		r.mounted = append(r.mounted, pattern)
+	}
 }
 
 // WithCache puts c's Handlers under ControlPath on the router's mux —
@@ -326,12 +361,13 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets and Handler read back what the options set, for a
+// Origins, WebSockets, Wrap and Mounted read back what the options set, for a
 // caller standing in for a router that wants to see what it was handed
 // without standing one up.
-func (r *RouterImpl) Origins() v1.Origins                      { return r.dialable }
-func (r *RouterImpl) WebSockets() int                          { return r.ws }
-func (r *RouterImpl) Handler() func(http.Handler) http.Handler { return r.handler }
+func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
+func (r *RouterImpl) WebSockets() int                       { return r.ws }
+func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
+func (r *RouterImpl) Mounted() []string                     { return slices.Clone(r.mounted) }
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
@@ -404,7 +440,10 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
 	route := *r
 	v1.Apply(&route, opts...)
-	dialable, ws, front, log := route.dialable, route.ws, route.handler, route.log
+	if route.mountErr != nil {
+		return nil, route.mountErr
+	}
+	dialable, ws, front, log := route.dialable, route.ws, route.wrap, route.log
 	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
 	}

@@ -768,7 +768,7 @@ func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL
 	// one that serves.
 	r := router.New(opts...)
 	f.configured = r
-	dialable, front := r.Origins(), r.Handler()
+	dialable, front := r.Origins(), r.Wrap()
 	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
 	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
 	if f.err != nil {

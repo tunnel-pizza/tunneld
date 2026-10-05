@@ -642,7 +642,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	local, err := b.router.Route(ctx,
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
-		router.WithHandler(b.display.Panel(b.multiview, origins, log)),
+		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
 		// The run's cached spec on the control path: the cache keeps the
 		// origins it was loaded under, above, and saved under once the
 		// tunnel is up. The tunnel secret guards it, and a grant the cache
