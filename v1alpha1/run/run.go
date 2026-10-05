@@ -547,7 +547,9 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 }
 
 // wait blocks until the run is over or a new spec arrives for it. A new spec
-// is next, with respec true. Otherwise it says how the run ended: nil for a
+// is next, with respec true, unless it differs from the tunnel's only in its
+// messages (messagesOnly): those are learned and saved in place, and the run
+// keeps waiting. Otherwise it says how the run ended: nil for a
 // signal or a viewer asking it to end, and the tunnel's own verdict when it
 // ends first.
 //
@@ -571,14 +573,26 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 	for waiting := true; waiting; {
 		select {
 		case spec := <-specs:
-			if !sameSpec(spec, saved) {
-				log.Info("a new spec arrived for the run")
-				return spec, true, nil
+			if sameSpec(spec, saved) {
+				if !own {
+					log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+				}
+				own = false
+				continue
 			}
-			if !own {
-				log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+			if messages, ok := messagesOnly(spec, saved); ok {
+				// The provider rewording what it says about this tunnel (the
+				// "publicly accessible" warning following a password): learned
+				// live, saved, and the tunnel kept. A respec would reconnect
+				// every visitor, and replay the spec through the mint.
+				r.motd.Learn(messages, log)
+				r.cache.Save(cache.WithSpec(spec))
+				saved, own = spec, true // the save echoes back; pass it quietly
+				log.Info("the provider's messages changed", "count", len(messages))
+				continue
 			}
-			own = false
+			log.Info("a new spec arrived for the run")
+			return spec, true, nil
 		case <-ctx.Done():
 			waiting = false
 		case <-tun.Done():
