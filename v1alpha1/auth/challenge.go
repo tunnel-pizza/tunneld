@@ -199,13 +199,3 @@ func isToken(s string) bool {
 	}
 	return true
 }
-
-// parsePHC is replaced in the next commit.
-func parsePHC(s string) (phc, error) {
-	if !strings.HasPrefix(s, "$pbkdf2-sha256$i=") || strings.Count(s, "$") != 4 {
-		return phc{}, errors.New("pw is not a $pbkdf2-sha256$i=…$…$… string")
-	}
-	return phc{}, nil
-}
-
-type phc struct{}
