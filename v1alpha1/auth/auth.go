@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -228,13 +229,35 @@ func (a *AuthImpl) setCookie(w http.ResponseWriter, s *state, key []byte) {
 }
 
 // safeNext is next if it is a path on this host outside the control path,
-// "/" otherwise: a next of /_tunneld/logout would clear the cookie just set.
+// "/" otherwise, and in the form it is checked in. It is judged as a browser
+// will read it, not as written:
+//
+//   - a control character or a backslash is refused outright: a browser strips
+//     a tab, so "/\t/evil" arrives as "//evil", a host;
+//   - anything that parses with a scheme or a host is someone else's;
+//   - the path is unescaped and cleaned before the control-path check, so
+//     "/./_tunneld/logout" and "/%5Ftunneld/logout" are what they become;
+//   - what goes out is that cleaned path (and the query), so the check and
+//     the redirect agree.
+//
+// A next of /_tunneld/logout would clear the cookie just set.
 func safeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, `/\`) ||
-		strings.HasPrefix(next, "/_tunneld/") {
+	if strings.ContainsFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f || r == '\\' }) {
 		return "/"
 	}
-	return next
+	u, err := url.Parse(next)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" ||
+		!strings.HasPrefix(u.Path, "/") || strings.HasPrefix(u.Path, "//") {
+		return "/"
+	}
+	clean := path.Clean(u.Path)
+	if clean == "/_tunneld" || strings.HasPrefix(clean, "/_tunneld/") {
+		return "/"
+	}
+	if strings.HasSuffix(u.Path, "/") && clean != "/" {
+		clean += "/"
+	}
+	return (&url.URL{Path: clean, RawQuery: u.RawQuery}).String()
 }
 
 // Handlers is the login page and logout, under the router's control path.

@@ -245,3 +245,35 @@ func TestRotationRevokesAnInFlightPassword(t *testing.T) {
 		t.Errorf("the new password = %d, want 200", rec.Code)
 	}
 }
+
+// TestSafeNext pins where a login or logout may send a browser: a path on
+// this host, outside the control path, in any spelling. A control character
+// (a browser strips a tab, turning "/\t/evil" into "//evil"), a dot-segment or
+// an escaped character that reaches the control path once cleaned or
+// decoded, and anything with a scheme or a host, all go to "/".
+func TestSafeNext(t *testing.T) {
+	for in, want := range map[string]string{
+		"/app":                  "/app",
+		"/app/":                 "/app/",
+		"/app?x=1&y=2":          "/app?x=1&y=2",
+		"/":                     "/",
+		"":                      "/",
+		"app":                   "/",
+		"//evil.example":        "/",
+		`/\evil.example`:        "/",
+		"/\t/evil.example":      "/",
+		"/\n/evil.example":      "/",
+		"https://evil.example":  "/",
+		"/_tunneld/logout":      "/",
+		"/./_tunneld/logout":    "/",
+		"/x/../_tunneld/logout": "/",
+		"/%5Ftunneld/logout":    "/",
+		"/_tunneld":             "/",
+		"/a/b/../c":             "/a/c",
+		"/%2F%2Fevil.example":   "/",
+	} {
+		if got := safeNext(in); got != want {
+			t.Errorf("safeNext(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
