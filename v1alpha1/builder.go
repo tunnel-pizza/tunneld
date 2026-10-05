@@ -620,8 +620,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// what a provider default will fill. LookupEnv rather than viper, which
 	// would read set-and-empty as unset. A value that does not parse stops
 	// the run: a password the operator asked for and silently did not get is
-	// worse than not starting.
+	// worse than not starting. Read once and unset: every program the run
+	// starts, the shell a viewer types into among them, would inherit the
+	// hash, and a stale one once the password changes.
 	value, set := os.LookupEnv(v1.WWWAuthenticateEnv)
+	_ = os.Unsetenv(v1.WWWAuthenticateEnv)
 	if !set {
 		value, set = spec.Mutable(v1.WWWAuthenticateEnv)
 	}

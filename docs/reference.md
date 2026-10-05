@@ -1043,7 +1043,7 @@ after construction still lands.
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. |
+| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

@@ -3148,6 +3148,19 @@ func TestRunSettlesThePassword(t *testing.T) {
 			t.Errorf("recorded %q", h.cache.recorded)
 		}
 	})
+	t.Run("the environment's password is gone from the environment once read", func(t *testing.T) {
+		// Every program the run starts (the shell a viewer types into among
+		// them) inherits the environment; the hash is not theirs to read.
+		h := newRunHarness(t, live(public), ":3000")
+		t.Setenv(v1.WWWAuthenticateEnv, pw)
+		runTo(t, h)
+		if v, set := os.LookupEnv(v1.WWWAuthenticateEnv); set {
+			t.Errorf("%s still set after the run read it: %q", v1.WWWAuthenticateEnv, v)
+		}
+		if h.auth.Value() != pw {
+			t.Errorf("auth = %q, want the environment's", h.auth.Value())
+		}
+	})
 	t.Run("set and empty in the environment is public, over a cached password", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		t.Setenv(v1.WWWAuthenticateEnv, "")
