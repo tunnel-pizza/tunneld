@@ -1102,3 +1102,34 @@ func TestUnroutableWebSocketWarns(t *testing.T) {
 		t.Errorf("warning does not name its own fix (+ws): %q", got)
 	}
 }
+
+// TestProxyMarksUncachedResponses pins #179: a response whose origin said
+// nothing about caching goes out "Cache-Control: no-store", which is what it
+// gets on localhost, where no cache stands in front; one whose origin did say
+// keeps exactly what it said.
+func TestProxyMarksUncachedResponses(t *testing.T) {
+	for name, tc := range map[string]struct {
+		origin string // the origin's Cache-Control, "" for none
+		want   string
+	}{
+		"silent origin":        {"", "no-store"},
+		"origin says max-age":  {"max-age=60", "max-age=60"},
+		"origin says no-cache": {"no-cache", "no-cache"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.origin != "" {
+					w.Header().Set("Cache-Control", tc.origin)
+				}
+				io.WriteString(w, "body")
+			}))
+			t.Cleanup(srv.Close)
+			base := route(t, listOf(t, srv), -1, nil, slog.New(slog.DiscardHandler))
+			req, _ := http.NewRequest(http.MethodGet, base+"/app.css", nil)
+			resp, _ := get(t, http.DefaultClient, req)
+			if got := resp.Header.Values("Cache-Control"); len(got) != 1 || got[0] != tc.want {
+				t.Errorf("Cache-Control = %q, want exactly %q", got, tc.want)
+			}
+		})
+	}
+}

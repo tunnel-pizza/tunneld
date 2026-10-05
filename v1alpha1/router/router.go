@@ -651,10 +651,19 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = fmt.Fprintf(w, "nothing is running on %s yet: start a process on it, or ask whoever shared this address to\n", where)
 		},
-		// With several origins, an explicit top-level pick is answered with
-		// the sticky cookie; Rewrite put the index on the outbound context for
-		// it, and only then.
+		// Two jobs on the way back. A response the origin said nothing about
+		// caching goes out no-store (#179). And with several origins, an
+		// explicit top-level pick is answered with the sticky cookie; Rewrite
+		// put the index on the outbound context for it, and only then.
 		ModifyResponse: func(resp *http.Response) error {
+			// tunneld is meant to feel like localhost, where nothing caches.
+			// Cloudflare's edge caches a cacheable extension the origin said
+			// nothing about for its default TTL, which served a dev server's
+			// stale CSS for four hours (#179). An origin that does say keeps
+			// what it said.
+			if resp.Header.Get("Cache-Control") == "" {
+				resp.Header.Set("Cache-Control", "no-store")
+			}
 			if ix, ok := resp.Request.Context().Value(stickyKey{}).(int); ok {
 				cookie := &http.Cookie{Name: Cookie, Value: strconv.Itoa(ix), Path: "/"}
 				resp.Header.Add("Set-Cookie", cookie.String())

@@ -83,6 +83,14 @@ something is listening there.
 Each such request is logged at `warn` as `origin did not answer`; see
 [Logs](#logs).
 
+### Caching
+
+A response your app sends without a `Cache-Control` header goes out with
+`Cache-Control: no-store`, so Cloudflare's edge never keeps a copy your dev
+server didn't ask it to (#179). On `localhost` nothing caches, and an edge that
+did would keep serving a stylesheet you've since changed. A response that sets
+its own `Cache-Control` keeps exactly what it set.
+
 ## Several origins on one address
 
 Pass one argument per local service. They share one public hostname: the first
