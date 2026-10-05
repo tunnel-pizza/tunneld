@@ -143,7 +143,11 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		}
 		key := cookieKey(a.secret())
 		if c, err := r.Cookie(CookieName); err == nil && readCookie(key, c.Value, s.value, s.schemes, a.now()) {
-			a.pass(w, r, next, false)
+			// A browser that once answered the Basic dialog keeps sending it
+			// beside the cookie. The tunnel's password never reaches the
+			// origin; an origin's own Basic credential still does.
+			_, pw, basic := r.BasicAuth()
+			a.pass(w, r, next, basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny))
 			return
 		}
 		if _, pw, ok := r.BasicAuth(); ok {

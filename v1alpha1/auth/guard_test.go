@@ -75,3 +75,38 @@ func TestGuardBacksOffPerSource(t *testing.T) {
 		t.Errorf("still held back a minute later (retry %d)", retry)
 	}
 }
+
+// TestGuardMatches pins the question a cookie-holder's Basic header asks:
+// is this the tunnel's password (strip it) or the origin's own (keep it)?
+// Both answers are remembered, so the origin's credential costs one PBKDF2,
+// and a no is never a failure: the origin-Basic workaround must not back off.
+func TestGuardMatches(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	g := newGuard(func() time.Time { return now })
+	key := cookieKey([]byte("s"))
+	var calls int
+	verify := func(p string) bool { calls++; return p == "tunnel-pw" }
+	for range 3 {
+		if g.matches(context.Background(), key, "v", "origin:creds", verify) {
+			t.Fatal("the origin's own credential matched the tunnel's password")
+		}
+	}
+	if calls != 1 {
+		t.Errorf("verify ran %d times for one origin credential, want 1", calls)
+	}
+	if !g.matches(context.Background(), key, "v", "tunnel-pw", verify) || !g.matches(context.Background(), key, "v", "tunnel-pw", verify) {
+		t.Error("the tunnel's password did not match")
+	}
+	if calls != 2 {
+		t.Errorf("verify ran %d times, want 2: a match is remembered too", calls)
+	}
+	for range 10 {
+		g.matches(context.Background(), key, "v", "origin:creds", verify)
+	}
+	if _, retry := g.check(context.Background(), "", key, "v", "tunnel-pw", verify); retry != 0 {
+		t.Errorf("non-matches counted as failures: retry %d", retry)
+	}
+	if g.matches(context.Background(), key, "w", "tunnel-pw", func(string) bool { return false }) {
+		t.Error("a match under one value answered for another")
+	}
+}

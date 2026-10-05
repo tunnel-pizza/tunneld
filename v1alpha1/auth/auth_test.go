@@ -277,3 +277,27 @@ func TestSafeNext(t *testing.T) {
 		}
 	}
 }
+
+// TestCookieHolderBasic pins what reaches the origin when a browser carries
+// both the cookie and a Basic header (Chrome resends cached Basic): the
+// tunnel's password is stripped, the origin's own credential is not.
+func TestCookieHolderBasic(t *testing.T) {
+	a := protected(t)
+	h := a.Handler(origin())
+	cookie := mintCookie(cookieKey([]byte("s3cr3t")), "basic", value, a.now())
+	ask := func(user, pw string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.AddCookie(&http.Cookie{Name: CookieName, Value: cookie})
+		req.SetBasicAuth(user, pw)
+		return serve(h, req)
+	}
+	if rec := ask("", password); rec.Code != 200 || rec.Header().Get("X-Authorization") != "" {
+		t.Errorf("the tunnel's password reached the origin: %d %q", rec.Code, rec.Header().Get("X-Authorization"))
+	}
+	for range 6 {
+		rec := ask("admin", "s3cret")
+		if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("X-Authorization"), "Basic ") {
+			t.Fatalf("the origin's own credential: %d %q, want 200 with it intact", rec.Code, rec.Header().Get("X-Authorization"))
+		}
+	}
+}
