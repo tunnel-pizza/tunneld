@@ -136,6 +136,9 @@ type RunImpl struct {
 	// this call, nil when none was: that frame is still up, showing the same
 	// origins, so a later tunnel keeps it rather than drawing another.
 	screen console.Screen
+	// authenticate is the tunnel's challenges in public form, realm left
+	// out, read at every mint; nil or empty says nothing.
+	authenticate func() []string
 }
 
 // New returns a RunImpl configured by opts: a logger that discards, a spinner
@@ -221,6 +224,13 @@ func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
 
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
+
+// WithAuthenticate is the tunnel's challenges in public form, realm left out,
+// read at every mint: the provider leaves "publicly accessible" out of the
+// messages for a tunnel that is not. Nil, or nothing, says nothing.
+func WithAuthenticate(public func() []string) Option {
+	return func(r *RunImpl) { r.authenticate = public }
+}
 
 // Run is one run's tunnel, from its spec to its end: mint, up, wait — and
 // again from the top whenever a new spec arrives while it waits, the tunnel
@@ -317,6 +327,14 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, by the router.
 		WithLocalURL(local)
+	// What the gate says, so the mint's messages match it: a protected tunnel
+	// is not "publicly accessible". The client's own word, deciding only a
+	// banner the client itself shows. Nothing at all when public.
+	if r.authenticate != nil {
+		if public := r.authenticate(); len(public) > 0 {
+			tun = tun.WithHeader(v1.AuthenticateHeader, strings.Join(public, ", "))
+		}
+	}
 	return tun, stop
 }
 

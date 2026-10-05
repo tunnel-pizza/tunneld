@@ -3259,3 +3259,41 @@ func TestRunLearnsAMessagesOnlySpec(t *testing.T) {
 		t.Errorf("no log line for the change:\n%s", h.stderr.String())
 	}
 }
+
+// TestEveryMintSaysTheVisibility pins X-Tunneld-Authenticate on the mint
+// request: the gate's public challenges, realm left out, when the tunnel is
+// protected, and no header at all when it is public, so a provider treats a
+// public run exactly as before.
+func TestEveryMintSaysTheVisibility(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+	for name, tc := range map[string]struct {
+		env  string // "" leaves the variable unset
+		want []string
+	}{
+		"protected": {pw, []string{v1.AuthenticateHeader + `: Basic charset="UTF-8"`}},
+		"public":    {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tun := live(public)
+			h := newRunHarness(t, tun, ":3000")
+			if tc.env != "" {
+				t.Setenv(v1.WWWAuthenticateEnv, tc.env)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			var got []string
+			for _, hd := range tun.headers {
+				if strings.HasPrefix(hd, v1.AuthenticateHeader+":") {
+					got = append(got, hd)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("mint headers %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

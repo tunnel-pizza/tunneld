@@ -673,6 +673,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// gets the lines instead.
 		run.WithSpinner(b.logLevel == ""),
 		run.WithHint(stopHint),
+		run.WithAuthenticate(func() []string { return b.auth.Public("") }),
 	)
 }
 
