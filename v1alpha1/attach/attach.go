@@ -103,6 +103,18 @@ type Target interface {
 	Close() error
 }
 
+// Spawner is what a Target can do beyond being attached to: start one
+// private process on the origin, over pipes — no terminal, no echo, no
+// viewer — and say how it ended. It is what an agent's one-shot command runs
+// on, beside the shared terminal a person may be watching, and a provider
+// that cannot do it simply does not implement it.
+//
+// exit is the process's exit code, -1 when a signal ended it; err is a
+// failure to start, never a non-zero exit. The process ends with ctx.
+type Spawner interface {
+	Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (exit int, err error)
+}
+
 // Logs is where tunneld's own recent log lines come from, for a frame to show
 // on request.
 //
@@ -351,7 +363,7 @@ func (b *BinderImpl) answered() []string {
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
 	dialable := make([]*url.URL, 0, shown.Len())
-	var servers bound
+	servers := bound{shown: shown.Len()}
 	asked := newAsk()
 	for at, origin := range shown.URLs() {
 		// Anything no provider claims is an address the tunnel dials itself.
@@ -393,7 +405,10 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		servers = append(servers, boundOrigin{at: at, srv: server})
+		// A target that can start a private process says so by having the
+		// method; kept at the origin's index for Spawners.
+		spawner, _ := target.(Spawner)
+		servers.origins = append(servers.origins, boundOrigin{at: at, srv: server, spawner: spawner})
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
@@ -405,7 +420,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	// tiles. That run gets the report on the console and the panel in a tab.
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
-	if len(servers) == 1 && shown.Len() == 1 {
+	if len(servers.origins) == 1 && shown.Len() == 1 {
 		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
 	}
 	return origins.New(origins.WithURL(dialable...)), servers, nil
@@ -426,9 +441,10 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.bound.show(ctx, in, out)
 }
 
-// Bound is what a Bind call hands back: the servers it started, and the three
+// Bound is what a Bind call hands back: the servers it started, and the four
 // things every one of them can do — be closed, be told the public addresses,
-// and say when a viewer has asked the run to end.
+// say when a viewer has asked the run to end, and hand over each origin's
+// Spawner.
 //
 // None of those is conditional, which is why they are here rather than
 // discovered by type assertion one at a time. Exactly one thing is: a bound
@@ -439,6 +455,11 @@ type Bound interface {
 	io.Closer
 	Announce(public []string)
 	Done() <-chan struct{}
+	// Spawners is one slot per shown origin, in order: the origin's Spawner
+	// where its target has one, nil for an address and for a target that
+	// cannot spawn. Unconditional — every bound list can answer — which is
+	// why it is here and not a type assertion.
+	Spawners() []Spawner
 }
 
 // bound is every attach server a Bind call started, with the place in the
@@ -447,8 +468,13 @@ type Bound interface {
 // The index is kept because that is the only thing that connects a server to
 // the address it will answer on: the tunnel hands back one public URL and the
 // origins are told apart by their routing parameter, so origin n's address is
-// derived from n. Same length and order as shown, like everything else here.
-type bound []boundOrigin
+// derived from n.
+type bound struct {
+	origins []boundOrigin
+	// shown is how many origins the run has, served or not: the length of
+	// what Spawners answers, since index n is origin n there too.
+	shown int
+}
 
 // show puts the one origin bound here on the given streams.
 //
@@ -457,10 +483,10 @@ type bound []boundOrigin
 // the length check that used to live here was a guard against a caller that
 // can no longer exist.
 func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
-	if len(b) != 1 {
-		return fmt.Errorf("attach: %d origins to show, want exactly one", len(b))
+	if len(b.origins) != 1 {
+		return fmt.Errorf("attach: %d origins to show, want exactly one", len(b.origins))
 	}
-	return b[0].srv.Show(ctx, in, out)
+	return b.origins[0].srv.Show(ctx, in, out)
 }
 
 // Done closes when a viewer of any of these origins asks the run to end. One
@@ -480,16 +506,30 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 // yet, and the console would leave "Press Ctrl+C to stop the tunnel..." on a
 // prompt the run is about to walk away from.
 func (b bound) Done() <-chan struct{} {
-	if len(b) == 0 {
+	if len(b.origins) == 0 {
 		// Nothing served, so nobody who could ask: a channel that never closes.
 		return make(chan struct{})
 	}
-	return b[0].srv.Done()
+	return b.origins[0].srv.Done()
 }
 
 type boundOrigin struct {
 	at  int
 	srv *Server
+	// spawner is the target's own Spawner, nil when it has none.
+	spawner Spawner
+}
+
+// Spawners is one slot per shown origin, the served ones' spawners at the
+// index each origin had, nil everywhere else.
+func (b bound) Spawners() []Spawner {
+	out := make([]Spawner, b.shown)
+	for _, o := range b.origins {
+		if o.spawner != nil && o.at < len(out) {
+			out[o.at] = o.spawner
+		}
+	}
+	return out
 }
 
 // Close shuts every attach server down, and with it every container client
@@ -497,7 +537,7 @@ type boundOrigin struct {
 // shutdown is worse than a lost error message.
 func (b bound) Close() error {
 	var err error
-	for _, o := range b {
+	for _, o := range b.origins {
 		if cerr := o.srv.Close(); err == nil {
 			err = cerr
 		}
@@ -516,7 +556,7 @@ func (b bound) Close() error {
 // A short list is not an error. It means the caller had fewer addresses than
 // origins, and a server without one simply has nothing to show.
 func (b bound) Announce(public []string) {
-	for _, o := range b {
+	for _, o := range b.origins {
 		if o.at < len(public) {
 			o.srv.Announce(public[o.at])
 		}

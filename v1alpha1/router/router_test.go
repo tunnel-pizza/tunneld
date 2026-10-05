@@ -61,7 +61,7 @@ func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
 	r := New()
-	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithHandler(front), WithLog(log))
+	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithWrap(front), WithLog(log))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -123,9 +123,9 @@ func TestRouteNothingIsAnError(t *testing.T) {
 // New was given, then what Route is given for that route alone — on a copy,
 // so the next route starts from the router's own again.
 func TestOptions(t *testing.T) {
-	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Handler() != nil || r.mux == nil || r.log != discard {
+	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Wrap() != nil || r.mux == nil || r.log != discard {
 		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
-			r.Origins(), r.WebSockets(), r.Handler() != nil, r.mux != nil, r.log == discard)
+			r.Origins(), r.WebSockets(), r.Wrap() != nil, r.mux != nil, r.log == discard)
 	}
 	if r := New(WithLog(nil)); r.log != discard {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
@@ -1275,5 +1275,54 @@ func TestProviderOrigin(t *testing.T) {
 		if got := ProviderOrigin(in); got != want {
 			t.Errorf("ProviderOrigin(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestWithHandlerMountsOnTheControlPath pins the mount: a handler put under
+// ControlPath answers there, through authorize — a bare 401 without the
+// secret, the handler's own answer with it — and Mounted reads the pattern
+// back without standing anything up.
+func TestWithHandlerMountsOnTheControlPath(t *testing.T) {
+	secret := []byte("s3cr3t")
+	hello := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })
+	r := New(WithHandler(ControlPath+"hello", hello), WithCache(cacheOf{secret: secret, key: runKey}))
+	if got, want := r.Mounted(), []string{ControlPath + "hello"}; !slices.Equal(got, want) {
+		t.Errorf("Mounted() = %v, want %v", got, want)
+	}
+	u, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	t.Cleanup(r.Cancel)
+	base := strings.TrimSuffix(u.String(), "/")
+	for name, tc := range map[string]struct {
+		auth       string
+		wantStatus int
+		wantBody   string
+	}{
+		"without the secret": {"", 401, ""},
+		"with the secret":    {tokenOf(secret), 200, "hello"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequest("GET", base+ControlPath+"hello", nil)
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			resp, body := get(t, http.DefaultClient, req)
+			if resp.StatusCode != tc.wantStatus || body != tc.wantBody {
+				t.Errorf("GET = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
+			}
+		})
+	}
+}
+
+// TestWithHandlerRefusesAnOriginsPath pins that a pattern outside ControlPath
+// is an error when the router routes: every other path is an origin's, and a
+// handler there would shadow it silently.
+func TestWithHandlerRefusesAnOriginsPath(t *testing.T) {
+	r := New(WithHandler("/mcp", http.NotFoundHandler()))
+	_, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
+	if err == nil || !strings.Contains(err.Error(), `a handler at "/mcp" is outside the control path`) {
+		t.Fatalf("Route = %v, want the pattern refused", err)
 	}
 }

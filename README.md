@@ -293,6 +293,9 @@ tunneld is a thin layer over other people's work. Thank you to:
   every one of u-root's that builds there, from `ls`, `cat` and `grep` to
   `wget`, `tar` and `sshd` — rewritten into tunneld by
   [gobusybox](https://github.com/u-root/gobusybox), u-root's busybox builder.
+- **[MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)**
+  (`github.com/modelcontextprotocol/go-sdk`): the Model Context Protocol
+  server tunneld serves to agents on its control path.
 - **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
   `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
   `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded

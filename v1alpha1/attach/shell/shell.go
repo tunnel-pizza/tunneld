@@ -40,6 +40,7 @@ var (
 	_ attach.Target     = (*TargetImpl)(nil)
 	_ attach.Targets    = (*TargetsImpl)(nil)
 	_ attach.Repeatable = (*TargetImpl)(nil)
+	_ attach.Spawner    = (*TargetImpl)(nil)
 )
 
 // Resolve answers whether s names a program this machine can run, and with

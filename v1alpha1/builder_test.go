@@ -689,6 +689,49 @@ type fakeBinder struct {
 	showed atomic.Bool
 	// shows counts the frames drawn: a respec keeps the one that is up.
 	shows atomic.Int32
+	// spawners is what Spawners hands back: one slot per origin the run
+	// shows, as the real binder answers.
+	spawners []attach.Spawner
+}
+
+func (f *fakeBinder) Spawners() []attach.Spawner { return f.spawners }
+
+// fakeSpawner is a Spawner that runs nothing: the run only hands it on.
+type fakeSpawner struct{}
+
+func (fakeSpawner) Spawn(context.Context, []string, io.Reader, io.Writer, io.Writer) (int, error) {
+	return 0, nil
+}
+
+// TestMcpOrigins pins what the agent server is told about each shown
+// origin: the origin as shown, its kind by scheme, and the bound origin's
+// spawner at its own index — none where the binder has none, and none past
+// a short list.
+func TestMcpOrigins(t *testing.T) {
+	shown := origins.New(origins.WithURL(
+		&url.URL{Scheme: "http", Host: "localhost:3000"},
+		&url.URL{Scheme: v1.ExecScheme, Path: "/bin/sh"},
+		&url.URL{Scheme: v1.AttachScheme, Host: v1.DockerProvider, Path: "/web"},
+	))
+	sp := fakeSpawner{}
+	got := mcpOrigins(shown, []attach.Spawner{nil, sp})
+	want := []struct {
+		name  string
+		kind  v0exp1.McpKind
+		spawn bool
+	}{
+		{"http://localhost:3000", v0exp1.McpHTTP, false},
+		{"exec:///bin/sh", v0exp1.McpProgram, true},
+		{"attach://dockerd/web", v0exp1.McpContainer, false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("mcpOrigins = %d origins, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i].Name != w.name || got[i].Kind != w.kind || (got[i].Spawner != nil) != w.spawn {
+			t.Errorf("origin %d = %+v, want %s %s spawner=%v", i, got[i], w.name, w.kind, w.spawn)
+		}
+	}
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
@@ -768,7 +811,7 @@ func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL
 	// one that serves.
 	r := router.New(opts...)
 	f.configured = r
-	dialable, front := r.Origins(), r.Handler()
+	dialable, front := r.Origins(), r.Wrap()
 	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
 	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
 	if f.err != nil {
@@ -1348,6 +1391,21 @@ func TestRun(t *testing.T) {
 		// stream carries, and the message is read on the frame and the panel.
 		if out := h.stderr.String(); strings.Contains(out, "warning") || strings.Contains(out, "data:") {
 			t.Errorf("stderr = %q, want no trace of the message", out)
+		}
+	})
+
+	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
+		// The router refuses, so the run ends right after asking it: what
+		// it was asked is the whole of the case.
+		h.router.err = errors.New("no loopback")
+
+		if err := h.run(t, t.Context()); !errors.Is(err, h.router.err) {
+			t.Fatalf("run() = %v, want the router's own error", err)
+		}
+		if got := h.router.configured.Mounted(); !slices.Contains(got, router.ControlPath+"mcp") {
+			t.Errorf("mounted = %v, want %s", got, router.ControlPath+"mcp")
 		}
 	})
 
