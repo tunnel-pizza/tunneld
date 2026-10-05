@@ -81,7 +81,9 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 // of the run the cache is for, "" before it knows: what the router names the
 // run by on every answer from its control path, refusals included. Spec is
 // every spec the cache takes, the run's own saves among them: a new one while
-// the run waits is a new tunnel.
+// the run waits is a new tunnel. Grant is whether a bearer token is a live,
+// unused grant the cache issued on GET .env, for the router to let that one
+// PATCH through.
 type Cache interface {
 	Load(opts ...cache.Option) string
 	Save(opts ...cache.Option)
@@ -90,6 +92,7 @@ type Cache interface {
 	Secret() []byte
 	Key() string
 	Spec() <-chan string
+	Grant(bearer string) bool
 }
 
 // Pid is how a run is found and handed back from outside it, by the npm
@@ -162,8 +165,9 @@ func (noCache) String() string              { return "" }
 func (noCache) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) {
 	return nil
 }
-func (noCache) Secret() []byte { return nil }
-func (noCache) Key() string    { return "" }
+func (noCache) Secret() []byte    { return nil }
+func (noCache) Key() string       { return "" }
+func (noCache) Grant(string) bool { return false }
 
 // Spec is never a new spec: a run with caching off keeps its tunnel.
 func (noCache) Spec() <-chan string { return nil }

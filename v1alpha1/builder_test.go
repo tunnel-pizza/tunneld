@@ -505,6 +505,9 @@ type fakeCache struct {
 // Spec is every spec the fake takes, as the real cache hands them on.
 func (f *fakeCache) Spec() <-chan string { return f.specs }
 
+// Grant is no grant: the fake issues none.
+func (f *fakeCache) Grant(string) bool { return false }
+
 // fakePid records a run's registration in the order of effects, and says a
 // launcher was waiting when waiting is set.
 type fakePid struct {
