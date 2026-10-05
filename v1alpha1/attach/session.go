@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -717,7 +718,7 @@ func (s *session) viewLocally(ctx context.Context, in io.Reader, out io.Writer) 
 
 	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
 	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height, linger: true},
+		frame{sess: s, v: v, width: width, height: height, linger: true, getenv: os.Getenv},
 		tea.WithContext(ctx),
 		tea.WithInput(in),
 		tea.WithOutput(out),
@@ -1243,6 +1244,34 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))
 		}
 	}
+}
+
+// transcript is everything a viewer could scroll through, in one buffer: the
+// kept lines and the live screen under them, or the live screen alone on the
+// alternate screen, which keeps no history. Sized and drawn under one hold of
+// the screen lock, so output arriving meanwhile cannot leave it a row short.
+func (s *session) transcript() uv.ScreenBuffer {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	w, h := s.em.Width(), s.em.Height()
+	kept := 0
+	if !s.em.IsAltScreen() {
+		kept = s.em.ScrollbackLen()
+	}
+	buf := uv.NewScreenBuffer(w, kept+h)
+	for y := range kept {
+		for x := range w {
+			buf.SetCell(x, y, s.em.ScrollbackCellAt(x, y))
+		}
+	}
+	live := uv.NewScreenBuffer(w, h)
+	s.drawPaneLocked(live, live.Bounds())
+	for y := range h {
+		for x := range w {
+			buf.SetCell(x, kept+y, live.CellAt(x, y))
+		}
+	}
+	return buf
 }
 
 // altScreen reports whether the program is on the alternate screen, where

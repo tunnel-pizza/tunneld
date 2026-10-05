@@ -1,6 +1,7 @@
 package attach
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1623,8 +1624,8 @@ func TestDraggingSelectsAndCopies(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("release produced no command, want the copy")
 	}
-	if msg := cmd(); !strings.Contains(fmt.Sprintf("%T", msg), "lipboard") {
-		t.Errorf("release produced %T, want a clipboard message", msg)
+	if msg, ok := cmd().(tea.RawMsg); !ok || !strings.HasPrefix(fmt.Sprint(msg.Msg), "\x1b]52;c;") {
+		t.Errorf("release produced %#v, want an OSC 52 write", cmd())
 	}
 	if got := h.f.sel.text(h.f.composed()); got != "hello world\nsecond" {
 		t.Errorf("selected text = %q, want the two rows in stream order", got)
@@ -1639,6 +1640,46 @@ func TestDraggingSelectsAndCopies(t *testing.T) {
 	h.reached(t, "x")
 	if h.f.selected || reversed(h.f.View().Content) {
 		t.Error("the selection outlived a keystroke")
+	}
+}
+
+// TestACopyInsideTmuxIsWrappedAndSaysSo pins a console inside tmux: the copy
+// goes in tmux's passthrough, since tmux drops a bare OSC 52 from an
+// application, and the chip says the copy needs allow-passthrough rather than
+// claiming it landed.
+func TestACopyInsideTmuxIsWrappedAndSaysSo(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.getenv = func(k string) string {
+		return map[string]string{"TMUX": "/tmp/tmux-501/default,1,0"}[k]
+	}
+	if _, err := h.s.em.WriteString("hello"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	pane := h.f.pane()
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseLeft})
+	cmd := h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 4, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("release produced no command, want the copy")
+	}
+	if msg, ok := cmd().(tea.RawMsg); !ok || !strings.Contains(fmt.Sprint(msg.Msg), "\x1bPtmux;") {
+		t.Errorf("release produced %#v, want tmux's passthrough", cmd())
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "sent to tmux") {
+		t.Errorf("bottom border = %q, want it saying the copy went to tmux, unconfirmed", bottom)
+	}
+}
+
+// TestACopyTooLargeIsNotSent pins the cap: a copy longer than a terminal will
+// take is not sent to be dropped, and the chip says so instead of "copied".
+func TestACopyTooLargeIsNotSent(t *testing.T) {
+	h := newFrameHarness(t)
+	f, cmd := h.f.copy(strings.Repeat("a", 60000))
+	h.f = f
+	if cmd != nil {
+		t.Errorf("a copy past the cap produced %#v, want nothing sent", cmd())
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "too large to copy") || strings.Contains(bottom, " copied ") {
+		t.Errorf("bottom border = %q, want it saying the copy was too large", bottom)
 	}
 }
 
@@ -2035,5 +2076,282 @@ func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 	// xterm's dashed mark on a link cell disappears into the chip.
 	if !strings.Contains(top, "58;5;214") {
 		t.Errorf("the chip's underline is not coloured like its ground: %q", top)
+	}
+}
+
+// consoleHarness is a frame on the console rather than in a tab: the one
+// whose viewer's terminal is the process's own, which is where scrollback
+// mode and the mouse toggle are offered.
+func consoleHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newFrameHarness(t)
+	h.f.linger = true
+	h.f.getenv = func(string) string { return "" }
+	return h
+}
+
+// enterScrollback is ^K [ on h's frame.
+func (h *harness) enterScrollback(t *testing.T) {
+	t.Helper()
+	h.press(t, commandKey)
+	h.press(t, typing('['))
+}
+
+// TestScrollbackModeReleasesTheMouse pins the mode's point: while it is on,
+// the frame declares no mouse mode, so the viewer's terminal selects natively
+// again, and leaving it asks for the mouse back.
+func TestScrollbackModeReleasesTheMouse(t *testing.T) {
+	h := consoleHarness(t)
+	// A drag under way when the mode starts gets no release: the mouse is
+	// let go. It must not stay highlighted.
+	pane := h.f.pane()
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseLeft})
+	h.mouse(t, tea.MouseMotionMsg{X: pane.Min.X + 3, Y: pane.Min.Y, Button: tea.MouseLeft})
+	h.enterScrollback(t)
+	if !h.f.reading {
+		t.Fatal("^K [ did not enter scrollback mode")
+	}
+	if h.f.selecting || reversed(h.f.View().Content) {
+		t.Error("a drag under way outlived entering the mode")
+	}
+	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("MouseMode in scrollback = %v, want none: the terminal selects", got)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "scrollback") {
+		t.Errorf("bottom border = %q, want it saying the mode is on", bottom)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("after esc: reading %v, MouseMode %v; want live, the mouse asked for again", h.f.reading, h.f.View().MouseMode)
+	}
+}
+
+// TestScrollbackModeKeysMoveTheHistory pins the keys in the mode: the arrows
+// (which a terminal's wheel becomes once the mouse is released), page keys,
+// home and end move this viewer through the history, typing reaches nobody,
+// and q leaves for the live screen.
+func TestScrollbackModeKeysMoveTheHistory(t *testing.T) {
+	h := consoleHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows)
+	live := h.paneRow(t, 0)
+	h.enterScrollback(t)
+
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows) {
+		t.Errorf("after up, top row = %q, want one line back", got)
+	}
+	h.press(t, tea.Key{Code: tea.KeyHome})
+	if got := h.paneRow(t, 0); got != "line 001" {
+		t.Errorf("after home, top row = %q, want the first line kept", got)
+	}
+	h.press(t, tea.Key{Code: tea.KeyPgDown})
+	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 1+rows) {
+		t.Errorf("after pgdn, top row = %q, want a page on", got)
+	}
+	h.press(t, typing('x'))
+	h.silent(t)
+	if !h.f.reading {
+		t.Error("typing left the mode, want it going nowhere")
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnd})
+	if got := h.paneRow(t, 0); got != live {
+		t.Errorf("after end, top row = %q, want the live screen's %q", got, live)
+	}
+	h.press(t, typing('q'))
+	if h.f.reading || h.f.scrolled {
+		t.Error("q did not return to the live screen")
+	}
+	h.silent(t)
+}
+
+// TestScrollbackModeCopiesEverything pins c: the whole history and the live
+// screen, which a native selection cannot reach past the pane.
+func TestScrollbackModeCopiesEverything(t *testing.T) {
+	h := consoleHarness(t)
+	rows := defaultRows - chromeHeight
+	h.scrollOff(t, 1, 3*rows)
+	h.enterScrollback(t)
+	cmd := h.press(t, typing('c'))
+	if cmd == nil {
+		t.Fatal("c produced no command, want the copy")
+	}
+	raw, ok := cmd().(tea.RawMsg)
+	if !ok {
+		t.Fatalf("c produced %#v, want an OSC 52 write", cmd())
+	}
+	seq := fmt.Sprint(raw.Msg)
+	b64 := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b]52;c;"), "\a")
+	text, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("decode %q: %v", seq, err)
+	}
+	if !strings.HasPrefix(string(text), "line 001\n") || !strings.HasSuffix(string(text), fmt.Sprintf("line %03d", 3*rows)) {
+		t.Errorf("copied %q…%q, want every line from the first kept to the live screen's last", string(text)[:20], string(text)[len(text)-20:])
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied") {
+		t.Errorf("bottom border = %q, want it saying the copy went", bottom)
+	}
+	if !h.f.reading {
+		t.Error("c left the mode")
+	}
+}
+
+// TestTheBareViewDropsTheBorder pins f in the mode: no border, bar or labels
+// to pick up in a native selection, and f again brings them back.
+func TestTheBareViewDropsTheBorder(t *testing.T) {
+	h := consoleHarness(t)
+	if _, err := h.s.em.WriteString("hello"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.enterScrollback(t)
+	h.press(t, typing('f'))
+	content := stripSGR(h.f.View().Content)
+	if strings.ContainsAny(content, "│╭╮╰╯─") || !strings.HasPrefix(content, "hello") {
+		t.Errorf("bare view = %q…, want the pane alone from the top left", content[:min(40, len(content))])
+	}
+	h.press(t, typing('f'))
+	if !strings.ContainsAny(stripSGR(h.f.View().Content), "│") {
+		t.Error("f again did not bring the border back")
+	}
+}
+
+// TestTheMouseToggle pins ^K m on the console: the mouse released outside
+// the mode for a viewer who would rather select natively than scroll with
+// the wheel, except to a program that asked for it.
+func TestTheMouseToggle(t *testing.T) {
+	h := consoleHarness(t)
+	h.press(t, commandKey)
+	h.press(t, typing('m'))
+	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
+		t.Errorf("MouseMode after ^K m = %v, want none", got)
+	}
+	if _, err := h.s.scan.Write([]byte("\x1b[?1000h")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("MouseMode with a program that asked = %v, want it reported", got)
+	}
+	if _, err := h.s.scan.Write([]byte("\x1b[?1000l")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.press(t, commandKey)
+	h.press(t, typing('m'))
+	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Errorf("MouseMode after ^K m twice = %v, want cell motion again", got)
+	}
+}
+
+// TestATabHasNoScrollbackMode pins the tab as it was: the page keeps the
+// mouse and xterm selects natively, so neither key does anything there, and
+// neither is offered.
+func TestATabHasNoScrollbackMode(t *testing.T) {
+	h := newFrameHarness(t)
+	h.press(t, commandKey)
+	if hint := stripSGR(bottomOf(h)); strings.Contains(hint, "scrollback") || strings.Contains(hint, "mouse") {
+		t.Errorf("a tab's commands = %q, want neither key offered", hint)
+	}
+	h.press(t, typing('['))
+	h.press(t, commandKey)
+	h.press(t, typing('m'))
+	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("a tab after ^K [ and ^K m: reading %v, MouseMode %v; want neither", h.f.reading, h.f.View().MouseMode)
+	}
+	c := consoleHarness(t)
+	c.s.Target = newRerunTarget(true) // a program: restart offered too
+	c.press(t, commandKey)
+	if hint := stripSGR(bottomOf(c)); !strings.Contains(hint, " [  scroll") || !strings.Contains(hint, " m  mouse") || !strings.Contains(hint, "restart") {
+		t.Errorf("the console's commands at 80 columns = %q, want restart, [ and m all offered whole", hint)
+	}
+}
+
+// TestTheChipsSurviveScrollbackAt80Columns pins the bottom row in the mode
+// on an ordinary console: the copy's chip and how far back the reader is
+// both show beside the mode's keys.
+func TestTheChipsSurviveScrollbackAt80Columns(t *testing.T) {
+	h := consoleHarness(t)
+	h.f.getenv = func(k string) string { return map[string]string{"TMUX": "/tmp/t,1,0"}[k] }
+	h.scrollOff(t, 1, 3*(defaultRows-chromeHeight))
+	h.enterScrollback(t)
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	h.press(t, typing('c'))
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "sent to tmux") || !strings.Contains(bottom, "↑2") {
+		t.Errorf("bottom border = %q, want the copy's chip and ↑2", bottom)
+	}
+}
+
+// TestTheEndDoesNotCutScrollbackShort pins a run ending under a reader in
+// the mode: the wheel (arrows now) and the mode's keys keep reading rather
+// than counting as "any key to exit"; leaving the mode is what hands over to
+// the ended frame.
+func TestTheEndDoesNotCutScrollbackShort(t *testing.T) {
+	h := consoleHarness(t)
+	h.scrollOff(t, 1, 3*(defaultRows-chromeHeight))
+	h.enterScrollback(t)
+	h.f.ended = true
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	if h.f.exiting || !h.f.reading {
+		t.Fatalf("an arrow after the end: exiting %v, reading %v; want still reading", h.f.exiting, h.f.reading)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.exiting || h.f.reading {
+		t.Fatalf("esc after the end: exiting %v, reading %v; want out of the mode, not gone", h.f.exiting, h.f.reading)
+	}
+	h.press(t, typing('x'))
+	if !h.f.exiting {
+		t.Error("a key on the ended frame did not exit")
+	}
+}
+
+// TestCopyingTooMuchHistoryCopiesItsEnd pins c over a history longer than a
+// terminal will take: rather than nothing, the end that fits, from a whole
+// line, and a chip saying it is only the end.
+func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
+	h := consoleHarness(t)
+	var b strings.Builder
+	for i := 1; i <= 1200; i++ {
+		if i > 1 {
+			b.WriteString("\r\n")
+		}
+		fmt.Fprintf(&b, "%04d %s", i, strings.Repeat("x", 60))
+	}
+	if _, err := h.s.em.WriteString(b.String()); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.enterScrollback(t)
+	cmd := h.press(t, typing('c'))
+	if cmd == nil {
+		t.Fatal("c over a long history sent nothing, want its end")
+	}
+	raw, _ := cmd().(tea.RawMsg)
+	b64 := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprint(raw.Msg), "\x1b]52;c;"), "\a")
+	text, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	last := "1200 " + strings.Repeat("x", 60)
+	if len(b64) > osc52Max || !strings.HasSuffix(string(text), last) || strings.HasPrefix(string(text), "0001 ") {
+		t.Errorf("copied %d bytes from %.10q, want the end that fits", len(text), text)
+	}
+	if first := strings.SplitN(string(text), "\n", 2)[0]; len(first) != len(last) {
+		t.Errorf("copied text starts %q, want a whole line", first)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied (end)") {
+		t.Errorf("bottom border = %q, want it saying only the end was copied", bottom)
+	}
+}
+
+// TestTheAltScreenModeOffersNoScrolling pins the hint on the alternate
+// screen, which has no history: the mode copies and goes bare there, and
+// offers no keys that would do nothing.
+func TestTheAltScreenModeOffersNoScrolling(t *testing.T) {
+	h := consoleHarness(t)
+	if _, err := h.s.em.WriteString("\x1b[?1049h"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	h.enterScrollback(t)
+	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑↓") {
+		t.Errorf("bottom border = %q, offers scrolling where there is nothing to scroll", bottom)
 	}
 }
