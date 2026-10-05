@@ -960,9 +960,9 @@ TUNNELD_WWW_AUTHENTICATE='Basic pw="$pbkdf2-sha256$i=600000$<salt>$<hash>"' tunn
 The value is a `WWW-Authenticate` challenge whose `pw` parameter is the
 password's PBKDF2-SHA256 hash (600,000 iterations, a 16-byte salt, the
 password NFC-normalized), never the password itself. tunnel.pizza's status
-page sets it for you, hashing in your browser. Only `Basic` is taken, with
-`pw` and optionally `realm` and `charset`; anything else stops the run with an
-error naming the variable.
+page sets it for you, hashing in your browser. Only `Basic` is taken, once,
+with `pw` and optionally `realm` and `charset`; anything else stops the run
+with an error naming the variable.
 
 There is **no flag** for it, on purpose: a command line is readable by every
 user on the machine through `ps`, and lands in shell history.
@@ -978,6 +978,11 @@ What a visitor gets:
   gets through with `curl -u :<password>`.
 - Wrong passwords are slowed: at most two checks run at once, and five wrong
   ones from one address within a minute get `429` with `Retry-After: 60`.
+  Every wrong one is logged (`a login`, `via=form` or `via=basic`); a right
+  Basic one is not, since an API client sends it on every request.
+- The login page can't be framed (`frame-ancestors 'none'`), and a sibling
+  tunnel's `tunneld-auth` cookie sent ahead of this tunnel's own doesn't lock
+  a visitor out: every one is tried.
 - While a password is set, every response carries
   `Cloudflare-CDN-Cache-Control: no-store`, so the edge never hands a cached
   copy to someone who did not log in.
