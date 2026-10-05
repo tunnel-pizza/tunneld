@@ -93,6 +93,16 @@ func TestOptions(t *testing.T) {
 		t.Errorf("<-Spec() after two unread = %q, %d more waiting; want third alone", got, len(c.Spec()))
 	}
 
+	// WithSavedSpec is the file's alone: a spec waiting on Spec stays.
+	c = cache.New(cache.WithSpec("patched"))
+	cache.WithSavedSpec(envelope)(c)
+	if got := <-c.Spec(); got != "patched" || len(c.Spec()) != 0 {
+		t.Errorf("<-Spec() after WithSavedSpec = %q, %d more; want the waiting one alone", got, len(c.Spec()))
+	}
+	if !strings.Contains(c.String(), envelope) {
+		t.Errorf("String() after WithSavedSpec = %q, want the saved spec in the file", c.String())
+	}
+
 	dir := t.TempDir()
 	o, other := run(t, "http://localhost:3000"), run(t, "http://localhost:4000")
 	c = cache.New(cache.WithDir(dir), cache.WithOrigins(o), cache.WithLog(discard()))

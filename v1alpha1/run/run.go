@@ -603,9 +603,11 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 				// "publicly accessible" warning following a password): learned
 				// live, saved, and the tunnel kept. A respec would reconnect
 				// every visitor, and replay the spec through the mint.
+				// Saved without an echo: a spec PATCHed meanwhile is still
+				// waiting on the channel, and is the next one read.
 				r.motd.Learn(messages, log)
-				r.cache.Save(cache.WithSpec(spec))
-				saved, own = spec, true // the save echoes back; pass it quietly
+				r.cache.Save(cache.WithSavedSpec(spec))
+				saved, own = spec, false
 				log.Info("the provider's messages changed", "count", len(messages))
 				continue
 			}

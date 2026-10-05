@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -607,12 +608,18 @@ func (f *fakeCache) Save(opts ...cache.Option) {
 	// one that writes.
 	c := cache.New(opts...)
 	f.spec = ""
+	echoed := false
 	select {
 	case f.spec = <-c.Spec():
+		echoed = true
 	default:
+		// WithSavedSpec: in the file, not handed on.
+		if m := regexp.MustCompile(`(?m)^LIBTUNNEL_SPEC='(.*)'$`).FindStringSubmatch(c.String()); m != nil {
+			f.spec = m[1]
+		}
 	}
 	f.saved, f.tracking, f.secret, f.key = true, c.Tracking(), c.Secret(), c.Key()
-	if f.specs != nil {
+	if f.specs != nil && echoed {
 		select {
 		case <-f.specs:
 		default:
@@ -801,9 +808,15 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 // where its output landed.
 type fakeMotd struct {
 	learned []string
+	onLearn func() // what else lands while the run learns
 }
 
-func (f *fakeMotd) Learn(raw []string, _ v1.Logger) { f.learned = raw }
+func (f *fakeMotd) Learn(raw []string, _ v1.Logger) {
+	f.learned = raw
+	if f.onLearn != nil {
+		f.onLearn()
+	}
+}
 
 // runHarness is run with every collaborator faked except the one that is
 // pure: the shown's panel half, because its URL and the page it serves are
@@ -3270,6 +3283,48 @@ func TestRunLearnsAMessagesOnlySpec(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr.String(), "the provider's messages changed") {
 		t.Errorf("no log line for the change:\n%s", h.stderr.String())
+	}
+}
+
+// TestAMessagesOnlySaveKeepsAWaitingSpec pins a respec PATCHed while the run
+// is taking a messages-only spec: it was answered 200, so it is the run's to
+// apply. The messages-only save must not take its place on the channel.
+func TestAMessagesOnlySaveKeepsAWaitingSpec(t *testing.T) {
+	const public, second = "https://foo.tunneled.pizza/", "https://bar.tunneled.pizza/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
+	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["tip"]}`
+	const respec = `{"backend":"cloudflare","spec":{"hostname":"bar.tunneled.pizza","secret":"b3RoZXI="}}`
+	tun := live(public)
+	tun.serialized = env
+	h := newRunHarness(t, tun, ":3000")
+	next := live(second)
+	next.order = &h.order
+	h.tunnels = append(h.tunnels, next)
+	h.cache.specs = make(chan string, 1)
+	h.motd.onLearn = func() { h.cache.specs <- respec } // lands before the save
+	ctx, cancel := context.WithCancel(t.Context())
+	saves := 0
+	h.cache.onSave = func() {
+		saves++
+		switch saves {
+		case 1:
+			go func() {
+				for len(h.cache.specs) > 0 { // the run takes its own save first
+					time.Sleep(time.Millisecond)
+				}
+				h.cache.specs <- quieter
+			}()
+		case 2: // the messages-only save
+		default:
+			cancel()
+		}
+	}
+	go func() { time.Sleep(5 * time.Second); cancel() }()
+	if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if len(h.specs) != 2 || h.specs[1] != respec {
+		t.Errorf("minted from %q, want the waiting respec applied", h.specs)
 	}
 }
 

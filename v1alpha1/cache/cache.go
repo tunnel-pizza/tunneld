@@ -194,6 +194,14 @@ func WithSpec(spec string) Option {
 	}
 }
 
+// WithSavedSpec sets the spec Save writes without handing it on to Spec: for
+// a spec the run already has, and has taken without a reconnect (a
+// messages-only update). Unlike WithSpec it leaves a spec waiting on Spec in
+// place, since a PATCH that put one there was answered as taken.
+func WithSavedSpec(spec string) Option {
+	return func(c *CacheImpl) { c.spec = spec }
+}
+
 // WithTracking sets what Save writes beside the spec: what the run settled
 // on, keyed by the variable that names each knob.
 func WithTracking(tracking map[string]string) Option {
