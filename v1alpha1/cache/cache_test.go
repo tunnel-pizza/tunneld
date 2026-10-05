@@ -775,6 +775,43 @@ func TestConcurrentPatches(t *testing.T) {
 	}
 }
 
+// TestASpecBeingAppliedRefusesAnother pins a spec PATCHed while the run is
+// still applying the last one: taken off Spec but not yet saved (a respec
+// minting it). It is refused with a 429 rather than answered 200 and then
+// replaced by the save's echo; the save that settles the spec, WithSpec or
+// WithSavedSpec, opens the way again. A PATCH without a spec still lands.
+func TestASpecBeingAppliedRefusesAnother(t *testing.T) {
+	c, applied := mutableCache(t)
+	select {
+	case <-c.Spec(): // the save's own echo
+	default:
+	}
+	spec := func(n string) int {
+		return call(c, "PATCH", "", "LIBTUNNEL_SPEC='"+envelope+"-"+n+"'").Code
+	}
+	if code := spec("2"); code != 200 {
+		t.Fatalf("first spec PATCH = %d, want 200", code)
+	}
+	<-c.Spec() // the run takes it and starts a respec
+	rec := call(c, "PATCH", "", "LIBTUNNEL_SPEC='"+envelope+"-3'")
+	if rec.Code != 429 || rec.Header().Get("Retry-After") == "" {
+		t.Errorf("a spec PATCH mid-respec = %d, Retry-After %q; want 429 with one", rec.Code, rec.Header().Get("Retry-After"))
+	}
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"='"+authValue+"'"); rec.Code != 200 || len(*applied) != 1 {
+		t.Errorf("a password PATCH mid-respec = %d, applied %d; want 200, one", rec.Code, len(*applied))
+	}
+	c.Save(cache.WithSpec(envelope + "-2"))
+	<-c.Spec() // the echo
+	if code := spec("3"); code != 200 {
+		t.Errorf("a spec PATCH after the respec saved = %d, want 200", code)
+	}
+	<-c.Spec() // taken as messages-only
+	c.Save(cache.WithSavedSpec(envelope + "-3"))
+	if code := spec("4"); code != 200 {
+		t.Errorf("a spec PATCH after a messages-only save = %d, want 200", code)
+	}
+}
+
 // TestInMemoryCache pins what --no-cache now runs on: a cache with nowhere
 // to write still serves .env and takes a PATCH, for this run only.
 func TestInMemoryCache(t *testing.T) {
