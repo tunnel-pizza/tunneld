@@ -90,6 +90,7 @@ func TestMessagesOnly(t *testing.T) {
 		{"reordered, same messages", `{"messages":["warn","tip"],"metadata":{"record_id":"r1"},"spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"hostname":"0tk.tunneled.pizza","backend":"cloudflare"}`, false, nil},
 		{"another secret", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"b3RoZXI="},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
 		{"another record", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r2"},"messages":["tip"]}`, false, nil},
+		{"another hostname", `{"backend":"cloudflare","hostname":"0tz.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
 		{"another backend", `{"backend":"other","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
 		{"not JSON", "patched", false, nil},
 	} {

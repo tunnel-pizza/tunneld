@@ -603,9 +603,11 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 				// "publicly accessible" warning following a password): learned
 				// live, saved, and the tunnel kept. A respec would reconnect
 				// every visitor, and replay the spec through the mint.
+				// Saved without an echo: a spec PATCHed meanwhile is still
+				// waiting on the channel, and is the next one read.
 				r.motd.Learn(messages, log)
-				r.cache.Save(cache.WithSpec(spec))
-				saved, own = spec, true // the save echoes back; pass it quietly
+				r.cache.Save(cache.WithSavedSpec(spec))
+				saved, own = spec, false
 				log.Info("the provider's messages changed", "count", len(messages))
 				continue
 			}
@@ -663,9 +665,9 @@ func decodeSpec(spec string) (any, error) {
 }
 
 // messagesOnly reports whether next is saved with only its messages changed:
-// the same backend, the same credential (compared as JSON), and every other
-// field beside it equal, metadata today and whatever libtunnel adds there
-// later. That is the provider rewording what it says about this tunnel, not
+// the same backend and hostname, the same credential (compared as JSON), and
+// every other field beside it equal, metadata today and whatever libtunnel
+// adds there later. That is the provider rewording what it says about this tunnel, not
 // a new tunnel, so the run learns it without a reconnect. Not JSON, or any
 // other difference, is not.
 func messagesOnly(next, saved string) ([]string, bool) {
@@ -675,6 +677,13 @@ func messagesOnly(next, saved string) ([]string, bool) {
 	}
 	sb, sspec, saside, err := ltv1alpha1.DecodeSpec(saved)
 	if err != nil || nb != sb || !sameSpec(string(nspec), string(sspec)) {
+		return nil, false
+	}
+	// The envelope's own hostname, which DecodeSpec leaves out.
+	var nh, sh struct {
+		Hostname string `json:"hostname"`
+	}
+	if json.Unmarshal([]byte(next), &nh) != nil || json.Unmarshal([]byte(saved), &sh) != nil || nh != sh {
 		return nil, false
 	}
 	if slices.Equal(naside.Messages, saside.Messages) {

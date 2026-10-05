@@ -142,7 +142,7 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			return
 		}
 		key := cookieKey(a.secret())
-		if c, err := r.Cookie(CookieName); err == nil && readCookie(key, c.Value, s.value, s.schemes, a.now()) {
+		if a.cookied(r, key, s) {
 			// A browser that once answered the Basic dialog keeps sending it
 			// beside the cookie. The tunnel's password never reaches the
 			// origin; an origin's own Basic credential still does.
@@ -152,6 +152,13 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		}
 		if _, pw, ok := r.BasicAuth(); ok {
 			good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, s.value, pw, s.verifyAny)
+			if !good && retry == 0 {
+				// Checked and wrong only: an API client sends Basic on every
+				// request, so a success would bury the failures, and a held
+				// address is refused before any check, so a line per refusal
+				// would let anyone grow the log at request rate.
+				a.log.Info("a login", "via", "basic", "ok", false)
+			}
 			if retry > 0 {
 				refuse(w, http.StatusTooManyRequests, "Retry-After", strconv.Itoa(retry))
 				return
@@ -174,6 +181,26 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		}
 		refuse(w, http.StatusUnauthorized)
 	})
+}
+
+// maxAuthCookies is how many auth cookies a request gets tried: each is an
+// HMAC, and a request may carry thousands.
+const maxAuthCookies = 4
+
+// cookied reports whether any of r's auth cookies is valid. Every one is
+// tried: a sibling tunnel on the shared domain can set one by the same name,
+// which the browser may send ahead of this tunnel's own.
+func (a *AuthImpl) cookied(r *http.Request, key []byte, s *state) bool {
+	cookies := r.CookiesNamed(CookieName)
+	if len(cookies) > maxAuthCookies {
+		cookies = cookies[:maxAuthCookies]
+	}
+	for _, c := range cookies {
+		if readCookie(key, c.Value, s.value, s.schemes, a.now()) {
+			return true
+		}
+	}
+	return false
 }
 
 // pass hands r to next without auth's own cookie, and without Authorization
@@ -304,6 +331,12 @@ type page struct{ Host, Next, Error string }
 func (a *AuthImpl) render(w http.ResponseWriter, r *http.Request, status int, next, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
+	// The page is one inline stylesheet and a form posting to itself.
+	// Another site's frame could dress the password field up as something
+	// else; the multiview panel's tiles are this origin's own frames, and a
+	// tile that lands here must still show the form.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'")
 	w.WriteHeader(status)
 	_ = loginTmpl.Execute(w, page{Host: r.Host, Next: next, Error: msg})
 }
@@ -314,6 +347,7 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodHead:
 		next := safeNext(r.URL.Query().Get("next"))
 		if len(s.challenges) == 0 {
+			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, next, http.StatusSeeOther)
 			return
 		}
@@ -323,6 +357,7 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		next := safeNext(r.PostForm.Get("next"))
 		if len(s.challenges) == 0 {
+			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, next, http.StatusSeeOther)
 			return
 		}
@@ -333,7 +368,7 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, s.value, r.PostForm.Get("password"), s.verifyAny)
-		a.log.Info("a login", "ok", good, "held", retry > 0)
+		a.log.Info("a login", "via", "form", "ok", good, "held", retry > 0)
 		switch {
 		case retry > 0:
 			w.Header().Set("Retry-After", strconv.Itoa(retry))

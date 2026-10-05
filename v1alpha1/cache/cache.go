@@ -194,6 +194,24 @@ func WithSpec(spec string) Option {
 	}
 }
 
+// WithSavedSpec sets the spec Save writes without handing it on to Spec: for
+// a spec the run already has, and has taken without a reconnect (a
+// messages-only update). Unlike WithSpec it leaves a spec waiting on Spec in
+// place, since a PATCH that put one there was answered as taken.
+func WithSavedSpec(spec string) Option {
+	return func(c *CacheImpl) { c.spec = spec }
+}
+
+// WithClock sets what the cache reads the time from, for a grant's minute.
+// Nil keeps the one it has (time.Now unless set).
+func WithClock(now func() time.Time) Option {
+	return func(c *CacheImpl) {
+		if now != nil {
+			c.now = now
+		}
+	}
+}
+
 // WithTracking sets what Save writes beside the spec: what the run settled
 // on, keyed by the variable that names each knob.
 func WithTracking(tracking map[string]string) Option {
@@ -564,7 +582,8 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// A read-then-write caller (tunnel.pizza's messages sync) names the
 			// file it read; if a respec replaced it in between, writing back
 			// what was read would send the old credential as a new spec.
-			if want := r.Header.Get("If-Match"); want != "" && want != etag(c.served()) {
+			// Every field line: a list may come split over several.
+			if want := strings.Join(r.Header.Values("If-Match"), ","); want != "" && !ifMatch(want, c.served()) {
 				log.Info("refused a patch to .env", "reason", "the file changed since it was read")
 				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
 				return
@@ -669,6 +688,23 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 func etag(file string) string {
 	sum := sha256.Sum256([]byte(file))
 	return `"` + base64.RawURLEncoding.EncodeToString(sum[:]) + `"`
+}
+
+// ifMatch reports whether an If-Match header names file: "*" for any file
+// there is (RFC 9110), or a list holding its tag. A tag that comes back
+// weakened (W/) still matches: a hop that compressed the response weakens
+// it, and it is still this server's own name for the same bytes.
+func ifMatch(header, file string) bool {
+	if strings.TrimSpace(header) == "*" {
+		return file != ""
+	}
+	want := etag(file)
+	for tag := range strings.SplitSeq(header, ",") {
+		if strings.TrimPrefix(strings.TrimSpace(tag), "W/") == want {
+			return true
+		}
+	}
+	return false
 }
 
 // maxDotenv is the most a PATCH body may be: a cache file is one spec and a

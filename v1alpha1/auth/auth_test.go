@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -210,8 +212,74 @@ func TestLogin(t *testing.T) {
 	for p, h := range public.Handlers("/_tunneld/") {
 		mp.HandleFunc(p, h)
 	}
-	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" {
-		t.Errorf("login with nothing set: %d %q, want 303 /app", rec.Code, rec.Header().Get("Location"))
+	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" ||
+		rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("login with nothing set: %d %q, Cache-Control %q; want 303 /app, no-store", rec.Code, rec.Header().Get("Location"), rec.Header().Get("Cache-Control"))
+	}
+	form = url.Values{"password": {"x"}, "next": {"/app"}}
+	req = httptest.NewRequest("POST", "/_tunneld/login", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if rec := serve(mp, req); rec.Code != 303 || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("POST login with nothing set: %d, Cache-Control %q; want 303, no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	// The page holds a form another site's frame could dress up as something
+	// else; the panel's own tiles are same-origin frames, and may show it.
+	csp := get.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"frame-ancestors 'self'", "default-src 'none'", "form-action 'self'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("login page CSP %q, missing %s", csp, want)
+		}
+	}
+}
+
+// TestBasicFailuresAreLogged pins that a wrong Basic password is logged as
+// a failed form login is, and a right one (an API client sending it on
+// every request) is not.
+func TestBasicFailuresAreLogged(t *testing.T) {
+	var buf bytes.Buffer
+	a := protected(t)
+	WithLog(slog.New(slog.NewTextHandler(&buf, nil)))(a)
+	h := a.Handler(origin())
+	ask := func(pw string) {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.SetBasicAuth("", pw)
+		serve(h, req)
+	}
+	ask(password)
+	if strings.Contains(buf.String(), "a login") {
+		t.Errorf("a right Basic password was logged:\n%s", buf.String())
+	}
+	ask("wrong")
+	if !strings.Contains(buf.String(), "a login") || !strings.Contains(buf.String(), "via=basic") || !strings.Contains(buf.String(), "ok=false") {
+		t.Errorf("a wrong Basic password was not logged as a failed login:\n%s", buf.String())
+	}
+	// Once the address is held, each refusal is a 429 before any check: one
+	// line per request would let anyone grow the log at request rate.
+	for range 10 {
+		ask("wrong")
+	}
+	if n := strings.Count(buf.String(), "a login"); n > 5 {
+		t.Errorf("%d login lines for 11 wrong passwords, want only the 5 checked", n)
+	}
+}
+
+// TestEveryAuthCookieIsTried pins a sibling tunnel's cookie: any tunnel on
+// the shared domain can set one named like ours, which the browser may send
+// first. The visitor's own still lets them in.
+func TestEveryAuthCookieIsTried(t *testing.T) {
+	a := protected(t)
+	good := mintCookie(cookieKey([]byte("s3cr3t")), "basic", value, a.now())
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Cookie", CookieName+"=v1.forged.mac; "+CookieName+"="+good)
+	if rec := serve(a.Handler(origin()), req); rec.Code != 200 || strings.Contains(rec.Header().Get("X-Cookie"), CookieName) {
+		t.Errorf("own cookie behind a sibling's: %d, origin saw %q; want 200, neither", rec.Code, rec.Header().Get("X-Cookie"))
+	}
+	// Only the first few are tried: each costs an HMAC, and a request may
+	// carry thousands.
+	req.Header.Set("Cookie", strings.Repeat(CookieName+"=v1.forged.mac; ", maxAuthCookies)+CookieName+"="+good)
+	if rec := serve(a.Handler(origin()), req); rec.Code == 200 {
+		t.Errorf("a cookie behind %d forged ones was tried", maxAuthCookies)
 	}
 }
 

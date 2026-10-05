@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -91,6 +92,16 @@ func TestOptions(t *testing.T) {
 	cache.WithSpec("third")(c)
 	if got := <-c.Spec(); got != "third" || len(c.Spec()) != 0 {
 		t.Errorf("<-Spec() after two unread = %q, %d more waiting; want third alone", got, len(c.Spec()))
+	}
+
+	// WithSavedSpec is the file's alone: a spec waiting on Spec stays.
+	c = cache.New(cache.WithSpec("patched"))
+	cache.WithSavedSpec(envelope)(c)
+	if got := <-c.Spec(); got != "patched" || len(c.Spec()) != 0 {
+		t.Errorf("<-Spec() after WithSavedSpec = %q, %d more; want the waiting one alone", got, len(c.Spec()))
+	}
+	if !strings.Contains(c.String(), envelope) {
+		t.Errorf("String() after WithSavedSpec = %q, want the saved spec in the file", c.String())
 	}
 
 	dir := t.TempDir()
@@ -725,6 +736,27 @@ func TestGrants(t *testing.T) {
 	}
 }
 
+// TestGrantsExpire pins a grant's minute: live just before, gone just after,
+// and a PATCH with an expired one is the bodyless 401 a used one is.
+func TestGrantsExpire(t *testing.T) {
+	c, _ := mutableCache(t)
+	now := time.Now()
+	cache.WithClock(func() time.Time { return now })(c)
+	grant := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	now = now.Add(time.Minute)
+	if !c.Grant(grant) {
+		t.Error("a grant expired at its minute, want live until after it")
+	}
+	now = now.Add(time.Second)
+	if c.Grant(grant) {
+		t.Error("a grant outlived its minute")
+	}
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Body.Len() != 0 {
+		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
+	}
+}
+
 // TestConcurrentPatches pins all-or-nothing under contention: two PATCHes
 // each carrying a spec and the variable leave one applied and one refused.
 func TestConcurrentPatches(t *testing.T) {
@@ -787,6 +819,35 @@ func TestETag(t *testing.T) {
 	}
 	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"="); rec.Code != 200 {
 		t.Errorf("no If-Match = %d, want 200 as before", rec.Code)
+	}
+}
+
+// TestIfMatchForms pins the If-Match forms a PATCH takes beside the bare tag
+// GET answered: "*" (RFC 9110: the file exists), the tag in a list, and the
+// tag come back weakened (W/), since a hop that compressed the response
+// would weaken it and the tag is still this server's own name for the file.
+func TestIfMatchForms(t *testing.T) {
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	for name, form := range map[string]func(tag string) string{
+		"any":      func(string) string { return "*" },
+		"listed":   func(tag string) string { return `"not-the-file", ` + tag },
+		"weakened": func(tag string) string { return "W/" + tag },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, applied := mutableCache(t)
+			tag := call(c, "GET", "", "").Header().Get("ETag")
+			req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
+			req.Header.Set("If-Match", form(tag))
+			if name == "listed" { // the list on two field lines, as RFC 9110 allows
+				req.Header.Set("If-Match", `"not-the-file"`)
+				req.Header.Add("If-Match", tag)
+			}
+			rec := httptest.NewRecorder()
+			c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
+			if rec.Code != 200 || len(*applied) != 1 {
+				t.Errorf("If-Match %q = %d, applied %d; want 200, one", form(tag), rec.Code, len(*applied))
+			}
+		})
 	}
 }
 

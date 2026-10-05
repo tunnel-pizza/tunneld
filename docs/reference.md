@@ -960,9 +960,9 @@ TUNNELD_WWW_AUTHENTICATE='Basic pw="$pbkdf2-sha256$i=600000$<salt>$<hash>"' tunn
 The value is a `WWW-Authenticate` challenge whose `pw` parameter is the
 password's PBKDF2-SHA256 hash (600,000 iterations, a 16-byte salt, the
 password NFC-normalized), never the password itself. tunnel.pizza's status
-page sets it for you, hashing in your browser. Only `Basic` is taken, with
-`pw` and optionally `realm` and `charset`; anything else stops the run with an
-error naming the variable.
+page sets it for you, hashing in your browser. Only `Basic` is taken, once,
+with `pw` and optionally `realm` and `charset`; anything else stops the run
+with an error naming the variable.
 
 There is **no flag** for it, on purpose: a command line is readable by every
 user on the machine through `ps`, and lands in shell history.
@@ -978,6 +978,13 @@ What a visitor gets:
   gets through with `curl -u :<password>`.
 - Wrong passwords are slowed: at most two checks run at once, and five wrong
   ones from one address within a minute get `429` with `Retry-After: 60`.
+  Every wrong one that is checked is logged (`a login`, `via=form` or
+  `via=basic`); a right Basic one is not, since an API client sends it on
+  every request, and neither is a refusal while an address is held.
+- The login page can't be framed by another site (`frame-ancestors 'self'`;
+  the multiview panel's tiles may show it), and a sibling tunnel's
+  `tunneld-auth` cookie sent ahead of this tunnel's own doesn't lock a
+  visitor out: the first four are tried.
 - While a password is set, every response carries
   `Cloudflare-CDN-Cache-Control: no-store`, so the edge never hands a cached
   copy to someone who did not log in.
@@ -1009,7 +1016,8 @@ A PATCH is all or nothing: a value that does not parse is a `400` and changes
 nothing. `GET /_tunneld/.env` answers an `ETag`; a PATCH carrying `If-Match`
 that names a file other than the current one is a `412` that changes nothing,
 so a caller that read the file and writes it back cannot overwrite a newer
-one.
+one. `If-Match` takes `*`, a list, and the tag weakened (`W/"…"`), as a
+compressing hop would return it.
 
 Every mint tells the provider what the tunnel's gate is:
 `X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
@@ -1043,7 +1051,7 @@ after construction still lands.
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. |
+| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound
