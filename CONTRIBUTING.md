@@ -19,13 +19,14 @@ Deep-link by filename; line numbers will drift.
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
-| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, and the page for an origin nothing answers on (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
+| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and `WithHandler`'s mounts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings, and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
+| The MCP server served to agents on the control path: tools over a run's origins, sessions | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Password protection: the challenge, PBKDF2 checks, the cookie, the login page (`Auth`) | [`v1alpha1/auth/`](./v1alpha1/auth) |
@@ -435,6 +436,12 @@ implements `attach.Target` — five methods, four of its own plus the embedded
 a local program run on a pseudo-terminal. What opens one by reference —
 `TargetsImpl.Open` in either — sits behind `attach`'s own `Targets` contract,
 which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
+
+A provider may also implement `attach.Spawner`: one private process over
+pipes, with its exit code, which is what the agent server's tools run on.
+`shell.TargetImpl` does; `docker.TargetImpl` does not yet, so a container is
+listed to an agent and refused. `Bind` keeps each spawner at its origin's
+index on `Bound.Spawners`, nil where there is none.
 
 **A served origin is spelled by verb, provider, reference.** The scheme says
 what tunneld does — `attach`, `exec` — the authority says where it does it, and
