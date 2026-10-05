@@ -28,6 +28,7 @@ Deep-link by filename; line numbers will drift.
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
 | Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
+| Password protection: the challenge, PBKDF2 checks, the cookie, the login page (`Auth`) | [`v1alpha1/auth/`](./v1alpha1/auth) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
 | godoc examples                                 | [`v1alpha1/example_test.go`](./v1alpha1/example_test.go)         |
 | What a person running it reads first, and Acknowledgements | [`README.md`](./README.md)                          |
@@ -934,6 +935,11 @@ When a flag really is warranted, five things move together:
    [`docs/reference.md`](./docs/reference.md#flags), and a row in the README's
    **Configuration** table when it is something a person running tunneld will
    reach for.
+
+A knob that carries a credential has no flag at all, only its variable, read
+where it takes effect: a command line is readable by every user on the machine
+through `ps` and lands in shell history. `TUNNELD_WWW_AUTHENTICATE` is the one
+today, read with `os.LookupEnv` because set-and-empty is a choice there.
 
 Step 3's `flagEnv` row is the one that is easy to forget, and
 `TestFlagEnvRegistryIsComplete` in `v1alpha1/builder_test.go` fails without it: a

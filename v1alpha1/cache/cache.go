@@ -14,6 +14,10 @@ package cache
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +30,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -95,7 +100,42 @@ type CacheImpl struct {
 	// own, the latest being the one that matters, and a PATCH that finds one
 	// waiting is refused rather than dropped.
 	specs chan string
+
+	// mutable is what a PATCH, Load or SetMutable set, apart from tracking so
+	// that a respec's save, which replaces tracking wholesale, cannot erase it.
+	// A name present with "" is a choice of empty (public), written as a bare
+	// line; absent is never chosen.
+	mutable map[string]string
+	// mutables is how each variable is checked and applied, by name.
+	mutables map[string]mutableVar
+	// public is the challenges in their public form, for a grant's answer.
+	public func(host string) []string
+	// grants is every outstanding grant, by SHA-256 of the token; grantOrder
+	// is issue order, for forgetting the oldest.
+	grants     map[[32]byte]grant
+	grantOrder [][32]byte
+	now        func() time.Time
 }
+
+// mutableVar is one variable a PATCH may change: a pure check, then a commit
+// that cannot fail once the check has passed.
+type mutableVar struct {
+	validate func(string) error
+	apply    func(string)
+}
+
+// grant is what a single-use grant may do, and until when.
+type grant struct {
+	vars []string
+	exp  time.Time
+}
+
+// A grant lasts a minute (long enough to hash a password and send it) and at
+// most 32 are outstanding, since every GET issues one and nobody may use it.
+const (
+	grantLife = time.Minute
+	grantsMax = 32
+)
 
 // New returns a CacheImpl configured by opts, pointed at the user's cache
 // directory.
@@ -106,7 +146,14 @@ type CacheImpl struct {
 // gitignore templates and 752 real ones, the best a name managed was 13% and
 // 26%.
 func New(opts ...Option) *CacheImpl {
-	c := &CacheImpl{log: discard, specs: make(chan string, 1)}
+	c := &CacheImpl{
+		log:      discard,
+		specs:    make(chan string, 1),
+		mutable:  map[string]string{},
+		mutables: map[string]mutableVar{},
+		grants:   map[[32]byte]grant{},
+		now:      time.Now,
+	}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
 	}
@@ -152,7 +199,85 @@ func WithTracking(tracking map[string]string) Option {
 // WithSecret sets the running tunnel's secret. The cache keeps it in memory
 // and never writes it.
 func WithSecret(secret []byte) Option {
-	return func(c *CacheImpl) { c.secret = secret }
+	return func(c *CacheImpl) {
+		// A new secret is a new tunnel: every grant the old one issued goes.
+		if !bytes.Equal(c.secret, secret) {
+			c.grants, c.grantOrder = map[[32]byte]grant{}, nil
+		}
+		c.secret = secret
+	}
+}
+
+// WithMutable registers how name, one of MUTABLE_VARS other than the spec,
+// is checked and applied: validate is pure; apply commits and cannot fail
+// once validate has passed. A PATCH naming a variable with nothing
+// registered is refused rather than stored unapplied.
+func WithMutable(name string, validate func(string) error, apply func(string)) Option {
+	return func(c *CacheImpl) { c.mutables[name] = mutableVar{validate, apply} }
+}
+
+// WithPublic sets how the challenges read in public, for a grant's answer.
+func WithPublic(public func(host string) []string) Option {
+	return func(c *CacheImpl) { c.public = public }
+}
+
+// Mutable is name's value and whether one was set at all, "" included.
+func (c *CacheImpl) Mutable(name string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.mutable[name]
+	return v, ok
+}
+
+// SetMutable records name's value for the file, applying nothing: the
+// builder applies what it settled itself.
+func (c *CacheImpl) SetMutable(name, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mutable[name] = value
+}
+
+// Grant reports whether bearer is a live, unused grant. It does not use it:
+// the PATCH it authorizes does, once applied.
+func (c *CacheImpl) Grant(bearer string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.liveGrant(bearer)
+	return ok
+}
+
+// liveGrant finds bearer's grant, dropping it if expired; callers hold c.mu.
+func (c *CacheImpl) liveGrant(bearer string) (grant, bool) {
+	id := sha256.Sum256([]byte(bearer))
+	g, ok := c.grants[id]
+	if ok && c.now().After(g.exp) {
+		delete(c.grants, id)
+		return grant{}, false
+	}
+	return g, ok
+}
+
+// issueGrant mints one; callers hold c.mu. Only its hash is kept, so a dump
+// of the map holds nothing usable.
+func (c *CacheImpl) issueGrant() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	token := base64.RawURLEncoding.EncodeToString(b)
+	var vars []string
+	for name := range MUTABLE_VARS {
+		if name != ltv1.SpecEnv {
+			vars = append(vars, name)
+		}
+	}
+	slices.Sort(vars)
+	id := sha256.Sum256([]byte(token))
+	c.grants[id] = grant{vars: vars, exp: c.now().Add(grantLife)}
+	c.grantOrder = append(c.grantOrder, id)
+	for len(c.grantOrder) > grantsMax {
+		delete(c.grants, c.grantOrder[0])
+		c.grantOrder = c.grantOrder[1:]
+	}
+	return token
 }
 
 // Key is the key of the run the cache would read or write for now — the name
@@ -251,6 +376,16 @@ func (c *CacheImpl) Load(opts ...Option) string {
 		log.Warn("the tunnel cache names no spec", "path", path)
 		return ""
 	}
+	// The mutables the file holds, present-and-empty included: a bare line is
+	// a choice of public, distinct from a file that never named the variable.
+	for name := range MUTABLE_VARS {
+		if name == ltv1.SpecEnv {
+			continue
+		}
+		if key := strings.ToLower(name); v.InConfig(key) {
+			c.mutable[name] = v.GetString(key)
+		}
+	}
 	log.Info("resuming a tunnel from cache", "path", path)
 	return spec
 }
@@ -284,6 +419,12 @@ func (c *CacheImpl) Save(opts ...Option) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	v1.Apply(c, opts...)
+	c.save()
+}
+
+// save is Save for a caller already holding c.mu: a PATCH, which validates,
+// applies and saves under one hold of the lock.
+func (c *CacheImpl) save() {
 	log := c.log
 	body := c.render()
 	if body == "" {
@@ -343,13 +484,19 @@ func (c *CacheImpl) logger() v1.Logger {
 	return c.log
 }
 
-// dotenvHandler answers GET with String, the cache file as the run last saved
-// it, and 404 when nothing is saved yet. PATCH reads its body as variables
-// (parseDotenv) and refuses one that does not parse, 400, or is too big, 413;
-// one that does keeps only the variables in MUTABLE_VARS, and its
-// LIBTUNNEL_SPEC, if it has one, is handed on to Spec: a 200, or a 429 when
-// one is already being applied, asking to be tried again in a second. Any other method
-// is a 405 naming GET.
+// dotenvHandler answers GET with the cache file as the run last saved it,
+// 404 when nothing is saved yet, and a single-use grant (v1.GrantHeader) the
+// caller may hand the owner's browser. PATCH reads its body as variables
+// (parseDotenv), refusing one that does not parse, 400, or is too big, 413,
+// and keeps only MUTABLE_VARS. Then, under the cache's lock, it is
+// all-or-nothing: a grant naming a variable outside its own is a 403, a
+// variable nobody registered or that fails its check a 400, and a spec while
+// one is still waiting a 429 asking to be tried again in a second; only then
+// is every variable applied and saved and the spec handed on to Spec. With
+// the secret the answer is a 200 carrying the file, as GET would; with a
+// grant, which is used up once something was applied, a 204 carrying the
+// public challenges (v1.AuthenticateHeader) and never the file, which holds
+// the spec. Any other method is a 405 naming GET.
 //
 // No answer is stored anywhere on the way: the file changes with every save,
 // and a stale copy of a credential is one more place it lives.
@@ -358,11 +505,21 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		switch r.Method {
 		case http.MethodGet:
-			saved := c.String()
+			// Every read by the secret's holder carries a grant: what that
+			// holder may hand the owner's browser so it can PATCH this file
+			// once, without ever holding the secret itself.
+			c.mu.Lock()
+			saved := c.render()
+			var token string
+			if saved != "" {
+				token = c.issueGrant()
+			}
+			c.mu.Unlock()
 			if saved == "" {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
+			w.Header().Set(v1.GrantHeader, token)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = io.WriteString(w, saved)
 		case http.MethodPatch:
@@ -382,6 +539,30 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			// From here to the answer under one hold of the lock, so two
+			// PATCHes cannot interleave: everything is validated before
+			// anything is applied, and the spec slot checked here is the slot
+			// written below, since WithSpec only runs inside Save, under it.
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			bearer, granted := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			var g grant
+			if granted {
+				var ok bool
+				if g, ok = c.liveGrant(bearer); !ok {
+					// Expired or used between authorize and here.
+					w.Header().Set("Content-Length", "0")
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				for _, name := range slices.Sorted(maps.Keys(vars)) {
+					if !slices.Contains(g.vars, name) {
+						log.Info("refused a patch to .env", "reason", "outside the grant", "name", name)
+						http.Error(w, name+" is not this grant's to change", http.StatusForbidden)
+						return
+					}
+				}
+			}
 			// Only what a caller may change: the rest of the file is the
 			// run's to say.
 			var ignored []string
@@ -392,21 +573,67 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				return !MUTABLE_VARS[name]
 			})
 			slices.Sort(ignored)
-			spec, ok := vars[ltv1.SpecEnv]
-			if !ok {
-				log.Info("a patch to .env changed nothing", "ignored", ignored)
-				w.WriteHeader(http.StatusOK)
-				return
+			spec, hasSpec := vars[ltv1.SpecEnv]
+			for _, name := range slices.Sorted(maps.Keys(vars)) {
+				if name == ltv1.SpecEnv {
+					continue
+				}
+				m, ok := c.mutables[name]
+				if !ok {
+					log.Info("refused a patch to .env", "reason", "not applied by this run", "name", name)
+					http.Error(w, name+": this run does not apply it", http.StatusBadRequest)
+					return
+				}
+				if err := m.validate(vars[name]); err != nil {
+					log.Info("refused a patch to .env", "reason", "invalid", "name", name)
+					http.Error(w, name+": "+err.Error(), http.StatusBadRequest)
+					return
+				}
 			}
-			select {
-			case c.specs <- spec:
-				log.Info("a patch to .env brought a spec; handing it to the run", "ignored", ignored)
-				w.WriteHeader(http.StatusOK)
-			default:
+			if hasSpec && len(c.specs) == cap(c.specs) {
 				log.Info("refused a patch to .env", "reason", "a patch is already being applied")
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "a patch is already being applied", http.StatusTooManyRequests)
+				return
 			}
+			// Apply: nothing below can fail.
+			applied := false
+			for name, value := range vars {
+				if name == ltv1.SpecEnv {
+					continue
+				}
+				c.mutables[name].apply(value)
+				c.mutable[name] = value
+				applied = true
+			}
+			if applied {
+				c.save()
+			}
+			if hasSpec {
+				c.specs <- spec
+			}
+			switch {
+			case hasSpec:
+				log.Info("a patch to .env brought a spec; handing it to the run", "names", slices.Sorted(maps.Keys(vars)), "ignored", ignored)
+			case applied:
+				log.Info("a patch to .env applied", "names", slices.Sorted(maps.Keys(vars)), "ignored", ignored)
+			default:
+				log.Info("a patch to .env changed nothing", "ignored", ignored)
+			}
+			if granted {
+				if applied {
+					delete(c.grants, sha256.Sum256([]byte(bearer)))
+				}
+				if c.public != nil {
+					for _, v := range c.public(r.Host) {
+						w.Header().Add(v1.AuthenticateHeader, v)
+					}
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, c.render())
 		default:
 			w.Header().Set("Allow", http.MethodGet)
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -420,7 +647,7 @@ const maxDotenv = 64 << 10
 
 // MUTABLE_VARS is every variable a PATCH may change: the handler keeps these
 // from what parseDotenv read and drops the rest.
-var MUTABLE_VARS = map[string]bool{ltv1.SpecEnv: true}
+var MUTABLE_VARS = map[string]bool{ltv1.SpecEnv: true, v1.WWWAuthenticateEnv: true}
 
 // dotenvName is what a variable may be called: a letter or an underscore, then
 // letters, digits and underscores — a name a shell can export.
@@ -494,7 +721,20 @@ func (c *CacheImpl) render() string {
 	}
 	slices.Sort(names)
 	for _, name := range names {
+		if _, mut := c.mutable[name]; mut {
+			continue
+		}
 		lines = append(lines, assign(name, c.tracking[name]))
+	}
+	// What a PATCH or the operator set, after the run's knobs: an empty one
+	// as a bare line, since present-and-empty is a choice (public) that a
+	// file without the line could not tell from never having chosen.
+	for _, name := range slices.Sorted(maps.Keys(c.mutable)) {
+		if c.mutable[name] == "" {
+			lines = append(lines, name+"=")
+		} else {
+			lines = append(lines, assign(name, c.mutable[name]))
+		}
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

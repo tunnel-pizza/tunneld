@@ -5,6 +5,7 @@ package cache_test
 
 import (
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
@@ -570,5 +572,188 @@ func TestSaveSurvivesAQuoteInAValue(t *testing.T) {
 	if got := c.Load(cache.WithOrigins(o), cache.WithLog(discard())); got != envelope {
 		body, _ := os.ReadFile(path)
 		t.Errorf("Load() = %q, want the spec — a quoted tracking value broke the file:\n%s", got, body)
+	}
+}
+
+const authValue = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
+
+// mutableCache is a cache with a spec saved and the variable registered:
+// validate refuses "bad", apply records what it was given.
+func mutableCache(t *testing.T) (*cache.CacheImpl, *[]string) {
+	t.Helper()
+	c, o, _ := fixed(t, "http://localhost:3000")
+	var applied []string
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s")),
+		cache.WithMutable(v1.WWWAuthenticateEnv,
+			func(v string) error {
+				if v == "bad" {
+					return errors.New("not a challenge")
+				}
+				return nil
+			},
+			func(v string) { applied = append(applied, v) }),
+		cache.WithPublic(func(host string) []string { return []string{`Basic realm="` + host + `"`} }))
+	<-c.Spec() // the save's own spec, as the run would take it
+	return c, &applied
+}
+
+func call(c *cache.CacheImpl, method, auth, body string) *httptest.ResponseRecorder {
+	h := c.Handlers("/_tunneld/")["/_tunneld/.env"]
+	req := httptest.NewRequest(method, "/_tunneld/.env", strings.NewReader(body))
+	req.Host = "h.tunneled.pizza"
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+// TestMutables pins the variable a PATCH may change beside the spec: checked
+// before anything is applied, kept apart from tracking so a respec's save
+// cannot drop it, and written as a bare line when cleared.
+func TestMutables(t *testing.T) {
+	c, applied := mutableCache(t)
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+
+	if rec := call(c, "PATCH", "", line); rec.Code != 200 || !strings.Contains(rec.Body.String(), line) {
+		t.Fatalf("PATCH with the secret's path = %d %q, want 200 and the file", rec.Code, rec.Body)
+	}
+	if len(*applied) != 1 || (*applied)[0] != authValue {
+		t.Errorf("applied %q", *applied)
+	}
+	if v, set := c.Mutable(v1.WWWAuthenticateEnv); !set || v != authValue {
+		t.Errorf("Mutable = %q, %v", v, set)
+	}
+	// A respec's save replaces tracking wholesale; the password stays.
+	c.Save(cache.WithTracking(map[string]string{"TUNNELD_VERSION": "x"}))
+	if !strings.Contains(c.String(), line) {
+		t.Errorf("a respec's save dropped the password:\n%s", c.String())
+	}
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"=bad"); rec.Code != 400 || len(*applied) != 1 {
+		t.Errorf("bad value = %d, applied %q; want 400 and nothing applied", rec.Code, *applied)
+	}
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"="); rec.Code != 200 {
+		t.Fatalf("clear = %d", rec.Code)
+	}
+	if !strings.Contains(c.String(), "\n"+v1.WWWAuthenticateEnv+"=\n") {
+		t.Errorf("clearing left no bare line:\n%s", c.String())
+	}
+	if v, set := c.Mutable(v1.WWWAuthenticateEnv); !set || v != "" {
+		t.Errorf("after clear Mutable = %q, %v; want set and empty", v, set)
+	}
+	// A spec plus the variable while the spec slot is full: 429, nothing applied.
+	c.Save(cache.WithSpec(envelope)) // fills the slot again
+	before := len(*applied)
+	if rec := call(c, "PATCH", "", "LIBTUNNEL_SPEC='"+envelope+"'\n"+line); rec.Code != 429 || len(*applied) != before {
+		t.Errorf("busy = %d, applied %d; want 429, none", rec.Code, len(*applied)-before)
+	}
+}
+
+func TestMutableUnregisteredIsRefused(t *testing.T) {
+	c, o, _ := fixed(t, "http://localhost:3000")
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s")))
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"='"+authValue+"'"); rec.Code != 400 {
+		t.Errorf("a variable nobody applies = %d, want 400 rather than a claim of protection", rec.Code)
+	}
+}
+
+func TestLoadReadsMutables(t *testing.T) {
+	for name, tc := range map[string]struct {
+		line    string
+		want    string
+		wantSet bool
+	}{
+		"value":      {v1.WWWAuthenticateEnv + "='" + authValue + "'\n", authValue, true},
+		"bare empty": {v1.WWWAuthenticateEnv + "=\n", "", true},
+		"no line":    {"", "", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			o := run(t, "http://localhost:3000")
+			write(t, dir, o, "LIBTUNNEL_SPEC='"+envelope+"'\n"+tc.line)
+			c := cache.New(cache.WithDir(dir))
+			c.Load(cache.WithOrigins(o))
+			if v, set := c.Mutable(v1.WWWAuthenticateEnv); v != tc.want || set != tc.wantSet {
+				t.Errorf("Mutable = %q, %v; want %q, %v", v, set, tc.want, tc.wantSet)
+			}
+		})
+	}
+}
+
+// TestGrants pins the single-use grants a GET issues for the owner's browser:
+// looked up without being used, used up by an applied PATCH, never for the
+// spec, forgotten oldest-first past 32 and all at once on a new secret.
+func TestGrants(t *testing.T) {
+	c, _ := mutableCache(t)
+	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	get := call(c, "GET", "", "")
+	grant := get.Header().Get(v1.GrantHeader)
+	if grant == "" || get.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET .env issued no grant (%q) or is cacheable", grant)
+	}
+	if !c.Grant(grant) || !c.Grant(grant) {
+		t.Fatal("Grant consumed on lookup, or does not know its own grant")
+	}
+	if rec := call(c, "PATCH", "Bearer "+grant, "LIBTUNNEL_SPEC='x'"); rec.Code != 403 {
+		t.Errorf("a grant naming LIBTUNNEL_SPEC = %d, want 403", rec.Code)
+	}
+	if rec := call(c, "PATCH", "Bearer "+grant, v1.WWWAuthenticateEnv+"=bad"); rec.Code != 400 || !c.Grant(grant) {
+		t.Errorf("a refused value = %d, grant live %v; want 400 and the grant kept", rec.Code, c.Grant(grant))
+	}
+	rec := call(c, "PATCH", "Bearer "+grant, line)
+	if rec.Code != 204 || rec.Body.Len() != 0 || rec.Header().Get(v1.AuthenticateHeader) != `Basic realm="h.tunneled.pizza"` {
+		t.Errorf("grant PATCH = %d, body %q, header %q", rec.Code, rec.Body, rec.Header().Get(v1.AuthenticateHeader))
+	}
+	if c.Grant(grant) {
+		t.Error("a used grant is still live")
+	}
+	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Body.Len() != 0 {
+		t.Errorf("a used grant = %d, want a bodyless 401", rec.Code)
+	}
+	first := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	for range 32 {
+		call(c, "GET", "", "")
+	}
+	if c.Grant(first) {
+		t.Error("the 33rd grant did not forget the first")
+	}
+	g := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	c.Save(cache.WithSecret([]byte("new")))
+	if c.Grant(g) {
+		t.Error("a grant survived a new secret")
+	}
+}
+
+// TestConcurrentPatches pins all-or-nothing under contention: two PATCHes
+// each carrying a spec and the variable leave one applied and one refused.
+func TestConcurrentPatches(t *testing.T) {
+	c, applied := mutableCache(t)
+	body := "LIBTUNNEL_SPEC='" + envelope + "-2'\n" + v1.WWWAuthenticateEnv + "='" + authValue + "'"
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func() { defer wg.Done(); codes[i] = call(c, "PATCH", "", body).Code }()
+	}
+	wg.Wait()
+	slices.Sort(codes)
+	if codes[0] != 200 || codes[1] != 429 || len(*applied) != 1 {
+		t.Errorf("codes %v, applied %d; want one 200, one 429, one apply", codes, len(*applied))
+	}
+}
+
+// TestInMemoryCache pins what --no-cache now runs on: a cache with nowhere
+// to write still serves .env and takes a PATCH, for this run only.
+func TestInMemoryCache(t *testing.T) {
+	c := cache.New(cache.WithDir(""))
+	o := run(t, "http://localhost:3000")
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s")),
+		cache.WithMutable(v1.WWWAuthenticateEnv, func(string) error { return nil }, func(string) {}))
+	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"='"+authValue+"'"); rec.Code != 200 {
+		t.Errorf("in-memory PATCH = %d", rec.Code)
+	}
+	if rec := call(c, "GET", "", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), authValue) {
+		t.Errorf("in-memory GET = %d %q", rec.Code, rec.Body)
 	}
 }

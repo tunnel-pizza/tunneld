@@ -1133,3 +1133,118 @@ func TestProxyMarksUncachedResponses(t *testing.T) {
 		})
 	}
 }
+
+// cacheOf's Grant: one fixed grant, "g00d", is live.
+func (c cacheOf) Grant(bearer string) bool { return bearer == "g00d" }
+
+// authOf stands in for auth: it refuses every visitor unless pass is set,
+// answers login and logout, and says its challenge in public.
+type authOf struct{ pass bool }
+
+func (a authOf) Handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.pass {
+			w.WriteHeader(401)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
+	return map[string]func(http.ResponseWriter, *http.Request){
+		path + "login":  func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "login") },
+		path + "logout": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "logout") },
+	}
+}
+func (authOf) Public(host string) []string { return []string{`Basic realm="` + host + `"`} }
+
+// TestAuth pins how the router carries auth: outermost on the visitor side,
+// the control path outside it; login and logout need no secret; ping says the
+// challenge; a grant opens PATCH .env and nothing else; CORS on .env for the
+// provider's origin alone, on every answer.
+func TestAuth(t *testing.T) {
+	secret := []byte("s3cr3t")
+	r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey}))
+	env := controlOf(t, r, ".env", WithAuth(authOf{}), WithAllowOrigin("https://tunnel.pizza"))
+	base := strings.TrimSuffix(env, "/_tunneld/.env")
+
+	if resp, _ := ask(t, "GET", base+"/app", ""); resp.StatusCode != 401 {
+		t.Errorf("a visitor = %d, want auth's 401", resp.StatusCode)
+	}
+	for _, p := range []string{"login", "logout"} {
+		if resp, body := ask(t, "GET", base+"/_tunneld/"+p, ""); resp.StatusCode != 200 || body != p {
+			t.Errorf("%s = %d %q, want auth's page without the secret", p, resp.StatusCode, body)
+		}
+	}
+	resp, _ := ask(t, "GET", base+"/_tunneld/ping", "")
+	if resp.Header.Get(v1.AuthenticateHeader) == "" {
+		t.Error("ping said no challenge")
+	}
+	if resp, _ := ask(t, "GET", env, tokenOf(secret)); resp.StatusCode != 200 {
+		t.Errorf("the secret still opens .env: %d", resp.StatusCode)
+	}
+	for name, tc := range map[string]struct {
+		method, url, auth string
+		want              int
+	}{
+		"grant on PATCH .env": {"PATCH", env, "Bearer g00d", 405}, // cacheOf answers only GET; 405 means authorize let it through
+		"grant on GET .env":   {"GET", env, "Bearer g00d", 401},
+		"unknown grant":       {"PATCH", env, "Bearer nope", 401},
+		"grant elsewhere":     {"PATCH", base + "/_tunneld/nope", "Bearer g00d", 401},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := ask(t, tc.method, tc.url, tc.auth)
+			if resp.StatusCode != tc.want {
+				t.Errorf("= %d, want %d", resp.StatusCode, tc.want)
+			}
+			if tc.want == 401 && (body != "" || resp.Header.Get("Cache-Control") != "no-store") {
+				t.Errorf("a 401 with body %q, Cache-Control %q; want bodyless, no-store", body, resp.Header.Get("Cache-Control"))
+			}
+		})
+	}
+
+	preflight := func(origin, path string) *http.Response {
+		req, _ := http.NewRequest("OPTIONS", base+path, nil)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Access-Control-Request-Method", "PATCH")
+		req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+		resp, _ := get(t, http.DefaultClient, req)
+		return resp
+	}
+	ok := preflight("https://tunnel.pizza", "/_tunneld/.env")
+	if ok.StatusCode != 204 || ok.Header.Get("Access-Control-Allow-Origin") != "https://tunnel.pizza" ||
+		!strings.Contains(ok.Header.Get("Access-Control-Allow-Methods"), "PATCH") ||
+		!strings.Contains(ok.Header.Get("Access-Control-Allow-Headers"), "authorization") ||
+		ok.Header.Get("Access-Control-Allow-Credentials") != "" || ok.Header.Get("Vary") != "Origin" {
+		t.Errorf("preflight from the provider: %d %v", ok.StatusCode, ok.Header)
+	}
+	if other := preflight("https://evil.example", "/_tunneld/.env"); other.StatusCode != 204 || other.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("preflight from elsewhere: %d ACAO %q", other.StatusCode, other.Header.Get("Access-Control-Allow-Origin"))
+	}
+	if ping := preflight("https://tunnel.pizza", "/_tunneld/ping"); ping.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Error("CORS answered on a path other than .env")
+	}
+	// Every answer to a PATCH from the provider's origin, a 401 included.
+	req, _ := http.NewRequest("PATCH", env, nil)
+	req.Header.Set("Origin", "https://tunnel.pizza")
+	req.Header.Set("Authorization", "Bearer nope")
+	resp, _ = get(t, http.DefaultClient, req)
+	if resp.StatusCode != 401 || resp.Header.Get("Access-Control-Allow-Origin") != "https://tunnel.pizza" ||
+		!strings.Contains(resp.Header.Get("Access-Control-Expose-Headers"), "Retry-After") ||
+		!strings.Contains(resp.Header.Get("Access-Control-Expose-Headers"), v1.AuthenticateHeader) {
+		t.Errorf("401 to the provider's PATCH: %v", resp.Header)
+	}
+}
+
+func TestProviderOrigin(t *testing.T) {
+	for in, want := range map[string]string{
+		"tunnel.pizza":                        "https://tunnel.pizza",
+		"localhost:3000":                      "https://localhost:3000",
+		"http://localhost:3000/tunnel":        "http://localhost:3000",
+		"https://staging.tunnel.pizza/tunnel": "https://staging.tunnel.pizza",
+	} {
+		if got := ProviderOrigin(in); got != want {
+			t.Errorf("ProviderOrigin(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

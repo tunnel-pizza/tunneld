@@ -189,6 +189,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
+| — | `TUNNELD_WWW_AUTHENTICATE` | Password-protect the tunnel. Environment only: a command line is readable by every user. See [Password protection](./docs/reference.md#password-protection). |
 
 stdout carries the public addresses and nothing else, one per line, so they're
 easy to pipe. Everything meant for a person goes to stderr. `tunneld version`

@@ -264,6 +264,26 @@ const (
 	// line of protocol between the launcher and the binary it ships with.
 	NotifyPidEnv = "TUNNELD_NOTIFY_PID"
 
+	// WWWAuthenticateEnv is a tunnel's password protection: a WWW-Authenticate
+	// challenge whose private pw parameter is the password's PBKDF2 hash,
+	//
+	//	Basic realm="0t8qsb6pq3.tunneled.pizza", pw="$pbkdf2-sha256$i=600000$…$…"
+	//
+	// and empty for public. Environment only, deliberately: there is no flag,
+	// since a command line is readable by every user through ps and lands in
+	// shell history, and set-and-empty is a choice (public), not an absence.
+	// A PATCH to /_tunneld/.env can change it on a running tunnel.
+	WWWAuthenticateEnv = "TUNNELD_WWW_AUTHENTICATE"
+
+	// AuthenticateHeader carries a tunnel's challenges in their public form,
+	// one value each, on /_tunneld/ping and on a grant's PATCH answer; absent
+	// when the tunnel is public.
+	AuthenticateHeader = "X-Tunneld-Authenticate"
+
+	// GrantHeader carries a single-use grant to PATCH /_tunneld/.env, on every
+	// answer to GET /_tunneld/.env made with the tunnel secret.
+	GrantHeader = "X-Tunneld-Grant"
+
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.
 	CommandName = "tunneld"

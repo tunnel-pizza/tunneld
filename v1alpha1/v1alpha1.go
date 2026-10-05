@@ -22,6 +22,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/docker"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -81,7 +82,11 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 // of the run the cache is for, "" before it knows: what the router names the
 // run by on every answer from its control path, refusals included. Spec is
 // every spec the cache takes, the run's own saves among them: a new one while
-// the run waits is a new tunnel.
+// the run waits is a new tunnel. Grant is whether a bearer token is a live,
+// unused grant the cache issued on GET .env, for the router to let that one
+// PATCH through. Mutable is what the file said about a variable a PATCH may
+// change, set says whether it said anything at all (an empty line is a
+// choice); SetMutable records what the builder settled, for the file.
 type Cache interface {
 	Load(opts ...cache.Option) string
 	Save(opts ...cache.Option)
@@ -90,6 +95,9 @@ type Cache interface {
 	Secret() []byte
 	Key() string
 	Spec() <-chan string
+	Grant(bearer string) bool
+	Mutable(name string) (string, bool)
+	SetMutable(name, value string)
 }
 
 // Pid is how a run is found and handed back from outside it, by the npm
@@ -162,8 +170,11 @@ func (noCache) String() string              { return "" }
 func (noCache) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) {
 	return nil
 }
-func (noCache) Secret() []byte { return nil }
-func (noCache) Key() string    { return "" }
+func (noCache) Secret() []byte                { return nil }
+func (noCache) Key() string                   { return "" }
+func (noCache) Grant(string) bool             { return false }
+func (noCache) Mutable(string) (string, bool) { return "", false }
+func (noCache) SetMutable(string, string)     {}
 
 // Spec is never a new spec: a run with caching off keeps its tunnel.
 func (noCache) Spec() <-chan string { return nil }
@@ -314,6 +325,21 @@ type Motd interface {
 	Learn(raw []string, log v1.Logger)
 }
 
+// Auth stands between a visitor and everything the tunnel serves: the
+// origins, the panel, every terminal. The router keeps its control path
+// outside it, and puts its Handlers (the login page, logout) under that path
+// without asking for the secret, since a visitor logging in has none. Set is
+// what the builder calls with the password it settled, and what a PATCH to
+// .env calls through the cache; Value and Public say it back, privately and
+// as a visitor may see it.
+type Auth interface {
+	Handler(next http.Handler) http.Handler
+	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
+	Set(value string) error
+	Value() string
+	Public(host string) []string
+}
+
 // Run is one run's tunnel, from its spec to its end: minted from the spec,
 // brought up and put in front of everybody — the addresses, the map, the bound
 // origins told where they answer from, the provider's messages, the browser
@@ -336,6 +362,22 @@ type Run interface {
 //	    v1alpha1.WithBinder(attach.New(attach.WithMotd(board), …)))
 func WithMotd(m Motd) Option {
 	return func(b *BuilderImpl) { b.motd = m }
+}
+
+// WithAuth replaces what stands between a visitor and everything the tunnel
+// serves. The default is auth.New, reading the tunnel secret from the cache
+// the run uses.
+func WithAuth(a Auth) Option {
+	return func(b *BuilderImpl) { b.auth = a }
+}
+
+// secret is the running tunnel's secret, from the cache this run uses: what
+// the default auth keys its cookie with.
+func (b *BuilderImpl) secret() []byte {
+	if b.runCache == nil {
+		return nil
+	}
+	return b.runCache.Secret()
 }
 
 // WithRun replaces what takes a run's tunnel from its spec to its end. The
@@ -368,6 +410,7 @@ var (
 	_ Router     = (*router.RouterImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 	_ Motd       = (*motd.MotdImpl)(nil)
+	_ Auth       = (*auth.AuthImpl)(nil)
 	_ Run        = (*run.RunImpl)(nil)
 	_ Log        = (*logs.LogImpl)(nil)
 )
@@ -398,12 +441,16 @@ func New(opts ...Option) *BuilderImpl {
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
-	b := v1.Apply(&BuilderImpl{log: log},
+	// The builder first, so the default auth can read the run's secret off
+	// it: which cache a run uses is only settled in Command.
+	b := &BuilderImpl{log: log}
+	b = v1.Apply(b,
 		WithMultiview(v1.DefaultMultiview),
 		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
+		WithAuth(auth.New(auth.WithSecret(b.secret), auth.WithLog(log.Logger()))),
 		WithRun(run.New()),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
@@ -498,6 +545,14 @@ type BuilderImpl struct {
 
 	// motd keeps what the provider said with the spec for every surface.
 	motd Motd
+
+	// auth stands between a visitor and everything the tunnel serves.
+	auth Auth
+
+	// runCache is the cache the current run reads and writes through: the
+	// field's, an in-memory one under --no-cache, or noCache. Set in Command,
+	// read by the default auth for the tunnel secret.
+	runCache Cache
 
 	// run takes each run's tunnel from its spec to its end.
 	run Run
