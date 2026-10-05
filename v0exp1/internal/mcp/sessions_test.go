@@ -161,3 +161,33 @@ func TestSessionLimits(t *testing.T) {
 		t.Errorf("%d sessions after Close, want 0", n)
 	}
 }
+
+// slowSpawner takes a moment to go once it is told to, the way a real
+// process does past its signal, and says when it has.
+type slowSpawner struct{ gone chan struct{} }
+
+func (s slowSpawner) Spawn(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) (int, error) {
+	<-ctx.Done()
+	time.Sleep(100 * time.Millisecond)
+	close(s.gone)
+	return -1, nil
+}
+
+// TestCloseWaitsForTheProcesses pins that Close returns only once every
+// session's process has gone: nothing a session started outlives the run.
+func TestCloseWaitsForTheProcesses(t *testing.T) {
+	sp := slowSpawner{gone: make(chan struct{})}
+	tbl := newSessions([]Origin{{Kind: KindProgram, Spawner: sp}}, slog.New(slog.DiscardHandler))
+	if _, _, err := tbl.open(t.Context(), nil, sessionOpenIn{N: 0}); err != nil {
+		t.Fatal(err)
+	}
+	_ = tbl.Close()
+	select {
+	case <-sp.gone:
+	default:
+		t.Error("Close returned while a session's process was still going")
+	}
+	if _, _, err := tbl.open(t.Context(), nil, sessionOpenIn{N: 0}); err == nil {
+		t.Error("open after Close started a session")
+	}
+}

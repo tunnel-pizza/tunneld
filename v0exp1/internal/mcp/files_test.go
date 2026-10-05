@@ -17,6 +17,9 @@ func TestFiles(t *testing.T) {
 	dir := t.TempDir()
 	program := []Origin{{Name: "exec:///bin/sh", Kind: KindProgram, Spawner: &fakeSpawner{}}}
 	container := []Origin{{Name: "attach://dockerd/web", Kind: KindContainer}}
+	// A container whose provider can spawn: its files are still not ones
+	// this build can reach.
+	spawningContainer := []Origin{{Name: "attach://dockerd/web", Kind: KindContainer, Spawner: &fakeSpawner{}}}
 	content := base64.StdEncoding.EncodeToString([]byte("hello\x00world"))
 
 	t.Run("round trip with a mode", func(t *testing.T) {
@@ -68,13 +71,14 @@ func TestFiles(t *testing.T) {
 		wantMsg string
 		unix    bool
 	}{
-		"a relative path is refused": {program, "put_file", map[string]any{"n": 0, "path": "rel.txt", "content_base64": content}, `path "rel.txt" is not absolute`, false},
-		"a directory is refused":     {program, "get_file", map[string]any{"n": 0, "path": dir}, "is a directory", false},
-		"a directory is not written": {program, "put_file", map[string]any{"n": 0, "path": dir, "content_base64": content}, "is a directory", true},
-		"a missing file is refused":  {program, "get_file", map[string]any{"n": 0, "path": filepath.Join(dir, "nope")}, "no such file", true},
-		"a container is refused":     {container, "get_file", map[string]any{"n": 0, "path": "/etc/hostname"}, "origin 0 cannot run a program: it is a container origin", false},
-		"bad base64 is refused":      {program, "put_file", map[string]any{"n": 0, "path": filepath.Join(dir, "b"), "content_base64": "!!"}, "content_base64", false},
-		"a mode that is not octal":   {program, "put_file", map[string]any{"n": 0, "path": filepath.Join(dir, "c"), "content_base64": content, "mode": "rw"}, `mode "rw" is not octal`, false},
+		"a relative path is refused":               {program, "put_file", map[string]any{"n": 0, "path": "rel.txt", "content_base64": content}, `path "rel.txt" is not absolute`, false},
+		"a directory is refused":                   {program, "get_file", map[string]any{"n": 0, "path": dir}, dir + " is a directory", false},
+		"a directory is not written":               {program, "put_file", map[string]any{"n": 0, "path": dir, "content_base64": content}, "is a directory", true},
+		"a missing file is refused":                {program, "get_file", map[string]any{"n": 0, "path": filepath.Join(dir, "nope")}, "no such file", true},
+		"a container is refused":                   {container, "get_file", map[string]any{"n": 0, "path": "/etc/hostname"}, "origin 0 cannot run a program: it is a container origin", false},
+		"a spawning container's files are refused": {spawningContainer, "get_file", map[string]any{"n": 0, "path": "/etc/hostname"}, "origin 0: files on a container origin are not supported yet", false},
+		"bad base64 is refused":                    {program, "put_file", map[string]any{"n": 0, "path": filepath.Join(dir, "b"), "content_base64": "!!"}, "content_base64", false},
+		"a mode that is not octal":                 {program, "put_file", map[string]any{"n": 0, "path": filepath.Join(dir, "c"), "content_base64": content, "mode": "rw"}, `mode "rw" is not octal`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if tc.unix && runtime.GOOS == "windows" {

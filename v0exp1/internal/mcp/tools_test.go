@@ -42,6 +42,8 @@ func TestExec(t *testing.T) {
 			map[string]any{"n": 0, "argv": []string{"-c", "x"}}, execOut{Stdout: "o", Stderr: "e", ExitCode: 3}, ""},
 		{"stdin is fed", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{echoStdin: true}}},
 			map[string]any{"n": 0, "argv": []string{"cat"}, "stdin": "fed"}, execOut{Stdout: "fed"}, ""},
+		{"one byte past the cap is dropped and marked", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{out: strings.Repeat("x", maxOutput+1)}}},
+			map[string]any{"n": 0, "argv": []string{"big"}}, execOut{Stdout: strings.Repeat("x", maxOutput), Truncated: true}, ""},
 		{"output past the cap is dropped and marked", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{out: strings.Repeat("x", maxOutput+5)}}},
 			map[string]any{"n": 0, "argv": []string{"big"}}, execOut{Stdout: strings.Repeat("x", maxOutput), Truncated: true}, ""},
 		{"non-UTF-8 output is replaced", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{out: "a\xffb"}}},
@@ -50,6 +52,8 @@ func TestExec(t *testing.T) {
 			map[string]any{"n": 0, "argv": []string{"ls"}}, execOut{}, "origin 0 cannot run a program: it is an http origin"},
 		{"a container with no spawner refuses", []Origin{{Name: "attach://dockerd/web", Kind: KindContainer}},
 			map[string]any{"n": 0, "argv": []string{"ls"}}, execOut{}, "origin 0 cannot run a program: it is a container origin"},
+		{"the index one past the last refuses", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{}}},
+			map[string]any{"n": 1, "argv": []string{"ls"}}, execOut{}, "origin 1: there are 1 origins, 0 to 0"},
 		{"an index off the list refuses", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{}}},
 			map[string]any{"n": 4, "argv": []string{"ls"}}, execOut{}, "origin 4: there are 1 origins, 0 to 0"},
 	} {
@@ -84,5 +88,24 @@ func TestExecTimeout(t *testing.T) {
 		if got := clampTimeout(in); got != want {
 			t.Errorf("clampTimeout(%d) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// TestCapped pins the writer exec and sessions collect output in: every byte
+// is accepted, whether kept or dropped, so the copy feeding it never stops
+// short; and what it hands back is valid UTF-8 on its own, not by the grace
+// of whichever JSON encoder carries it.
+func TestCapped(t *testing.T) {
+	c := newCapped(4)
+	for _, p := range []string{"a\xffb", "cdef"} {
+		if n, err := c.Write([]byte(p)); n != len(p) || err != nil {
+			t.Errorf("Write(%q) = %d, %v; want %d, nil", p, n, err, len(p))
+		}
+	}
+	if got := c.text(); got != "a\uFFFDbc" || !c.truncated {
+		t.Errorf("text() = %q, truncated %v; want %q, true", got, c.truncated, "a\uFFFDbc")
+	}
+	if got := c.take(); got != "a\uFFFDbc" || c.truncated || c.text() != "" {
+		t.Errorf("take() = %q, then truncated %v and %q left; want everything once", got, c.truncated, c.text())
 	}
 }
