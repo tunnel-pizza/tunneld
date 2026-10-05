@@ -100,6 +100,12 @@ type CacheImpl struct {
 	// own, the latest being the one that matters, and a PATCH that finds one
 	// waiting is refused rather than dropped.
 	specs chan string
+	// applying is a PATCHed spec handed to the run and not yet settled by a
+	// save (WithSpec after a respec, WithSavedSpec after a messages-only
+	// update, or a re-sent spec the run already has). Another spec PATCH
+	// meanwhile is refused like one finding a spec waiting: the settling
+	// save's echo would replace it, after it was answered 200.
+	applying bool
 
 	// mutable is what a PATCH, Load or SetMutable set, apart from tracking so
 	// that a respec's save, which replaces tracking wholesale, cannot erase it.
@@ -182,7 +188,7 @@ func WithOrigins(origins v1.Origins) Option {
 // one still waiting there.
 func WithSpec(spec string) Option {
 	return func(c *CacheImpl) {
-		c.spec = spec
+		c.spec, c.applying = spec, false
 		select {
 		case <-c.specs:
 		default:
@@ -199,7 +205,7 @@ func WithSpec(spec string) Option {
 // messages-only update). Unlike WithSpec it leaves a spec waiting on Spec in
 // place, since a PATCH that put one there was answered as taken.
 func WithSavedSpec(spec string) Option {
-	return func(c *CacheImpl) { c.spec = spec }
+	return func(c *CacheImpl) { c.spec, c.applying = spec, false }
 }
 
 // WithClock sets what the cache reads the time from, for a grant's minute.
@@ -633,7 +639,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 					return
 				}
 			}
-			if hasSpec && len(c.specs) == cap(c.specs) {
+			if hasSpec && (len(c.specs) == cap(c.specs) || c.applying) {
 				log.Info("refused a patch to .env", "reason", "a patch is already being applied")
 				w.Header().Set("Retry-After", "1")
 				http.Error(w, "a patch is already being applied", http.StatusTooManyRequests)
@@ -654,6 +660,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			}
 			if hasSpec {
 				c.specs <- spec
+				c.applying = true
 			}
 			switch {
 			case hasSpec:

@@ -1018,6 +1018,9 @@ that names a file other than the current one is a `412` that changes nothing,
 so a caller that read the file and writes it back cannot overwrite a newer
 one. `If-Match` takes `*`, a list, and the tag weakened (`W/"…"`), as a
 compressing hop would return it.
+A PATCH carrying `LIBTUNNEL_SPEC` while the run is still taking the last one
+(waiting to be read, or a new tunnel being minted from it) is a `429` with
+`Retry-After: 1` that changes nothing, never a `200` the run then drops.
 
 Every mint tells the provider what the tunnel's gate is:
 `X-Tunneld-Authenticate` with the challenge as a visitor would see it (no

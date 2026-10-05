@@ -594,6 +594,8 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 			if sameSpec(spec, saved) {
 				if !own {
 					log.Info("the spec sent is the one this tunnel already has; keeping the tunnel")
+					// A PATCH sent it: settled, so the cache takes the next.
+					r.cache.Save(cache.WithSavedSpec(saved))
 				}
 				own = false
 				continue

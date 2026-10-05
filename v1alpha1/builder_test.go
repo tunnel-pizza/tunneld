@@ -1122,13 +1122,20 @@ func TestRun(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		// Once the run has passed over its own save, the same spec twice more —
 		// what a caller replaying the cache file sends — and then the signal.
+		// Armed by the first save only: the run saves again on each replay, to
+		// settle it.
+		saves := 0
 		h.cache.onSave = func() {
+			if saves++; saves > 1 {
+				return
+			}
+			spec := h.cache.spec // read here, beside the saves that write it
 			go func() {
 				for range 2 {
 					for len(h.cache.specs) > 0 {
 						time.Sleep(time.Millisecond)
 					}
-					h.cache.specs <- h.cache.spec
+					h.cache.specs <- spec
 				}
 				for len(h.cache.specs) > 0 {
 					time.Sleep(time.Millisecond)
@@ -3325,6 +3332,43 @@ func TestAMessagesOnlySaveKeepsAWaitingSpec(t *testing.T) {
 	}
 	if len(h.specs) != 2 || h.specs[1] != respec {
 		t.Errorf("minted from %q, want the waiting respec applied", h.specs)
+	}
+}
+
+// TestAReSentSpecSettlesTheCache pins a PATCH of the spec the run already
+// has: the run keeps its tunnel, and saves, so the cache stops refusing spec
+// PATCHes as though one were still being applied.
+func TestAReSentSpecSettlesTheCache(t *testing.T) {
+	const public = "https://foo.tunneled.pizza/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"}}`
+	tun := live(public)
+	tun.serialized = env
+	h := newRunHarness(t, tun, ":3000")
+	h.cache.specs = make(chan string, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	saves := 0
+	h.cache.onSave = func() {
+		saves++
+		if saves == 1 {
+			go func() {
+				for len(h.cache.specs) > 0 { // the run takes its own save first
+					time.Sleep(time.Millisecond)
+				}
+				h.cache.specs <- env
+			}()
+			return
+		}
+		cancel()
+	}
+	go func() { time.Sleep(5 * time.Second); cancel() }()
+	if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if saves != 2 || h.cache.spec != env {
+		t.Errorf("saves = %d, cached %q; want the re-sent spec settled by a second save", saves, h.cache.spec)
+	}
+	if len(h.specs) != 1 {
+		t.Errorf("minted %d times, want once: the same spec is no respec", len(h.specs))
 	}
 }
 
