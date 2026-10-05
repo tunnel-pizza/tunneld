@@ -24,12 +24,14 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
+	ltv1alpha1 "github.com/cnuss/libtunnel/v1alpha1"
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
@@ -626,6 +628,32 @@ func decodeSpec(spec string) (any, error) {
 		return nil, errors.New("more than one JSON value")
 	}
 	return v, nil
+}
+
+// messagesOnly reports whether next is saved with only its messages changed:
+// the same backend, the same credential (compared as JSON), and every other
+// field beside it equal, metadata today and whatever libtunnel adds there
+// later. That is the provider rewording what it says about this tunnel, not
+// a new tunnel, so the run learns it without a reconnect. Not JSON, or any
+// other difference, is not.
+func messagesOnly(next, saved string) ([]string, bool) {
+	nb, nspec, naside, err := ltv1alpha1.DecodeSpec(next)
+	if err != nil {
+		return nil, false
+	}
+	sb, sspec, saside, err := ltv1alpha1.DecodeSpec(saved)
+	if err != nil || nb != sb || !sameSpec(string(nspec), string(sspec)) {
+		return nil, false
+	}
+	if slices.Equal(naside.Messages, saside.Messages) {
+		return nil, false
+	}
+	messages := naside.Messages
+	naside.Messages, saside.Messages = nil, nil
+	if !reflect.DeepEqual(naside, saside) {
+		return nil, false
+	}
+	return messages, true
 }
 
 // openEnv is the hammer, and the one thing about how a run is shown that is

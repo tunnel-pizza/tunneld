@@ -4,6 +4,7 @@ package run
 
 import (
 	"net/url"
+	"slices"
 	"testing"
 )
 
@@ -70,6 +71,31 @@ func TestSameSpec(t *testing.T) {
 		}
 		if got := sameSpec(tc.b, tc.a); got != tc.want {
 			t.Errorf("%s, swapped: sameSpec = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestMessagesOnly pins what is a change to the messages alone, which the
+// run applies live, and what is a new tunnel: every other field is compared
+// as JSON, so a reformatted envelope with the same messages is neither.
+func TestMessagesOnly(t *testing.T) {
+	const saved = `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["warn","tip"]}`
+	for _, tc := range []struct {
+		name, next string
+		want       bool
+		messages   []string
+	}{
+		{"the warning dropped", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, true, []string{"tip"}},
+		{"all messages gone", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"metadata":{"record_id":"r1"}}`, true, nil},
+		{"reordered, same messages", `{"messages":["warn","tip"],"metadata":{"record_id":"r1"},"spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"hostname":"0tk.tunneled.pizza","backend":"cloudflare"}`, false, nil},
+		{"another secret", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"b3RoZXI="},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
+		{"another record", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r2"},"messages":["tip"]}`, false, nil},
+		{"another backend", `{"backend":"other","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
+		{"not JSON", "patched", false, nil},
+	} {
+		got, ok := messagesOnly(tc.next, saved)
+		if ok != tc.want || ok && !slices.Equal(got, tc.messages) {
+			t.Errorf("%s: messagesOnly = %q, %v; want %q, %v", tc.name, got, ok, tc.messages, tc.want)
 		}
 	}
 }
