@@ -406,6 +406,10 @@ it last said.
 A narrow window drops what it cannot hold, in order: the build first, then the
 counts, and the keys last. Above the frame, centred and one row each, sit the
 messages the provider sent with the mint, as text with their links by name.
+They can change while the run is up: a spec sent to `/_tunneld/.env` that
+differs from the running one only in its messages is taken in place, with no
+reconnect, and every frame redraws (and resizes, when the number of rows
+changes). An open multiview panel picks the change up on its next load.
 
 Every key reaches the program or the container except one:
 
@@ -999,7 +1003,15 @@ Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
   (`https://<provider>`) and no other.
 
 A PATCH is all or nothing: a value that does not parse is a `400` and changes
-nothing. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
+nothing. `GET /_tunneld/.env` answers an `ETag`; a PATCH carrying `If-Match`
+that names a file other than the current one is a `412` that changes nothing,
+so a caller that read the file and writes it back cannot overwrite a newer
+one.
+
+Every mint tells the provider what the tunnel's gate is:
+`X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
+realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
+publicly accessible." out of a protected tunnel's messages. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
 as a visitor would see it, absent when the tunnel is public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so
