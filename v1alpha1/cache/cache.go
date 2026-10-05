@@ -687,7 +687,8 @@ var dotenvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // way the cache writes them: blank lines and # comments are skipped, a line
 // may end \r\n (bufio.ScanLines drops the \r), and one pair of matching quotes
 // around a value, ' or ", is taken off — so what GET answers is a body PATCH
-// takes.
+// takes, but for a redacted line (WithRedact): a password served in public
+// form has no pw, and its validation refuses it.
 //
 // Sanitized rather than trusted, since it arrives over the network: a line
 // with no '=', a name a shell could not export, a name given twice, and a value

@@ -185,7 +185,7 @@ else is the origins', passed through exactly as it was sent.
 | Path | Auth | Answers |
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
-| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — or a bare `404` before the first save |
+| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` in its public form (`Basic charset="UTF-8"`, realm and hash left out; the file on disk keeps them), or a bare `404` before the first save |
 
 Everything but `ping` needs `Authorization: token <secret>`, the running
 tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
@@ -992,7 +992,10 @@ directory comes up protected; Public is written as a bare
 Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
 
 - with the tunnel secret (`Authorization: token <secret>`), as for any
-  variable, answered `200` with the file; or
+  variable, answered `200` with the file as `GET` serves it. A protected
+  run's file comes back with the password in its public form, which is not
+  a challenge `PATCH` takes (no `pw`): to write the whole file back, leave
+  that line out; or
 - with a **grant**: every `GET /_tunneld/.env` made with the secret answers an
   `X-Tunneld-Grant`, a single-use token good for a minute that may change only
   `TUNNELD_WWW_AUTHENTICATE`, never the spec. tunnel.pizza hands it to the
