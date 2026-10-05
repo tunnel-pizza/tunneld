@@ -22,7 +22,7 @@ func TestParse(t *testing.T) {
 		"realm and charset":       {`Basic realm="h", charset="UTF-8", pw="` + vector + `"`, 1, ""},
 		"scheme in any case":      {`bAsIc pw="` + vector + `"`, 1, ""},
 		"token value":             {`Basic pw=` + vector, 1, ""},
-		"two challenges":          {`Basic pw="` + vector + `", Basic realm="b", pw="` + vector + `"`, 2, ""},
+		"one scheme twice":        {`Basic pw="` + vector + `", Basic realm="b", pw="` + vector + `"`, -1, "twice"},
 		"no pw":                   {`Basic realm="h"`, -1, "pw"},
 		"wrong scheme":            {`Bearer realm="h"`, -1, "Bearer"},
 		"invented scheme":         {`Tunneld pw="` + vector + `"`, -1, "Tunneld"},
