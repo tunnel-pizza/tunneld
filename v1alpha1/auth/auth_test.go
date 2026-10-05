@@ -301,3 +301,32 @@ func TestCookieHolderBasic(t *testing.T) {
 		}
 	}
 }
+
+// TestEdgeHeaderWinsOverTheOrigins pins that a protected tunnel's answer
+// tells the edge exactly one thing, no-store, even when the origin set its
+// own Cloudflare-CDN-Cache-Control: two values could let the edge keep a
+// copy for visitors who never logged in. Flushing (streaming, upgrades)
+// still reaches the real writer.
+func TestEdgeHeaderWinsOverTheOrigins(t *testing.T) {
+	a := protected(t)
+	cookie := mintCookie(cookieKey([]byte("s3cr3t")), "basic", value, a.now())
+	var flushErr error
+	h := a.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cloudflare-CDN-Cache-Control", "max-age=600")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(200)
+		flushErr = http.NewResponseController(w).Flush()
+	}))
+	req := httptest.NewRequest("GET", "/asset.js", nil)
+	req.AddCookie(&http.Cookie{Name: CookieName, Value: cookie})
+	rec := serve(h, req)
+	if got := rec.Header().Values("Cloudflare-CDN-Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+		t.Errorf("Cloudflare-CDN-Cache-Control = %q, want exactly no-store", got)
+	}
+	if rec.Header().Get("Cache-Control") != "public, max-age=60" {
+		t.Errorf("the origin's own Cache-Control was touched: %q", rec.Header().Get("Cache-Control"))
+	}
+	if flushErr != nil || !rec.Flushed {
+		t.Errorf("flush through auth = %v, flushed %v", flushErr, rec.Flushed)
+	}
+}

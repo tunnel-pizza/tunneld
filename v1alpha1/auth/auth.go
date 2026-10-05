@@ -196,9 +196,36 @@ func (a *AuthImpl) pass(w http.ResponseWriter, r *http.Request, next http.Handle
 	if consumed {
 		r.Header.Del("Authorization")
 	}
-	w.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
-	next.ServeHTTP(w, r)
+	next.ServeHTTP(&edgeWriter{ResponseWriter: w}, r)
 }
+
+// edgeWriter makes Cloudflare-CDN-Cache-Control no-store the last word on
+// the edge when the header goes out, after the origin's own headers are in:
+// an origin that sets its own would otherwise replace or join it, and let
+// the edge keep a copy for visitors who never logged in. The origin's
+// Cache-Control, for the browser, is left alone. Unwrap lets
+// http.ResponseController reach the real writer, for flushes and upgrades.
+type edgeWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (e *edgeWriter) WriteHeader(code int) {
+	if !e.wrote {
+		e.wrote = true
+		e.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
+	}
+	e.ResponseWriter.WriteHeader(code)
+}
+
+func (e *edgeWriter) Write(b []byte) (int, error) {
+	if !e.wrote {
+		e.WriteHeader(http.StatusOK)
+	}
+	return e.ResponseWriter.Write(b)
+}
+
+func (e *edgeWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
 
 // refuse answers status with headers only: an app's fetch or an SDK never
 // meets a body it was not written for.
