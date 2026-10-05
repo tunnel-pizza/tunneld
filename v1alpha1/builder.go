@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
@@ -534,6 +535,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
+	// The agent server, while the experiment is on: one over every shown
+	// origin, each with its spawner where the bound origin has one, so a tool
+	// that names origin n reaches what ?n reaches. Mounted on the control
+	// path below, behind the tunnel secret, and closed before the bound
+	// origins are, since what it holds are processes on them.
+	var agents []router.Option
+	if m := v0exp1.Experimental().Mcp(); m != nil {
+		h, closer := m.Handler(mcpOrigins(origins, bound.Spawners()), log)
+		defer closer.Close()
+		agents = append(agents, router.WithHandler(router.ControlPath+"mcp", h))
+	}
+
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -639,7 +652,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// over and its tunnel has drained. It is stood up here, immediately before
 	// the tunnel it is handed to, so nothing between the two can return and
 	// leave it serving with no tunnel to end it.
-	local, err := b.router.Route(ctx,
+	local, err := b.router.Route(ctx, append([]router.Option{
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
 		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
@@ -656,7 +669,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// request at warn; showing it belongs here in the builder, at a point
 		// where a line cannot land in the middle of a frame, not on the
 		// request's goroutine deep in the router.
-	)
+	}, agents...)...)
 	if err != nil {
 		return err
 	}
@@ -1063,6 +1076,29 @@ func (b *BuilderImpl) cached() Origins {
 		return nil
 	}
 	return b.Origins()
+}
+
+// mcpOrigins is what the agent server is told about each shown origin: how
+// it was shown, what kind it is by its scheme, and its spawner, which the
+// bound origins hand over by index — nil, an address's or a provider's that
+// cannot, stays nil.
+func mcpOrigins(shown Origins, spawners []attach.Spawner) []v0exp1.McpOrigin {
+	urls := shown.URLs()
+	list := make([]v0exp1.McpOrigin, len(urls))
+	for i, u := range urls {
+		o := v0exp1.McpOrigin{Name: u.String(), Kind: v0exp1.McpHTTP}
+		switch u.Scheme {
+		case v1.ExecScheme:
+			o.Kind = v0exp1.McpProgram
+		case v1.AttachScheme:
+			o.Kind = v0exp1.McpContainer
+		}
+		if i < len(spawners) && spawners[i] != nil {
+			o.Spawner = spawners[i]
+		}
+		list[i] = o
+	}
+	return list
 }
 
 // fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
