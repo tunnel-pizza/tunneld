@@ -361,15 +361,17 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to the prompt with nothing left waiting, the way a shell session
 		// ends when its shell does. The browser's story is different: there
 		// the page offers a restart, and the frame quit on the end already.
+		// Scrollback mode owns every key until it is left: the arrows are
+		// the terminal's wheel as much as they are keys, and typing reaches
+		// nobody. Before the end's "any key", so a run ending under a reader
+		// does not take the history with the next wheel notch; leaving the
+		// mode hands over to it.
+		if f.reading {
+			return f.read(tea.Key(msg))
+		}
 		if f.ended {
 			f.exiting = true
 			return f, tea.Quit
-		}
-		// Scrollback mode owns every key until it is left: the arrows are
-		// the terminal's wheel as much as they are keys, and typing reaches
-		// nobody.
-		if f.reading {
-			return f.read(tea.Key(msg))
 		}
 		// Typing is being present. The first keystroke returns a viewer who
 		// scrolled back to the live screen, and still goes where it was
@@ -608,9 +610,30 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 	case key == "f":
 		f.bare = !f.bare
 	case key == "c":
-		return f.copy(f.everything())
+		text, whole := fitting(f.everything())
+		f, cmd := f.copy(text)
+		if !whole && cmd != nil {
+			f.clip = "copied (end)"
+		}
+		return f, cmd
 	}
 	return f, nil
+}
+
+// fitting is text cut to the end that a terminal will take as one copy (see
+// osc52Max), from the start of a line, and whether that is all of it. The
+// end, because what somebody copying a long history most often wants is what
+// just happened.
+func fitting(text string) (string, bool) {
+	limit := osc52Max / 4 * 3 // the bytes that encode to it
+	if len(text) <= limit {
+		return text, true
+	}
+	tail := text[len(text)-limit:]
+	if i := strings.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	return tail, false
 }
 
 // scroll moves a reader step lines through the history, clamped to it, and
@@ -635,18 +658,12 @@ func (f frame) scroll(step int) frame {
 // scrollback mode: what a native selection cannot reach past the pane. Only
 // the live screen on the alternate screen, which has no history of its own.
 func (f frame) everything() string {
-	w, h := f.sess.paneSize()
-	kept := f.sess.history()
-	if f.sess.altScreen() {
-		kept = 0
+	buf := f.sess.transcript()
+	b := buf.Bounds()
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return ""
 	}
-	buf := uv.NewScreenBuffer(w, kept+h)
-	if f.sess.altScreen() {
-		f.sess.drawPane(buf, buf.Bounds())
-	} else {
-		f.sess.drawHistory(buf, buf.Bounds(), 0)
-	}
-	all := selection{anchor: uv.Pos(0, 0), head: uv.Pos(w-1, kept+h-1)}
+	all := selection{anchor: uv.Pos(0, 0), head: uv.Pos(b.Dx()-1, b.Dy()-1)}
 	return strings.TrimRight(all.text(buf), "\n")
 }
 
@@ -677,7 +694,8 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// Scrollback mode, on the console: see reading. A tab's page keeps
 		// the mouse and selects natively already, so there it is not offered.
 		if f.console() {
-			f.reading = true
+			// A drag under way gets no release once the mouse is let go.
+			f.reading, f.selecting, f.selected = true, false, false
 			f = f.scroll(0)
 		}
 		return f, nil
@@ -686,6 +704,7 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 		// mouseOff. The console's alone, for the same reason.
 		if f.console() {
 			f.mouseOff = !f.mouseOff
+			f.selecting, f.selected = false, false
 		}
 		return f, nil
 	case 'r':
@@ -870,7 +889,7 @@ func (f frame) View() tea.View {
 	// The counts give way whole on a narrow window, but not the one part of
 	// them that says this screen is not live: a scrolled viewer with no
 	// indicator is a viewer who thinks the program has stopped.
-	f.row(buf, f.frameRect().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back())
+	f.row(buf, f.frameRect().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back(), f.back(), f.copied())
 
 	view.Content = buf.Render()
 	// No cursor when the frame owns the keyboard, when the reader has scrolled
@@ -1422,9 +1441,14 @@ func (f frame) hint() string {
 		return chipStyle.Styled(" esc ") + hintStyle.Styled(" back to the terminal ")
 	}
 	if f.reading {
-		return chipStyle.Styled(" scrollback ") +
-			hintStyle.Styled(" ↑↓ pgup pgdn ") +
-			chipStyle.Styled(" c ") + hintStyle.Styled(" copy all ") +
+		// Short: the copy's chip and how far back the reader is share the row
+		// on an 80-column console. No arrows where there is nothing to scroll.
+		var scroll string
+		if !f.sess.altScreen() {
+			scroll = hintStyle.Styled(" ↑↓ ")
+		}
+		return chipStyle.Styled(" scrollback ") + scroll +
+			chipStyle.Styled(" c ") + hintStyle.Styled(" copy ") +
 			chipStyle.Styled(" f ") + hintStyle.Styled(" bare ") +
 			chipStyle.Styled(" esc ") + hintStyle.Styled(" live ")
 	}
@@ -1438,23 +1462,22 @@ func (f frame) hint() string {
 	if f.sess.restartable() {
 		restart = chipStyle.Styled(" r ") + hintStyle.Styled(" restart ")
 	}
-	// Scrollback and the mouse only on the console: see reading.
+	// Scrollback and the mouse only on the console: see reading. There esc
+	// gives up its chip so all of them fit 80 columns; any unbound key
+	// cancels anyway.
+	cancel := chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
 	var console string
 	if f.console() {
-		mouse := " mouse off "
-		if f.mouseOff {
-			mouse = " mouse on "
-		}
-		console = chipStyle.Styled(" [ ") + hintStyle.Styled(" scrollback ") +
-			chipStyle.Styled(" m ") + hintStyle.Styled(mouse)
+		console = chipStyle.Styled(" [ ") + hintStyle.Styled(" scroll ") +
+			chipStyle.Styled(" m ") + hintStyle.Styled(" mouse ")
+		cancel = ""
 	}
 	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
 		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
 		restart +
 		chipStyle.Styled(" l ") + hintStyle.Styled(" logs ") +
 		chipStyle.Styled(" q ") + hintStyle.Styled(" qr ") +
-		console +
-		chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
+		console + cancel
 }
 
 // viewers names how many are watching, in the one place it is said.

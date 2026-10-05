@@ -1246,6 +1246,34 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	}
 }
 
+// transcript is everything a viewer could scroll through, in one buffer: the
+// kept lines and the live screen under them, or the live screen alone on the
+// alternate screen, which keeps no history. Sized and drawn under one hold of
+// the screen lock, so output arriving meanwhile cannot leave it a row short.
+func (s *session) transcript() uv.ScreenBuffer {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	w, h := s.em.Width(), s.em.Height()
+	kept := 0
+	if !s.em.IsAltScreen() {
+		kept = s.em.ScrollbackLen()
+	}
+	buf := uv.NewScreenBuffer(w, kept+h)
+	for y := range kept {
+		for x := range w {
+			buf.SetCell(x, y, s.em.ScrollbackCellAt(x, y))
+		}
+	}
+	live := uv.NewScreenBuffer(w, h)
+	s.drawPaneLocked(live, live.Bounds())
+	for y := range h {
+		for x := range w {
+			buf.SetCell(x, kept+y, live.CellAt(x, y))
+		}
+	}
+	return buf
+}
+
 // altScreen reports whether the program is on the alternate screen, where
 // nothing scrolls off and there is no history to look back at.
 func (s *session) altScreen() bool { return s.em.IsAltScreen() }
