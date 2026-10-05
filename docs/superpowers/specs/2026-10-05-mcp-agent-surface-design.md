@@ -65,8 +65,9 @@ type Experiments interface {
 // Mcp serves one run's origins to agents over streamable HTTP.
 type Mcp interface {
 	// Handler answers the MCP endpoint for these origins, index n being
-	// origin n. Closing stops every session and process it started.
-	Handler(origins []Origin) (http.Handler, io.Closer)
+	// origin n, logging each call on log. Closing stops every session and
+	// process it started.
+	Handler(origins []Origin, log *slog.Logger) (http.Handler, io.Closer)
 }
 
 // Origin is what the server knows about one origin of the run.
@@ -83,7 +84,9 @@ type Spawner interface {
 }
 ```
 
-`v0exp1` declares the types it consumes; `v1alpha1` adapts to them. The
+`v0exp1` declares the types it consumes (aliases of `v0exp1/internal/mcp`'s,
+the way `ErrBuiltinNoTerminal` is `builtin.ErrNoTerminal`); `v1alpha1`
+adapts to them. The
 dependency direction is the one `Builtin` already set (`v1alpha1` imports
 `v0exp1`), so there is no cycle. The MCP Go SDK
 (`github.com/modelcontextprotocol/go-sdk`, v1.8.0) is imported by
@@ -106,7 +109,9 @@ func WithWrap(wrap func(http.Handler) http.Handler) Option
 func WithHandler(pattern string, h http.Handler) Option
 ```
 
-The builder mounts the server with
+`WithHandler` records the pattern, and `Mounted()` reads the patterns back,
+the way `Origins()` and `WebSockets()` let a test see what a router was
+handed without standing it up. The builder mounts the server with
 `router.WithHandler(router.ControlPath+"mcp", h)`. `authorize` already
 guards everything under `ControlPath` but ping, login and logout, so the
 endpoint demands `Authorization: token <base64 secret>` before the SDK sees
@@ -179,6 +184,16 @@ code is in the result.
   `argv` at debug. Never stdin, file bytes or output.
 - **Browsers.** No CORS on the endpoint; the SDK's handler is same-origin
   by default. A browser-resident agent is not a target.
+- **The loopback.** The router listens on 127.0.0.1 and the tunnel forwards
+  requests carrying the public hostname as `Host`. The SDK's handler rejects
+  exactly that shape as DNS rebinding unless told not to
+  (`DisableLocalhostProtection`), so it is told: the secret is the guard,
+  not the address. The handler is stateless (no `Mcp-Session-Id`; tool
+  sessions have ids of their own) and a request's cancellation cancels the
+  tool call, so a client that drops kills the process it was waiting on.
+- **The edge.** Cloudflare answers a request nothing has been written to
+  for about 100 s with a 524. An `exec` expected to run longer than that
+  belongs in a session; the reference says so beside `timeout_ms`.
 
 ## Code layout
 
