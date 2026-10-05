@@ -838,6 +838,10 @@ func TestIfMatchForms(t *testing.T) {
 			tag := call(c, "GET", "", "").Header().Get("ETag")
 			req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))
 			req.Header.Set("If-Match", form(tag))
+			if name == "listed" { // the list on two field lines, as RFC 9110 allows
+				req.Header.Set("If-Match", `"not-the-file"`)
+				req.Header.Add("If-Match", tag)
+			}
 			rec := httptest.NewRecorder()
 			c.Handlers("/_tunneld/")["/_tunneld/.env"](rec, req)
 			if rec.Code != 200 || len(*applied) != 1 {

@@ -100,15 +100,6 @@ func Parse(value string) ([]Challenge, error) {
 		}
 		out = append(out, c)
 	}
-	// One challenge per scheme: each pw is a PBKDF2 run per wrong password,
-	// so a value holding many would multiply what one guess costs the run.
-	seen := map[string]bool{}
-	for _, c := range out {
-		if seen[c.scheme()] {
-			return nil, fmt.Errorf("%s: given twice (one challenge per scheme)", c.Scheme)
-		}
-		seen[c.scheme()] = true
-	}
 	for _, c := range out {
 		rule, ok := schemes[c.scheme()]
 		if !ok {
@@ -127,6 +118,15 @@ func Parse(value string) ([]Challenge, error) {
 		if err := rule.check(c); err != nil {
 			return nil, fmt.Errorf("%s: %w", rule.name, err)
 		}
+	}
+	// One challenge per scheme: each pw is a PBKDF2 run per wrong password,
+	// so a value holding many would multiply what one guess costs the run.
+	seen := map[string]bool{}
+	for _, c := range out {
+		if seen[c.scheme()] {
+			return nil, fmt.Errorf("%s: given twice (one challenge per scheme)", c.Scheme)
+		}
+		seen[c.scheme()] = true
 	}
 	return out, nil
 }

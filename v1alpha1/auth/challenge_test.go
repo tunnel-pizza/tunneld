@@ -25,6 +25,7 @@ func TestParse(t *testing.T) {
 		"one scheme twice":        {`Basic pw="` + vector + `", Basic realm="b", pw="` + vector + `"`, -1, "twice"},
 		"no pw":                   {`Basic realm="h"`, -1, "pw"},
 		"wrong scheme":            {`Bearer realm="h"`, -1, "Bearer"},
+		"wrong scheme twice":      {`Bearer realm="h", Bearer realm="i"`, -1, "not a scheme this tunnel can verify"},
 		"invented scheme":         {`Tunneld pw="` + vector + `"`, -1, "Tunneld"},
 		"unknown param":           {`Basic pw="` + vector + `", pW2="x"`, -1, "pw2"},
 		"param twice":             {`Basic pw="` + vector + `", pw="` + vector + `"`, -1, "twice"},

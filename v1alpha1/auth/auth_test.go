@@ -222,9 +222,10 @@ func TestLogin(t *testing.T) {
 	if rec := serve(mp, req); rec.Code != 303 || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("POST login with nothing set: %d, Cache-Control %q; want 303, no-store", rec.Code, rec.Header().Get("Cache-Control"))
 	}
-	// The page holds a form a frame could dress up as something else.
+	// The page holds a form another site's frame could dress up as something
+	// else; the panel's own tiles are same-origin frames, and may show it.
 	csp := get.Header().Get("Content-Security-Policy")
-	for _, want := range []string{"frame-ancestors 'none'", "default-src 'none'", "form-action 'self'"} {
+	for _, want := range []string{"frame-ancestors 'self'", "default-src 'none'", "form-action 'self'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("login page CSP %q, missing %s", csp, want)
 		}
@@ -252,6 +253,14 @@ func TestBasicFailuresAreLogged(t *testing.T) {
 	if !strings.Contains(buf.String(), "a login") || !strings.Contains(buf.String(), "via=basic") || !strings.Contains(buf.String(), "ok=false") {
 		t.Errorf("a wrong Basic password was not logged as a failed login:\n%s", buf.String())
 	}
+	// Once the address is held, each refusal is a 429 before any check: one
+	// line per request would let anyone grow the log at request rate.
+	for range 10 {
+		ask("wrong")
+	}
+	if n := strings.Count(buf.String(), "a login"); n > 5 {
+		t.Errorf("%d login lines for 11 wrong passwords, want only the 5 checked", n)
+	}
 }
 
 // TestEveryAuthCookieIsTried pins a sibling tunnel's cookie: any tunnel on
@@ -265,6 +274,12 @@ func TestEveryAuthCookieIsTried(t *testing.T) {
 	req.Header.Set("Cookie", CookieName+"=v1.forged.mac; "+CookieName+"="+good)
 	if rec := serve(a.Handler(origin()), req); rec.Code != 200 || strings.Contains(rec.Header().Get("X-Cookie"), CookieName) {
 		t.Errorf("own cookie behind a sibling's: %d, origin saw %q; want 200, neither", rec.Code, rec.Header().Get("X-Cookie"))
+	}
+	// Only the first few are tried: each costs an HMAC, and a request may
+	// carry thousands.
+	req.Header.Set("Cookie", strings.Repeat(CookieName+"=v1.forged.mac; ", maxAuthCookies)+CookieName+"="+good)
+	if rec := serve(a.Handler(origin()), req); rec.Code == 200 {
+		t.Errorf("a cookie behind %d forged ones was tried", maxAuthCookies)
 	}
 }
 

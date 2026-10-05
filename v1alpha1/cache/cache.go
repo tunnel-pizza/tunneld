@@ -582,7 +582,8 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 			// A read-then-write caller (tunnel.pizza's messages sync) names the
 			// file it read; if a respec replaced it in between, writing back
 			// what was read would send the old credential as a new spec.
-			if want := r.Header.Get("If-Match"); want != "" && !ifMatch(want, c.served()) {
+			// Every field line: a list may come split over several.
+			if want := strings.Join(r.Header.Values("If-Match"), ","); want != "" && !ifMatch(want, c.served()) {
 				log.Info("refused a patch to .env", "reason", "the file changed since it was read")
 				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
 				return

@@ -978,11 +978,13 @@ What a visitor gets:
   gets through with `curl -u :<password>`.
 - Wrong passwords are slowed: at most two checks run at once, and five wrong
   ones from one address within a minute get `429` with `Retry-After: 60`.
-  Every wrong one is logged (`a login`, `via=form` or `via=basic`); a right
-  Basic one is not, since an API client sends it on every request.
-- The login page can't be framed (`frame-ancestors 'none'`), and a sibling
-  tunnel's `tunneld-auth` cookie sent ahead of this tunnel's own doesn't lock
-  a visitor out: every one is tried.
+  Every wrong one that is checked is logged (`a login`, `via=form` or
+  `via=basic`); a right Basic one is not, since an API client sends it on
+  every request, and neither is a refusal while an address is held.
+- The login page can't be framed by another site (`frame-ancestors 'self'`;
+  the multiview panel's tiles may show it), and a sibling tunnel's
+  `tunneld-auth` cookie sent ahead of this tunnel's own doesn't lock a
+  visitor out: the first four are tried.
 - While a password is set, every response carries
   `Cloudflare-CDN-Cache-Control: no-store`, so the edge never hands a cached
   copy to someone who did not log in.

@@ -152,10 +152,12 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		}
 		if _, pw, ok := r.BasicAuth(); ok {
 			good, retry := a.guard.check(r.Context(), r.Header.Get("CF-Connecting-IP"), key, s.value, pw, s.verifyAny)
-			if !good {
-				// Failures only: an API client sends Basic on every request,
-				// and logging each success would bury the failures.
-				a.log.Info("a login", "via", "basic", "ok", false, "held", retry > 0)
+			if !good && retry == 0 {
+				// Checked and wrong only: an API client sends Basic on every
+				// request, so a success would bury the failures, and a held
+				// address is refused before any check, so a line per refusal
+				// would let anyone grow the log at request rate.
+				a.log.Info("a login", "via", "basic", "ok", false)
 			}
 			if retry > 0 {
 				refuse(w, http.StatusTooManyRequests, "Retry-After", strconv.Itoa(retry))
@@ -181,11 +183,19 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 	})
 }
 
+// maxAuthCookies is how many auth cookies a request gets tried: each is an
+// HMAC, and a request may carry thousands.
+const maxAuthCookies = 4
+
 // cookied reports whether any of r's auth cookies is valid. Every one is
 // tried: a sibling tunnel on the shared domain can set one by the same name,
 // which the browser may send ahead of this tunnel's own.
 func (a *AuthImpl) cookied(r *http.Request, key []byte, s *state) bool {
-	for _, c := range r.CookiesNamed(CookieName) {
+	cookies := r.CookiesNamed(CookieName)
+	if len(cookies) > maxAuthCookies {
+		cookies = cookies[:maxAuthCookies]
+	}
+	for _, c := range cookies {
 		if readCookie(key, c.Value, s.value, s.schemes, a.now()) {
 			return true
 		}
@@ -321,10 +331,12 @@ type page struct{ Host, Next, Error string }
 func (a *AuthImpl) render(w http.ResponseWriter, r *http.Request, status int, next, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	// The page is one inline stylesheet and a form posting to itself; a
-	// frame around it could dress the password field up as something else.
+	// The page is one inline stylesheet and a form posting to itself.
+	// Another site's frame could dress the password field up as something
+	// else; the multiview panel's tiles are this origin's own frames, and a
+	// tile that lands here must still show the form.
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+		"default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'self'; base-uri 'none'")
 	w.WriteHeader(status)
 	_ = loginTmpl.Execute(w, page{Host: r.Host, Next: next, Error: msg})
 }
