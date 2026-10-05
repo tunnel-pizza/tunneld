@@ -105,6 +105,8 @@ except one.
 | then <kbd>x</kbd> | Exit. Ends the run: the tunnel, every origin, and every program it started. |
 | then <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
 | then <kbd>l</kbd> | Shows tunneld's own recent log lines. |
+| then <kbd>[</kbd> | On the console, scrollback mode: your terminal selects natively, the arrows scroll, <kbd>c</kbd> copies everything, <kbd>f</kbd> drops the border, <kbd>esc</kbd> goes back. |
+| then <kbd>m</kbd> | On the console, releases the mouse for native selection (or asks for it again). |
 | then <kbd>esc</kbd> | Never mind. |
 | wheel | Scrolls back through what went past. Any key returns to the live screen. |
 | drag | Selects, and copies to your clipboard. |

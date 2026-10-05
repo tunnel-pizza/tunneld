@@ -422,6 +422,8 @@ Every key reaches the program or the container except one:
 | then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
+| then `[` | Scrollback mode, on the console: see below. `esc` or `q` goes back to the live screen. |
+| then `m` | On the console, release the mouse (or ask for it again): your terminal selects natively, and its wheel becomes arrow keys for the program. A program that asked for the mouse still gets it. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 | — | Messages from the provider sit above the frame in every view. No key moves them. |
 
@@ -447,6 +449,21 @@ say so. In the tab the copy goes through the browser's clipboard API; on the
 console it goes through OSC 52, which iTerm2 honours once "Applications in
 terminal may access clipboard" is on, VS Code's terminal honours as is, and
 Terminal.app does not — there the highlight shows and nothing is copied.
+Inside tmux the copy is wrapped in tmux's passthrough, which tmux forwards only
+with `allow-passthrough on`, so the border says `copied (tmux: needs
+allow-passthrough)`; inside screen it is wrapped in screen's own. A copy longer
+than a terminal will take (74,994 bytes encoded) is not sent, and the border
+says `too large to copy`.
+
+The frame's selection is the pane's rows on screen, by drag. For everything
+your terminal's own selection does — word and line clicks, its copy key,
+copy-on-select, more than a screen — the console has **scrollback mode**
+(`Ctrl+K` then `[`). It releases the mouse, so your terminal selects natively,
+and typing reaches nobody. The arrows (which your terminal's wheel becomes),
+`PgUp`/`PgDn`, `Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the
+history; `c` copies all of it and the live screen; `f` drops the border so a
+selection picks up none of it; `esc` or `q` is the live screen again. The tab
+selects natively already and has no need of it.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers
