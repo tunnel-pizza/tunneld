@@ -105,7 +105,7 @@ There are no fluent setters: every knob is an option passed to `New`, and
 shape changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
 `BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithBinder`,
-`WithRouter`, `WithConsole`, `WithIdentity`, `WithMotd` and `WithRun`, which swap the collaborators the
+`WithRouter`, `WithConsole`, `WithIdentity`, `WithMotd`, `WithAuth` and `WithRun`, which swap the collaborators the
 tunnel run composes, and `WithTunnelFactory`, which replaces `libtunnel.From`
 as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
 caching off, and what `--no-cache` leaves a run in. They are a contributor's

@@ -944,6 +944,73 @@ bypasses the logger, a panic's trace included, lands there too. The file is
 written by the Go side alone; the npm launcher only reads it, for the path
 its summary prints.
 
+## Password protection
+
+A tunnel can ask for a password before anything behind it answers: the app,
+the multiview panel, every terminal. Set it in the environment:
+
+```sh
+TUNNELD_WWW_AUTHENTICATE='Basic pw="$pbkdf2-sha256$i=600000$<salt>$<hash>"' tunneld :3000
+```
+
+The value is a `WWW-Authenticate` challenge whose `pw` parameter is the
+password's PBKDF2-SHA256 hash (600,000 iterations, a 16-byte salt, the
+password NFC-normalized), never the password itself. tunnel.pizza's status
+page sets it for you, hashing in your browser. Only `Basic` is taken, with
+`pw` and optionally `realm` and `charset`; anything else stops the run with an
+error naming the variable.
+
+There is **no flag** for it, on purpose: a command line is readable by every
+user on the machine through `ps`, and lands in shell history.
+
+What a visitor gets:
+
+- **A browser** opening a page is sent to `/_tunneld/login`, enters the
+  password, and gets a cookie (`tunneld-auth`, 30 days, `HttpOnly`,
+  `Secure`). `/_tunneld/logout` signs it out. Changing the password, or the
+  tunnel's secret, signs everyone out.
+- **Anything else** (curl, `fetch`, an SDK) gets a `401` with
+  `WWW-Authenticate: Basic realm="<host>", charset="UTF-8"` and no body, and
+  gets through with `curl -u :<password>`.
+- Wrong passwords are slowed: at most two checks run at once, and five wrong
+  ones from one address within a minute get `429` with `Retry-After: 60`.
+- While a password is set, every response carries
+  `Cloudflare-CDN-Cache-Control: no-store`, so the edge never hands a cached
+  copy to someone who did not log in.
+
+Where it comes from, first match wins: the environment if the variable is set
+at all, else the run's cache file. A password set while running (below) is
+written to the cache file, so running the same thing again from the same
+directory comes up protected; Public is written as a bare
+`TUNNELD_WWW_AUTHENTICATE=` line, so it stays Public. Under `--no-cache` the
+`.env` lives in memory: a password works for that run and nothing is written.
+
+Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
+
+- with the tunnel secret (`Authorization: token <secret>`), as for any
+  variable, answered `200` with the file; or
+- with a **grant**: every `GET /_tunneld/.env` made with the secret answers an
+  `X-Tunneld-Grant`, a single-use token good for a minute that may change only
+  `TUNNELD_WWW_AUTHENTICATE`, never the spec. tunnel.pizza hands it to the
+  owner's browser, which PATCHes the tunnel directly with
+  `Authorization: Bearer <grant>`, so neither the password nor its hash passes
+  through tunnel.pizza. The answer is `204` with `X-Tunneld-Authenticate`.
+  `/_tunneld/.env` answers CORS for the provider's origin
+  (`https://<provider>`) and no other.
+
+A PATCH is all or nothing: a value that does not parse is a `400` and changes
+nothing. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
+as a visitor would see it, absent when the tunnel is public.
+
+**An app with its own Basic auth.** A request carries one `Authorization`, so
+a client cannot send the tunnel's password and the app's at once. Get the
+cookie first, then send the app's:
+
+```sh
+curl -c jar -u ':<tunnel password>' https://<host>/
+curl -b jar -u '<app user>:<app password>' https://<host>/api
+```
+
 ## Environment
 
 Every knob with an env-expressible value has a mirror constant in `v1`, and
@@ -961,6 +1028,7 @@ after construction still lands.
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound
