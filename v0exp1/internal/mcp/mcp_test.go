@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,11 +22,15 @@ type fakeSpawner struct {
 	exit         int
 	echoStdin    bool
 	block        bool // never returns until ctx ends
-	argv         [][]string
+
+	mu   sync.Mutex // sessions spawn from goroutines of their own
+	argv [][]string
 }
 
 func (f *fakeSpawner) Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	f.mu.Lock()
 	f.argv = append(f.argv, argv)
+	f.mu.Unlock()
 	if f.block {
 		<-ctx.Done()
 		return -1, nil

@@ -119,5 +119,17 @@ func (c *capped) Write(p []byte) (int, error) {
 func (c *capped) text() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return strings.ToValidUTF8(c.buf.String(), "�")
+	return strings.ToValidUTF8(c.buf.String(), "\uFFFD")
+}
+
+// take is what arrived since the last take, as text, and the buffer is
+// emptied: the cap is on what waits unread, so a session that is read keeps
+// printing.
+func (c *capped) take() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := strings.ToValidUTF8(c.buf.String(), "\uFFFD")
+	c.buf.Reset()
+	c.truncated = false
+	return s
 }

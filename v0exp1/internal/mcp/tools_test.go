@@ -45,7 +45,7 @@ func TestExec(t *testing.T) {
 		{"output past the cap is dropped and marked", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{out: strings.Repeat("x", maxOutput+5)}}},
 			map[string]any{"n": 0, "argv": []string{"big"}}, execOut{Stdout: strings.Repeat("x", maxOutput), Truncated: true}, ""},
 		{"non-UTF-8 output is replaced", []Origin{{Kind: KindProgram, Spawner: &fakeSpawner{out: "a\xffb"}}},
-			map[string]any{"n": 0, "argv": []string{"bin"}}, execOut{Stdout: "a�b"}, ""},
+			map[string]any{"n": 0, "argv": []string{"bin"}}, execOut{Stdout: "a\uFFFDb"}, ""},
 		{"an http origin refuses", []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}},
 			map[string]any{"n": 0, "argv": []string{"ls"}}, execOut{}, "origin 0 cannot run a program: it is an http origin"},
 		{"a container with no spawner refuses", []Origin{{Name: "attach://dockerd/web", Kind: KindContainer}},
