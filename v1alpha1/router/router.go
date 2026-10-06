@@ -493,16 +493,21 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // authorize guards the ControlPath: every request under it needs
 // "Authorization: token <secret>", the running tunnel's secret as the cache
 // WithCache handed over holds it, base64-encoded (the encoding the spec's own
-// JSON gives it, so whoever holds the spec holds the token), except:
+// JSON gives it, so whoever holds the spec holds the token), except, by
+// method:
 //
-//   - ping, login and logout, which a visitor without the secret asks;
-//   - a PATCH of .env carrying "Bearer <grant>", a live grant the cache issued
-//     to the secret's holder for the owner's browser;
-//   - a CORS preflight for .env, which carries no credentials by design.
+//   - OPTIONS: a CORS preflight on a browser-bound path (corsMethods), which
+//     carries no credentials by design;
+//   - GET and HEAD: ping, login and logout, which a visitor without the
+//     secret asks;
+//   - POST: login and logout, the same visitor's form;
+//   - PATCH: .env carrying "Bearer <grant>", a live grant the cache issued to
+//     the secret's holder for the owner's browser.
 //
-// A browser-bound path answers CORS (cors) before anything is checked. Anything else is a
-// bare 401, no-store, before the mux sees it, registered endpoint or not, so
-// nothing under the prefix can be probed without it.
+// A browser-bound path answers CORS (cors) on every answer, a refusal
+// included. Anything else is a bare 401, no-store, before the mux sees it,
+// registered endpoint or not, so nothing under the prefix can be probed
+// without it.
 //
 // Fails closed: with no cache, or no secret yet, nothing but ping, login and
 // logout answers. Compared in constant time, so the time a refusal takes says
@@ -519,35 +524,61 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 				w.Header().Set(CacheKeyHeader, key)
 			}
 		}
-		if r.cors(w, req) {
-			return
+		r.cors(w, req)
+		path := req.URL.Path
+		switch req.Method {
+		case http.MethodOptions:
+			if methods, ok := corsMethods[path]; ok && req.Header.Get("Access-Control-Request-Method") != "" {
+				if w.Header().Get("Access-Control-Allow-Origin") != "" {
+					w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
+					w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
+					w.Header().Set("Access-Control-Max-Age", "600")
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		case http.MethodGet, http.MethodHead:
+			switch path {
+			case ControlPath + "ping":
+				// The challenges in public: nothing a 401 would not say to anyone.
+				if a != nil {
+					for _, v := range a.Public(req.Host) {
+						w.Header().Add(v1.AuthenticateHeader, v)
+					}
+				}
+				next.ServeHTTP(w, req)
+				return
+			case ControlPath + "login", ControlPath + "logout":
+				next.ServeHTTP(w, req)
+				return
+			}
+		case http.MethodPost:
+			switch path {
+			case ControlPath + "login", ControlPath + "logout":
+				next.ServeHTTP(w, req)
+				return
+			}
+		case http.MethodPatch:
+			switch path {
+			case ControlPath + ".env":
+				if bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer "); ok && c != nil && c.Grant(bearer) {
+					next.ServeHTTP(w, req)
+					return
+				}
+			}
 		}
+		// Anything else needs the secret.
 		var secret []byte
 		if c != nil {
 			secret = c.Secret()
 		}
-		got := req.Header.Get("Authorization")
-		bearer, isBearer := strings.CutPrefix(got, "Bearer ")
-		switch path := req.URL.Path; {
-		case path == ControlPath+"ping":
-			// The challenges in public: nothing a 401 would not say to anyone.
-			if a != nil {
-				for _, v := range a.Public(req.Host) {
-					w.Header().Add(v1.AuthenticateHeader, v)
-				}
-			}
-		case path == ControlPath+"login", path == ControlPath+"logout":
-			// Asked by a visitor logging in, who has no secret.
-		case len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte("token "+base64.StdEncoding.EncodeToString(secret))) == 1:
-			// The secret.
-		case isBearer && req.Method == http.MethodPatch && path == ControlPath+".env" && c != nil && c.Grant(bearer):
-			// A live grant, issued to the secret's holder for the owner's browser.
-		default:
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusUnauthorized)
+		want := "token " + base64.StdEncoding.EncodeToString(secret)
+		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte(want)) == 1 {
+			next.ServeHTTP(w, req)
 			return
 		}
-		next.ServeHTTP(w, req)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusUnauthorized)
 	})
 }
 
@@ -558,32 +589,18 @@ var corsMethods = map[string][]string{
 	ControlPath + ".env": {http.MethodPatch},
 }
 
-// cors answers CORS on a path corsMethods has, for the provider's origin
-// alone, on every answer, a refusal included, so the browser can read why;
-// true when req was a preflight, which it has answered. Every other path
-// gets nothing.
-func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
-	methods, ok := corsMethods[req.URL.Path]
-	if !ok {
-		return false
+// cors names the provider's origin, and no other, on every answer on a path
+// corsMethods has, a refusal included, so the browser can read why. Every
+// other path gets nothing.
+func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) {
+	if _, ok := corsMethods[req.URL.Path]; !ok {
+		return
 	}
 	w.Header().Add("Vary", "Origin")
-	allow := false
 	if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
-		allow = true
 		w.Header().Set("Access-Control-Allow-Origin", o)
 		w.Header().Set("Access-Control-Expose-Headers", v1.AuthenticateHeader+", Retry-After")
 	}
-	if req.Method != http.MethodOptions || req.Header.Get("Access-Control-Request-Method") == "" {
-		return false
-	}
-	if allow {
-		w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
-		w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
-		w.Header().Set("Access-Control-Max-Age", "600")
-	}
-	w.WriteHeader(http.StatusNoContent)
-	return true
 }
 
 // Cancel takes down every route this router has serving: their listeners

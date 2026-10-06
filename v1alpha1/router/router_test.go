@@ -190,9 +190,9 @@ func TestControlPath(t *testing.T) {
 		wantStatus int
 		wantBody   string
 	}{
-		"ping":                       {"GET", "/_tunneld/ping", 200, "pong"},
-		"ping answers HEAD as GET":   {"HEAD", "/_tunneld/ping", 200, ""},
-		"ping takes no other method": {"POST", "/_tunneld/ping", 405, ""},
+		"ping":                     {"GET", "/_tunneld/ping", 200, "pong"},
+		"ping answers HEAD as GET": {"HEAD", "/_tunneld/ping", 200, ""},
+		"ping by another method needs the secret": {"POST", "/_tunneld/ping", 401, ""},
 		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 401, ""},
 		"a lookalike prefix is the origin's":      {"GET", "/_tunneldx", 200, "A|/_tunneldx"},
 		"a doubled slash reaches the origin":      {"GET", "/a//b", 200, "A|/a//b"},
@@ -285,32 +285,44 @@ func ask(t *testing.T, method, url, auth string) (*http.Response, string) {
 }
 
 // TestAuthorize pins what guards the ControlPath: everything under it but
-// ping needs "Authorization: token <base64 secret>", the secret the cache
-// holds; anything else is a bare 401 before the mux is asked, so an
-// unregistered path is no different from a registered one. With no secret,
+// ping (by GET or HEAD) needs "Authorization: token <base64 secret>", the
+// secret the cache holds; anything else is a bare 401 before the mux is
+// asked, so an unregistered path is no different from a registered one, and
+// a method ping does not take is no different from a path. With no secret,
 // nothing but ping answers — not even to a token of nothing.
 func TestAuthorize(t *testing.T) {
 	secret := []byte("s3cr3t")
 	env := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey})), ".env")
 	nope := strings.TrimSuffix(env, ".env") + "nope"
 	ping := strings.TrimSuffix(env, ".env") + "ping"
+	login := strings.TrimSuffix(env, ".env") + "login"
+	logout := strings.TrimSuffix(env, ".env") + "logout"
 	for name, tc := range map[string]struct {
-		url, auth  string
-		wantStatus int
+		method, url, auth string
+		wantStatus        int
 	}{
-		"no header":                     {env, "", 401},
-		"another scheme":                {env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
-		"a wrong token":                 {env, tokenOf([]byte("guess")), 401},
-		"the secret unencoded":          {env, "token " + string(secret), 401},
-		"the right token":               {env, tokenOf(secret), 200},
-		"an unregistered path, no auth": {nope, "", 401},
-		"an unregistered path, auth":    {nope, tokenOf(secret), 404},
-		"ping needs nothing":            {ping, "", 200},
+		"no header":                     {"GET", env, "", 401},
+		"another scheme":                {"GET", env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
+		"a wrong token":                 {"GET", env, tokenOf([]byte("guess")), 401},
+		"the secret unencoded":          {"GET", env, "token " + string(secret), 401},
+		"the right token":               {"GET", env, tokenOf(secret), 200},
+		"an unregistered path, no auth": {"GET", nope, "", 401},
+		"an unregistered path, auth":    {"GET", nope, tokenOf(secret), 404},
+		"ping needs nothing":            {"GET", ping, "", 200},
+		"ping by HEAD needs nothing":    {"HEAD", ping, "", 200},
+		"ping by POST, no auth":         {"POST", ping, "", 401},
+		"ping by POST, auth":            {"POST", ping, tokenOf(secret), 405},
+		// No auth here, so nothing is on the mux at login and logout: a 404
+		// is the mux asked, a 401 the guard refusing.
+		"login by GET reaches the mux":   {"GET", login, "", 404},
+		"login by POST reaches the mux":  {"POST", login, "", 404},
+		"logout by POST reaches the mux": {"POST", logout, "", 404},
+		"login by PUT, no auth":          {"PUT", login, "", 401},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp, body := ask(t, "GET", tc.url, tc.auth)
+			resp, body := ask(t, tc.method, tc.url, tc.auth)
 			if resp.StatusCode != tc.wantStatus {
-				t.Fatalf("GET %s = %d %q, want %d", tc.url, resp.StatusCode, body, tc.wantStatus)
+				t.Fatalf("%s %s = %d %q, want %d", tc.method, tc.url, resp.StatusCode, body, tc.wantStatus)
 			}
 			if tc.wantStatus == 401 && body != "" {
 				t.Errorf("a refusal said %q, want a bare 401", body)
@@ -1218,6 +1230,8 @@ func TestAuth(t *testing.T) {
 	}{
 		"grant on PATCH .env": {"PATCH", env, "Bearer g00d", 405}, // cacheOf answers only GET; 405 means authorize let it through
 		"grant on GET .env":   {"GET", env, "Bearer g00d", 401},
+		"grant on PUT .env":   {"PUT", env, "Bearer g00d", 401},
+		"grant on POST .env":  {"POST", env, "Bearer g00d", 401},
 		"unknown grant":       {"PATCH", env, "Bearer nope", 401},
 		"grant elsewhere":     {"PATCH", base + "/_tunneld/nope", "Bearer g00d", 401},
 	} {
@@ -1247,8 +1261,14 @@ func TestAuth(t *testing.T) {
 		ok.Header.Get("Access-Control-Allow-Credentials") != "" || ok.Header.Get("Vary") != "Origin" {
 		t.Errorf("preflight from the provider: %d %v", ok.StatusCode, ok.Header)
 	}
-	if other := preflight("https://evil.example", "/_tunneld/.env"); other.StatusCode != 204 || other.Header.Get("Access-Control-Allow-Origin") != "" {
-		t.Errorf("preflight from elsewhere: %d ACAO %q", other.StatusCode, other.Header.Get("Access-Control-Allow-Origin"))
+	if other := preflight("https://evil.example", "/_tunneld/.env"); other.StatusCode != 204 || other.Header.Get("Access-Control-Allow-Origin") != "" ||
+		other.Header.Get("Access-Control-Allow-Methods") != "" {
+		t.Errorf("preflight from elsewhere: %d ACAO %q, methods %q", other.StatusCode, other.Header.Get("Access-Control-Allow-Origin"), other.Header.Get("Access-Control-Allow-Methods"))
+	}
+	// An OPTIONS that asks for no method is no preflight: it carries no
+	// credentials, so the guard refuses it like any other request.
+	if bare, _ := ask(t, "OPTIONS", env, ""); bare.StatusCode != 401 {
+		t.Errorf("OPTIONS with no Access-Control-Request-Method = %d, want 401", bare.StatusCode)
 	}
 	if ping := preflight("https://tunnel.pizza", "/_tunneld/ping"); ping.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Error("CORS answered on a path other than .env")
