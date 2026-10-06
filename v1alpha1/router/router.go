@@ -500,10 +500,9 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 //     to the secret's holder for the owner's browser;
 //   - a CORS preflight for .env, which carries no credentials by design.
 //
-// .env answers CORS for the provider's origin alone (allowOrigin), on every
-// answer, a refusal included, so the browser can read why. Anything else is
-// a bare 401, no-store, before the mux sees it, registered endpoint or not,
-// so nothing under the prefix can be probed without it.
+// .env answers CORS (cors) before anything is checked. Anything else is a
+// bare 401, no-store, before the mux sees it, registered endpoint or not, so
+// nothing under the prefix can be probed without it.
 //
 // Fails closed: with no cache, or no secret yet, nothing but ping, login and
 // logout answers. Compared in constant time, so the time a refusal takes says
@@ -520,54 +519,64 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 				w.Header().Set(CacheKeyHeader, key)
 			}
 		}
-		env := req.URL.Path == ControlPath+".env"
-		if env {
-			w.Header().Add("Vary", "Origin")
-			if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
-				w.Header().Set("Access-Control-Allow-Origin", o)
-				w.Header().Set("Access-Control-Expose-Headers", v1.AuthenticateHeader+", Retry-After")
-			}
-			if req.Method == http.MethodOptions && req.Header.Get("Access-Control-Request-Method") != "" {
-				if w.Header().Get("Access-Control-Allow-Origin") != "" {
-					w.Header().Set("Access-Control-Allow-Methods", "PATCH")
-					w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
-					w.Header().Set("Access-Control-Max-Age", "600")
-				}
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
+		if req.URL.Path == ControlPath+".env" && r.cors(w, req) {
+			return
 		}
-		switch req.URL.Path {
-		case ControlPath + "ping":
+		if !allowed(c, req) {
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if req.URL.Path == ControlPath+"ping" && a != nil {
 			// The challenges in public: nothing a 401 would not say to anyone.
-			if a != nil {
-				for _, v := range a.Public(req.Host) {
-					w.Header().Add(v1.AuthenticateHeader, v)
-				}
+			for _, v := range a.Public(req.Host) {
+				w.Header().Add(v1.AuthenticateHeader, v)
 			}
-			next.ServeHTTP(w, req)
-			return
-		case ControlPath + "login", ControlPath + "logout":
-			next.ServeHTTP(w, req)
-			return
 		}
-		var secret []byte
-		if c != nil {
-			secret = c.Secret()
-		}
-		got := req.Header.Get("Authorization")
-		want := "token " + base64.StdEncoding.EncodeToString(secret)
-		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if bearer, ok := strings.CutPrefix(got, "Bearer "); ok && env && req.Method == http.MethodPatch && c != nil && c.Grant(bearer) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusUnauthorized)
+		next.ServeHTTP(w, req)
 	})
+}
+
+// cors answers CORS on .env for the provider's origin alone, on every
+// answer, a refusal included, so the browser can read why; true when req was
+// a preflight, which it has answered.
+func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
+	w.Header().Add("Vary", "Origin")
+	allow := false
+	if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
+		allow = true
+		w.Header().Set("Access-Control-Allow-Origin", o)
+		w.Header().Set("Access-Control-Expose-Headers", v1.AuthenticateHeader+", Retry-After")
+	}
+	if req.Method != http.MethodOptions || req.Header.Get("Access-Control-Request-Method") == "" {
+		return false
+	}
+	if allow {
+		w.Header().Set("Access-Control-Allow-Methods", "PATCH")
+		w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
+		w.Header().Set("Access-Control-Max-Age", "600")
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
+}
+
+// allowed reports whether req may reach the mux: a page a visitor without
+// the secret asks for, the secret itself, or a live grant on a PATCH of .env.
+func allowed(c Cache, req *http.Request) bool {
+	switch req.URL.Path {
+	case ControlPath + "ping", ControlPath + "login", ControlPath + "logout":
+		return true
+	}
+	if c == nil {
+		return false
+	}
+	got := req.Header.Get("Authorization")
+	if secret := c.Secret(); len(secret) > 0 &&
+		subtle.ConstantTimeCompare([]byte(got), []byte("token "+base64.StdEncoding.EncodeToString(secret))) == 1 {
+		return true
+	}
+	bearer, ok := strings.CutPrefix(got, "Bearer ")
+	return ok && req.Method == http.MethodPatch && req.URL.Path == ControlPath+".env" && c.Grant(bearer)
 }
 
 // Cancel takes down every route this router has serving: their listeners
