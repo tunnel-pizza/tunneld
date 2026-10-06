@@ -522,7 +522,27 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 		if r.cors(w, req) {
 			return
 		}
-		if !allowed(w, req, c, a) {
+		var secret []byte
+		if c != nil {
+			secret = c.Secret()
+		}
+		got := req.Header.Get("Authorization")
+		bearer, isBearer := strings.CutPrefix(got, "Bearer ")
+		switch path := req.URL.Path; {
+		case path == ControlPath+"ping":
+			// The challenges in public: nothing a 401 would not say to anyone.
+			if a != nil {
+				for _, v := range a.Public(req.Host) {
+					w.Header().Add(v1.AuthenticateHeader, v)
+				}
+			}
+		case path == ControlPath+"login", path == ControlPath+"logout":
+			// Asked by a visitor logging in, who has no secret.
+		case len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte("token "+base64.StdEncoding.EncodeToString(secret))) == 1:
+			// The secret.
+		case isBearer && req.Method == http.MethodPatch && path == ControlPath+".env" && c != nil && c.Grant(bearer):
+			// A live grant, issued to the secret's holder for the owner's browser.
+		default:
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -564,34 +584,6 @@ func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return true
-}
-
-// allowed reports whether req may reach the mux: a page a visitor without
-// the secret asks for, the secret itself, or a live grant on a PATCH of .env.
-// Ping also carries a's challenges on w.
-func allowed(w http.ResponseWriter, req *http.Request, c Cache, a Auth) bool {
-	switch req.URL.Path {
-	case ControlPath + "ping":
-		// The challenges in public: nothing a 401 would not say to anyone.
-		if a != nil {
-			for _, v := range a.Public(req.Host) {
-				w.Header().Add(v1.AuthenticateHeader, v)
-			}
-		}
-		return true
-	case ControlPath + "login", ControlPath + "logout":
-		return true
-	}
-	if c == nil {
-		return false
-	}
-	got := req.Header.Get("Authorization")
-	if secret := c.Secret(); len(secret) > 0 &&
-		subtle.ConstantTimeCompare([]byte(got), []byte("token "+base64.StdEncoding.EncodeToString(secret))) == 1 {
-		return true
-	}
-	bearer, ok := strings.CutPrefix(got, "Bearer ")
-	return ok && req.Method == http.MethodPatch && req.URL.Path == ControlPath+".env" && c.Grant(bearer)
 }
 
 // Cancel takes down every route this router has serving: their listeners
