@@ -540,8 +540,8 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 // corsMethods is every path under the ControlPath a browser calls across
 // origins, by the methods its preflight allows: .env, which the provider's
 // page PATCHes with a grant.
-var corsMethods = map[string]string{
-	ControlPath + ".env": "PATCH",
+var corsMethods = map[string][]string{
+	ControlPath + ".env": {http.MethodPatch},
 }
 
 // cors answers CORS on a path corsMethods has, for the provider's origin
@@ -564,7 +564,7 @@ func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 	if allow {
-		w.Header().Set("Access-Control-Allow-Methods", methods)
+		w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
 		w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
 		w.Header().Set("Access-Control-Max-Age", "600")
 	}
