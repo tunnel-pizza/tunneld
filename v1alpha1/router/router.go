@@ -111,9 +111,6 @@ type RouterImpl struct {
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
 	mux *http.ServeMux
-	// mcp is the agent server authorize answers ControlPath+"mcp" with, nil
-	// for none.
-	mcp Mcp
 
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
@@ -163,13 +160,15 @@ type Mcp interface {
 // does not know its run yet.
 const CacheKeyHeader = "X-Cache-Key"
 
-// env is the cache endpoints' state: the cache they serve from, and the
-// patterns already on the mux — a ServeMux panics on a pattern registered
-// twice, and WithCache can be applied more than once.
+// env is the cache endpoints' state: the cache they serve from, the agent
+// server, and the patterns already on the mux — a ServeMux panics on a
+// pattern registered twice, and WithCache and WithMcp can be applied more
+// than once.
 type env struct {
 	mu         sync.Mutex
 	cache      Cache
 	auth       Auth
+	mcp        Mcp
 	registered map[string]bool
 }
 
@@ -221,10 +220,37 @@ func WithWrap(wrap func(http.Handler) http.Handler) Option {
 	return func(r *RouterImpl) { r.wrap = wrap }
 }
 
-// WithMcp sets the agent server authorize answers ControlPath+"mcp" with,
-// or none, when nil: that path is then a 404 like any the mux does not have.
+// WithMcp puts m's Handler at ControlPath+"mcp" on the router's mux, behind
+// the secret like everything else under ControlPath (see authorize). Which
+// server answers is asked on every request, so applied again, it replaces
+// the server rather than registering the endpoint twice; once nil, the path
+// is a 404.
 func WithMcp(m Mcp) Option {
-	return func(r *RouterImpl) { r.mcp = m }
+	return func(r *RouterImpl) {
+		e := r.env
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.mcp = m
+		pattern := ControlPath + "mcp"
+		if m == nil || e.registered[pattern] {
+			return
+		}
+		if e.registered == nil {
+			e.registered = map[string]bool{}
+		}
+		e.registered[pattern] = true
+		r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
+			e.mu.Lock()
+			m := e.mcp
+			e.mu.Unlock()
+			if m == nil {
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			m.Handler().ServeHTTP(w, req)
+		})
+	}
 }
 
 // WithCache puts c's Handlers under ControlPath on the router's mux —
@@ -347,7 +373,11 @@ func WithLog(log v1.Logger) Option {
 func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
 func (r *RouterImpl) WebSockets() int                       { return r.ws }
 func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
-func (r *RouterImpl) Mcp() Mcp                              { return r.mcp }
+func (r *RouterImpl) Mcp() Mcp {
+	r.env.mu.Lock()
+	defer r.env.mu.Unlock()
+	return r.env.mcp
+}
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
@@ -480,19 +510,11 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // a bare 401, no-store, before the mux sees it, registered endpoint or not,
 // so nothing under the prefix can be probed without it.
 //
-// ControlPath+"mcp" is the agent server's (WithMcp), answered here rather
-// than registered on the mux, so the route carries it the way it carries
-// its origins; with no server it falls through to the mux, and a 404.
-//
 // Fails closed: with no cache, or no secret yet, nothing but ping, login and
 // logout answers. Compared in constant time, so the time a refusal takes says
 // nothing about how much of a guess was right.
 func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	e := r.env
-	var agents http.Handler
-	if r.mcp != nil {
-		agents = r.mcp.Handler()
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		e.mu.Lock()
 		c, a := e.cache, e.auth
@@ -541,10 +563,6 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 		got := req.Header.Get("Authorization")
 		want := "token " + base64.StdEncoding.EncodeToString(secret)
 		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
-			if agents != nil && req.URL.Path == ControlPath+"mcp" {
-				agents.ServeHTTP(w, req)
-				return
-			}
 			next.ServeHTTP(w, req)
 			return
 		}

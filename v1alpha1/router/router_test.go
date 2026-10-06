@@ -1283,29 +1283,29 @@ type mcpOf struct{ h http.Handler }
 
 func (m mcpOf) Handler() http.Handler { return m.h }
 
-// TestWithMcp pins the agent server's place: ControlPath+"mcp", answered
-// through authorize — a bare 401 without the secret, the server's own answer
-// with it, and a 404 on a route with no server — and Mcp reads it back
-// without standing anything up.
+// TestWithMcp pins the agent server's place: ControlPath+"mcp" on the mux,
+// behind authorize — a bare 401 without the secret, the server's own answer
+// with it — and, like WithCache, asked for on every request, so a server
+// taken away is a 404 rather than a stale answer. Mcp reads it back without
+// standing anything up.
 func TestWithMcp(t *testing.T) {
 	secret := []byte("s3cr3t")
 	hello := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })}
-	r := New(WithCache(cacheOf{secret: secret, key: runKey}))
-	if r.Mcp() != nil {
-		t.Errorf("Mcp() = %v before WithMcp, want nil", r.Mcp())
-	}
 	for name, tc := range map[string]struct {
 		opts       []Option
 		auth       string
 		wantStatus int
 		wantBody   string
 	}{
-		"without the secret": {[]Option{WithMcp(hello)}, "", 401, ""},
-		"with the secret":    {[]Option{WithMcp(hello)}, tokenOf(secret), 200, "hello"},
-		"with no server":     {nil, tokenOf(secret), 404, "404 page not found\n"},
+		"without the secret":    {[]Option{WithMcp(hello)}, "", 401, ""},
+		"with the secret":       {[]Option{WithMcp(hello)}, tokenOf(secret), 200, "hello"},
+		"with no server":        {nil, tokenOf(secret), 404, "404 page not found\n"},
+		"a server taken away":   {[]Option{WithMcp(hello), WithMcp(nil)}, tokenOf(secret), 404, ""},
+		"applied twice answers": {[]Option{WithMcp(hello), WithMcp(hello)}, tokenOf(secret), 200, "hello"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "solo")))}, tc.opts...)...)
+			r := New(append([]Option{WithCache(cacheOf{secret: secret, key: runKey})}, tc.opts...)...)
+			u, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
 			if err != nil {
 				t.Fatalf("Route: %v", err)
 			}
@@ -1319,6 +1319,9 @@ func TestWithMcp(t *testing.T) {
 				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
 			}
 		})
+	}
+	if got := New().Mcp(); got != nil {
+		t.Errorf("Mcp() = %v before WithMcp, want nil", got)
 	}
 	if got := New(WithMcp(hello)).Mcp(); got != hello {
 		t.Errorf("Mcp() = %v, want the server WithMcp was given", got)
