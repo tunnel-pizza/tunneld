@@ -1394,21 +1394,6 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
-		h := newRunHarness(t, live(public), ":3000", ":4000")
-		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
-		// The router refuses, so the run ends right after asking it: what
-		// it was asked is the whole of the case.
-		h.router.err = errors.New("no loopback")
-
-		if err := h.run(t, t.Context()); !errors.Is(err, h.router.err) {
-			t.Fatalf("run() = %v, want the router's own error", err)
-		}
-		if h.router.configured.Mcp() == nil {
-			t.Error("the router was given no MCP server")
-		}
-	})
-
 	t.Run("a binder failure is returned before the engine is asked for anything", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		h.binder.err = errors.New("no such container")
@@ -1486,6 +1471,43 @@ func TestRun(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body), resp.Header.Get(router.CacheKeyHeader)
 	}
+	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		// Routed here, as envOf does, with the token the run's secret makes:
+		// an initialize the server answers is the server on the mux.
+		origin := httptest.NewServer(http.NotFoundHandler())
+		t.Cleanup(origin.Close)
+		u, _ := url.Parse(origin.URL)
+		r := h.router.configured
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		t.Cleanup(r.Cancel)
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+		req, err := http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
+		}
+	})
 	t.Run("the router serves what the run saved", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		ctx, cancel := context.WithCancel(t.Context())

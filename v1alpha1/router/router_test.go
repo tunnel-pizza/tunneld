@@ -1286,8 +1286,7 @@ func (m mcpOf) Handler() http.Handler { return m.h }
 // TestWithMcp pins the agent server's place: ControlPath+"mcp" on the mux,
 // behind authorize — a bare 401 without the secret, the server's own answer
 // with it — and, like WithCache, asked for on every request, so a server
-// taken away is a 404 rather than a stale answer. Mcp reads it back without
-// standing anything up.
+// taken away is a 404 rather than a stale answer.
 func TestWithMcp(t *testing.T) {
 	secret := []byte("s3cr3t")
 	hello := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })}
@@ -1319,11 +1318,5 @@ func TestWithMcp(t *testing.T) {
 				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
 			}
 		})
-	}
-	if got := New().Mcp(); got != nil {
-		t.Errorf("Mcp() = %v before WithMcp, want nil", got)
-	}
-	if got := New(WithMcp(hello)).Mcp(); got != hello {
-		t.Errorf("Mcp() = %v, want the server WithMcp was given", got)
 	}
 }

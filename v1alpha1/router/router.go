@@ -367,17 +367,12 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets, Wrap and Mcp read back what the options set, for a
+// Origins, WebSockets and Wrap read back what the options set, for a
 // caller standing in for a router that wants to see what it was handed
 // without standing one up.
 func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
 func (r *RouterImpl) WebSockets() int                       { return r.ws }
 func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
-func (r *RouterImpl) Mcp() Mcp {
-	r.env.mu.Lock()
-	defer r.env.mu.Unlock()
-	return r.env.mcp
-}
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
