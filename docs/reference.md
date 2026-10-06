@@ -1015,7 +1015,8 @@ What a visitor gets:
   `Secure`). `/_tunneld/logout` signs it out. Changing the password, or the
   tunnel's secret, signs everyone out.
 - **Anything else** (curl, `fetch`, an SDK) gets a `401` with
-  `WWW-Authenticate: Basic realm="<host>", charset="UTF-8"` and no body, and
+  `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"` and no body (the
+  `realm` you set, else the hostname the request was sent to), and
   gets through with `curl -u :<password>`.
 - Wrong passwords are slowed: at most two checks run at once, and five wrong
   ones from one address within a minute get `429` with `Retry-After: 60`.
@@ -1064,10 +1065,10 @@ A PATCH carrying `LIBTUNNEL_SPEC` while the run is still taking the last one
 `Retry-After: 1` that changes nothing, never a `200` the run then drops.
 
 Every mint tells the provider what the tunnel's gate is:
-`X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
-realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
+`X-Tunneld-Authenticate` with the challenge as a visitor would see it (its
+`realm` as set, if one is), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
 publicly accessible." out of a protected tunnel's messages. Every answer under `/_tunneld/`, `ping` among them, carries `X-Tunneld-Authenticate`
-with the challenge in public form, realm left out, absent when the tunnel is
+with the challenge in public form, the same way, absent when the tunnel is
 public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so

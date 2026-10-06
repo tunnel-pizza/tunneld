@@ -72,20 +72,26 @@ func TestRedacted(t *testing.T) {
 }
 
 // TestPublic pins what a visitor is sent: by allow-list, byte for byte MDN's
-// Basic example, realm from the request's host whatever was stored, and never
-// pw; an empty host leaves the realm out.
+// Basic example, the realm as stored (quoted again), none when none was
+// stored, and never pw.
 func TestPublic(t *testing.T) {
-	cs, err := Parse(`basic realm="old.example", pw="` + vector + `", charset="latin1"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := cs[0].Public("0t8qsb6pq3.tunneled.pizza"); got != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
-		t.Errorf("Public = %q", got)
-	}
-	if got := cs[0].Public(""); got != `Basic charset="UTF-8"` {
-		t.Errorf(`Public("") = %q, want the realm left out`, got)
-	}
-	if strings.Contains(cs[0].Public("h"), "pbkdf2") {
-		t.Error("pw leaked into the public form")
+	for name, tc := range map[string]struct{ value, want string }{
+		"the stored realm": {`basic realm="old.example", pw="` + vector + `", charset="latin1"`, `Basic realm="old.example", charset="UTF-8"`},
+		"no realm stored":  {`Basic pw="` + vector + `"`, `Basic charset="UTF-8"`},
+		"quoted again":     {`Basic realm="a \\ \"b\"", pw="` + vector + `"`, `Basic realm="a \\ \"b\"", charset="UTF-8"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cs, err := Parse(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := cs[0].Public()
+			if got != tc.want {
+				t.Errorf("Public = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, "pbkdf2") {
+				t.Error("pw leaked into the public form")
+			}
+		})
 	}
 }

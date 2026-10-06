@@ -41,22 +41,19 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestHeader pins the header the auth hands a mint: X-Tunneld-Authenticate,
-// in public form with no realm, or the value as stored when asked not to;
-// empty when public.
+// TestHeader pins the gate as the auth says it: X-Tunneld-Authenticate, in
+// public form, the stored realm included; empty when public. Never the value
+// as stored.
 func TestHeader(t *testing.T) {
 	a := New()
-	if name, v := a.Header(true); name != v1.AuthenticateHeader || v != "" {
-		t.Errorf("public Header(true) = %q, %q; want %s and empty", name, v, v1.AuthenticateHeader)
+	if name, v := a.Header(); name != v1.AuthenticateHeader || v != "" {
+		t.Errorf("public Header() = %q, %q; want %s and empty", name, v, v1.AuthenticateHeader)
 	}
 	if err := a.Set(value); err != nil {
 		t.Fatal(err)
 	}
-	if _, v := a.Header(true); v != `Basic charset="UTF-8"` {
-		t.Errorf("Header(true) = %q, want the public form", v)
-	}
-	if _, v := a.Header(false); v != value {
-		t.Errorf("Header(false) = %q, want the value as stored", v)
+	if _, v := a.Header(); v != `Basic realm="stored.example", charset="UTF-8"` {
+		t.Errorf("Header() = %q, want the public form", v)
 	}
 }
 
@@ -65,7 +62,7 @@ func TestSet(t *testing.T) {
 	if err := a.Set("Basic nope"); err == nil {
 		t.Error("an invalid value was accepted")
 	}
-	if a.Value() != "" || a.public("h") != "" {
+	if _, v := a.Header(); a.Value() != "" || v != "" {
 		t.Error("a refused Set changed the value")
 	}
 	if err := a.Set(value); err != nil {
@@ -74,12 +71,12 @@ func TestSet(t *testing.T) {
 	if a.Value() != value {
 		t.Errorf("Value = %q", a.Value())
 	}
-	if got := a.public("h"); got != `Basic realm="h", charset="UTF-8"` {
-		t.Errorf("Public = %q", got)
+	if _, got := a.Header(); got != `Basic realm="stored.example", charset="UTF-8"` {
+		t.Errorf("Header = %q", got)
 	}
 	a.Set("")
-	if a.public("h") != "" {
-		t.Error("public after clearing")
+	if _, v := a.Header(); v != "" {
+		t.Error("a challenge after clearing")
 	}
 }
 
@@ -116,6 +113,16 @@ func TestHandler(t *testing.T) {
 			t.Errorf("stale cookie = %d, want 401", rec.Code)
 		}
 	})
+	t.Run("a 401 with no realm stored names the host", func(t *testing.T) {
+		b := protected(t)
+		b.Set(`Basic pw="` + vector + `"`)
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Host = "0t8qsb6pq3.tunneled.pizza"
+		rec := serve(b.Handler(origin()), req)
+		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
+			t.Errorf("WWW-Authenticate = %q, want the request's host as the realm", got)
+		}
+	})
 	t.Run("basic right passes, header stripped, cookie set", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/x", nil)
 		req.SetBasicAuth("anyone", password)
@@ -150,8 +157,8 @@ func TestHandler(t *testing.T) {
 			if rec.Code != 401 || rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
 				t.Fatalf("%d, %d bytes, Content-Type %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Type"))
 			}
-			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
-				t.Errorf("WWW-Authenticate = %q", got)
+			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="stored.example", charset="UTF-8"` {
+				t.Errorf("WWW-Authenticate = %q, want the stored realm", got)
 			}
 			// Cache-Control is the router's to write, on everything it serves.
 			if rec.Header().Get("Content-Length") != "0" {

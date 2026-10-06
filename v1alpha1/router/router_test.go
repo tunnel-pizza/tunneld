@@ -1261,7 +1261,7 @@ func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.R
 		path + "logout": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "logout") },
 	}
 }
-func (authOf) Header(bool) (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+func (authOf) Header() (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
 
 // gateOf is an Auth whose public challenge is whatever gate holds, so a
 // handler can change it mid-request the way a grant's PATCH does.
@@ -1270,7 +1270,7 @@ type gateOf struct {
 	gate *atomic.Value
 }
 
-func (g gateOf) Header(bool) (string, string) {
+func (g gateOf) Header() (string, string) {
 	v, _ := g.gate.Load().(string)
 	return v1.AuthenticateHeader, v
 }

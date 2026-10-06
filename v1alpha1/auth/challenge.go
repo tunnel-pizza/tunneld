@@ -14,6 +14,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -49,13 +50,13 @@ var schemes = map[string]schemeRule{
 func (c Challenge) scheme() string { return strings.ToLower(c.Scheme) }
 
 // Public is the challenge as a visitor may see it: the canonical scheme, the
-// realm set to host (left out when host is ""), and charset="UTF-8" for Basic
+// realm as stored (left out when none was), and charset="UTF-8" for Basic
 // (RFC 7617). Nothing else, pw least of all.
-func (c Challenge) Public(host string) string {
+func (c Challenge) Public() string {
 	rule := schemes[c.scheme()]
 	var params []string
-	if host != "" {
-		params = append(params, `realm="`+host+`"`)
+	if realm, ok := c.Params["realm"]; ok {
+		params = append(params, `realm="`+quoted.Replace(realm)+`"`)
 	}
 	if rule.name == "Basic" {
 		params = append(params, `charset="UTF-8"`)
@@ -66,12 +67,22 @@ func (c Challenge) Public(host string) string {
 	return rule.name + " " + strings.Join(params, ", ")
 }
 
+// withRealm is c with its realm set to realm, its Params copied rather than
+// shared, so the stored challenge is left as it was.
+func (c Challenge) withRealm(realm string) Challenge {
+	c.Params = maps.Clone(c.Params)
+	c.Params["realm"] = realm
+	return c
+}
+
+// quoted escapes a parameter's value for a quoted-string (RFC 9110 §5.6.4).
+var quoted = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
 // Redacted is the challenge as stored, for whoever reads .env: every
 // parameter it was given, in the order its scheme takes them, but pw's salt
 // and hash, which are what would let a reader guess the password offline.
 func (c Challenge) Redacted() string {
 	rule := schemes[c.scheme()]
-	quote := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	var params []string
 	for _, key := range rule.allowed {
 		v, ok := c.Params[key]
@@ -84,7 +95,7 @@ func (c Challenge) Redacted() string {
 				v = fmt.Sprintf("$pbkdf2-sha256$i=%d$…$…", p.iter)
 			}
 		}
-		params = append(params, key+`="`+quote.Replace(v)+`"`)
+		params = append(params, key+`="`+quoted.Replace(v)+`"`)
 	}
 	if len(params) == 0 {
 		return rule.name

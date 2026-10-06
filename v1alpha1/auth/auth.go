@@ -38,7 +38,7 @@ type Auth interface {
 	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Set(value string) error
 	Value() string
-	Header(public bool) (key, value string)
+	Header() (key, value string)
 }
 
 // Option configures an AuthImpl.
@@ -120,27 +120,17 @@ func (a *AuthImpl) Set(value string) error {
 // Value is the challenge as last Set, private params and all.
 func (a *AuthImpl) Value() string { return a.state.Load().value }
 
-// Header is the gate as a mint request carries it: X-Tunneld-Authenticate,
-// in public form with no realm, since the hostname is the mint's to say, or,
-// not public, the value as stored, private params and all; empty when the
-// tunnel is public.
-func (a *AuthImpl) Header(public bool) (key, value string) {
-	if !public {
-		return v1.AuthenticateHeader, a.Value()
-	}
-	return v1.AuthenticateHeader, a.public("")
-}
-
-// public is the challenges as a visitor may see them, realm set to host
-// (left out when host is ""), comma-joined as one WWW-Authenticate field
-// value (RFC 9110 §11.6.1); "" when public.
-func (a *AuthImpl) public(host string) string {
+// Header is the gate as a mint request and the control path carry it:
+// X-Tunneld-Authenticate, each challenge in public form, its realm as stored,
+// comma-joined as one field value (RFC 9110 §11.6.1); empty when public.
+// Never the value as stored: that is Value's.
+func (a *AuthImpl) Header() (key, value string) {
 	s := a.state.Load()
 	out := make([]string, len(s.challenges))
 	for i, c := range s.challenges {
-		out[i] = c.Public(host)
+		out[i] = c.Public()
 	}
-	return strings.Join(out, ", ")
+	return v1.AuthenticateHeader, strings.Join(out, ", ")
 }
 
 // verifyAny reports whether password verifies against any challenge's pw.
@@ -199,9 +189,16 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/_tunneld/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
-		if v := a.public(r.Host); v != "" {
-			w.Header().Set("WWW-Authenticate", v)
+		// Header's public form, but Basic needs a realm (RFC 7617): a
+		// challenge stored with none names the hostname the visitor asked for.
+		out := make([]string, len(s.challenges))
+		for i, c := range s.challenges {
+			if _, ok := c.Params["realm"]; !ok {
+				c = c.withRealm(r.Host)
+			}
+			out[i] = c.Public()
 		}
+		w.Header().Set("WWW-Authenticate", strings.Join(out, ", "))
 		refuse(w, http.StatusUnauthorized)
 	})
 }

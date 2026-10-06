@@ -554,14 +554,14 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 // one; absent when the tunnel is public.
 type gated struct {
 	http.ResponseWriter
-	gate    func(public bool) (key, value string)
+	gate    func() (key, value string)
 	written bool
 }
 
 func (g *gated) WriteHeader(code int) {
 	if !g.written {
 		g.written = true
-		if key, v := g.gate(true); v != "" {
+		if key, v := g.gate(); v != "" {
 			g.ResponseWriter.Header().Set(key, v)
 		}
 	}
