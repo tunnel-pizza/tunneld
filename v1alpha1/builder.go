@@ -543,7 +543,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	var agents []router.Option
 	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithLog(log)); m != nil {
 		defer m.Close()
-		agents = append(agents, router.WithHandler(router.ControlPath+"mcp", m.Handler()))
+		agents = append(agents, router.WithMcp(m))
 	}
 
 	// The cache this run reads and writes through. Off is a cache that finds

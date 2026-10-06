@@ -1404,8 +1404,8 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, t.Context()); !errors.Is(err, h.router.err) {
 			t.Fatalf("run() = %v, want the router's own error", err)
 		}
-		if got := h.router.configured.Mounted(); !slices.Contains(got, router.ControlPath+"mcp") {
-			t.Errorf("mounted = %v, want %s", got, router.ControlPath+"mcp")
+		if h.router.configured.Mcp() == nil {
+			t.Error("the router was given no MCP server")
 		}
 	})
 

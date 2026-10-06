@@ -1278,51 +1278,49 @@ func TestProviderOrigin(t *testing.T) {
 	}
 }
 
-// TestWithHandlerMountsOnTheControlPath pins the mount: a handler put under
-// ControlPath answers there, through authorize — a bare 401 without the
-// secret, the handler's own answer with it — and Mounted reads the pattern
-// back without standing anything up.
-func TestWithHandlerMountsOnTheControlPath(t *testing.T) {
+// mcpOf is an Mcp answering with h.
+type mcpOf struct{ h http.Handler }
+
+func (m mcpOf) Handler() http.Handler { return m.h }
+
+// TestWithMcp pins the agent server's place: ControlPath+"mcp", answered
+// through authorize — a bare 401 without the secret, the server's own answer
+// with it, and a 404 on a route with no server — and Mcp reads it back
+// without standing anything up.
+func TestWithMcp(t *testing.T) {
 	secret := []byte("s3cr3t")
-	hello := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })
-	r := New(WithHandler(ControlPath+"hello", hello), WithCache(cacheOf{secret: secret, key: runKey}))
-	if got, want := r.Mounted(), []string{ControlPath + "hello"}; !slices.Equal(got, want) {
-		t.Errorf("Mounted() = %v, want %v", got, want)
+	hello := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })}
+	r := New(WithCache(cacheOf{secret: secret, key: runKey}))
+	if r.Mcp() != nil {
+		t.Errorf("Mcp() = %v before WithMcp, want nil", r.Mcp())
 	}
-	u, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
-	if err != nil {
-		t.Fatalf("Route: %v", err)
-	}
-	t.Cleanup(r.Cancel)
-	base := strings.TrimSuffix(u.String(), "/")
 	for name, tc := range map[string]struct {
+		opts       []Option
 		auth       string
 		wantStatus int
 		wantBody   string
 	}{
-		"without the secret": {"", 401, ""},
-		"with the secret":    {tokenOf(secret), 200, "hello"},
+		"without the secret": {[]Option{WithMcp(hello)}, "", 401, ""},
+		"with the secret":    {[]Option{WithMcp(hello)}, tokenOf(secret), 200, "hello"},
+		"with no server":     {nil, tokenOf(secret), 404, "404 page not found\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", base+ControlPath+"hello", nil)
+			u, err := r.Route(t.Context(), append([]Option{WithOrigins(listOf(t, echo(t, "solo")))}, tc.opts...)...)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			req, _ := http.NewRequest("POST", strings.TrimSuffix(u.String(), "/")+ControlPath+"mcp", nil)
 			if tc.auth != "" {
 				req.Header.Set("Authorization", tc.auth)
 			}
 			resp, body := get(t, http.DefaultClient, req)
 			if resp.StatusCode != tc.wantStatus || body != tc.wantBody {
-				t.Errorf("GET = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
+				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
 			}
 		})
 	}
-}
-
-// TestWithHandlerRefusesAnOriginsPath pins that a pattern outside ControlPath
-// is an error when the router routes: every other path is an origin's, and a
-// handler there would shadow it silently.
-func TestWithHandlerRefusesAnOriginsPath(t *testing.T) {
-	r := New(WithHandler("/mcp", http.NotFoundHandler()))
-	_, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
-	if err == nil || !strings.Contains(err.Error(), `a handler at "/mcp" is outside the control path`) {
-		t.Fatalf("Route = %v, want the pattern refused", err)
+	if got := New(WithMcp(hello)).Mcp(); got != hello {
+		t.Errorf("Mcp() = %v, want the server WithMcp was given", got)
 	}
 }

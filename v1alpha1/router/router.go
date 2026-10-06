@@ -30,7 +30,6 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,11 +111,9 @@ type RouterImpl struct {
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
 	mux *http.ServeMux
-	// mounted is every pattern WithHandler put on the mux, in order, and
-	// mountErr the first pattern that was not the control path's: an option
-	// cannot refuse, so Route does, with this.
-	mounted  []string
-	mountErr error
+	// mcp is the agent server authorize answers ControlPath+"mcp" with, nil
+	// for none.
+	mcp Mcp
 
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
@@ -152,6 +149,12 @@ type Auth interface {
 	Handler(next http.Handler) http.Handler
 	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Public(host string) []string
+}
+
+// Mcp is the agent server the router answers ControlPath+"mcp" with, behind
+// the secret like everything else on the control path.
+type Mcp interface {
+	Handler() http.Handler
 }
 
 // CacheKeyHeader is what every response under the ControlPath carries, a
@@ -218,33 +221,10 @@ func WithWrap(wrap func(http.Handler) http.Handler) Option {
 	return func(r *RouterImpl) { r.wrap = wrap }
 }
 
-// WithHandler puts h on the router's mux at pattern, which must be under
-// ControlPath: that prefix is the mux's and authorize's, and every other path
-// is an origin's. So whatever answers there is behind the tunnel secret
-// without asking for it. The same pattern twice keeps the first; a pattern
-// outside the control path is refused when the router routes, since an
-// option has no error to return.
-func WithHandler(pattern string, h http.Handler) Option {
-	return func(r *RouterImpl) {
-		if !strings.HasPrefix(pattern, ControlPath) {
-			if r.mountErr == nil {
-				r.mountErr = fmt.Errorf("router: a handler at %q is outside the control path", pattern)
-			}
-			return
-		}
-		e := r.env
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		if e.registered[pattern] {
-			return
-		}
-		if e.registered == nil {
-			e.registered = map[string]bool{}
-		}
-		e.registered[pattern] = true
-		r.mux.Handle(pattern, h)
-		r.mounted = append(r.mounted, pattern)
-	}
+// WithMcp sets the agent server authorize answers ControlPath+"mcp" with,
+// or none, when nil: that path is then a 404 like any the mux does not have.
+func WithMcp(m Mcp) Option {
+	return func(r *RouterImpl) { r.mcp = m }
 }
 
 // WithCache puts c's Handlers under ControlPath on the router's mux —
@@ -361,13 +341,13 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets, Wrap and Mounted read back what the options set, for a
+// Origins, WebSockets, Wrap and Mcp read back what the options set, for a
 // caller standing in for a router that wants to see what it was handed
 // without standing one up.
 func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
 func (r *RouterImpl) WebSockets() int                       { return r.ws }
 func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
-func (r *RouterImpl) Mounted() []string                     { return slices.Clone(r.mounted) }
+func (r *RouterImpl) Mcp() Mcp                              { return r.mcp }
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
@@ -440,9 +420,6 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
 	route := *r
 	v1.Apply(&route, opts...)
-	if route.mountErr != nil {
-		return nil, route.mountErr
-	}
 	dialable, ws, front, log := route.dialable, route.ws, route.wrap, route.log
 	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
@@ -465,16 +442,15 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 		site = gate.Handler(site)
 	}
 	control := route.authorize(route.mux)
-	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, ControlPath) {
-			control.ServeHTTP(w, r)
-			return
-		}
-		site.ServeHTTP(w, r)
-	})
 	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
 	srv := &http.Server{
-		Handler:     h,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, ControlPath) {
+				control.ServeHTTP(w, r)
+				return
+			}
+			site.ServeHTTP(w, r)
+		}),
 		BaseContext: func(net.Listener) context.Context { return routing },
 		ErrorLog:    slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
@@ -504,11 +480,19 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // a bare 401, no-store, before the mux sees it, registered endpoint or not,
 // so nothing under the prefix can be probed without it.
 //
+// ControlPath+"mcp" is the agent server's (WithMcp), answered here rather
+// than registered on the mux, so the route carries it the way it carries
+// its origins; with no server it falls through to the mux, and a 404.
+//
 // Fails closed: with no cache, or no secret yet, nothing but ping, login and
 // logout answers. Compared in constant time, so the time a refusal takes says
 // nothing about how much of a guess was right.
 func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	e := r.env
+	var agents http.Handler
+	if r.mcp != nil {
+		agents = r.mcp.Handler()
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		e.mu.Lock()
 		c, a := e.cache, e.auth
@@ -557,6 +541,10 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 		got := req.Header.Get("Authorization")
 		want := "token " + base64.StdEncoding.EncodeToString(secret)
 		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+			if agents != nil && req.URL.Path == ControlPath+"mcp" {
+				agents.ServeHTTP(w, req)
+				return
+			}
 			next.ServeHTTP(w, req)
 			return
 		}
