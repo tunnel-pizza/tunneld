@@ -191,7 +191,19 @@ else is the origins', passed through exactly as it was sent.
 Everything but `ping` needs `Authorization: token <secret>`, the running
 tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
 whoever holds the spec holds the token. Without it, or before the run has
-saved, the answer is a bare `401`, whether or not the path exists. A run with
+saved, the answer is a `401` with no body, whether or not the path exists. Its
+`WWW-Authenticate` is [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)'s
+`Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource"`,
+password or not: a tunnel's password opens its origins, never `/_tunneld/`.
+
+That metadata URL is the origins' path, and tunneld answers it only when
+nothing else does. A `GET` or `HEAD` of `/.well-known/oauth-protected-resource`
+goes to the origin first; only a `404`, or no origin listening, is answered
+with tunneld's metadata: the tunnel's hostname as the `resource`, and the
+provider (`https://tunnel.pizza`, or `--provider`'s) as its authorization
+server. Anything else the origin answers, its own metadata or a `401` from
+protection of its own, is what the client gets. Behind a password the origin
+is out of reach, so the gate answers it with tunneld's. A run with
 `--no-cache` saves nothing and so authorizes nothing but `ping`.
 
 Every answer under `/_tunneld/`, a `401` included, carries `X-Cache-Key`: the
@@ -1015,7 +1027,8 @@ What a visitor gets:
   `Secure`). `/_tunneld/logout` signs it out. Changing the password, or the
   tunnel's secret, signs everyone out.
 - **Anything else** (curl, `fetch`, an SDK) gets a `401` with
-  `WWW-Authenticate: Basic realm="<host>", charset="UTF-8"` and no body, and
+  `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"` and no body (the
+  `realm` you set, else the hostname the request was sent to), and
   gets through with `curl -u :<password>`.
 - Wrong passwords are slowed: at most two checks run at once, and five wrong
   ones from one address within a minute get `429` with `Retry-After: 60`.
@@ -1064,10 +1077,10 @@ A PATCH carrying `LIBTUNNEL_SPEC` while the run is still taking the last one
 `Retry-After: 1` that changes nothing, never a `200` the run then drops.
 
 Every mint tells the provider what the tunnel's gate is:
-`X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
-realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
+`X-Tunneld-Authenticate` with the challenge as a visitor would see it (its
+`realm` as set, if one is), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
 publicly accessible." out of a protected tunnel's messages. Every answer under `/_tunneld/`, `ping` among them, carries `X-Tunneld-Authenticate`
-with the challenge in public form, realm left out, absent when the tunnel is
+with the challenge in public form, the same way, absent when the tunnel is
 public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so

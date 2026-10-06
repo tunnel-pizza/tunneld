@@ -535,6 +535,13 @@ type fakeAuth struct {
 	setBeforeRoute bool
 }
 
+// Unauthorized marks the 401 as this auth's, so a test can see which auth a
+// refusal went through.
+func (f *fakeAuth) Unauthorized(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Fake-Auth", "1")
+	f.AuthImpl.Unauthorized(w, r)
+}
+
 func (f *fakeAuth) Set(v string) error {
 	if err := f.AuthImpl.Set(v); err != nil {
 		return err
@@ -3509,5 +3516,44 @@ func TestDotenvServesNoHash(t *testing.T) {
 	body := rec.Body.String()
 	if rec.Code != 200 || strings.Contains(body, "UFtjhDQ2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`) {
 		t.Errorf("GET .env = %d %q, want the password redacted", rec.Code, body)
+	}
+}
+
+// TestARefusedGrantIsTheRunsAuth pins the cache's 401 to the run's auth: a
+// PATCH whose grant is gone is refused through the auth the builder holds,
+// not one the cache made for itself.
+func TestARefusedGrantIsTheRunsAuth(t *testing.T) {
+	h := newRunHarness(t, live("https://foo.tunneled.pizza/"), ":3000")
+	ctx, cancel := context.WithCancel(t.Context())
+	v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
+	_ = h.run(t, ctx, "--no-cache", ":3000")
+	patch := h.b.runCache.Handlers(router.ControlPath)[router.ControlPath+".env"]
+	req := httptest.NewRequest("PATCH", router.ControlPath+".env", strings.NewReader(v1.WWWAuthenticateEnv+"="))
+	req.Header.Set("Authorization", "Bearer gone")
+	rec := httptest.NewRecorder()
+	patch(rec, req)
+	if rec.Code != 401 || rec.Header().Get("X-Fake-Auth") != "1" {
+		t.Errorf("PATCH with a gone grant = %d, X-Fake-Auth %q; want the run's auth's 401", rec.Code, rec.Header().Get("X-Fake-Auth"))
+	}
+}
+
+// TestTheDefaultAuthNamesTheProvider pins the authorization server the
+// default auth's resource metadata names: the provider's origin.
+func TestTheDefaultAuthNamesTheProvider(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts []Option
+		want string
+	}{
+		"by default":   {nil, `"authorization_servers":["https://tunnel.pizza"]`},
+		"--provider's": {[]Option{WithProvider("p.example")}, `"authorization_servers":["https://p.example"]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := New(tc.opts...)
+			rec := httptest.NewRecorder()
+			b.auth.ResourceMetadata(rec, httptest.NewRequest("GET", auth.MetadataPath, nil))
+			if !strings.Contains(rec.Body.String(), tc.want) {
+				t.Errorf("metadata = %s, want %s", rec.Body.String(), tc.want)
+			}
+		})
 	}
 }

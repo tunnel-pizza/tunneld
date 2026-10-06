@@ -112,7 +112,9 @@ func (gateOf) Handler(next http.Handler) http.Handler                           
 func (gateOf) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) { return nil }
 func (gateOf) Set(string) error                                                    { return nil }
 func (gateOf) Value() string                                                       { return "" }
-func (g gateOf) Header(bool) (string, string)                                      { return v1.AuthenticateHeader, string(g) }
+func (gateOf) Unauthorized(http.ResponseWriter, *http.Request)                     {}
+func (gateOf) ResourceMetadata(http.ResponseWriter, *http.Request)                 {}
+func (g gateOf) Header() (string, string)                                          { return v1.AuthenticateHeader, string(g) }
 
 // TestAuth pins the gate a mint is told about: the auth's own public form,
 // public ("") by default, and a nil auth keeps that rather than leaving mint
@@ -127,8 +129,8 @@ func TestAuth(t *testing.T) {
 		"nil keeps public":   {[]Option{WithAuth(nil)}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if name, got := New(tc.opts...).auth.Header(true); name != v1.AuthenticateHeader || got != tc.want {
-				t.Errorf("auth.Header(true) = %q, %q; want %s, %q", name, got, v1.AuthenticateHeader, tc.want)
+			if name, got := New(tc.opts...).auth.Header(); name != v1.AuthenticateHeader || got != tc.want {
+				t.Errorf("auth.Header() = %q, %q; want %s, %q", name, got, v1.AuthenticateHeader, tc.want)
 			}
 		})
 	}

@@ -284,6 +284,10 @@ const (
 	// every mint request, empty when it is public.
 	AuthenticateHeader = "X-Tunneld-Authenticate"
 
+	// ControlPath is the prefix tunneld keeps for itself on the tunnel
+	// hostname; every other path is the origins'. See router.ControlPath.
+	ControlPath = "/_tunneld/"
+
 	// GrantHeader carries a single-use grant to PATCH /_tunneld/.env, on every
 	// answer to GET /_tunneld/.env made with the tunnel secret.
 	GrantHeader = "X-Tunneld-Grant"

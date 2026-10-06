@@ -41,8 +41,7 @@ func TestGuardBoundsConcurrency(t *testing.T) {
 	slow := func(string) bool { started <- struct{}{}; <-release; return false }
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() { defer wg.Done(); g.check(context.Background(), "", nil, "v", "x", slow) }()
+		wg.Go(func() { g.check(context.Background(), "", nil, "v", "x", slow) })
 	}
 	<-started
 	<-started
@@ -94,8 +93,10 @@ func TestGuardMatches(t *testing.T) {
 	if calls != 1 {
 		t.Errorf("verify ran %d times for one origin credential, want 1", calls)
 	}
-	if !g.matches(context.Background(), key, "v", "tunnel-pw", verify) || !g.matches(context.Background(), key, "v", "tunnel-pw", verify) {
-		t.Error("the tunnel's password did not match")
+	for range 2 {
+		if !g.matches(context.Background(), key, "v", "tunnel-pw", verify) {
+			t.Error("the tunnel's password did not match")
+		}
 	}
 	if calls != 2 {
 		t.Errorf("verify ran %d times, want 2: a match is remembered too", calls)

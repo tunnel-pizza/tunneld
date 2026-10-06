@@ -607,7 +607,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// of the places the password comes from, and the password has to be in
 	// place before a visitor can reach anything. The variable is registered
 	// with the cache so a PATCH to .env checks and applies it the same way.
-	loaded := spec.Load(cache.WithOrigins(origins), cache.WithLog(log),
+	loaded := spec.Load(cache.WithOrigins(origins), cache.WithLog(log), cache.WithAuth(b.auth),
 		cache.WithMutable(v1.WWWAuthenticateEnv,
 			func(v string) error { _, err := auth.Parse(v); return err },
 			func(v string) { _ = b.auth.Set(v) }))

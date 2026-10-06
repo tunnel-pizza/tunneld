@@ -3,11 +3,13 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -41,22 +43,79 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
-// TestHeader pins the header the auth hands a mint: X-Tunneld-Authenticate,
-// in public form with no realm, or the value as stored when asked not to;
-// empty when public.
+// TestHeader pins the gate as the auth says it: X-Tunneld-Authenticate, in
+// public form, the stored realm included; empty when public. Never the value
+// as stored.
 func TestHeader(t *testing.T) {
 	a := New()
-	if name, v := a.Header(true); name != v1.AuthenticateHeader || v != "" {
-		t.Errorf("public Header(true) = %q, %q; want %s and empty", name, v, v1.AuthenticateHeader)
+	if name, v := a.Header(); name != v1.AuthenticateHeader || v != "" {
+		t.Errorf("public Header() = %q, %q; want %s and empty", name, v, v1.AuthenticateHeader)
 	}
 	if err := a.Set(value); err != nil {
 		t.Fatal(err)
 	}
-	if _, v := a.Header(true); v != `Basic charset="UTF-8"` {
-		t.Errorf("Header(true) = %q, want the public form", v)
+	if _, v := a.Header(); v != `Basic realm="stored.example", charset="UTF-8"` {
+		t.Errorf("Header() = %q, want the public form", v)
 	}
-	if _, v := a.Header(false); v != value {
-		t.Errorf("Header(false) = %q, want the value as stored", v)
+}
+
+// TestUnauthorized pins the 401 for whatever the password does not open:
+// RFC 9728's Bearer challenge, naming this tunnel's protected-resource
+// metadata, password or not; no body.
+func TestUnauthorized(t *testing.T) {
+	for name, a := range map[string]*AuthImpl{"public": New(), "protected": protected(t)} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/_tunneld/.env", nil)
+			req.Host = "h.example"
+			rec := httptest.NewRecorder()
+			a.Unauthorized(rec, req)
+			if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 || rec.Header().Get("Content-Length") != "0" {
+				t.Errorf("%d, %d bytes, Content-Length %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Length"))
+			}
+			want := `Bearer resource_metadata="https://h.example/.well-known/oauth-protected-resource"`
+			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != want {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestProtectedResource pins the metadata the 401 points at (RFC 9728): this
+// tunnel as the resource, the provider as its authorization server.
+func TestProtectedResource(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts   []Option
+		server string
+	}{
+		"by default, tunnel.pizza": {nil, "https://tunnel.pizza"},
+		"the provider it is given": {[]Option{WithAuthorizationServer(func() string { return "https://p.example" })}, "https://p.example"},
+		"nil keeps tunnel.pizza":   {[]Option{WithAuthorizationServer(nil)}, "https://tunnel.pizza"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", MetadataPath, nil)
+			req.Host = "h.example"
+			rec := httptest.NewRecorder()
+			New(tc.opts...).ResourceMetadata(rec, req)
+			if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("%d, Content-Type %q; want 200 application/json", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{
+				"resource":                 "https://h.example",
+				"authorization_servers":    []any{tc.server},
+				"scopes_supported":         []any{"openid", "profile"},
+				"bearer_methods_supported": []any{"header"},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("metadata = %v, want %v", got, want)
+			}
+		})
+	}
+	if _, ok := New().Handlers("/_tunneld/")["/_tunneld/.well-known/oauth-protected-resource"]; ok {
+		t.Error("the metadata is under the control path too; want it at the root alone")
 	}
 }
 
@@ -65,7 +124,7 @@ func TestSet(t *testing.T) {
 	if err := a.Set("Basic nope"); err == nil {
 		t.Error("an invalid value was accepted")
 	}
-	if a.Value() != "" || a.public("h") != "" {
+	if _, v := a.Header(); a.Value() != "" || v != "" {
 		t.Error("a refused Set changed the value")
 	}
 	if err := a.Set(value); err != nil {
@@ -74,12 +133,12 @@ func TestSet(t *testing.T) {
 	if a.Value() != value {
 		t.Errorf("Value = %q", a.Value())
 	}
-	if got := a.public("h"); got != `Basic realm="h", charset="UTF-8"` {
-		t.Errorf("Public = %q", got)
+	if _, got := a.Header(); got != `Basic realm="stored.example", charset="UTF-8"` {
+		t.Errorf("Header = %q", got)
 	}
 	a.Set("")
-	if a.public("h") != "" {
-		t.Error("public after clearing")
+	if _, v := a.Header(); v != "" {
+		t.Error("a challenge after clearing")
 	}
 }
 
@@ -116,6 +175,27 @@ func TestHandler(t *testing.T) {
 			t.Errorf("stale cookie = %d, want 401", rec.Code)
 		}
 	})
+	t.Run("a 401 with no realm stored names the host", func(t *testing.T) {
+		b := protected(t)
+		b.Set(`Basic pw="` + vector + `"`)
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Host = "0t8qsb6pq3.tunneled.pizza"
+		rec := serve(b.Handler(origin()), req)
+		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
+			t.Errorf("WWW-Authenticate = %q, want the request's host as the realm", got)
+		}
+	})
+	t.Run("the metadata needs no password, by GET or HEAD", func(t *testing.T) {
+		for _, method := range []string{"GET", "HEAD"} {
+			rec := serve(h, httptest.NewRequest(method, MetadataPath, nil))
+			if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" || strings.Contains(rec.Body.String(), "origin") {
+				t.Errorf("%s metadata = %d %q; want tunneld's, in front of the origin", method, rec.Code, rec.Body)
+			}
+		}
+		if rec := serve(h, httptest.NewRequest("POST", MetadataPath, nil)); rec.Code != 401 {
+			t.Errorf("POST metadata = %d, want the gate's 401", rec.Code)
+		}
+	})
 	t.Run("basic right passes, header stripped, cookie set", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/x", nil)
 		req.SetBasicAuth("anyone", password)
@@ -150,8 +230,8 @@ func TestHandler(t *testing.T) {
 			if rec.Code != 401 || rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
 				t.Fatalf("%d, %d bytes, Content-Type %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Type"))
 			}
-			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
-				t.Errorf("WWW-Authenticate = %q", got)
+			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="stored.example", charset="UTF-8"` {
+				t.Errorf("WWW-Authenticate = %q, want the stored realm", got)
 			}
 			// Cache-Control is the router's to write, on everything it serves.
 			if rec.Header().Get("Content-Length") != "0" {

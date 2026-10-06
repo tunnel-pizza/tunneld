@@ -287,9 +287,8 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// What the gate says, so the mint's messages match it: a protected
 		// tunnel is not "publicly accessible". The client's own word,
 		// deciding only a banner the client itself shows. Sent on every
-		// mint, empty when public; no realm, since the hostname is the
-		// mint's to say.
-		WithHeader(r.auth.Header(true)).
+		// mint, empty when public.
+		WithHeader(r.auth.Header()).
 		WithLogger(log).
 		WithContext(tctx).
 		WithEventListener(listen).

@@ -339,6 +339,11 @@ func TestAuthorize(t *testing.T) {
 			if tc.wantStatus == 401 && body != "" {
 				t.Errorf("a refusal said %q, want a bare 401", body)
 			}
+			// With no auth handed over, a refusal is still RFC 9728's.
+			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + `/.well-known/oauth-protected-resource"`
+			if got := resp.Header.Get("WWW-Authenticate"); tc.wantStatus == 401 && got != want {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
+			}
 		})
 	}
 
@@ -1261,7 +1266,11 @@ func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.R
 		path + "logout": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "logout") },
 	}
 }
-func (authOf) Header(bool) (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+func (authOf) Header() (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+func (authOf) Unauthorized(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("WWW-Authenticate", "Fake")
+	w.WriteHeader(401)
+}
 
 // gateOf is an Auth whose public challenge is whatever gate holds, so a
 // handler can change it mid-request the way a grant's PATCH does.
@@ -1270,7 +1279,7 @@ type gateOf struct {
 	gate *atomic.Value
 }
 
-func (g gateOf) Header(bool) (string, string) {
+func (g gateOf) Header() (string, string) {
 	v, _ := g.gate.Load().(string)
 	return v1.AuthenticateHeader, v
 }
@@ -1449,6 +1458,83 @@ func TestWithMcp(t *testing.T) {
 			resp, body := get(t, http.DefaultClient, req)
 			if resp.StatusCode != tc.wantStatus || body != tc.wantBody {
 				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
+			}
+		})
+	}
+}
+
+// TestAuthorizeRefusesThroughTheAuth pins who answers a refusal under the
+// ControlPath: the auth handed over, through its Unauthorized.
+func TestAuthorizeRefusesThroughTheAuth(t *testing.T) {
+	url := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", []byte("s3cr3t"), runKey}), WithAuth(authOf{})), ".env")
+	resp, _ := ask(t, "GET", url, "")
+	if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != "Fake" {
+		t.Errorf("GET .env = %d, WWW-Authenticate %q; want the auth's 401", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+}
+
+// TestResourceMetadataFallback pins the root's RFC 9728 metadata: the
+// origin's whenever it says anything there, its own protection's refusal
+// included; tunneld's only when the origin has none (a 404) or nothing is
+// listening, and only for GET and HEAD.
+func TestResourceMetadataFallback(t *testing.T) {
+	const path = "/.well-known/oauth-protected-resource"
+	down := httptest.NewServer(http.NotFoundHandler())
+	down.Close()
+	origin := func(status int, body string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Origin", "1")
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	for name, tc := range map[string]struct {
+		srv     *httptest.Server
+		method  string
+		auth    auth.Auth // nil: none handed over
+		status  int
+		tunneld bool
+	}{
+		"the origin's own":       {origin(200, `{"resource":"mine"}`), "GET", auth.New(), 200, false},
+		"the origin's refusal":   {origin(401, ""), "GET", auth.New(), 401, false},
+		"the origin has none":    {origin(404, "nope"), "GET", auth.New(), 200, true},
+		"by HEAD":                {origin(404, ""), "HEAD", auth.New(), 200, true},
+		"nothing listening":      {down, "GET", auth.New(), 200, true},
+		"a POST is the origin's": {origin(404, "nope"), "POST", auth.New(), 404, false},
+		"no auth handed over":    {origin(404, "nope"), "GET", nil, 200, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := New()
+			opts := []Option{WithOrigins(listOf(t, tc.srv))}
+			if tc.auth != nil {
+				opts = append(opts, WithAuth(tc.auth))
+			}
+			u, err := r.Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			req, err := http.NewRequest(tc.method, strings.TrimSuffix(u.String(), "/")+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.status {
+				t.Errorf("%s %s = %d %q, want %d", tc.method, path, resp.StatusCode, body, tc.status)
+			}
+			tunneld := resp.Header.Get("X-Origin") == "" && resp.Header.Get("Content-Type") == "application/json"
+			if tunneld != tc.tunneld {
+				t.Errorf("answered by tunneld = %v, want %v (headers %v)", tunneld, tc.tunneld, resp.Header)
+			}
+			if tc.tunneld && tc.method == "GET" && !strings.Contains(string(body), `"authorization_servers":["https://tunnel.pizza"]`) {
+				t.Errorf("metadata = %s, want tunneld's", body)
 			}
 		})
 	}

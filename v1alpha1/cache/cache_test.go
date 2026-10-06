@@ -21,6 +21,7 @@ import (
 
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
@@ -753,9 +754,29 @@ func TestGrantsExpire(t *testing.T) {
 		t.Error("a grant outlived its minute")
 	}
 	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
-	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Body.Len() != 0 {
+	rec := call(c, "PATCH", "Bearer "+grant, line)
+	if rec.Code != 401 || rec.Body.Len() != 0 {
 		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
 	}
+	// With no auth handed over, the refusal is still RFC 9728's.
+	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource"`; got != want {
+		t.Errorf("WWW-Authenticate = %q, want %q", got, want)
+	}
+	// Handed one, the auth answers it.
+	cache.WithAuth(refuser{})(c)
+	grant = call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	now = now.Add(2 * time.Minute)
+	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Header().Get("WWW-Authenticate") != "Fake" {
+		t.Errorf("an expired grant = %d, WWW-Authenticate %q; want the auth's 401", rec.Code, rec.Header().Get("WWW-Authenticate"))
+	}
+}
+
+// refuser is an auth whose 401 says Fake.
+type refuser struct{ auth.Auth }
+
+func (refuser) Unauthorized(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("WWW-Authenticate", "Fake")
+	w.WriteHeader(401)
 }
 
 // TestConcurrentPatches pins all-or-nothing under contention: two PATCHes

@@ -26,6 +26,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -56,7 +57,9 @@ const Cookie = "tunneld-origin"
 // cleans the paths it serves, answering "/a//b" or "/a/../b" with a redirect
 // to the clean form; in front of the origins that would rewrite what they are
 // sent. Under this prefix only tunneld's own paths are cleaned.
-const ControlPath = "/_tunneld/"
+//
+// Declared in v1, so auth, which the router imports, can name it too.
+const ControlPath = v1.ControlPath
 
 // unreachableHeader marks tunneld's own answer for an origin nothing is
 // listening on, its value that origin's host. The page the answer carries
@@ -460,8 +463,10 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	route.env.mu.Lock()
 	gate := route.env.auth
 	route.env.mu.Unlock()
-	if gate != nil {
-		site = gate.Handler(site)
+	if gate == nil {
+		site = metadata(site, fallback)
+	} else {
+		site = gate.Handler(metadata(site, gate))
 	}
 	control := route.cors(route.authorize(route.mux))
 	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
@@ -492,16 +497,17 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // "Authorization: token <secret>", the running tunnel's secret as the cache
 // WithCache handed over holds it, base64-encoded (the encoding the spec's own
 // JSON gives it, so whoever holds the spec holds the token), except a path
-// and method authMethods has: ping, login and logout by the methods a
-// visitor uses, and a PATCH of .env carrying "Bearer <grant>".
+// and method authMethods has: ping, login, logout and the resource metadata
+// by the methods a visitor uses, and a PATCH of .env carrying "Bearer
+// <grant>".
 //
 // A CORS preflight never reaches it: cors, in front, answers that. Anything
-// else is a bare 401, no-store, before the mux sees it,
-// registered endpoint or not, so nothing under the prefix can be probed
-// without it.
+// else is the auth's Unauthorized, a bodyless 401 naming the resource
+// metadata, before the mux sees it, registered endpoint or not, so nothing
+// under the prefix can be probed without it.
 //
-// Fails closed: with no cache, or no secret yet, nothing but ping, login and
-// logout answers. Compared in constant time, so the time a refusal takes says
+// Fails closed: with no cache, or no secret yet, nothing but ping, login,
+// logout and the resource metadata answers. Compared in constant time, so the time a refusal takes says
 // nothing about how much of a guess was right.
 func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	e := r.env
@@ -543,9 +549,16 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		w.WriteHeader(http.StatusUnauthorized)
+		if a == nil {
+			a = fallback
+		}
+		a.Unauthorized(w, req)
 	})
 }
+
+// fallback is what a router handed no auth refuses through, so its 401 still
+// carries a challenge, and serves the metadata that challenge names.
+var fallback auth.Auth = auth.New()
 
 // gated stamps an answer with X-Tunneld-Authenticate, the challenges in
 // public: nothing a 401 would not say to anyone, said ahead so a caller (the
@@ -554,14 +567,14 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 // one; absent when the tunnel is public.
 type gated struct {
 	http.ResponseWriter
-	gate    func(public bool) (key, value string)
+	gate    func() (key, value string)
 	written bool
 }
 
 func (g *gated) WriteHeader(code int) {
 	if !g.written {
 		g.written = true
-		if key, v := g.gate(true); v != "" {
+		if key, v := g.gate(); v != "" {
 			g.ResponseWriter.Header().Set(key, v)
 		}
 	}
@@ -613,8 +626,9 @@ func (u *unstored) Write(b []byte) (int, error) {
 func (u *unstored) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 
 // authMethods is every path under the ControlPath a request reaches without
-// the secret, by its name there and the methods it may use: ping, login and logout, which a
-// visitor without the secret asks, and .env, which the owner's browser
+// the secret, by its name there and the methods it may use: ping, login,
+// logout and the resource metadata, which a visitor without the secret asks,
+// and .env, which the owner's browser
 // PATCHes with a live grant the cache issued to the secret's holder.
 var authMethods = map[string][]string{
 	"ping":   {http.MethodGet, http.MethodHead},
@@ -661,6 +675,70 @@ func (r *RouterImpl) cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, req)
 	})
+}
+
+// metadata answers auth.MetadataPath from the origins first, and with a's
+// RFC 9728 metadata only when they have none there: a 404, or nothing
+// listening. Anything else the origin says, a 401 from protection of its own
+// included, is the origin's, so tunneld never stands in front of an origin
+// that guards itself. GET and HEAD only; any other method is the origin's
+// whatever it answers.
+func metadata(next http.Handler, a auth.Auth) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != auth.MetadataPath || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := &held{ResponseWriter: w, header: http.Header{}}
+		next.ServeHTTP(h, r)
+		if h.missing {
+			a.ResourceMetadata(w, r)
+		}
+	})
+}
+
+// held keeps an answer's headers back until its status says whether there
+// was one: a 404, or tunneld's own answer for an origin nothing listens on,
+// is missing and dropped whole; anything else goes out as it came.
+// Informational answers are dropped: what follows them decides.
+type held struct {
+	http.ResponseWriter
+	header           http.Header
+	written, missing bool
+}
+
+func (h *held) Header() http.Header { return h.header }
+
+func (h *held) WriteHeader(code int) {
+	if h.written || code < http.StatusOK {
+		return
+	}
+	h.written = true
+	if code == http.StatusNotFound || h.header.Get(unreachableHeader) != "" {
+		h.missing = true
+		return
+	}
+	maps.Copy(h.ResponseWriter.Header(), h.header)
+	h.ResponseWriter.WriteHeader(code)
+}
+
+func (h *held) Write(b []byte) (int, error) {
+	if !h.written {
+		h.WriteHeader(http.StatusOK)
+	}
+	if h.missing {
+		return len(b), nil
+	}
+	return h.ResponseWriter.Write(b)
+}
+
+// FlushError is for http.ResponseController: the proxy flushes through it,
+// and nothing goes out of an answer that is missing.
+func (h *held) FlushError() error {
+	if !h.written || h.missing {
+		return nil
+	}
+	return http.NewResponseController(h.ResponseWriter).Flush()
 }
 
 // Cancel takes down every route this router has serving: their listeners

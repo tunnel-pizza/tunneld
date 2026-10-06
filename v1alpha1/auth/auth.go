@@ -2,6 +2,7 @@ package auth
 
 import (
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -38,7 +39,9 @@ type Auth interface {
 	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
 	Set(value string) error
 	Value() string
-	Header(public bool) (key, value string)
+	Header() (key, value string)
+	Unauthorized(w http.ResponseWriter, r *http.Request)
+	ResourceMetadata(w http.ResponseWriter, r *http.Request)
 }
 
 // Option configures an AuthImpl.
@@ -56,6 +59,7 @@ type state struct {
 // a tunnel serves.
 type AuthImpl struct {
 	secret func() []byte
+	server func() string
 	log    v1.Logger
 	now    func() time.Time
 	state  atomic.Pointer[state]
@@ -64,11 +68,27 @@ type AuthImpl struct {
 
 // New returns an AuthImpl with nothing set: everything passes.
 func New(opts ...Option) *AuthImpl {
-	a := &AuthImpl{secret: func() []byte { return nil }, log: slog.New(slog.DiscardHandler), now: time.Now}
+	a := &AuthImpl{
+		secret: func() []byte { return nil },
+		server: func() string { return "https://" + v1.DefaultProvider },
+		log:    slog.New(slog.DiscardHandler),
+		now:    time.Now,
+	}
 	a.state.Store(&state{})
 	v1.Apply(a, opts...)
 	a.guard = newGuard(a.now)
 	return a
+}
+
+// WithAuthorizationServer is where the authorization server the resource
+// metadata names is read from, on every request: the provider's origin, which
+// is only settled once the command has read its flags. Nil keeps tunnel.pizza.
+func WithAuthorizationServer(server func() string) Option {
+	return func(a *AuthImpl) {
+		if server != nil {
+			a.server = server
+		}
+	}
 }
 
 // WithSecret is where the tunnel secret is read from, on every request: it
@@ -120,27 +140,17 @@ func (a *AuthImpl) Set(value string) error {
 // Value is the challenge as last Set, private params and all.
 func (a *AuthImpl) Value() string { return a.state.Load().value }
 
-// Header is the gate as a mint request carries it: X-Tunneld-Authenticate,
-// in public form with no realm, since the hostname is the mint's to say, or,
-// not public, the value as stored, private params and all; empty when the
-// tunnel is public.
-func (a *AuthImpl) Header(public bool) (key, value string) {
-	if !public {
-		return v1.AuthenticateHeader, a.Value()
-	}
-	return v1.AuthenticateHeader, a.public("")
-}
-
-// public is the challenges as a visitor may see them, realm set to host
-// (left out when host is ""), comma-joined as one WWW-Authenticate field
-// value (RFC 9110 §11.6.1); "" when public.
-func (a *AuthImpl) public(host string) string {
+// Header is the gate as a mint request and the control path carry it:
+// X-Tunneld-Authenticate, each challenge in public form, its realm as stored,
+// comma-joined as one field value (RFC 9110 §11.6.1); empty when public.
+// Never the value as stored: that is Value's.
+func (a *AuthImpl) Header() (key, value string) {
 	s := a.state.Load()
 	out := make([]string, len(s.challenges))
 	for i, c := range s.challenges {
-		out[i] = c.Public(host)
+		out[i] = c.Public()
 	}
-	return strings.Join(out, ", ")
+	return v1.AuthenticateHeader, strings.Join(out, ", ")
 }
 
 // verifyAny reports whether password verifies against any challenge's pw.
@@ -163,6 +173,12 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		s := a.state.Load()
 		if len(s.challenges) == 0 {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// RFC 9728's metadata has to be readable without credentials, and
+		// behind the password the origin's is out of reach: answered here.
+		if r.URL.Path == MetadataPath && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			a.ResourceMetadata(w, r)
 			return
 		}
 		key := cookieKey(a.secret())
@@ -196,13 +212,19 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			}
 		}
 		if pageLoad(r) {
-			http.Redirect(w, r, "/_tunneld/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+			http.Redirect(w, r, v1.ControlPath+"login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
-		if v := a.public(r.Host); v != "" {
-			w.Header().Set("WWW-Authenticate", v)
+		// Header's public form, but Basic needs a realm (RFC 7617): a
+		// challenge stored with none names the hostname the visitor asked for.
+		out := make([]string, len(s.challenges))
+		for i, c := range s.challenges {
+			if _, ok := c.Params["realm"]; !ok {
+				c = c.withRealm(r.Host)
+			}
+			out[i] = c.Public()
 		}
-		refuse(w, http.StatusUnauthorized)
+		unauthorized(w, strings.Join(out, ", "))
 	})
 }
 
@@ -279,6 +301,51 @@ func (e *edgeWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
 
 // refuse answers status with headers only: an app's fetch or an SDK never
 // meets a body it was not written for.
+// MetadataPath is where a tunnel's OAuth protected-resource metadata is
+// (RFC 9728): the root's well-known path, which is the origins'. The router
+// asks the origin first and answers with ResourceMetadata only when it has
+// none; behind a password, the gate answers it, since the origin is out of
+// reach.
+const MetadataPath = "/.well-known/oauth-protected-resource"
+
+// Unauthorized is the 401 for whatever the password does not open, the
+// ControlPath's and a lost grant's: RFC 9110 has every 401 carry a challenge,
+// and this one is RFC 9728's, a Bearer naming this tunnel's resource
+// metadata, which names the provider as the authorization server. Password
+// or not: the password opens the origins, never the ControlPath.
+func (a *AuthImpl) Unauthorized(w http.ResponseWriter, r *http.Request) {
+	unauthorized(w, `Bearer resource_metadata="https://`+r.Host+MetadataPath+`"`)
+}
+
+// unauthorized is every 401 tunneld sends, the gate's and Unauthorized's: no
+// body, and the challenge it is given.
+func unauthorized(w http.ResponseWriter, challenge string) {
+	w.Header().Set("WWW-Authenticate", challenge)
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
+// metadata is RFC 9728's protected-resource metadata: this tunnel's hostname
+// as the resource, and the provider as the server a token for it comes from.
+type metadata struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	ScopesSupported        []string `json:"scopes_supported"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+}
+
+// ResourceMetadata answers MetadataPath, to anyone: it is what a client
+// refused by Unauthorized reads to learn where to get a token.
+func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(metadata{
+		Resource:               "https://" + r.Host,
+		AuthorizationServers:   []string{a.server()},
+		ScopesSupported:        []string{"openid", "profile"},
+		BearerMethodsSupported: []string{"header"},
+	})
+}
+
 func refuse(w http.ResponseWriter, status int, kv ...string) {
 	for i := 0; i+1 < len(kv); i += 2 {
 		w.Header().Set(kv[i], kv[i+1])
