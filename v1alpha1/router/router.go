@@ -500,7 +500,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 //     to the secret's holder for the owner's browser;
 //   - a CORS preflight for .env, which carries no credentials by design.
 //
-// .env answers CORS (cors) before anything is checked. Anything else is a
+// A browser-bound path answers CORS (cors) before anything is checked. Anything else is a
 // bare 401, no-store, before the mux sees it, registered endpoint or not, so
 // nothing under the prefix can be probed without it.
 //
@@ -519,7 +519,7 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 				w.Header().Set(CacheKeyHeader, key)
 			}
 		}
-		if req.URL.Path == ControlPath+".env" && r.cors(w, req) {
+		if r.cors(w, req) {
 			return
 		}
 		if !allowed(c, req) {
@@ -537,10 +537,22 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	})
 }
 
-// cors answers CORS on .env for the provider's origin alone, on every
-// answer, a refusal included, so the browser can read why; true when req was
-// a preflight, which it has answered.
+// corsMethods is every path under the ControlPath a browser calls across
+// origins, by the methods its preflight allows: .env, which the provider's
+// page PATCHes with a grant.
+var corsMethods = map[string]string{
+	ControlPath + ".env": "PATCH",
+}
+
+// cors answers CORS on a path corsMethods has, for the provider's origin
+// alone, on every answer, a refusal included, so the browser can read why;
+// true when req was a preflight, which it has answered. Every other path
+// gets nothing.
 func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
+	methods, ok := corsMethods[req.URL.Path]
+	if !ok {
+		return false
+	}
 	w.Header().Add("Vary", "Origin")
 	allow := false
 	if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
@@ -552,7 +564,7 @@ func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
 		return false
 	}
 	if allow {
-		w.Header().Set("Access-Control-Allow-Methods", "PATCH")
+		w.Header().Set("Access-Control-Allow-Methods", methods)
 		w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
 		w.Header().Set("Access-Control-Max-Age", "600")
 	}
