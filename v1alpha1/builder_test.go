@@ -721,8 +721,8 @@ func TestMcpOrigins(t *testing.T) {
 		spawn bool
 	}{
 		{"http://localhost:3000", v0exp1.McpHTTP, false},
-		{"exec:///bin/sh", v0exp1.McpProgram, true},
-		{"attach://dockerd/web", v0exp1.McpContainer, false},
+		{"exec:///bin/sh", v0exp1.McpExec, true},
+		{"attach://dockerd/web", v0exp1.McpAttach, false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("mcpOrigins = %d origins, want %d", len(got), len(want))

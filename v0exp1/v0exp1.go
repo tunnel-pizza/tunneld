@@ -46,13 +46,12 @@ type Builtin interface {
 	Run() int
 }
 
-// Mcp serves one run's origins to agents over streamable HTTP: tools that
-// run a command, move a file or hold a process on any origin that can spawn
-// one, named by the index the routing parameter uses.
+// Mcp serves one run's origins to agents over streamable HTTP, named by the
+// index the routing parameter uses. It offers no tools yet: the agent
+// surface is being redesigned.
 type Mcp interface {
 	// Handler answers the MCP endpoint for these origins, index n being
-	// origin n, logging each call on log. Closing stops every session and
-	// process it started.
+	// origin n, logging on log. Closing ends whatever it started.
 	Handler(origins []McpOrigin, log *slog.Logger) (http.Handler, io.Closer)
 }
 
@@ -62,14 +61,14 @@ type Mcp interface {
 // Origin alone would claim the word for one of them.
 type McpOrigin = mcp.Origin
 
-// McpKind is what an origin is: McpProgram, McpContainer or McpHTTP.
+// McpKind is what an origin is: McpExec, McpAttach or McpHTTP.
 type McpKind = mcp.Kind
 
-// The kinds of origin, as the origins tool reports them.
+// The kinds of origin.
 const (
-	McpProgram   = mcp.KindProgram
-	McpContainer = mcp.KindContainer
-	McpHTTP      = mcp.KindHTTP
+	McpExec   = mcp.KindExec
+	McpAttach = mcp.KindAttach
+	McpHTTP   = mcp.KindHTTP
 )
 
 // McpSpawner starts one private process on an origin. attach.Spawner has the

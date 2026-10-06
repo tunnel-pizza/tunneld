@@ -1089,9 +1089,9 @@ func mcpOrigins(shown Origins, spawners []attach.Spawner) []v0exp1.McpOrigin {
 		o := v0exp1.McpOrigin{Name: u.String(), Kind: v0exp1.McpHTTP}
 		switch u.Scheme {
 		case v1.ExecScheme:
-			o.Kind = v0exp1.McpProgram
+			o.Kind = v0exp1.McpExec
 		case v1.AttachScheme:
-			o.Kind = v0exp1.McpContainer
+			o.Kind = v0exp1.McpAttach
 		}
 		if i < len(spawners) && spawners[i] != nil {
 			o.Spawner = spawners[i]

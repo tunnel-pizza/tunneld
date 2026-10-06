@@ -1,47 +1,15 @@
 package mcp
 
 import (
-	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-// fakeSpawner is a Spawner that writes what it is told and exits with what
-// it is told, recording what it was asked to run.
-type fakeSpawner struct {
-	out, errText string
-	exit         int
-	echoStdin    bool
-	block        bool // never returns until ctx ends
-
-	mu   sync.Mutex // sessions spawn from goroutines of their own
-	argv [][]string
-}
-
-func (f *fakeSpawner) Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	f.mu.Lock()
-	f.argv = append(f.argv, argv)
-	f.mu.Unlock()
-	if f.block {
-		<-ctx.Done()
-		return -1, nil
-	}
-	if f.echoStdin && stdin != nil {
-		_, _ = io.Copy(stdout, stdin)
-	}
-	_, _ = io.WriteString(stdout, f.out)
-	_, _ = io.WriteString(stderr, f.errText)
-	return f.exit, nil
-}
 
 // connect stands the server up over an in-memory transport and returns a
 // client session on it.
@@ -63,50 +31,12 @@ func connect(t *testing.T, origins []Origin) *sdk.ClientSession {
 	return cs
 }
 
-// call runs one tool and decodes its structured result into out; it returns
-// the tool error's text, "" for none.
-func call(t *testing.T, cs *sdk.ClientSession, name string, args map[string]any, out any) string {
-	t.Helper()
-	res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
-	if err != nil {
-		t.Fatalf("CallTool %s: %v", name, err)
-	}
-	if res.IsError {
-		var sb strings.Builder
-		for _, c := range res.Content {
-			if tc, ok := c.(*sdk.TextContent); ok {
-				sb.WriteString(tc.Text)
-			}
-		}
-		return sb.String()
-	}
-	if out != nil {
-		raw, err := json.Marshal(res.StructuredContent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(raw, out); err != nil {
-			t.Fatalf("decoding %s result %s: %v", name, raw, err)
-		}
-	}
-	return ""
-}
-
-// TestListsEveryTool pins the surface by name: what an agent sees in
-// tools/list is the spec's table, nothing more.
-func TestListsEveryTool(t *testing.T) {
+// TestListsNoTools pins the surface while it is redesigned: the server
+// answers initialize and offers nothing.
+func TestListsNoTools(t *testing.T) {
 	cs := connect(t, nil)
-	res, err := cs.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, tool := range res.Tools {
-		got = append(got, tool.Name)
-	}
-	want := "exec get_file origins put_file session_close session_open session_read session_write"
-	if strings.Join(slices.Sorted(slices.Values(got)), " ") != want {
-		t.Errorf("tools = %v, want %s", got, want)
+	if caps := cs.InitializeResult().Capabilities; caps.Tools != nil {
+		t.Errorf("capabilities.tools = %+v, want none", caps.Tools)
 	}
 }
 
