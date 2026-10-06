@@ -619,8 +619,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				var ok bool
 				if g, ok = c.liveGrant(bearer); !ok {
 					// Expired or used between authorize and here.
-					w.Header().Set("Content-Length", "0")
-					w.WriteHeader(http.StatusUnauthorized)
+					auth.Unauthorized(w, "")
 					return
 				}
 				for _, name := range slices.Sorted(maps.Keys(vars)) {

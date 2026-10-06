@@ -543,7 +543,7 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		w.WriteHeader(http.StatusUnauthorized)
+		auth.Unauthorized(w, "")
 	})
 }
 

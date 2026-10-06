@@ -198,8 +198,7 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			}
 			out[i] = c.Public()
 		}
-		w.Header().Set("WWW-Authenticate", strings.Join(out, ", "))
-		refuse(w, http.StatusUnauthorized)
+		Unauthorized(w, strings.Join(out, ", "))
 	})
 }
 
@@ -276,6 +275,18 @@ func (e *edgeWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
 
 // refuse answers status with headers only: an app's fetch or an SDK never
 // meets a body it was not written for.
+// Unauthorized is every 401 tunneld sends, the gate's, the control path's and
+// the cache's: no body, and WWW-Authenticate when there is a challenge to
+// answer. A refusal under the control path passes none, since a password
+// does not open it; only the secret does.
+func Unauthorized(w http.ResponseWriter, challenge string) {
+	if challenge != "" {
+		w.Header().Set("WWW-Authenticate", challenge)
+	}
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
 func refuse(w http.ResponseWriter, status int, kv ...string) {
 	for i := 0; i+1 < len(kv); i += 2 {
 		w.Header().Set(kv[i], kv[i+1])

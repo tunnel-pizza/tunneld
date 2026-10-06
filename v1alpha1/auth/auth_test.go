@@ -57,6 +57,26 @@ func TestHeader(t *testing.T) {
 	}
 }
 
+// TestUnauthorized pins every 401 tunneld sends: no body, Content-Length 0,
+// and WWW-Authenticate only when there is a challenge to answer.
+func TestUnauthorized(t *testing.T) {
+	for name, tc := range map[string]struct{ challenge, want string }{
+		"a challenge": {`Basic realm="h", charset="UTF-8"`, `Basic realm="h", charset="UTF-8"`},
+		"none":        {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			Unauthorized(rec, tc.challenge)
+			if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 || rec.Header().Get("Content-Length") != "0" {
+				t.Errorf("%d, %d bytes, Content-Length %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Length"))
+			}
+			if got := rec.Header().Values("WWW-Authenticate"); strings.Join(got, "|") != tc.want {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSet(t *testing.T) {
 	a := New()
 	if err := a.Set("Basic nope"); err == nil {
