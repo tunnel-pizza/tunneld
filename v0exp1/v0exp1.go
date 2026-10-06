@@ -47,11 +47,12 @@ type Builtin interface {
 }
 
 // Mcp serves one run's origins to agents over streamable HTTP, named by the
-// index the routing parameter uses: the handler to mount on the control
-// path, and the closer that ends whatever it started. It offers no tools
-// yet: the agent surface is being redesigned.
+// index the routing parameter uses. It offers no tools yet: the agent
+// surface is being redesigned.
 type Mcp interface {
-	http.Handler
+	// Handler answers the MCP endpoint, to mount on the control path.
+	Handler() http.Handler
+	// Close ends whatever the server started. Callable more than once.
 	io.Closer
 }
 

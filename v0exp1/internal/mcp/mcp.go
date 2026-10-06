@@ -45,9 +45,8 @@ type Origin struct {
 // Option configures a McpImpl.
 type Option = v1.Option[*McpImpl]
 
-// McpImpl is the Mcp contract: one run's MCP server over its origins, an
-// http.Handler to mount on the control path and an io.Closer for the run's
-// end. It offers no tools yet: the surface is being redesigned, and the
+// McpImpl is the Mcp contract: one run's MCP server over its origins, a
+// handler to mount on the control path and a Close for the run's end. It offers no tools yet: the surface is being redesigned, and the
 // origins are kept for what comes back.
 type McpImpl struct {
 	origins []Origin
@@ -91,8 +90,8 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// ServeHTTP answers the MCP endpoint.
-func (m *McpImpl) ServeHTTP(w http.ResponseWriter, r *http.Request) { m.handler.ServeHTTP(w, r) }
+// Handler answers the MCP endpoint.
+func (m *McpImpl) Handler() http.Handler { return m.handler }
 
 // Close ends whatever the server started, which is nothing while there are
 // no tools. Callable more than once.

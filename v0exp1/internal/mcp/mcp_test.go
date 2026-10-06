@@ -92,7 +92,7 @@ func TestCloseTwice(t *testing.T) {
 func TestServeAcceptsAForwardedHost(t *testing.T) {
 	m := New()
 	defer m.Close()
-	srv := httptest.NewServer(m)
+	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(body))

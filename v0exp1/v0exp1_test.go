@@ -3,7 +3,6 @@ package v0exp1
 import (
 	"errors"
 	"log/slog"
-	"net/http"
 	"testing"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -35,7 +34,9 @@ func TestMcp(t *testing.T) {
 	if m == nil {
 		t.Skip("the MCP server is turned off")
 	}
-	var _ http.Handler = m
+	if m.Handler() == nil {
+		t.Fatal("Handler = nil, want one to mount")
+	}
 	for range 2 {
 		if err := m.Close(); err != nil {
 			t.Errorf("Close: %v", err)
