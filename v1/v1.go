@@ -275,9 +275,13 @@ const (
 	// A PATCH to /_tunneld/.env can change it on a running tunnel.
 	WWWAuthenticateEnv = "TUNNELD_WWW_AUTHENTICATE"
 
+	// UserAgentHeader names which tunneld is asking, on every mint request.
+	UserAgentHeader = "User-Agent"
+
 	// AuthenticateHeader carries a tunnel's challenges in their public form,
-	// one value each, on /_tunneld/ping and on a grant's PATCH answer; absent
-	// when the tunnel is public.
+	// comma-joined in one value: on every answer under /_tunneld/, ping and
+	// a grant's PATCH among them, absent when the tunnel is public; and on
+	// every mint request, empty when it is public.
 	AuthenticateHeader = "X-Tunneld-Authenticate"
 
 	// GrantHeader carries a single-use grant to PATCH /_tunneld/.env, on every

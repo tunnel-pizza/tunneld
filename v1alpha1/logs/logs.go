@@ -60,6 +60,24 @@ const maxPending = 1 << 20
 // cache files into, so a run's spec, pid and log sit together under one name.
 const dirName = "tunneld"
 
+// Log is a run's own logging: one logger from New on, and where its lines go.
+//
+// Logger is the logger, the same every time. To points what --log-level shows
+// at a handler, or nowhere; Mute and Detach keep lines off it while a frame
+// draws, and for the rest of a detached run. Lines is the recent ones, for a
+// terminal's log view. Open starts the run's log file once its key is known,
+// File is that file, and Close ends it.
+type Log interface {
+	Logger() *slog.Logger
+	To(h slog.Handler, level slog.Level)
+	Lines() []string
+	Mute(muted bool)
+	Detach()
+	Open(origins v1.Origins)
+	File() *os.File
+	Close()
+}
+
 // Option configures a LogImpl at construction.
 type Option = v1.Option[*LogImpl]
 

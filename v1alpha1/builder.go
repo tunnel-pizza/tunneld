@@ -541,10 +541,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// path below, behind the tunnel secret, and closed before the bound
 	// origins are, since what it holds are processes on them.
 	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(); m != nil {
-		h, closer := m.Handler(mcpOrigins(origins, bound.Spawners()), log)
-		defer closer.Close()
-		agents = append(agents, router.WithHandler(router.ControlPath+"mcp", h))
+	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithLog(log)); m != nil {
+		defer m.Close()
+		agents = append(agents, router.WithMcp(m))
 	}
 
 	// The cache this run reads and writes through. Off is a cache that finds
@@ -611,21 +610,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	loaded := spec.Load(cache.WithOrigins(origins), cache.WithLog(log),
 		cache.WithMutable(v1.WWWAuthenticateEnv,
 			func(v string) error { _, err := auth.Parse(v); return err },
-			func(v string) { _ = b.auth.Set(v) }),
-		cache.WithPublic(b.auth.Public),
-		// Served, .env says the challenge in public form: the hash stays in
-		// the file on disk and never goes to whoever reads .env.
-		cache.WithRedact(v1.WWWAuthenticateEnv, func(v string) string {
-			cs, err := auth.Parse(v)
-			if err != nil {
-				return "(set)"
-			}
-			public := make([]string, len(cs))
-			for i, c := range cs {
-				public[i] = c.Public("")
-			}
-			return strings.Join(public, ", ")
-		}))
+			func(v string) { _ = b.auth.Set(v) }))
 
 	// The password: the environment if the variable is set at all (set and
 	// empty is a deliberate Public), else the file's line if it has one
@@ -702,7 +687,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// gets the lines instead.
 		run.WithSpinner(b.logLevel == ""),
 		run.WithHint(stopHint),
-		run.WithAuthenticate(func() []string { return b.auth.Public("") }),
+		run.WithAuth(b.auth),
 	)
 }
 
@@ -1089,9 +1074,9 @@ func mcpOrigins(shown Origins, spawners []attach.Spawner) []v0exp1.McpOrigin {
 		o := v0exp1.McpOrigin{Name: u.String(), Kind: v0exp1.McpHTTP}
 		switch u.Scheme {
 		case v1.ExecScheme:
-			o.Kind = v0exp1.McpProgram
+			o.Kind = v0exp1.McpExec
 		case v1.AttachScheme:
-			o.Kind = v0exp1.McpContainer
+			o.Kind = v0exp1.McpAttach
 		}
 		if i < len(spawners) && spawners[i] != nil {
 			o.Spawner = spawners[i]

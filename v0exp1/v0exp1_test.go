@@ -25,20 +25,20 @@ func TestBuiltin(t *testing.T) {
 	}
 }
 
-// TestMcp holds Experimental().Mcp() to the package it fronts: a handler and
-// a closer, and the closer can be closed twice — once by the run's defer,
-// once by whatever else ends it.
+// TestMcp holds Experimental().Mcp() to the package it fronts: built from
+// the options it is handed, a handler to mount, and a closer that can be
+// closed twice — once by the run's defer, once by whatever else ends it.
 func TestMcp(t *testing.T) {
-	m := Experimental().Mcp()
+	origins := []McpOrigin{{Name: "http://localhost:3000", Kind: McpHTTP}}
+	m := Experimental().Mcp(McpWithOrigins(origins), McpWithLog(slog.New(slog.DiscardHandler)))
 	if m == nil {
 		t.Skip("the MCP server is turned off")
 	}
-	h, closer := m.Handler([]McpOrigin{{Name: "http://localhost:3000", Kind: McpHTTP}}, slog.New(slog.DiscardHandler))
-	if h == nil || closer == nil {
-		t.Fatalf("Handler = %v, %v; want both", h, closer)
+	if m.Handler() == nil {
+		t.Fatal("Handler = nil, want one to mount")
 	}
 	for range 2 {
-		if err := closer.Close(); err != nil {
+		if err := m.Close(); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	}

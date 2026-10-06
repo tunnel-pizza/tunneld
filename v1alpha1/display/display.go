@@ -35,11 +35,24 @@ import (
 	"rsc.io/qr"
 )
 
-// Motd is where the panel reads the provider's messages of the day, rendered
-// for a page. Read per request, because the router is stood up before the
-// mint that carries them.
-type Motd interface {
-	HTML() []motd.Rendered
+// Display puts the tunnel in front of a person: it answers the bare public
+// address when several origins have to share it, and it opens that address
+// once the edge serves it.
+//
+// URL and Panel are two halves of one decision and answer over the same
+// condition — "" and a nil wrapper when there is no panel to serve — so the
+// caller reads an answer rather than asking whether to ask. Panel is handed
+// to the Router, which puts it in front of the origins.
+//
+// Open reads the same way. It is told what the run is doing, in the options it
+// takes, and decides for itself whether that means a browser — there is no
+// "should I" for a caller to answer, and no second place where opening one is
+// decided.
+type Display interface {
+	URL(enabled bool, public *url.URL, origins v1.Origins) string
+	Panel(enabled bool, origins v1.Origins, log v1.Logger) func(next http.Handler) http.Handler
+	Open(ctx context.Context, log v1.Logger, opts ...Option)
+	QR(addr string) ([]string, error)
 }
 
 // Option configures a DisplayImpl at construction.
@@ -79,7 +92,7 @@ type DisplayImpl struct {
 	stderr io.Writer
 	// motd is where the panel reads the provider's messages of the day. Nil
 	// when nobody set one, which is a panel with no strip.
-	motd Motd
+	motd motd.Motd
 }
 
 // New returns a DisplayImpl that launches the host's browser, then configured
@@ -151,7 +164,7 @@ func WithStderr(stderr io.Writer) Option {
 
 // WithMotd sets where the panel reads the provider's messages of the day.
 // Unset, the panel has no strip.
-func WithMotd(m Motd) Option {
+func WithMotd(m motd.Motd) Option {
 	return func(d *DisplayImpl) { d.motd = m }
 }
 
@@ -318,8 +331,6 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 				}
 
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				// The panel is a live view of whatever the origins are serving right now.
-				w.Header().Set("Cache-Control", "no-store")
 				if _, err := fmt.Fprint(w, page.String()); err != nil {
 					log.Debug("multiview write failed", "error", err) // visitor went away
 				}

@@ -185,8 +185,8 @@ else is the origins', passed through exactly as it was sent.
 | Path | Auth | Answers |
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
-| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` in its public form (`Basic charset="UTF-8"`, realm and hash left out; the file on disk keeps them), or a bare `404` before the first save |
-| `POST /_tunneld/mcp` | token | an [MCP](https://modelcontextprotocol.io) server over the run's origins, for agents: see [Agents](#agents) |
+| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` redacted (`Basic pw="$pbkdf2-sha256$i=600000$…$…"`: every parameter as set, but pw's salt and hash; the file on disk keeps them), or a bare `404` before the first save |
+| `POST /_tunneld/mcp` | token | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
 
 Everything but `ping` needs `Authorization: token <secret>`, the running
 tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
@@ -208,44 +208,15 @@ A run serves one [MCP](https://modelcontextprotocol.io) server to agents, over
 streamable HTTP at `/_tunneld/mcp`. It is for whoever holds the tunnel's
 secret, like everything else under `/_tunneld/`: a password on the tunnel
 does not open it, and the secret opens it whether or not there is a
-password. Whoever has the secret could already respec the run onto a shell,
-so the server grants nothing new. What it adds is a way to use a program
-origin without a terminal.
+password.
 
 ```sh
 claude mcp add --transport http tunneld https://<host>/_tunneld/mcp \
   --header "Authorization: token <secret>"
 ```
 
-The tools name an origin by its index `n`, the number `?n` and the origin
-map use, and `origins` lists them. The rest work on an origin that can start
-a process: today a program, `exec://`. A container is listed and refused
-until its provider can. Each call spawns a private process over pipes, with
-no terminal, beside the shared terminal a person may be watching.
-
-| Tool | Does |
-| ---- | ---- |
-| `origins()` | `[{n, origin, kind}]`, kind one of `program`, `container`, `http` |
-| `exec(n, argv, stdin?, timeout_ms?)` | runs `argv` once: `{stdout, stderr, exit_code, truncated}` |
-| `put_file(n, path, content_base64, mode?)` | writes an absolute path, 16 MiB at most, mode `0644` unless given |
-| `get_file(n, path)` | reads one: `{content_base64, bytes, mode}` |
-| `session_open(n, argv?)` | starts a process that outlives the call, the origin's own program unless `argv` says otherwise: `{id}` |
-| `session_write(id, stdin)` | sends it input |
-| `session_read(id, timeout_ms?)` | what it printed since the last read, waiting up to `timeout_ms` (1 000 by default) for something: `{stdout, stderr, exited, exit_code}` |
-| `session_close(id)` | ends it |
-
-`exec` on a shell origin takes `argv: ["-c", "…"]`. Its `timeout_ms` is
-60 000 by default and 600 000 at most; at the timeout the process group is
-killed and `exit_code` is `-1`. Each of `stdout` and `stderr` keeps its first
-1 MiB, and `truncated` says when the rest was dropped. Bytes that are not
-UTF-8 arrive as `U+FFFD`. The edge answers a request nothing has been
-written to for about 100 seconds with a `524`, so a command expected to run
-longer belongs in a session, read as it goes.
-
-A session ends when it is closed, when its process exits and a read has
-reported it, after ten idle minutes, or with the run; a run holds sixteen at
-most. Paths and processes are tunneld's own user's. There is no sandbox: the
-secret is the whole of the guard.
+It offers no tools yet: the agent surface is being redesigned, and a client
+that connects gets an empty list.
 
 The server is an experiment, `v0exp1.Experimental().Mcp()` to a program
 embedding tunneld, and may change in any release.
@@ -1070,9 +1041,9 @@ Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
 
 - with the tunnel secret (`Authorization: token <secret>`), as for any
   variable, answered `200` with the file as `GET` serves it. A protected
-  run's file comes back with the password in its public form, which is not
-  a challenge `PATCH` takes (no `pw`): to write the whole file back, leave
-  that line out; or
+  run's file comes back with the password's salt and hash redacted, which is
+  not a challenge `PATCH` takes: to write the whole file back, leave that
+  line out; or
 - with a **grant**: every `GET /_tunneld/.env` made with the secret answers an
   `X-Tunneld-Grant`, a single-use token good for a minute that may change only
   `TUNNELD_WWW_AUTHENTICATE`, never the spec. tunnel.pizza hands it to the
@@ -1095,8 +1066,9 @@ A PATCH carrying `LIBTUNNEL_SPEC` while the run is still taking the last one
 Every mint tells the provider what the tunnel's gate is:
 `X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
 realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
-publicly accessible." out of a protected tunnel's messages. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
-as a visitor would see it, absent when the tunnel is public.
+publicly accessible." out of a protected tunnel's messages. Every answer under `/_tunneld/`, `ping` among them, carries `X-Tunneld-Authenticate`
+with the challenge in public form, realm left out, absent when the tunnel is
+public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so
 a client cannot send the tunnel's password and the app's at once. Get the

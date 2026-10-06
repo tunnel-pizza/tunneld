@@ -41,6 +41,8 @@ import (
 	"k8s.io/klog/v2"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -113,25 +115,6 @@ type Target interface {
 // failure to start, never a non-zero exit. The process ends with ctx.
 type Spawner interface {
 	Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (exit int, err error)
-}
-
-// Logs is where tunneld's own recent log lines come from, for a frame to show
-// on request.
-//
-// Read rather than subscribed to, because a frame draws when it draws: it asks
-// for the lines it is about to render and renders them, and a viewer who is
-// not looking at the logs costs nothing.
-type Logs interface {
-	Lines() []string
-}
-
-// Motd is where the provider's messages of the day come from, for a frame to
-// draw above the box. Read when the frame draws, like Logs; a frame with no
-// board draws no banner. Lines returns one row per message whatever the width
-// it is given, and the count is fixed once viewers are connected: the frame
-// sizes the pane from it, and every viewer has to agree on that size.
-type Motd interface {
-	Lines(width int) []string
 }
 
 // Sink is told what a program said about itself, as it said it — every OSC and
@@ -279,8 +262,8 @@ type BinderImpl struct {
 	// mistake that should collapse rather than depend on order.
 	targets map[string]Targets
 	banner  string
-	logs    Logs
-	motd    Motd
+	logs    logs.Log
+	motd    motd.Motd
 	sinks   []Sink
 }
 
@@ -311,13 +294,13 @@ func WithTargets(targets ...Targets) Option {
 
 // WithLogs sets where the frames this binder serves read tunneld's own recent
 // log lines from. Unset, a frame has none to show and says so.
-func WithLogs(logs Logs) Option {
+func WithLogs(logs logs.Log) Option {
 	return func(b *BinderImpl) { b.logs = logs }
 }
 
 // WithMotd sets where the frames this binder serves read the provider's
 // messages of the day from. Unset, a frame has none to show and shows none.
-func WithMotd(motd Motd) Option {
+func WithMotd(motd motd.Motd) Option {
 	return func(b *BinderImpl) { b.motd = motd }
 }
 
@@ -628,7 +611,7 @@ func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 // starting a Server on its own passes newAsk().
 //
 // The Server takes ownership of target: Close closes both.
-func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, asked *ask, log *slog.Logger) (*Server, error) {
+func Serve(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, asked *ask, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -738,8 +721,6 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		// The page is a live view of a running container.
-		w.Header().Set("Cache-Control", "no-store")
 		if _, err := io.WriteString(w, rendered.String()); err != nil {
 			s.log.Debug("attach write failed", "error", err) // visitor went away
 		}
@@ -757,7 +738,6 @@ func Serve(ctx context.Context, target Target, banner string, logs Logs, motd Mo
 	// thing told somebody who had just detached from their shell that pressing
 	// it would replace it.
 	mux.HandleFunc("GET /alive", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
 		offer := s.session.offer()
 		if offer == "" {
 			w.WriteHeader(http.StatusGone)

@@ -7,16 +7,14 @@
 // Experimental, which makes each use of an experiment visible at its call:
 //
 //	origin, err := v0exp1.Experimental().Builtin().Origin()
-//	handler, closer := v0exp1.Experimental().Mcp().Handler(origins, log)
+//	server := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(origins))
 //
 // Importing this package links the built-in shell, whose init turns a process
 // started with its argument into that shell before main runs.
 package v0exp1
 
 import (
-	"io"
 	"log/slog"
-	"net/http"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp"
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -29,9 +27,9 @@ type Experiments interface {
 	// Builtin is the shell built into tunneld, for a machine with none; nil
 	// when it is turned off.
 	Builtin() Builtin
-	// Mcp is the MCP server tunneld serves to agents on its control path;
-	// nil when it is turned off.
-	Mcp() Mcp
+	// Mcp is the MCP server tunneld serves to agents on its control path,
+	// configured by opts; nil when it is turned off.
+	Mcp(opts ...McpOption) Mcp
 }
 
 // Builtin is the shell built into tunneld: Elvish, with u-root's commands on
@@ -46,35 +44,34 @@ type Builtin interface {
 	Run() int
 }
 
-// Mcp serves one run's origins to agents over streamable HTTP: tools that
-// run a command, move a file or hold a process on any origin that can spawn
-// one, named by the index the routing parameter uses.
-type Mcp interface {
-	// Handler answers the MCP endpoint for these origins, index n being
-	// origin n, logging each call on log. Closing stops every session and
-	// process it started.
-	Handler(origins []McpOrigin, log *slog.Logger) (http.Handler, io.Closer)
-}
+// Mcp is mcp.Mcp: the MCP server, a handler to mount on the control path and
+// a closer for the run's end.
+type Mcp = mcp.Mcp
+
+// McpOption configures the MCP server. Prefixed, as every Mcp name here is,
+// because this package is every experiment's and Option alone would claim
+// the word for one of them.
+type McpOption = mcp.Option
+
+// McpWithOrigins sets the run's origins, index n being origin n.
+func McpWithOrigins(origins []McpOrigin) McpOption { return mcp.WithOrigins(origins) }
+
+// McpWithLog sets where the server logs. Nil keeps the one it has.
+func McpWithLog(log *slog.Logger) McpOption { return mcp.WithLog(log) }
 
 // McpOrigin is what the server is told about one origin: how it is shown,
-// what it is, and what can spawn a process on it, nil for nothing. Prefixed,
-// as every Mcp name here is, because this package is every experiment's and
-// Origin alone would claim the word for one of them.
+// what it is, and what can spawn a process on it, nil for nothing.
 type McpOrigin = mcp.Origin
 
-// McpKind is what an origin is: McpProgram, McpContainer or McpHTTP.
+// McpKind is what an origin is: McpExec, McpAttach or McpHTTP.
 type McpKind = mcp.Kind
 
-// The kinds of origin, as the origins tool reports them.
+// The kinds of origin.
 const (
-	McpProgram   = mcp.KindProgram
-	McpContainer = mcp.KindContainer
-	McpHTTP      = mcp.KindHTTP
+	McpExec   = mcp.KindExec
+	McpAttach = mcp.KindAttach
+	McpHTTP   = mcp.KindHTTP
 )
-
-// McpSpawner starts one private process on an origin. attach.Spawner has the
-// same method, so a bound origin's spawner is one as it stands.
-type McpSpawner = mcp.Spawner
 
 // ErrBuiltinNoTerminal is Builtin.Origin's answer on a platform with no
 // pseudo-terminals.
@@ -89,16 +86,11 @@ type ExperimentsImpl struct{}
 // Builtin is the shell built into tunneld.
 func (ExperimentsImpl) Builtin() Builtin { return BuiltinImpl{} }
 
-// Mcp is the MCP server.
-func (ExperimentsImpl) Mcp() Mcp { return McpImpl{} }
+// Mcp is the MCP server, configured by opts.
+func (ExperimentsImpl) Mcp(opts ...McpOption) Mcp { return mcp.New(opts...) }
 
-// McpImpl is Mcp, over v0exp1/internal/mcp.
-type McpImpl struct{}
-
-// Handler is mcp.Handler.
-func (McpImpl) Handler(origins []McpOrigin, log *slog.Logger) (http.Handler, io.Closer) {
-	return mcp.Handler(origins, log)
-}
+// McpImpl is Mcp: v0exp1/internal/mcp's.
+type McpImpl = mcp.McpImpl
 
 // BuiltinImpl is Builtin, over v0exp1/internal/shell/builtin.
 type BuiltinImpl struct{}

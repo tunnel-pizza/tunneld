@@ -19,15 +19,15 @@ Deep-link by filename; line numbers will drift.
 | Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
-| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and `WithHandler`'s mounts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
+| Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and the agent server `WithMcp` puts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings, and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
-| The MCP server served to agents on the control path: tools over a run's origins, sessions | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
-| Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| The MCP server served to agents on the control path, toolless while it is redesigned | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
+| Ring of tunneld's own log lines (`logs.Log`)   | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Password protection: the challenge, PBKDF2 checks, the cookie, the login page (`Auth`) | [`v1alpha1/auth/`](./v1alpha1/auth) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
@@ -438,10 +438,9 @@ a local program run on a pseudo-terminal. What opens one by reference —
 which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
 
 A provider may also implement `attach.Spawner`: one private process over
-pipes, with its exit code, which is what the agent server's tools run on.
-`shell.TargetImpl` does; `docker.TargetImpl` does not yet, so a container is
-listed to an agent and refused. `Bind` keeps each spawner at its origin's
-index on `Bound.Spawners`, nil where there is none.
+pipes, with its exit code, which the agent server is handed for each origin.
+`shell.TargetImpl` does; `docker.TargetImpl` does not yet. `Bind` keeps each
+spawner at its origin's index on `Bound.Spawners`, nil where there is none.
 
 **A served origin is spelled by verb, provider, reference.** The scheme says
 what tunneld does — `attach`, `exec` — the authority says where it does it, and
@@ -960,9 +959,13 @@ contract, not a function. Seven things move together, and
 `TestNewWiresEveryCollaborator` plus the assertion block catch the ones that
 are easy to forget:
 
-1. the interface in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go), beside
-   the others, with flag-settled configuration as method arguments rather
-   than constructor state;
+1. the interface in `v1alpha1/<name>/<name>.go`, beside its `XImpl`, with
+   flag-settled configuration as method arguments rather than constructor
+   state, and an alias for it in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)
+   beside the others (`type Cache = cache.Cache`). One interface each: every
+   package that takes one (the run, the router, a frame) imports it from
+   there rather than declaring a narrower copy, and a fake that needs only
+   part of it embeds the interface for the rest;
 2. `v1alpha1/<name>/<name>.go` with `XImpl`, `type Option =
    v1.Option[*XImpl]`, `New(opts ...Option) *XImpl`, and a `With*` per
    tunable;

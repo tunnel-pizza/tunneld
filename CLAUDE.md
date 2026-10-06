@@ -32,6 +32,16 @@ agent-specific framing.
   dependency needs a line there. Two exceptions only — `v1alpha1/example_test.go` and
   `e2e/`. See
   [CONTRIBUTING.md → One test file per source file](./CONTRIBUTING.md#one-test-file-per-source-file).
+- **One interface, one impl. Hard rule.** Every contract is declared once,
+  in the package that holds its `XImpl` (`cache.Cache` beside
+  `cache.CacheImpl`); `v1alpha1.go` only aliases it (`type Cache =
+  cache.Cache`), and every package that takes one (the run, the router, a
+  frame) imports that interface. Never declare a second, narrower copy in a
+  consuming package, and never another interface under the same name. A test
+  fake that needs part of one embeds the interface for the rest. An import
+  cycle that seems to force a copy means the interface belongs in a leaf
+  package, not that it gets copied. See
+  [CONTRIBUTING.md → Adding a collaborator](./CONTRIBUTING.md#adding-a-collaborator).
 - **Examples are real programs** that open a tunnel and block, so e2e drives
   most of them with `--help`; the `basic` row runs live and fetches back
   through the edge. A new example needs a row in `e2e/e2e_test.go` and in the

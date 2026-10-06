@@ -19,10 +19,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
@@ -190,9 +193,9 @@ func TestControlPath(t *testing.T) {
 		wantStatus int
 		wantBody   string
 	}{
-		"ping":                       {"GET", "/_tunneld/ping", 200, "pong"},
-		"ping answers HEAD as GET":   {"HEAD", "/_tunneld/ping", 200, ""},
-		"ping takes no other method": {"POST", "/_tunneld/ping", 405, ""},
+		"ping":                     {"GET", "/_tunneld/ping", 200, "pong"},
+		"ping answers HEAD as GET": {"HEAD", "/_tunneld/ping", 200, ""},
+		"ping by another method needs the secret": {"POST", "/_tunneld/ping", 401, ""},
 		"an unregistered one is not the origin's": {"GET", "/_tunneld/nope", 401, ""},
 		"a lookalike prefix is the origin's":      {"GET", "/_tunneldx", 200, "A|/_tunneldx"},
 		"a doubled slash reaches the origin":      {"GET", "/a//b", 200, "A|/a//b"},
@@ -249,7 +252,15 @@ func (c cacheOf) Handlers(path string) map[string]func(http.ResponseWriter, *htt
 	}
 }
 func (c cacheOf) Secret() []byte { return c.secret }
-func (c cacheOf) Key() string    { return c.key }
+
+// The rest of cache.Cache, which the router never asks of it.
+func (cacheOf) Load(...cache.Option) string   { return "" }
+func (cacheOf) Save(...cache.Option)          {}
+func (cacheOf) String() string                { return "" }
+func (cacheOf) Spec() <-chan string           { return nil }
+func (cacheOf) Mutable(string) (string, bool) { return "", false }
+func (cacheOf) SetMutable(string, string)     {}
+func (c cacheOf) Key() string                 { return c.key }
 
 // runKey is the key cacheOf names its run by in these tests.
 const runKey = "0123456789abcdef"
@@ -285,32 +296,45 @@ func ask(t *testing.T, method, url, auth string) (*http.Response, string) {
 }
 
 // TestAuthorize pins what guards the ControlPath: everything under it but
-// ping needs "Authorization: token <base64 secret>", the secret the cache
-// holds; anything else is a bare 401 before the mux is asked, so an
-// unregistered path is no different from a registered one. With no secret,
+// ping (by GET or HEAD) needs "Authorization: token <base64 secret>", the
+// secret the cache holds; anything else is a bare 401 before the mux is
+// asked, so an unregistered path is no different from a registered one, and
+// a method ping does not take is no different from a path. With no secret,
 // nothing but ping answers — not even to a token of nothing.
 func TestAuthorize(t *testing.T) {
 	secret := []byte("s3cr3t")
 	env := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey})), ".env")
 	nope := strings.TrimSuffix(env, ".env") + "nope"
 	ping := strings.TrimSuffix(env, ".env") + "ping"
+	login := strings.TrimSuffix(env, ".env") + "login"
+	logout := strings.TrimSuffix(env, ".env") + "logout"
 	for name, tc := range map[string]struct {
-		url, auth  string
-		wantStatus int
+		method, url, auth string
+		wantStatus        int
 	}{
-		"no header":                     {env, "", 401},
-		"another scheme":                {env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
-		"a wrong token":                 {env, tokenOf([]byte("guess")), 401},
-		"the secret unencoded":          {env, "token " + string(secret), 401},
-		"the right token":               {env, tokenOf(secret), 200},
-		"an unregistered path, no auth": {nope, "", 401},
-		"an unregistered path, auth":    {nope, tokenOf(secret), 404},
-		"ping needs nothing":            {ping, "", 200},
+		"no header":                     {"GET", env, "", 401},
+		"another scheme":                {"GET", env, "Bearer " + base64.StdEncoding.EncodeToString(secret), 401},
+		"a wrong token":                 {"GET", env, tokenOf([]byte("guess")), 401},
+		"the secret unencoded":          {"GET", env, "token " + string(secret), 401},
+		"the right token":               {"GET", env, tokenOf(secret), 200},
+		"an unregistered path, no auth": {"GET", nope, "", 401},
+		"an unregistered path, auth":    {"GET", nope, tokenOf(secret), 404},
+		"ping needs nothing":            {"GET", ping, "", 200},
+		"ping by HEAD needs nothing":    {"HEAD", ping, "", 200},
+		"ping by POST, no auth":         {"POST", ping, "", 401},
+		"ping by POST, auth":            {"POST", ping, tokenOf(secret), 405},
+		// No auth here, so nothing is on the mux at login and logout: a 404
+		// is the mux asked, a 401 the guard refusing.
+		"login by GET reaches the mux":   {"GET", login, "", 404},
+		"login by HEAD reaches the mux":  {"HEAD", login, "", 404},
+		"login by POST reaches the mux":  {"POST", login, "", 404},
+		"logout by POST reaches the mux": {"POST", logout, "", 404},
+		"login by PUT, no auth":          {"PUT", login, "", 401},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp, body := ask(t, "GET", tc.url, tc.auth)
+			resp, body := ask(t, tc.method, tc.url, tc.auth)
 			if resp.StatusCode != tc.wantStatus {
-				t.Fatalf("GET %s = %d %q, want %d", tc.url, resp.StatusCode, body, tc.wantStatus)
+				t.Fatalf("%s %s = %d %q, want %d", tc.method, tc.url, resp.StatusCode, body, tc.wantStatus)
 			}
 			if tc.wantStatus == 401 && body != "" {
 				t.Errorf("a refusal said %q, want a bare 401", body)
@@ -1163,12 +1187,64 @@ func TestProxyMarksUncachedResponses(t *testing.T) {
 	}
 }
 
+// TestEveryAnswerIsUnstored pins the rule the router keeps for everything it
+// serves, not only what it proxies: an answer that says nothing about
+// caching goes out "Cache-Control: no-store" — a page in front of the
+// origins (the panel's place), the agent server, a control endpoint — and
+// one that does say keeps exactly what it said, once.
+func TestEveryAnswerIsUnstored(t *testing.T) {
+	secret := []byte("s3cr3t")
+	silent := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "page") })
+	says := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=60")
+		io.WriteString(w, "page")
+	})
+	for name, tc := range map[string]struct {
+		front      http.Handler // answers in front of the origins, nil for none
+		mcp        http.Handler // the agent server, nil for none
+		path, auth string
+		want       string
+	}{
+		"a page in front, silent": {silent, nil, "/", "", "no-store"},
+		"a page in front, says":   {says, nil, "/", "", "max-age=60"},
+		"the agent server":        {nil, silent, ControlPath + "mcp", tokenOf(secret), "no-store"},
+		"the agent server, says":  {nil, says, ControlPath + "mcp", tokenOf(secret), "max-age=60"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := []Option{WithOrigins(listOf(t, echo(t, "A"))), WithCache(cacheOf{"x\n", secret, runKey})}
+			if tc.front != nil {
+				opts = append(opts, WithWrap(func(http.Handler) http.Handler { return tc.front }))
+			}
+			if tc.mcp != nil {
+				opts = append(opts, WithMcp(&mcpOf{tc.mcp}))
+			}
+			r := New()
+			u, err := r.Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			method := "GET"
+			if tc.mcp != nil {
+				method = "POST"
+			}
+			resp, _ := ask(t, method, strings.TrimSuffix(u.String(), "/")+tc.path, tc.auth)
+			if got := resp.Header.Values("Cache-Control"); len(got) != 1 || got[0] != tc.want {
+				t.Errorf("%s %s = %d, Cache-Control %q; want exactly %q", method, tc.path, resp.StatusCode, got, tc.want)
+			}
+		})
+	}
+}
+
 // cacheOf's Grant: one fixed grant, "g00d", is live.
 func (c cacheOf) Grant(bearer string) bool { return bearer == "g00d" }
 
 // authOf stands in for auth: it refuses every visitor unless pass is set,
 // answers login and logout, and says its challenge in public.
-type authOf struct{ pass bool }
+type authOf struct {
+	auth.Auth // the rest, which the router never asks of it
+	pass      bool
+}
 
 func (a authOf) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1185,7 +1261,55 @@ func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.R
 		path + "logout": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "logout") },
 	}
 }
-func (authOf) Public(host string) []string { return []string{`Basic realm="` + host + `"`} }
+func (authOf) Header(bool) (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+
+// gateOf is an Auth whose public challenge is whatever gate holds, so a
+// handler can change it mid-request the way a grant's PATCH does.
+type gateOf struct {
+	authOf
+	gate *atomic.Value
+}
+
+func (g gateOf) Header(bool) (string, string) {
+	v, _ := g.gate.Load().(string)
+	return v1.AuthenticateHeader, v
+}
+
+// TestAuthenticateHeader pins X-Tunneld-Authenticate: the router stamps every
+// answer under the ControlPath with the gate as a 401 would say it — ping,
+// a served endpoint, a refusal — and none when the tunnel is public. Read as
+// the status is written, so an answer that changed the gate says the new one.
+func TestAuthenticateHeader(t *testing.T) {
+	secret := []byte("s3cr3t")
+	gate := &atomic.Value{}
+	gate.Store(`Basic realm="old"`)
+	respec := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		gate.Store(`Basic realm="new"`)
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	written := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })}
+	for name, tc := range map[string]struct {
+		mcp                v0exp1.Mcp
+		method, path, auth string
+		gate, want         string
+	}{
+		"ping":                         {nil, "GET", "ping", "", `Basic realm="old"`, `Basic realm="old"`},
+		"a refusal":                    {nil, "GET", "nope", "", `Basic realm="old"`, `Basic realm="old"`},
+		"an answer that only writes":   {written, "POST", "mcp", tokenOf(secret), `Basic realm="old"`, `Basic realm="old"`},
+		"an answer that changed it":    {respec, "POST", "mcp", tokenOf(secret), `Basic realm="old"`, `Basic realm="new"`},
+		"a public tunnel says nothing": {nil, "GET", "ping", "", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gate.Store(tc.gate)
+			r := New(WithCache(cacheOf{"x\n", secret, runKey}), WithAuth(gateOf{gate: gate}), WithMcp(tc.mcp))
+			u := strings.TrimSuffix(controlOf(t, r, ""), "/") + "/" + tc.path
+			resp, _ := ask(t, tc.method, u, tc.auth)
+			if got := resp.Header.Values(v1.AuthenticateHeader); (tc.want == "" && got != nil) || (tc.want != "" && (len(got) != 1 || got[0] != tc.want)) {
+				t.Errorf("%s = %d, %s %q; want %q", tc.path, resp.StatusCode, v1.AuthenticateHeader, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestAuth pins how the router carries auth: outermost on the visitor side,
 // the control path outside it; login and logout need no secret; ping says the
@@ -1218,6 +1342,8 @@ func TestAuth(t *testing.T) {
 	}{
 		"grant on PATCH .env": {"PATCH", env, "Bearer g00d", 405}, // cacheOf answers only GET; 405 means authorize let it through
 		"grant on GET .env":   {"GET", env, "Bearer g00d", 401},
+		"grant on PUT .env":   {"PUT", env, "Bearer g00d", 401},
+		"grant on POST .env":  {"POST", env, "Bearer g00d", 401},
 		"unknown grant":       {"PATCH", env, "Bearer nope", 401},
 		"grant elsewhere":     {"PATCH", base + "/_tunneld/nope", "Bearer g00d", 401},
 	} {
@@ -1247,8 +1373,14 @@ func TestAuth(t *testing.T) {
 		ok.Header.Get("Access-Control-Allow-Credentials") != "" || ok.Header.Get("Vary") != "Origin" {
 		t.Errorf("preflight from the provider: %d %v", ok.StatusCode, ok.Header)
 	}
-	if other := preflight("https://evil.example", "/_tunneld/.env"); other.StatusCode != 204 || other.Header.Get("Access-Control-Allow-Origin") != "" {
-		t.Errorf("preflight from elsewhere: %d ACAO %q", other.StatusCode, other.Header.Get("Access-Control-Allow-Origin"))
+	if other := preflight("https://evil.example", "/_tunneld/.env"); other.StatusCode != 204 || other.Header.Get("Access-Control-Allow-Origin") != "" ||
+		other.Header.Get("Access-Control-Allow-Methods") != "" {
+		t.Errorf("preflight from elsewhere: %d ACAO %q, methods %q", other.StatusCode, other.Header.Get("Access-Control-Allow-Origin"), other.Header.Get("Access-Control-Allow-Methods"))
+	}
+	// An OPTIONS that asks for no method is no preflight: it carries no
+	// credentials, so the guard refuses it like any other request.
+	if bare, _ := ask(t, "OPTIONS", env, ""); bare.StatusCode != 401 {
+		t.Errorf("OPTIONS with no Access-Control-Request-Method = %d, want 401", bare.StatusCode)
 	}
 	if ping := preflight("https://tunnel.pizza", "/_tunneld/ping"); ping.Header.Get("Access-Control-Allow-Origin") != "" {
 		t.Error("CORS answered on a path other than .env")
@@ -1278,51 +1410,46 @@ func TestProviderOrigin(t *testing.T) {
 	}
 }
 
-// TestWithHandlerMountsOnTheControlPath pins the mount: a handler put under
-// ControlPath answers there, through authorize — a bare 401 without the
-// secret, the handler's own answer with it — and Mounted reads the pattern
-// back without standing anything up.
-func TestWithHandlerMountsOnTheControlPath(t *testing.T) {
+// mcpOf is a v0exp1.Mcp answering with h.
+type mcpOf struct{ h http.Handler }
+
+func (m mcpOf) Handler() http.Handler { return m.h }
+func (mcpOf) Close() error            { return nil }
+
+// TestWithMcp pins the agent server's place: ControlPath+"mcp" on the mux,
+// behind authorize — a bare 401 without the secret, the server's own answer
+// with it — and, like WithCache, asked for on every request, so a server
+// taken away is a 404 rather than a stale answer.
+func TestWithMcp(t *testing.T) {
 	secret := []byte("s3cr3t")
-	hello := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })
-	r := New(WithHandler(ControlPath+"hello", hello), WithCache(cacheOf{secret: secret, key: runKey}))
-	if got, want := r.Mounted(), []string{ControlPath + "hello"}; !slices.Equal(got, want) {
-		t.Errorf("Mounted() = %v, want %v", got, want)
-	}
-	u, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
-	if err != nil {
-		t.Fatalf("Route: %v", err)
-	}
-	t.Cleanup(r.Cancel)
-	base := strings.TrimSuffix(u.String(), "/")
+	hello := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "hello") })}
 	for name, tc := range map[string]struct {
+		opts       []Option
 		auth       string
 		wantStatus int
 		wantBody   string
 	}{
-		"without the secret": {"", 401, ""},
-		"with the secret":    {tokenOf(secret), 200, "hello"},
+		"without the secret":    {[]Option{WithMcp(hello)}, "", 401, ""},
+		"with the secret":       {[]Option{WithMcp(hello)}, tokenOf(secret), 200, "hello"},
+		"with no server":        {nil, tokenOf(secret), 404, "404 page not found\n"},
+		"a server taken away":   {[]Option{WithMcp(hello), WithMcp(nil)}, tokenOf(secret), 404, ""},
+		"applied twice answers": {[]Option{WithMcp(hello), WithMcp(hello)}, tokenOf(secret), 200, "hello"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			req, _ := http.NewRequest("GET", base+ControlPath+"hello", nil)
+			r := New(append([]Option{WithCache(cacheOf{secret: secret, key: runKey})}, tc.opts...)...)
+			u, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			req, _ := http.NewRequest("POST", strings.TrimSuffix(u.String(), "/")+ControlPath+"mcp", nil)
 			if tc.auth != "" {
 				req.Header.Set("Authorization", tc.auth)
 			}
 			resp, body := get(t, http.DefaultClient, req)
 			if resp.StatusCode != tc.wantStatus || body != tc.wantBody {
-				t.Errorf("GET = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
+				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
 			}
 		})
-	}
-}
-
-// TestWithHandlerRefusesAnOriginsPath pins that a pattern outside ControlPath
-// is an error when the router routes: every other path is an origin's, and a
-// handler there would shadow it silently.
-func TestWithHandlerRefusesAnOriginsPath(t *testing.T) {
-	r := New(WithHandler("/mcp", http.NotFoundHandler()))
-	_, err := r.Route(t.Context(), WithOrigins(listOf(t, echo(t, "solo"))))
-	if err == nil || !strings.Contains(err.Error(), `a handler at "/mcp" is outside the control path`) {
-		t.Fatalf("Route = %v, want the pattern refused", err)
 	}
 }

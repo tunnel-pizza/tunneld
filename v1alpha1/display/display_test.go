@@ -357,6 +357,11 @@ type testMotd []motd.Rendered
 
 func (m testMotd) HTML() []motd.Rendered { return []motd.Rendered(m) }
 
+// The rest of motd.Motd, which the panel never asks of it.
+func (testMotd) Learn([]string, v1.Logger) {}
+func (testMotd) Lines(int) []string        { return nil }
+func (testMotd) Changed() <-chan struct{}  { return nil }
+
 // TestServeShellCarriesTheMessages pins the strip above the tiles: one
 // element per message, classed by severity, carrying the rendered HTML — and
 // no header at all when there is nothing to say.

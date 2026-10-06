@@ -1,56 +1,23 @@
 package mcp
 
 import (
-	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// fakeSpawner is a Spawner that writes what it is told and exits with what
-// it is told, recording what it was asked to run.
-type fakeSpawner struct {
-	out, errText string
-	exit         int
-	echoStdin    bool
-	block        bool // never returns until ctx ends
-
-	mu   sync.Mutex // sessions spawn from goroutines of their own
-	argv [][]string
-}
-
-func (f *fakeSpawner) Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	f.mu.Lock()
-	f.argv = append(f.argv, argv)
-	f.mu.Unlock()
-	if f.block {
-		<-ctx.Done()
-		return -1, nil
-	}
-	if f.echoStdin && stdin != nil {
-		_, _ = io.Copy(stdout, stdin)
-	}
-	_, _ = io.WriteString(stdout, f.out)
-	_, _ = io.WriteString(stderr, f.errText)
-	return f.exit, nil
-}
-
-// connect stands the server up over an in-memory transport and returns a
+// connect stands m's server up over an in-memory transport and returns a
 // client session on it.
-func connect(t *testing.T, origins []Origin) *sdk.ClientSession {
+func connect(t *testing.T, m *McpImpl) *sdk.ClientSession {
 	t.Helper()
-	server, closer := newServer(origins, slog.New(slog.DiscardHandler))
-	t.Cleanup(func() { _ = closer.Close() })
+	t.Cleanup(func() { _ = m.Close() })
 	ct, st := sdk.NewInMemoryTransports()
-	ss, err := server.Connect(t.Context(), st, nil)
+	ss, err := m.server.Connect(t.Context(), st, nil)
 	if err != nil {
 		t.Fatalf("server.Connect: %v", err)
 	}
@@ -63,60 +30,69 @@ func connect(t *testing.T, origins []Origin) *sdk.ClientSession {
 	return cs
 }
 
-// call runs one tool and decodes its structured result into out; it returns
-// the tool error's text, "" for none.
-func call(t *testing.T, cs *sdk.ClientSession, name string, args map[string]any, out any) string {
-	t.Helper()
-	res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
-	if err != nil {
-		t.Fatalf("CallTool %s: %v", name, err)
-	}
-	if res.IsError {
-		var sb strings.Builder
-		for _, c := range res.Content {
-			if tc, ok := c.(*sdk.TextContent); ok {
-				sb.WriteString(tc.Text)
+// TestNew pins the options: the origins are kept in order, a log replaces
+// the discarding default, and a nil log keeps it.
+func TestNew(t *testing.T) {
+	origins := []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}, {Name: "exec:///bin/sh", Kind: KindExec}}
+	log := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name    string
+		opts    []Option
+		origins []Origin
+		log     *slog.Logger
+	}{
+		{"defaults", nil, nil, nil},
+		{"origins", []Option{WithOrigins(origins)}, origins, nil},
+		{"log", []Option{WithLog(log)}, nil, log},
+		{"nil log keeps the default", []Option{WithLog(nil)}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(tc.opts...)
+			if len(m.origins) != len(tc.origins) {
+				t.Fatalf("origins = %v, want %v", m.origins, tc.origins)
 			}
-		}
-		return sb.String()
-	}
-	if out != nil {
-		raw, err := json.Marshal(res.StructuredContent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(raw, out); err != nil {
-			t.Fatalf("decoding %s result %s: %v", name, raw, err)
-		}
-	}
-	return ""
-}
-
-// TestListsEveryTool pins the surface by name: what an agent sees in
-// tools/list is the spec's table, nothing more.
-func TestListsEveryTool(t *testing.T) {
-	cs := connect(t, nil)
-	res, err := cs.ListTools(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, tool := range res.Tools {
-		got = append(got, tool.Name)
-	}
-	want := "exec get_file origins put_file session_close session_open session_read session_write"
-	if strings.Join(slices.Sorted(slices.Values(got)), " ") != want {
-		t.Errorf("tools = %v, want %s", got, want)
+			for i := range tc.origins {
+				if m.origins[i] != tc.origins[i] {
+					t.Errorf("origin %d = %+v, want %+v", i, m.origins[i], tc.origins[i])
+				}
+			}
+			if m.log == nil {
+				t.Error("log = nil, want the discarding default")
+			}
+			if tc.log != nil && m.log != tc.log {
+				t.Error("log is not the one given")
+			}
+		})
 	}
 }
 
-// TestHandlerAcceptsAForwardedHost pins the loopback: the router listens on
+// TestListsNoTools pins the surface while it is redesigned: the server
+// answers initialize and offers nothing.
+func TestListsNoTools(t *testing.T) {
+	cs := connect(t, New())
+	if caps := cs.InitializeResult().Capabilities; caps.Tools != nil {
+		t.Errorf("capabilities.tools = %+v, want none", caps.Tools)
+	}
+}
+
+// TestCloseTwice pins the closer: the run's defer and whatever else ends it
+// may both close it.
+func TestCloseTwice(t *testing.T) {
+	m := New()
+	for range 2 {
+		if err := m.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+}
+
+// TestServeAcceptsAForwardedHost pins the loopback: the router listens on
 // 127.0.0.1 and the tunnel forwards the public hostname as Host, which the
 // SDK calls DNS rebinding and refuses unless told the secret is the guard.
-func TestHandlerAcceptsAForwardedHost(t *testing.T) {
-	h, closer := Handler(nil, slog.New(slog.DiscardHandler))
-	defer closer.Close()
-	srv := httptest.NewServer(h)
+func TestServeAcceptsAForwardedHost(t *testing.T) {
+	m := New()
+	defer m.Close()
+	srv := httptest.NewServer(m.Handler())
 	defer srv.Close()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(body))

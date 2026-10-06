@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 const password = "Pizza für alle 🍕"
@@ -39,12 +41,31 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
+// TestHeader pins the header the auth hands a mint: X-Tunneld-Authenticate,
+// in public form with no realm, or the value as stored when asked not to;
+// empty when public.
+func TestHeader(t *testing.T) {
+	a := New()
+	if name, v := a.Header(true); name != v1.AuthenticateHeader || v != "" {
+		t.Errorf("public Header(true) = %q, %q; want %s and empty", name, v, v1.AuthenticateHeader)
+	}
+	if err := a.Set(value); err != nil {
+		t.Fatal(err)
+	}
+	if _, v := a.Header(true); v != `Basic charset="UTF-8"` {
+		t.Errorf("Header(true) = %q, want the public form", v)
+	}
+	if _, v := a.Header(false); v != value {
+		t.Errorf("Header(false) = %q, want the value as stored", v)
+	}
+}
+
 func TestSet(t *testing.T) {
 	a := New()
 	if err := a.Set("Basic nope"); err == nil {
 		t.Error("an invalid value was accepted")
 	}
-	if a.Value() != "" || a.Public("h") != nil {
+	if a.Value() != "" || a.public("h") != "" {
 		t.Error("a refused Set changed the value")
 	}
 	if err := a.Set(value); err != nil {
@@ -53,11 +74,11 @@ func TestSet(t *testing.T) {
 	if a.Value() != value {
 		t.Errorf("Value = %q", a.Value())
 	}
-	if got := a.Public("h"); len(got) != 1 || got[0] != `Basic realm="h", charset="UTF-8"` {
+	if got := a.public("h"); got != `Basic realm="h", charset="UTF-8"` {
 		t.Errorf("Public = %q", got)
 	}
 	a.Set("")
-	if a.Public("h") != nil {
+	if a.public("h") != "" {
 		t.Error("public after clearing")
 	}
 }
@@ -132,8 +153,9 @@ func TestHandler(t *testing.T) {
 			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
 				t.Errorf("WWW-Authenticate = %q", got)
 			}
-			if rec.Header().Get("Content-Length") != "0" || rec.Header().Get("Cache-Control") != "no-store" {
-				t.Errorf("Content-Length %q, Cache-Control %q", rec.Header().Get("Content-Length"), rec.Header().Get("Cache-Control"))
+			// Cache-Control is the router's to write, on everything it serves.
+			if rec.Header().Get("Content-Length") != "0" {
+				t.Errorf("Content-Length %q", rec.Header().Get("Content-Length"))
 			}
 		})
 	}
@@ -212,15 +234,14 @@ func TestLogin(t *testing.T) {
 	for p, h := range public.Handlers("/_tunneld/") {
 		mp.HandleFunc(p, h)
 	}
-	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" ||
-		rec.Header().Get("Cache-Control") != "no-store" {
-		t.Errorf("login with nothing set: %d %q, Cache-Control %q; want 303 /app, no-store", rec.Code, rec.Header().Get("Location"), rec.Header().Get("Cache-Control"))
+	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" {
+		t.Errorf("login with nothing set: %d %q; want 303 /app", rec.Code, rec.Header().Get("Location"))
 	}
 	form = url.Values{"password": {"x"}, "next": {"/app"}}
 	req = httptest.NewRequest("POST", "/_tunneld/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if rec := serve(mp, req); rec.Code != 303 || rec.Header().Get("Cache-Control") != "no-store" {
-		t.Errorf("POST login with nothing set: %d, Cache-Control %q; want 303, no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	if rec := serve(mp, req); rec.Code != 303 {
+		t.Errorf("POST login with nothing set: %d; want 303", rec.Code)
 	}
 	// The page holds a form another site's frame could dress up as something
 	// else; the panel's own tiles are same-origin frames, and may show it.

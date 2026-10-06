@@ -37,6 +37,7 @@ import (
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	"github.com/spf13/viper"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 )
 
 // ext is what a cache file is called after its key. The contents are a file of
@@ -51,6 +52,43 @@ const ext = ".env"
 // Undotted, like every neighbour it sits among: a cache directory is not a
 // place anybody browses by accident, so hiding one inside it hides nothing.
 const dirName = "tunneld"
+
+// Cache persists a tunnel's spec between runs, filed under the name the
+// origins give it.
+//
+// Save takes what the run settled on as well, keyed by the variable that names
+// each knob. It is written beside the spec and never read back: a file whose
+// name is a hash otherwise says nothing about the run that wrote it, and a
+// cache that fed configuration back into the next run would pin a choice made
+// once into every run afterwards.
+//
+// Both take the run's facts as the options they are given, as Route and Open
+// do: the origins whose key names the file, and for Save the spec and the
+// tracking to write, and the run's logger. String is the file as the cache
+// last saved it, "" before then. Handlers is what the cache answers under a
+// path, by ServeMux pattern — the router hands it its control path — and the
+// default cache's .env there is String, served as a remote copy. Secret is the running tunnel's secret the run last saved with, nil before
+// then: what the router authorizes its control path against. Key is the key
+// of the run the cache is for, "" before it knows: what the router names the
+// run by on every answer from its control path, refusals included. Spec is
+// every spec the cache takes, the run's own saves among them: a new one while
+// the run waits is a new tunnel. Grant is whether a bearer token is a live,
+// unused grant the cache issued on GET .env, for the router to let that one
+// PATCH through. Mutable is what the file said about a variable a PATCH may
+// change, set says whether it said anything at all (an empty line is a
+// choice); SetMutable records what the builder settled, for the file.
+type Cache interface {
+	Load(opts ...Option) string
+	Save(opts ...Option)
+	String() string
+	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
+	Secret() []byte
+	Key() string
+	Spec() <-chan string
+	Grant(bearer string) bool
+	Mutable(name string) (string, bool)
+	SetMutable(name, value string)
+}
 
 // Option configures a CacheImpl, at construction or when Load or Save is
 // called.
@@ -114,11 +152,6 @@ type CacheImpl struct {
 	mutable map[string]string
 	// mutables is how each variable is checked and applied, by name.
 	mutables map[string]mutableVar
-	// public is the challenges in their public form, for a grant's answer.
-	public func(host string) []string
-	// redacts is how a mutable reads when .env is served rather than saved:
-	// the file on disk keeps the value, a reader gets this.
-	redacts map[string]func(string) string
 	// grants is every outstanding grant, by SHA-256 of the token; grantOrder
 	// is issue order, for forgetting the oldest.
 	grants     map[[32]byte]grant
@@ -160,7 +193,6 @@ func New(opts ...Option) *CacheImpl {
 		specs:    make(chan string, 1),
 		mutable:  map[string]string{},
 		mutables: map[string]mutableVar{},
-		redacts:  map[string]func(string) string{},
 		grants:   map[[32]byte]grant{},
 		now:      time.Now,
 	}
@@ -242,18 +274,6 @@ func WithSecret(secret []byte) Option {
 // registered is refused rather than stored unapplied.
 func WithMutable(name string, validate func(string) error, apply func(string)) Option {
 	return func(c *CacheImpl) { c.mutables[name] = mutableVar{validate, apply} }
-}
-
-// WithRedact sets how name reads when .env is served: the password's hash
-// stays in the file on disk, so a restart is protected, and never goes to
-// whoever reads .env, tunnel.pizza included.
-func WithRedact(name string, redact func(string) string) Option {
-	return func(c *CacheImpl) { c.redacts[name] = redact }
-}
-
-// WithPublic sets how the challenges read in public, for a grant's answer.
-func WithPublic(public func(host string) []string) Option {
-	return func(c *CacheImpl) { c.public = public }
 }
 
 // Mutable is name's value and whether one was set at all, "" included.
@@ -529,9 +549,8 @@ func (c *CacheImpl) logger() v1.Logger {
 // one is still waiting a 429 asking to be tried again in a second; only then
 // is every variable applied and saved and the spec handed on to Spec. With
 // the secret the answer is a 200 carrying the file, as GET would; with a
-// grant, which is used up once something was applied, a 204 carrying the
-// public challenges (v1.AuthenticateHeader) and never the file, which holds
-// the spec. GET answers an ETag naming the file, and a PATCH with If-Match
+// grant, which is used up once something was applied, a 204 and never the
+// file, which holds the spec (the router says the gate on it). GET answers an ETag naming the file, and a PATCH with If-Match
 // that names another is a 412 that applies nothing. Any other method is a
 // 405 naming GET.
 //
@@ -674,11 +693,6 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				if applied {
 					delete(c.grants, sha256.Sum256([]byte(bearer)))
 				}
-				if c.public != nil {
-					for _, v := range c.public(r.Host) {
-						w.Header().Add(v1.AuthenticateHeader, v)
-					}
-				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -730,8 +744,8 @@ var dotenvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // way the cache writes them: blank lines and # comments are skipped, a line
 // may end \r\n (bufio.ScanLines drops the \r), and one pair of matching quotes
 // around a value, ' or ", is taken off — so what GET answers is a body PATCH
-// takes, but for a redacted line (WithRedact): a password served in public
-// form has no pw, and its validation refuses it.
+// takes, but for the password: served with its salt and hash redacted, its
+// pw is no PHC string, and its validation refuses it.
 //
 // Sanitized rather than trusted, since it arrives over the network: a line
 // with no '=', a name a shell could not export, a name given twice, and a value
@@ -778,11 +792,11 @@ func parseDotenv(body io.Reader) (map[string]string, error) {
 // render is String for a caller already holding mu: Save.
 func (c *CacheImpl) render() string { return c.renderFor(false) }
 
-// served is the file as .env hands it out: every mutable with a redaction
-// registered (WithRedact) in its redacted form. Callers hold mu.
+// served is the file as .env hands it out: the password redacted.
+// Callers hold mu.
 func (c *CacheImpl) served() string { return c.renderFor(true) }
 
-// renderFor writes the file, as saved or, served, with mutables redacted.
+// renderFor writes the file, as saved or as served.
 func (c *CacheImpl) renderFor(served bool) string {
 	if c.spec == "" {
 		return ""
@@ -812,8 +826,20 @@ func (c *CacheImpl) renderFor(served bool) string {
 	// file without the line could not tell from never having chosen.
 	for _, name := range slices.Sorted(maps.Keys(c.mutable)) {
 		value := c.mutable[name]
-		if redact, ok := c.redacts[name]; served && ok && value != "" {
-			value = redact(value)
+		// Served, the password says its challenges with pw's salt and hash
+		// redacted: those stay in the file on disk, so a restart is
+		// protected, and never go to whoever reads .env, tunnel.pizza
+		// included. A value that does not parse says only that it is set.
+		if served && name == v1.WWWAuthenticateEnv && value != "" {
+			public := "(set)"
+			if cs, err := auth.Parse(value); err == nil {
+				out := make([]string, len(cs))
+				for i, ch := range cs {
+					out[i] = ch.Redacted()
+				}
+				public = strings.Join(out, ", ")
+			}
+			value = public
 		}
 		if value == "" {
 			lines = append(lines, name+"=")

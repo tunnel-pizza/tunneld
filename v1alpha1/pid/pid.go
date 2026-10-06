@@ -27,6 +27,20 @@ const dirName = "tunneld"
 // errLocked is what lock returns when another process holds the lock.
 var errLocked = errors.New("locked by another process")
 
+// Pid is how a run is found and handed back from outside it, by the npm
+// launcher.
+//
+// Register marks the run as running, for the launcher's -k to find and end,
+// until release is called, and refuses with v1.ErrRunning when the same run
+// is already going. Detach, once the addresses are out, hands the run
+// back from a launcher waiting on it — pointing its stdout and stderr at out,
+// or nowhere when out is nil, and telling the launcher — and reports whether
+// one was waiting.
+type Pid interface {
+	Register(origins v1.Origins, log v1.Logger) (release func(), err error)
+	Detach(out *os.File, log v1.Logger) bool
+}
+
 // Option configures a PidImpl at construction.
 type Option = v1.Option[*PidImpl]
 

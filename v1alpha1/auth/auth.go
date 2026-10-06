@@ -26,6 +26,21 @@ var loginHTML string
 // file that ships inside the binary, not a visitor's problem.
 var loginTmpl = template.Must(template.New("login").Parse(loginHTML))
 
+// Auth stands between a visitor and everything the tunnel serves: the
+// origins, the panel, every terminal. The router keeps its control path
+// outside it, and puts its Handlers (the login page, logout) under that path
+// without asking for the secret, since a visitor logging in has none. Set is
+// what the builder calls with the password it settled, and what a PATCH to
+// .env calls through the cache; Value and Header say it back, privately and
+// as a visitor may see it.
+type Auth interface {
+	Handler(next http.Handler) http.Handler
+	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
+	Set(value string) error
+	Value() string
+	Header(public bool) (key, value string)
+}
+
 // Option configures an AuthImpl.
 type Option = v1.Option[*AuthImpl]
 
@@ -105,18 +120,27 @@ func (a *AuthImpl) Set(value string) error {
 // Value is the challenge as last Set, private params and all.
 func (a *AuthImpl) Value() string { return a.state.Load().value }
 
-// Public is each challenge as a visitor may see it, realm set to host (left
-// out when host is ""); nil when public.
-func (a *AuthImpl) Public(host string) []string {
-	s := a.state.Load()
-	if len(s.challenges) == 0 {
-		return nil
+// Header is the gate as a mint request carries it: X-Tunneld-Authenticate,
+// in public form with no realm, since the hostname is the mint's to say, or,
+// not public, the value as stored, private params and all; empty when the
+// tunnel is public.
+func (a *AuthImpl) Header(public bool) (key, value string) {
+	if !public {
+		return v1.AuthenticateHeader, a.Value()
 	}
+	return v1.AuthenticateHeader, a.public("")
+}
+
+// public is the challenges as a visitor may see them, realm set to host
+// (left out when host is ""), comma-joined as one WWW-Authenticate field
+// value (RFC 9110 §11.6.1); "" when public.
+func (a *AuthImpl) public(host string) string {
+	s := a.state.Load()
 	out := make([]string, len(s.challenges))
 	for i, c := range s.challenges {
 		out[i] = c.Public(host)
 	}
-	return out
+	return strings.Join(out, ", ")
 }
 
 // verifyAny reports whether password verifies against any challenge's pw.
@@ -172,12 +196,11 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			}
 		}
 		if pageLoad(r) {
-			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, "/_tunneld/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
-		for _, v := range a.Public(r.Host) {
-			w.Header().Add("WWW-Authenticate", v)
+		if v := a.public(r.Host); v != "" {
+			w.Header().Set("WWW-Authenticate", v)
 		}
 		refuse(w, http.StatusUnauthorized)
 	})
@@ -260,7 +283,6 @@ func refuse(w http.ResponseWriter, status int, kv ...string) {
 	for i := 0; i+1 < len(kv); i += 2 {
 		w.Header().Set(kv[i], kv[i+1])
 	}
-	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(status)
 }
@@ -330,7 +352,6 @@ type page struct{ Host, Next, Error string }
 
 func (a *AuthImpl) render(w http.ResponseWriter, r *http.Request, status int, next, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
 	// The page is one inline stylesheet and a form posting to itself.
 	// Another site's frame could dress the password field up as something
 	// else; the multiview panel's tiles are this origin's own frames, and a
@@ -347,7 +368,6 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, http.MethodHead:
 		next := safeNext(r.URL.Query().Get("next"))
 		if len(s.challenges) == 0 {
-			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, next, http.StatusSeeOther)
 			return
 		}
@@ -357,7 +377,6 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		next := safeNext(r.PostForm.Get("next"))
 		if len(s.challenges) == 0 {
-			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, next, http.StatusSeeOther)
 			return
 		}
@@ -375,7 +394,6 @@ func (a *AuthImpl) login(w http.ResponseWriter, r *http.Request) {
 			a.render(w, r, http.StatusTooManyRequests, next, "Too many tries. Wait a minute, then try again.")
 		case good:
 			a.setCookie(w, s, key)
-			w.Header().Set("Cache-Control", "no-store")
 			http.Redirect(w, r, next, http.StatusSeeOther)
 		default:
 			a.render(w, r, http.StatusOK, next, "That password isn't right.")
@@ -393,6 +411,5 @@ func (a *AuthImpl) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
-	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 }

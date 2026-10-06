@@ -36,7 +36,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
 // Cookie is the sticky-routing cookie an explicit top-level pick answers
@@ -87,6 +90,33 @@ var unreachableHTML string
 // mistake in a file that ships inside the binary, not a visitor's problem.
 var unreachableTmpl = template.Must(template.New("unreachable").Parse(unreachableHTML))
 
+// Router puts several origins behind the one address a tunnel forwards to.
+// Every rule that picks an origin for a request — the bare ?n parameter, the
+// +ws origin for a handshake, a same-host Referer, the sticky cookie — is
+// tunneld's convention, so it is served here on a loopback listener rather
+// than asked of the tunnel engine, which is handed one URL and knows nothing
+// of origins (#176).
+//
+// Route answers with that URL, the router's own — a lone origin's run
+// included, so tunneld's /_tunneld/ control path answers on every tunnel.
+// What it routes is the run's,
+// handed over in the options it takes, as Display's Open is: the dialable
+// origins, the index of the one marked +ws, what the display's Panel answered
+// to put in front, and the run's logger.
+//
+// Unanswered dials each http and https origin once and says which indexes
+// nothing answered on, so the run can report that the address is up and the
+// thing behind it is not. It is the router's because the router is what dials
+// origins: a failed dial is what it answers visitors with a page for.
+//
+// Cancel takes the router down. Not ctx: the router outlives the run for as
+// long as the tunnel drains, so the caller cancels it once the tunnel is done.
+type Router interface {
+	Route(ctx context.Context, opts ...Option) (*url.URL, error)
+	Unanswered(ctx context.Context, origins v1.Origins) []int
+	Cancel()
+}
+
 // Option configures a RouterImpl, at construction or for one Route.
 type Option = v1.Option[*RouterImpl]
 
@@ -112,11 +142,6 @@ type RouterImpl struct {
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
 	mux *http.ServeMux
-	// mounted is every pattern WithHandler put on the mux, in order, and
-	// mountErr the first pattern that was not the control path's: an option
-	// cannot refuse, so Route does, with this.
-	mounted  []string
-	mountErr error
 
 	// live is what Cancel stops: every route this router has serving. A
 	// pointer, so the copy each Route configures still reaches it.
@@ -130,43 +155,21 @@ type RouterImpl struct {
 	allowOrigin string
 }
 
-// Cache is what the router serves a run's cache endpoints from, and what it
-// authorizes the ControlPath against: the handlers the cache answers with
-// under a path, by ServeMux pattern; the running tunnel's secret, nil
-// before then; and the key the file is named for, "" before the cache knows
-// its run.
-type Cache interface {
-	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
-	Secret() []byte
-	Key() string
-	// Grant reports whether bearer is a live, unused grant the cache issued
-	// on GET .env; the cache uses it up itself when its PATCH applies.
-	Grant(bearer string) bool
-}
-
-// Auth is what stands between a visitor and everything the router routes:
-// the origins, the panel, every terminal. The control path stays outside it,
-// guarded by the secret; its own pages (login, logout) go on the mux under
-// ControlPath and need no secret, since a visitor logging in has none.
-type Auth interface {
-	Handler(next http.Handler) http.Handler
-	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
-	Public(host string) []string
-}
-
 // CacheKeyHeader is what every response under the ControlPath carries, a
 // refusal included: the run's cache key, the name of the file its spec is
 // saved in, so a caller knows which run answered. Absent only when the cache
 // does not know its run yet.
 const CacheKeyHeader = "X-Cache-Key"
 
-// env is the cache endpoints' state: the cache they serve from, and the
-// patterns already on the mux — a ServeMux panics on a pattern registered
-// twice, and WithCache can be applied more than once.
+// env is the cache endpoints' state: the cache they serve from, the agent
+// server, and the patterns already on the mux — a ServeMux panics on a
+// pattern registered twice, and WithCache and WithMcp can be applied more
+// than once.
 type env struct {
 	mu         sync.Mutex
-	cache      Cache
-	auth       Auth
+	cache      cache.Cache
+	auth       auth.Auth
+	mcp        v0exp1.Mcp
 	registered map[string]bool
 }
 
@@ -194,7 +197,6 @@ func New(opts ...Option) *RouterImpl {
 	// Not stored anywhere on the way, so every ping is asked of this process.
 	mux.HandleFunc("GET "+ControlPath+"ping", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
 		_, _ = io.WriteString(w, "pong")
 	})
 	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{}}, opts...)
@@ -218,32 +220,35 @@ func WithWrap(wrap func(http.Handler) http.Handler) Option {
 	return func(r *RouterImpl) { r.wrap = wrap }
 }
 
-// WithHandler puts h on the router's mux at pattern, which must be under
-// ControlPath: that prefix is the mux's and authorize's, and every other path
-// is an origin's. So whatever answers there is behind the tunnel secret
-// without asking for it. The same pattern twice keeps the first; a pattern
-// outside the control path is refused when the router routes, since an
-// option has no error to return.
-func WithHandler(pattern string, h http.Handler) Option {
+// WithMcp puts m's Handler at ControlPath+"mcp" on the router's mux, behind
+// the secret like everything else under ControlPath (see authorize). Which
+// server answers is asked on every request, so applied again, it replaces
+// the server rather than registering the endpoint twice; once nil, the path
+// is a 404.
+func WithMcp(m v0exp1.Mcp) Option {
 	return func(r *RouterImpl) {
-		if !strings.HasPrefix(pattern, ControlPath) {
-			if r.mountErr == nil {
-				r.mountErr = fmt.Errorf("router: a handler at %q is outside the control path", pattern)
-			}
-			return
-		}
 		e := r.env
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if e.registered[pattern] {
+		e.mcp = m
+		pattern := ControlPath + "mcp"
+		if m == nil || e.registered[pattern] {
 			return
 		}
 		if e.registered == nil {
 			e.registered = map[string]bool{}
 		}
 		e.registered[pattern] = true
-		r.mux.Handle(pattern, h)
-		r.mounted = append(r.mounted, pattern)
+		r.mux.HandleFunc(pattern, func(w http.ResponseWriter, req *http.Request) {
+			e.mu.Lock()
+			m := e.mcp
+			e.mu.Unlock()
+			if m == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			m.Handler().ServeHTTP(w, req)
+		})
 	}
 }
 
@@ -257,7 +262,7 @@ func WithHandler(pattern string, h http.Handler) Option {
 // token every request under it but ping has to carry (see authorize). The
 // file holds the credential for the tunnel's public hostname, so it is
 // served only to whoever already has the secret it contains.
-func WithCache(c Cache) Option {
+func WithCache(c cache.Cache) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()
@@ -283,7 +288,6 @@ func WithCache(c Cache) Option {
 					h = c.Handlers(ControlPath)[pattern]
 				}
 				if h == nil {
-					w.Header().Set("Cache-Control", "no-store")
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
@@ -297,7 +301,7 @@ func WithCache(c Cache) Option {
 // (login, logout) under ControlPath, which need no secret. Which auth answers
 // is asked on every request, so applied again it replaces the auth rather
 // than registering a page twice.
-func WithAuth(a Auth) Option {
+func WithAuth(a auth.Auth) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()
@@ -323,7 +327,6 @@ func WithAuth(a Auth) Option {
 					h = a.Handlers(ControlPath)[pattern]
 				}
 				if h == nil {
-					w.Header().Set("Cache-Control", "no-store")
 					w.WriteHeader(http.StatusNotFound)
 					return
 				}
@@ -361,13 +364,12 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets, Wrap and Mounted read back what the options set, for a
+// Origins, WebSockets and Wrap read back what the options set, for a
 // caller standing in for a router that wants to see what it was handed
 // without standing one up.
 func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
 func (r *RouterImpl) WebSockets() int                       { return r.ws }
 func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
-func (r *RouterImpl) Mounted() []string                     { return slices.Clone(r.mounted) }
 
 // Unanswered dials each http and https origin in origins once and answers
 // with the index of every one nothing answered on — nothing listening, no
@@ -440,9 +442,6 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
 	route := *r
 	v1.Apply(&route, opts...)
-	if route.mountErr != nil {
-		return nil, route.mountErr
-	}
 	dialable, ws, front, log := route.dialable, route.ws, route.wrap, route.log
 	if dialable == nil || dialable.Len() == 0 {
 		return nil, errors.New("router: no origins to route to")
@@ -464,17 +463,17 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	if gate != nil {
 		site = gate.Handler(site)
 	}
-	control := route.authorize(route.mux)
-	var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, ControlPath) {
-			control.ServeHTTP(w, r)
-			return
-		}
-		site.ServeHTTP(w, r)
-	})
+	control := route.cors(route.authorize(route.mux))
 	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
 	srv := &http.Server{
-		Handler:     h,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w = &unstored{ResponseWriter: w}
+			if strings.HasPrefix(r.URL.Path, ControlPath) {
+				control.ServeHTTP(w, r)
+				return
+			}
+			site.ServeHTTP(w, r)
+		}),
 		BaseContext: func(net.Listener) context.Context { return routing },
 		ErrorLog:    slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
@@ -492,17 +491,14 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // authorize guards the ControlPath: every request under it needs
 // "Authorization: token <secret>", the running tunnel's secret as the cache
 // WithCache handed over holds it, base64-encoded (the encoding the spec's own
-// JSON gives it, so whoever holds the spec holds the token), except:
+// JSON gives it, so whoever holds the spec holds the token), except a path
+// and method authMethods has: ping, login and logout by the methods a
+// visitor uses, and a PATCH of .env carrying "Bearer <grant>".
 //
-//   - ping, login and logout, which a visitor without the secret asks;
-//   - a PATCH of .env carrying "Bearer <grant>", a live grant the cache issued
-//     to the secret's holder for the owner's browser;
-//   - a CORS preflight for .env, which carries no credentials by design.
-//
-// .env answers CORS for the provider's origin alone (allowOrigin), on every
-// answer, a refusal included, so the browser can read why. Anything else is
-// a bare 401, no-store, before the mux sees it, registered endpoint or not,
-// so nothing under the prefix can be probed without it.
+// A CORS preflight never reaches it: cors, in front, answers that. Anything
+// else is a bare 401, no-store, before the mux sees it,
+// registered endpoint or not, so nothing under the prefix can be probed
+// without it.
 //
 // Fails closed: with no cache, or no secret yet, nothing but ping, login and
 // logout answers. Compared in constant time, so the time a refusal takes says
@@ -519,53 +515,151 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 				w.Header().Set(CacheKeyHeader, key)
 			}
 		}
-		env := req.URL.Path == ControlPath+".env"
-		if env {
-			w.Header().Add("Vary", "Origin")
-			if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
-				w.Header().Set("Access-Control-Allow-Origin", o)
-				w.Header().Set("Access-Control-Expose-Headers", v1.AuthenticateHeader+", Retry-After")
-			}
-			if req.Method == http.MethodOptions && req.Header.Get("Access-Control-Request-Method") != "" {
-				if w.Header().Get("Access-Control-Allow-Origin") != "" {
-					w.Header().Set("Access-Control-Allow-Methods", "PATCH")
-					w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
-					w.Header().Set("Access-Control-Max-Age", "600")
+		// And says the gate, as a 401 from an origin would (gated).
+		if a != nil {
+			w = &gated{ResponseWriter: w, gate: a.Header}
+		}
+		name := strings.TrimPrefix(req.URL.Path, ControlPath)
+		if slices.Contains(authMethods[name], req.Method) {
+			switch name {
+			case ".env":
+				// Only with a live grant; anything else meets the secret below.
+				if bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer "); ok && c != nil && c.Grant(bearer) {
+					next.ServeHTTP(w, req)
+					return
 				}
-				w.WriteHeader(http.StatusNoContent)
+			default:
+				next.ServeHTTP(w, req)
 				return
 			}
 		}
-		switch req.URL.Path {
-		case ControlPath + "ping":
-			// The challenges in public: nothing a 401 would not say to anyone.
-			if a != nil {
-				for _, v := range a.Public(req.Host) {
-					w.Header().Add(v1.AuthenticateHeader, v)
-				}
-			}
-			next.ServeHTTP(w, req)
-			return
-		case ControlPath + "login", ControlPath + "logout":
-			next.ServeHTTP(w, req)
-			return
-		}
+		// Anything else needs the secret.
 		var secret []byte
 		if c != nil {
 			secret = c.Secret()
 		}
-		got := req.Header.Get("Authorization")
 		want := "token " + base64.StdEncoding.EncodeToString(secret)
-		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte(want)) == 1 {
 			next.ServeHTTP(w, req)
 			return
 		}
-		if bearer, ok := strings.CutPrefix(got, "Bearer "); ok && env && req.Method == http.MethodPatch && c != nil && c.Grant(bearer) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusUnauthorized)
+	})
+}
+
+// gated stamps an answer with X-Tunneld-Authenticate, the challenges in
+// public: nothing a 401 would not say to anyone, said ahead so a caller (the
+// provider's visibility) need not provoke one. Read as the status is
+// written, so an answer that changed the gate, a grant's PATCH, says the new
+// one; absent when the tunnel is public.
+type gated struct {
+	http.ResponseWriter
+	gate    func(public bool) (key, value string)
+	written bool
+}
+
+func (g *gated) WriteHeader(code int) {
+	if !g.written {
+		g.written = true
+		if key, v := g.gate(true); v != "" {
+			g.ResponseWriter.Header().Set(key, v)
+		}
+	}
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gated) Write(b []byte) (int, error) {
+	if !g.written {
+		g.WriteHeader(http.StatusOK)
+	}
+	return g.ResponseWriter.Write(b)
+}
+
+// Unwrap is for http.ResponseController: the MCP server flushes through it.
+func (g *gated) Unwrap() http.ResponseWriter { return g.ResponseWriter }
+
+// unstored writes "Cache-Control: no-store" on any answer the router serves
+// that says nothing about caching, as its status is written: tunneld is
+// meant to feel like localhost, where nothing caches. Cloudflare's edge
+// caches a cacheable extension an answer said nothing about for its default
+// TTL, which served a dev server's stale CSS for four hours (#179), and a
+// page of tunneld's own (the panel, a terminal, login, the control path) is
+// a live view nobody should be handed a copy of. An answer that does say
+// keeps what it said: an origin's, or .env's no-transform.
+type unstored struct {
+	http.ResponseWriter
+	written bool
+}
+
+func (u *unstored) WriteHeader(code int) {
+	if !u.written {
+		u.written = true
+		if u.ResponseWriter.Header().Get("Cache-Control") == "" {
+			u.ResponseWriter.Header().Set("Cache-Control", "no-store")
+		}
+	}
+	u.ResponseWriter.WriteHeader(code)
+}
+
+func (u *unstored) Write(b []byte) (int, error) {
+	if !u.written {
+		u.WriteHeader(http.StatusOK)
+	}
+	return u.ResponseWriter.Write(b)
+}
+
+// Unwrap is for http.ResponseController: the proxy flushes and upgrades
+// through it.
+func (u *unstored) Unwrap() http.ResponseWriter { return u.ResponseWriter }
+
+// authMethods is every path under the ControlPath a request reaches without
+// the secret, by its name there and the methods it may use: ping, login and logout, which a
+// visitor without the secret asks, and .env, which the owner's browser
+// PATCHes with a live grant the cache issued to the secret's holder.
+var authMethods = map[string][]string{
+	"ping":   {http.MethodGet, http.MethodHead},
+	"login":  {http.MethodGet, http.MethodHead, http.MethodPost},
+	"logout": {http.MethodGet, http.MethodHead, http.MethodPost},
+	".env":   {http.MethodPatch},
+}
+
+// corsMethods is every path under the ControlPath a browser calls across
+// origins, by its name there and the methods its preflight allows: .env,
+// which the provider's page PATCHes with a grant.
+var corsMethods = map[string][]string{
+	".env": {http.MethodPatch},
+}
+
+// cors stands in front of the ControlPath's guard for a browser calling
+// across origins. On a path corsMethods has, every answer names the
+// provider's origin, and no other, a refusal included, so the browser can
+// read why; and a preflight, which carries no credentials by design, is
+// answered here, before the guard would refuse it. Every other path, and an
+// OPTIONS that is no preflight, goes on to next untouched.
+func (r *RouterImpl) cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		methods, ok := corsMethods[strings.TrimPrefix(req.URL.Path, ControlPath)]
+		if !ok {
+			next.ServeHTTP(w, req)
+			return
+		}
+		w.Header().Add("Vary", "Origin")
+		provider := false
+		if o := req.Header.Get("Origin"); o != "" && o == r.allowOrigin {
+			provider = true
+			w.Header().Set("Access-Control-Allow-Origin", o)
+			w.Header().Set("Access-Control-Expose-Headers", v1.AuthenticateHeader+", Retry-After")
+		}
+		if req.Method == http.MethodOptions && req.Header.Get("Access-Control-Request-Method") != "" {
+			if provider {
+				w.Header().Set("Access-Control-Allow-Methods", strings.Join(methods, ", "))
+				w.Header().Set("Access-Control-Allow-Headers", "authorization, content-type")
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, req)
 	})
 }
 
@@ -792,7 +886,6 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 			}
 			h := w.Header()
 			h.Set("Retry-After", strconv.Itoa(retryAfter))
-			h.Set("Cache-Control", "no-store")
 			h.Set(unreachableHeader, host)
 			dest := r.Header.Get("Sec-Fetch-Dest")
 			if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
@@ -821,14 +914,6 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 		// explicit top-level pick is answered with the sticky cookie; Rewrite
 		// put the index on the outbound context for it, and only then.
 		ModifyResponse: func(resp *http.Response) error {
-			// tunneld is meant to feel like localhost, where nothing caches.
-			// Cloudflare's edge caches a cacheable extension the origin said
-			// nothing about for its default TTL, which served a dev server's
-			// stale CSS for four hours (#179). An origin that does say keeps
-			// what it said.
-			if resp.Header.Get("Cache-Control") == "" {
-				resp.Header.Set("Cache-Control", "no-store")
-			}
 			if ix, ok := resp.Request.Context().Value(stickyKey{}).(int); ok {
 				cookie := &http.Cookie{Name: Cookie, Value: strconv.Itoa(ix), Path: "/"}
 				resp.Header.Add("Set-Cookie", cookie.String())

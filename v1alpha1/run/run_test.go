@@ -6,6 +6,9 @@ import (
 	"net/url"
 	"slices"
 	"testing"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"net/http"
 )
 
 // TestPublicURL pins the routing contract: with more than one origin every
@@ -98,5 +101,35 @@ func TestMessagesOnly(t *testing.T) {
 		if ok != tc.want || ok && !slices.Equal(got, tc.messages) {
 			t.Errorf("%s: messagesOnly = %q, %v; want %q, %v", tc.name, got, ok, tc.messages, tc.want)
 		}
+	}
+}
+
+// gateOf is an Auth whose header carries gate.
+type gateOf string
+
+// The rest of auth.Auth, which the run never asks of it.
+func (gateOf) Handler(next http.Handler) http.Handler                              { return next }
+func (gateOf) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) { return nil }
+func (gateOf) Set(string) error                                                    { return nil }
+func (gateOf) Value() string                                                       { return "" }
+func (g gateOf) Header(bool) (string, string)                                      { return v1.AuthenticateHeader, string(g) }
+
+// TestAuth pins the gate a mint is told about: the auth's own public form,
+// public ("") by default, and a nil auth keeps that rather than leaving mint
+// a nil to call.
+func TestAuth(t *testing.T) {
+	for name, tc := range map[string]struct {
+		opts []Option
+		want string
+	}{
+		"by default, public": {nil, ""},
+		"given":              {[]Option{WithAuth(gateOf(`Basic charset="UTF-8"`))}, `Basic charset="UTF-8"`},
+		"nil keeps public":   {[]Option{WithAuth(nil)}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name, got := New(tc.opts...).auth.Header(true); name != v1.AuthenticateHeader || got != tc.want {
+				t.Errorf("auth.Header(true) = %q, %q; want %s, %q", name, got, v1.AuthenticateHeader, tc.want)
+			}
+		})
 	}
 }

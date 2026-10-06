@@ -9,8 +9,8 @@
 // reads top to bottom in one place. What the run settled before its first
 // tunnel (the logger, the origins, what they are bound to, the router's
 // address, the credential) the builder hands over with each call, along with
-// the collaborators a tunnel is shown through, each behind the narrow interface
-// declared below.
+// the collaborators a tunnel is shown through, each behind the interface its
+// own package declares.
 package run
 
 import (
@@ -35,9 +35,14 @@ import (
 	"github.com/spf13/cobra"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 )
 
 // Option configures a RunImpl, at construction or for one call to Run.
@@ -45,52 +50,6 @@ type Option = v1.Option[*RunImpl]
 
 // discard is where a run with no logger writes: nowhere.
 var discard = slog.New(slog.DiscardHandler)
-
-// Cache is where a tunnel that came up is saved, and where a new spec for the
-// run arrives: every spec the cache takes, the run's own saves included.
-type Cache interface {
-	Save(opts ...cache.Option)
-	Spec() <-chan string
-}
-
-// Display is how a tunnel is shown: the panel's address, when there is a
-// panel; the address as a code for a phone; and a tab or the console opened
-// on it.
-type Display interface {
-	URL(enabled bool, public *url.URL, origins v1.Origins) string
-	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
-	QR(addr string) ([]string, error)
-}
-
-// Console is the screen the run was started on, when there is one to draw a
-// frame on.
-type Console interface {
-	For(bound attach.Bound, streams console.Streams) console.Screen
-}
-
-// Motd is where what the provider said with the spec is learned.
-type Motd interface {
-	Learn(raw []string, log v1.Logger)
-}
-
-// Router is what the tunnel forwards to: asked which origins nothing answers
-// on, and cancelled once the run is over and its tunnel has drained.
-type Router interface {
-	Unanswered(ctx context.Context, origins v1.Origins) []int
-	Cancel()
-}
-
-// Pid hands a detached run back to a launcher waiting on it.
-type Pid interface {
-	Detach(out *os.File, log v1.Logger) bool
-}
-
-// Logs is the run's log file: where a detached run's streams go, and what
-// stops showing lines once they do.
-type Logs interface {
-	File() *os.File
-	Detach()
-}
 
 // RunImpl is the default Run. Its fields are one call's: New seeds the
 // defaults, and each call to Run applies its options to a copy.
@@ -111,18 +70,18 @@ type RunImpl struct {
 	cmd     *cobra.Command
 	origins v1.Origins
 	bound   attach.Bound
-	cache   Cache
+	cache   cache.Cache
 	// tracking is what the run settled on, saved beside the spec with the
 	// tunnel's hostname added.
 	tracking map[string]string
 
-	display   Display
+	display   display.Display
 	multiview bool
-	console   Console
-	motd      Motd
-	router    Router
-	pid       Pid
-	logs      Logs
+	console   console.Console
+	motd      motd.Motd
+	router    router.Router
+	pid       pid.Pid
+	logs      logs.Log
 
 	// qr prints the address as a code; open is a caller's decision about a
 	// tab, nil for none; spinner allows the one shown while the tunnel comes
@@ -136,15 +95,15 @@ type RunImpl struct {
 	// this call, nil when none was: that frame is still up, showing the same
 	// origins, so a later tunnel keeps it rather than drawing another.
 	screen console.Screen
-	// authenticate is the tunnel's challenges in public form, realm left
-	// out, read at every mint; nil or empty says nothing.
-	authenticate func() []string
+	// auth is the tunnel's gate, read at every mint.
+	auth auth.Auth
 }
 
 // New returns a RunImpl configured by opts: a logger that discards, a spinner
-// allowed, and nothing else — the builder hands over the rest with each call.
+// allowed, an auth with nothing set (public), and nothing else — the builder
+// hands over the rest with each call.
 func New(opts ...Option) *RunImpl {
-	return v1.Apply(&RunImpl{log: discard, spinner: true}, opts...)
+	return v1.Apply(&RunImpl{log: discard, spinner: true, auth: auth.New()}, opts...)
 }
 
 // WithSpec sets the spec the tunnel is minted from; "" mints fresh.
@@ -184,7 +143,7 @@ func WithOrigins(origins v1.Origins) Option { return func(r *RunImpl) { r.origin
 func WithBound(bound attach.Bound) Option { return func(r *RunImpl) { r.bound = bound } }
 
 // WithCache sets where a tunnel that came up is saved.
-func WithCache(c Cache) Option { return func(r *RunImpl) { r.cache = c } }
+func WithCache(c cache.Cache) Option { return func(r *RunImpl) { r.cache = c } }
 
 // WithTracking sets what the run settled on, saved beside the spec.
 func WithTracking(tracking map[string]string) Option {
@@ -193,24 +152,24 @@ func WithTracking(tracking map[string]string) Option {
 
 // WithDisplay sets how the tunnel is shown, and WithMultiview whether there is
 // a panel in front of the origins.
-func WithDisplay(d Display) Option { return func(r *RunImpl) { r.display = d } }
-func WithMultiview(on bool) Option { return func(r *RunImpl) { r.multiview = on } }
+func WithDisplay(d display.Display) Option { return func(r *RunImpl) { r.display = d } }
+func WithMultiview(on bool) Option         { return func(r *RunImpl) { r.multiview = on } }
 
 // WithConsole sets the screen the run was started on.
-func WithConsole(c Console) Option { return func(r *RunImpl) { r.console = c } }
+func WithConsole(c console.Console) Option { return func(r *RunImpl) { r.console = c } }
 
 // WithMotd sets where what the provider said is learned.
-func WithMotd(m Motd) Option { return func(r *RunImpl) { r.motd = m } }
+func WithMotd(m motd.Motd) Option { return func(r *RunImpl) { r.motd = m } }
 
 // WithRouter sets what the tunnel forwards to.
-func WithRouter(router Router) Option { return func(r *RunImpl) { r.router = router } }
+func WithRouter(router router.Router) Option { return func(r *RunImpl) { r.router = router } }
 
 // WithPid sets what hands a detached run back to a launcher; nil for a run
 // that was not registered.
-func WithPid(p Pid) Option { return func(r *RunImpl) { r.pid = p } }
+func WithPid(p pid.Pid) Option { return func(r *RunImpl) { r.pid = p } }
 
 // WithLogs sets the run's log file.
-func WithLogs(l Logs) Option { return func(r *RunImpl) { r.logs = l } }
+func WithLogs(l logs.Log) Option { return func(r *RunImpl) { r.logs = l } }
 
 // WithQR prints the address as a code for a phone.
 func WithQR(on bool) Option { return func(r *RunImpl) { r.qr = on } }
@@ -225,11 +184,15 @@ func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
 
-// WithAuthenticate is the tunnel's challenges in public form, realm left out,
-// read at every mint: the provider leaves "publicly accessible" out of the
-// messages for a tunnel that is not. Nil, or nothing, says nothing.
-func WithAuthenticate(public func() []string) Option {
-	return func(r *RunImpl) { r.authenticate = public }
+// WithAuth sets the tunnel's gate, read at every mint: the provider leaves
+// "publicly accessible" out of the messages for a tunnel that is not. Nil
+// keeps the one it has.
+func WithAuth(a auth.Auth) Option {
+	return func(r *RunImpl) {
+		if a != nil {
+			r.auth = a
+		}
+	}
 }
 
 // Run is one run's tunnel, from its spec to its end: mint, up, wait — and
@@ -320,21 +283,19 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// Which tunneld is asking, ahead of the libtunnel comment the mint
 		// adds after it. Always tunneld's, under whatever name an embedding
 		// program mounts the command as: it is this code minting.
-		WithHeader("User-Agent", r.userAgent).
+		WithHeader(v1.UserAgentHeader, r.userAgent).
+		// What the gate says, so the mint's messages match it: a protected
+		// tunnel is not "publicly accessible". The client's own word,
+		// deciding only a banner the client itself shows. Sent on every
+		// mint, empty when public; no realm, since the hostname is the
+		// mint's to say.
+		WithHeader(r.auth.Header(true)).
 		WithLogger(log).
 		WithContext(tctx).
 		WithEventListener(listen).
 		// One address, whatever the run exposes: which origin a request
 		// reaches is decided in front of them, by the router.
 		WithLocalURL(local)
-	// What the gate says, so the mint's messages match it: a protected tunnel
-	// is not "publicly accessible". The client's own word, deciding only a
-	// banner the client itself shows. Nothing at all when public.
-	if r.authenticate != nil {
-		if public := r.authenticate(); len(public) > 0 {
-			tun = tun.WithHeader(v1.AuthenticateHeader, strings.Join(public, ", "))
-		}
-	}
 	return tun, stop
 }
 

@@ -38,6 +38,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"rsc.io/qr"
@@ -721,8 +722,8 @@ func TestMcpOrigins(t *testing.T) {
 		spawn bool
 	}{
 		{"http://localhost:3000", v0exp1.McpHTTP, false},
-		{"exec:///bin/sh", v0exp1.McpProgram, true},
-		{"attach://dockerd/web", v0exp1.McpContainer, false},
+		{"exec:///bin/sh", v0exp1.McpExec, true},
+		{"attach://dockerd/web", v0exp1.McpAttach, false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("mcpOrigins = %d origins, want %d", len(got), len(want))
@@ -850,8 +851,9 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 // and prints one line per message, so a case can see the run reach it and
 // where its output landed.
 type fakeMotd struct {
-	learned []string
-	onLearn func() // what else lands while the run learns
+	motd.Motd // the rest, which the builder never asks of it
+	learned   []string
+	onLearn   func() // what else lands while the run learns
 }
 
 func (f *fakeMotd) Learn(raw []string, _ v1.Logger) {
@@ -1065,7 +1067,7 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if got, want := h.tunnels[0].headers, []string{"User-Agent: " + UserAgent()}; !slices.Equal(got, want) {
+		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": "}; !slices.Equal(got, want) {
 			t.Errorf("headers = %q, want %q", got, want)
 		}
 	})
@@ -1394,21 +1396,6 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
-		h := newRunHarness(t, live(public), ":3000", ":4000")
-		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
-		// The router refuses, so the run ends right after asking it: what
-		// it was asked is the whole of the case.
-		h.router.err = errors.New("no loopback")
-
-		if err := h.run(t, t.Context()); !errors.Is(err, h.router.err) {
-			t.Fatalf("run() = %v, want the router's own error", err)
-		}
-		if got := h.router.configured.Mounted(); !slices.Contains(got, router.ControlPath+"mcp") {
-			t.Errorf("mounted = %v, want %s", got, router.ControlPath+"mcp")
-		}
-	})
-
 	t.Run("a binder failure is returned before the engine is asked for anything", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		h.binder.err = errors.New("no such container")
@@ -1486,6 +1473,43 @@ func TestRun(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(body), resp.Header.Get(router.CacheKeyHeader)
 	}
+	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
+		h := newRunHarness(t, live(public), ":3000", ":4000")
+		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
+		ctx, cancel := context.WithCancel(t.Context())
+		h.cache.onSave = cancel
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		// Routed here, as envOf does, with the token the run's secret makes:
+		// an initialize the server answers is the server on the mux.
+		origin := httptest.NewServer(http.NotFoundHandler())
+		t.Cleanup(origin.Close)
+		u, _ := url.Parse(origin.URL)
+		r := h.router.configured
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		if err != nil {
+			t.Fatalf("Route: %v", err)
+		}
+		t.Cleanup(r.Cancel)
+		body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
+		req, err := http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
+		}
+	})
 	t.Run("the router serves what the run saved", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
 		ctx, cancel := context.WithCancel(t.Context())
@@ -3431,9 +3455,9 @@ func TestAReSentSpecSettlesTheCache(t *testing.T) {
 }
 
 // TestEveryMintSaysTheVisibility pins X-Tunneld-Authenticate on the mint
-// request: the gate's public challenges, realm left out, when the tunnel is
-// protected, and no header at all when it is public, so a provider treats a
-// public run exactly as before.
+// request, always: the gate's public challenges, realm left out, when the
+// tunnel is protected, and an empty value when it is public, which a
+// provider reads as public just as it read no header before.
 func TestEveryMintSaysTheVisibility(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
@@ -3442,7 +3466,7 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 		want []string
 	}{
 		"protected": {pw, []string{v1.AuthenticateHeader + `: Basic charset="UTF-8"`}},
-		"public":    {"", nil},
+		"public":    {"", []string{v1.AuthenticateHeader + ": "}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tun := live(public)
@@ -3468,10 +3492,9 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 	}
 }
 
-// TestDotenvServesNoHash pins the builder's wiring of the password's
-// redaction: a run's .env, as served, says the challenge in public form and
-// never carries the hash, so nobody reading it (tunnel.pizza included)
-// receives the password's hash.
+// TestDotenvServesNoHash pins the password on a run's .env end to end: as
+// served, it says the challenge with pw's salt and hash redacted, so nobody
+// reading it (tunnel.pizza included) receives what would crack the password.
 func TestDotenvServesNoHash(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
@@ -3484,7 +3507,7 @@ func TestDotenvServesNoHash(t *testing.T) {
 	rec := httptest.NewRecorder()
 	serve(rec, httptest.NewRequest("GET", router.ControlPath+".env", nil))
 	body := rec.Body.String()
-	if rec.Code != 200 || strings.Contains(body, "pbkdf2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
-		t.Errorf("GET .env = %d %q, want the public form and no hash", rec.Code, body)
+	if rec.Code != 200 || strings.Contains(body, "UFtjhDQ2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`) {
+		t.Errorf("GET .env = %d %q, want the password redacted", rec.Code, body)
 	}
 }

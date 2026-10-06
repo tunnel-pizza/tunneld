@@ -66,6 +66,32 @@ func (c Challenge) Public(host string) string {
 	return rule.name + " " + strings.Join(params, ", ")
 }
 
+// Redacted is the challenge as stored, for whoever reads .env: every
+// parameter it was given, in the order its scheme takes them, but pw's salt
+// and hash, which are what would let a reader guess the password offline.
+func (c Challenge) Redacted() string {
+	rule := schemes[c.scheme()]
+	quote := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	var params []string
+	for _, key := range rule.allowed {
+		v, ok := c.Params[key]
+		if !ok {
+			continue
+		}
+		if key == "pw" {
+			v = "…"
+			if p, err := parsePHC(c.Params[key]); err == nil {
+				v = fmt.Sprintf("$pbkdf2-sha256$i=%d$…$…", p.iter)
+			}
+		}
+		params = append(params, key+`="`+quote.Replace(v)+`"`)
+	}
+	if len(params) == 0 {
+		return rule.name
+	}
+	return rule.name + " " + strings.Join(params, ", ")
+}
+
 // Parse reads value as challenges and checks each against its scheme's rule.
 // "" (or blank) is public: nil, nil.
 func Parse(value string) ([]Challenge, error) {

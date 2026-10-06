@@ -15,6 +15,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
@@ -76,12 +78,12 @@ type session struct {
 
 	// logs is tunneld's own recent lines, for the frame to show on request.
 	// Nil when nothing was configured, which a frame says rather than hides.
-	logs Logs
+	logs logs.Log
 
 	// motd is the provider's messages of the day, drawn on top of the box. Nil
 	// when nothing was configured, and then there is no banner and no row
 	// spent on one.
-	motd Motd
+	motd motd.Motd
 
 	// sinks are told what the terminal says about itself, after the built-in
 	// routing. Empty unless a caller installed some with WithSinks.
@@ -206,7 +208,7 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs Logs, motd Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 
 	s := &session{
@@ -228,11 +230,10 @@ func newSession(ctx context.Context, target Target, banner string, logs Logs, mo
 
 	s.watch()
 
-	// A motd that can change (the real one can, mid-run, when the provider's
-	// messages are updated) is followed; attach.Motd itself stays Lines, so
-	// a banner that never changes needs nothing more.
-	if c, ok := motd.(interface{ Changed() <-chan struct{} }); ok {
-		go s.followMotd(ctx, c)
+	// The motd is followed: the provider's messages can change mid-run, and
+	// a frame already drawn redraws its banner when they do.
+	if motd != nil {
+		go s.followMotd(ctx, motd)
 	}
 
 	s.mu.Lock()
@@ -916,7 +917,7 @@ func (s *session) bannerRows() int {
 // a fresh channel after each close so it never spins on a closed one. The
 // fresh one is taken before the change is handled, not after: a change that
 // lands while the last is still being applied closes it, and is seen.
-func (s *session) followMotd(ctx context.Context, m interface{ Changed() <-chan struct{} }) {
+func (s *session) followMotd(ctx context.Context, m motd.Motd) {
 	ch := m.Changed()
 	for {
 		select {
