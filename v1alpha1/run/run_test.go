@@ -113,6 +113,7 @@ func (gateOf) Handlers(string) map[string]func(http.ResponseWriter, *http.Reques
 func (gateOf) Set(string) error                                                    { return nil }
 func (gateOf) Value() string                                                       { return "" }
 func (gateOf) Unauthorized(http.ResponseWriter, *http.Request)                     {}
+func (gateOf) ResourceMetadata(http.ResponseWriter, *http.Request)                 {}
 func (g gateOf) Header() (string, string)                                          { return v1.AuthenticateHeader, string(g) }
 
 // TestAuth pins the gate a mint is told about: the auth's own public form,

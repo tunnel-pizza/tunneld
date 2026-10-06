@@ -26,6 +26,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -462,8 +463,10 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	route.env.mu.Lock()
 	gate := route.env.auth
 	route.env.mu.Unlock()
-	if gate != nil {
-		site = gate.Handler(site)
+	if gate == nil {
+		site = metadata(site, fallback)
+	} else {
+		site = gate.Handler(metadata(site, gate))
 	}
 	control := route.cors(route.authorize(route.mux))
 	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
@@ -554,7 +557,7 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 }
 
 // fallback is what a router handed no auth refuses through, so its 401 still
-// carries a challenge.
+// carries a challenge, and serves the metadata that challenge names.
 var fallback auth.Auth = auth.New()
 
 // gated stamps an answer with X-Tunneld-Authenticate, the challenges in
@@ -631,9 +634,7 @@ var authMethods = map[string][]string{
 	"ping":   {http.MethodGet, http.MethodHead},
 	"login":  {http.MethodGet, http.MethodHead, http.MethodPost},
 	"logout": {http.MethodGet, http.MethodHead, http.MethodPost},
-	// What a client refused a 401 reads to learn where a token comes from.
-	auth.ResourceMetadata: {http.MethodGet, http.MethodHead},
-	".env":                {http.MethodPatch},
+	".env":   {http.MethodPatch},
 }
 
 // corsMethods is every path under the ControlPath a browser calls across
@@ -674,6 +675,70 @@ func (r *RouterImpl) cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, req)
 	})
+}
+
+// metadata answers auth.MetadataPath from the origins first, and with a's
+// RFC 9728 metadata only when they have none there: a 404, or nothing
+// listening. Anything else the origin says, a 401 from protection of its own
+// included, is the origin's, so tunneld never stands in front of an origin
+// that guards itself. GET and HEAD only; any other method is the origin's
+// whatever it answers.
+func metadata(next http.Handler, a auth.Auth) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != auth.MetadataPath || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		h := &held{ResponseWriter: w, header: http.Header{}}
+		next.ServeHTTP(h, r)
+		if h.missing {
+			a.ResourceMetadata(w, r)
+		}
+	})
+}
+
+// held keeps an answer's headers back until its status says whether there
+// was one: a 404, or tunneld's own answer for an origin nothing listens on,
+// is missing and dropped whole; anything else goes out as it came.
+// Informational answers are dropped: what follows them decides.
+type held struct {
+	http.ResponseWriter
+	header           http.Header
+	written, missing bool
+}
+
+func (h *held) Header() http.Header { return h.header }
+
+func (h *held) WriteHeader(code int) {
+	if h.written || code < http.StatusOK {
+		return
+	}
+	h.written = true
+	if code == http.StatusNotFound || h.header.Get(unreachableHeader) != "" {
+		h.missing = true
+		return
+	}
+	maps.Copy(h.ResponseWriter.Header(), h.header)
+	h.ResponseWriter.WriteHeader(code)
+}
+
+func (h *held) Write(b []byte) (int, error) {
+	if !h.written {
+		h.WriteHeader(http.StatusOK)
+	}
+	if h.missing {
+		return len(b), nil
+	}
+	return h.ResponseWriter.Write(b)
+}
+
+// FlushError is for http.ResponseController: the proxy flushes through it,
+// and nothing goes out of an answer that is missing.
+func (h *held) FlushError() error {
+	if !h.written || h.missing {
+		return nil
+	}
+	return http.NewResponseController(h.ResponseWriter).Flush()
 }
 
 // Cancel takes down every route this router has serving: their listeners

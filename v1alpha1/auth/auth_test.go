@@ -72,7 +72,7 @@ func TestUnauthorized(t *testing.T) {
 			if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 || rec.Header().Get("Content-Length") != "0" {
 				t.Errorf("%d, %d bytes, Content-Length %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Length"))
 			}
-			want := `Bearer resource_metadata="https://h.example/_tunneld/.well-known/oauth-protected-resource"`
+			want := `Bearer resource_metadata="https://h.example/.well-known/oauth-protected-resource"`
 			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != want {
 				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 			}
@@ -81,10 +81,8 @@ func TestUnauthorized(t *testing.T) {
 }
 
 // TestProtectedResource pins the metadata the 401 points at (RFC 9728): this
-// tunnel as the resource, the provider as its authorization server, by GET
-// or HEAD.
+// tunnel as the resource, the provider as its authorization server.
 func TestProtectedResource(t *testing.T) {
-	const path = "/_tunneld/.well-known/oauth-protected-resource"
 	for name, tc := range map[string]struct {
 		opts   []Option
 		server string
@@ -94,13 +92,10 @@ func TestProtectedResource(t *testing.T) {
 		"nil keeps tunnel.pizza":   {[]Option{WithAuthorizationServer(nil)}, "https://tunnel.pizza"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := New(tc.opts...).Handlers("/_tunneld/")[path]
-			if h == nil {
-				t.Fatalf("no handler at %s", path)
-			}
-			req := httptest.NewRequest("GET", path, nil)
+			req := httptest.NewRequest("GET", MetadataPath, nil)
 			req.Host = "h.example"
-			rec := serve(http.HandlerFunc(h), req)
+			rec := httptest.NewRecorder()
+			New(tc.opts...).ResourceMetadata(rec, req)
 			if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" {
 				t.Fatalf("%d, Content-Type %q; want 200 application/json", rec.Code, rec.Header().Get("Content-Type"))
 			}
@@ -119,12 +114,8 @@ func TestProtectedResource(t *testing.T) {
 			}
 		})
 	}
-	h := New().Handlers("/_tunneld/")[path]
-	if rec := serve(http.HandlerFunc(h), httptest.NewRequest("HEAD", path, nil)); rec.Code != 200 {
-		t.Errorf("HEAD = %d, want 200", rec.Code)
-	}
-	if rec := serve(http.HandlerFunc(h), httptest.NewRequest("POST", path, nil)); rec.Code != 405 || rec.Header().Get("Allow") != "GET, HEAD" {
-		t.Errorf("POST = %d, Allow %q; want 405 and GET, HEAD", rec.Code, rec.Header().Get("Allow"))
+	if _, ok := New().Handlers("/_tunneld/")["/_tunneld/.well-known/oauth-protected-resource"]; ok {
+		t.Error("the metadata is under the control path too; want it at the root alone")
 	}
 }
 
@@ -192,6 +183,17 @@ func TestHandler(t *testing.T) {
 		rec := serve(b.Handler(origin()), req)
 		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
 			t.Errorf("WWW-Authenticate = %q, want the request's host as the realm", got)
+		}
+	})
+	t.Run("the metadata needs no password, by GET or HEAD", func(t *testing.T) {
+		for _, method := range []string{"GET", "HEAD"} {
+			rec := serve(h, httptest.NewRequest(method, MetadataPath, nil))
+			if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" || strings.Contains(rec.Body.String(), "origin") {
+				t.Errorf("%s metadata = %d %q; want tunneld's, in front of the origin", method, rec.Code, rec.Body)
+			}
+		}
+		if rec := serve(h, httptest.NewRequest("POST", MetadataPath, nil)); rec.Code != 401 {
+			t.Errorf("POST metadata = %d, want the gate's 401", rec.Code)
 		}
 	})
 	t.Run("basic right passes, header stripped, cookie set", func(t *testing.T) {

@@ -759,7 +759,7 @@ func TestGrantsExpire(t *testing.T) {
 		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
 	}
 	// With no auth handed over, the refusal is still RFC 9728's.
-	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/_tunneld/.well-known/oauth-protected-resource"`; got != want {
+	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource"`; got != want {
 		t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 	}
 	// Handed one, the auth answers it.

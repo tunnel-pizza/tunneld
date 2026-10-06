@@ -308,7 +308,6 @@ func TestAuthorize(t *testing.T) {
 	ping := strings.TrimSuffix(env, ".env") + "ping"
 	login := strings.TrimSuffix(env, ".env") + "login"
 	logout := strings.TrimSuffix(env, ".env") + "logout"
-	metadata := strings.TrimSuffix(env, ".env") + ".well-known/oauth-protected-resource"
 	for name, tc := range map[string]struct {
 		method, url, auth string
 		wantStatus        int
@@ -326,14 +325,11 @@ func TestAuthorize(t *testing.T) {
 		"ping by POST, auth":            {"POST", ping, tokenOf(secret), 405},
 		// No auth here, so nothing is on the mux at login and logout: a 404
 		// is the mux asked, a 401 the guard refusing.
-		"login by GET reaches the mux":         {"GET", login, "", 404},
-		"login by HEAD reaches the mux":        {"HEAD", login, "", 404},
-		"login by POST reaches the mux":        {"POST", login, "", 404},
-		"logout by POST reaches the mux":       {"POST", logout, "", 404},
-		"login by PUT, no auth":                {"PUT", login, "", 401},
-		"the metadata by GET reaches the mux":  {"GET", metadata, "", 404},
-		"the metadata by HEAD reaches the mux": {"HEAD", metadata, "", 404},
-		"the metadata by POST, no auth":        {"POST", metadata, "", 401},
+		"login by GET reaches the mux":   {"GET", login, "", 404},
+		"login by HEAD reaches the mux":  {"HEAD", login, "", 404},
+		"login by POST reaches the mux":  {"POST", login, "", 404},
+		"logout by POST reaches the mux": {"POST", logout, "", 404},
+		"login by PUT, no auth":          {"PUT", login, "", 401},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp, body := ask(t, tc.method, tc.url, tc.auth)
@@ -344,7 +340,7 @@ func TestAuthorize(t *testing.T) {
 				t.Errorf("a refusal said %q, want a bare 401", body)
 			}
 			// With no auth handed over, a refusal is still RFC 9728's.
-			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + `/_tunneld/.well-known/oauth-protected-resource"`
+			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + `/.well-known/oauth-protected-resource"`
 			if got := resp.Header.Get("WWW-Authenticate"); tc.wantStatus == 401 && got != want {
 				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 			}
@@ -1474,5 +1470,72 @@ func TestAuthorizeRefusesThroughTheAuth(t *testing.T) {
 	resp, _ := ask(t, "GET", url, "")
 	if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != "Fake" {
 		t.Errorf("GET .env = %d, WWW-Authenticate %q; want the auth's 401", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+}
+
+// TestResourceMetadataFallback pins the root's RFC 9728 metadata: the
+// origin's whenever it says anything there, its own protection's refusal
+// included; tunneld's only when the origin has none (a 404) or nothing is
+// listening, and only for GET and HEAD.
+func TestResourceMetadataFallback(t *testing.T) {
+	const path = "/.well-known/oauth-protected-resource"
+	down := httptest.NewServer(http.NotFoundHandler())
+	down.Close()
+	origin := func(status int, body string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Origin", "1")
+			w.WriteHeader(status)
+			io.WriteString(w, body)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	for name, tc := range map[string]struct {
+		srv     *httptest.Server
+		method  string
+		auth    auth.Auth // nil: none handed over
+		status  int
+		tunneld bool
+	}{
+		"the origin's own":       {origin(200, `{"resource":"mine"}`), "GET", auth.New(), 200, false},
+		"the origin's refusal":   {origin(401, ""), "GET", auth.New(), 401, false},
+		"the origin has none":    {origin(404, "nope"), "GET", auth.New(), 200, true},
+		"by HEAD":                {origin(404, ""), "HEAD", auth.New(), 200, true},
+		"nothing listening":      {down, "GET", auth.New(), 200, true},
+		"a POST is the origin's": {origin(404, "nope"), "POST", auth.New(), 404, false},
+		"no auth handed over":    {origin(404, "nope"), "GET", nil, 200, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := New()
+			opts := []Option{WithOrigins(listOf(t, tc.srv))}
+			if tc.auth != nil {
+				opts = append(opts, WithAuth(tc.auth))
+			}
+			u, err := r.Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			req, err := http.NewRequest(tc.method, strings.TrimSuffix(u.String(), "/")+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.status {
+				t.Errorf("%s %s = %d %q, want %d", tc.method, path, resp.StatusCode, body, tc.status)
+			}
+			tunneld := resp.Header.Get("X-Origin") == "" && resp.Header.Get("Content-Type") == "application/json"
+			if tunneld != tc.tunneld {
+				t.Errorf("answered by tunneld = %v, want %v (headers %v)", tunneld, tc.tunneld, resp.Header)
+			}
+			if tc.tunneld && tc.method == "GET" && !strings.Contains(string(body), `"authorization_servers":["https://tunnel.pizza"]`) {
+				t.Errorf("metadata = %s, want tunneld's", body)
+			}
+		})
 	}
 }

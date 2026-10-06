@@ -3549,9 +3549,8 @@ func TestTheDefaultAuthNamesTheProvider(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := New(tc.opts...)
-			path := router.ControlPath + auth.ResourceMetadata
 			rec := httptest.NewRecorder()
-			b.auth.Handlers(router.ControlPath)[path](rec, httptest.NewRequest("GET", path, nil))
+			b.auth.ResourceMetadata(rec, httptest.NewRequest("GET", auth.MetadataPath, nil))
 			if !strings.Contains(rec.Body.String(), tc.want) {
 				t.Errorf("metadata = %s, want %s", rec.Body.String(), tc.want)
 			}
