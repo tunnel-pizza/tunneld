@@ -11,14 +11,13 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// connect stands the server up over an in-memory transport and returns a
+// connect stands m's server up over an in-memory transport and returns a
 // client session on it.
-func connect(t *testing.T, origins []Origin) *sdk.ClientSession {
+func connect(t *testing.T, m *McpImpl) *sdk.ClientSession {
 	t.Helper()
-	server, closer := newServer(origins, slog.New(slog.DiscardHandler))
-	t.Cleanup(func() { _ = closer.Close() })
+	t.Cleanup(func() { _ = m.Close() })
 	ct, st := sdk.NewInMemoryTransports()
-	ss, err := server.Connect(t.Context(), st, nil)
+	ss, err := m.server.Connect(t.Context(), st, nil)
 	if err != nil {
 		t.Fatalf("server.Connect: %v", err)
 	}
@@ -31,22 +30,69 @@ func connect(t *testing.T, origins []Origin) *sdk.ClientSession {
 	return cs
 }
 
+// TestNew pins the options: the origins are kept in order, a log replaces
+// the discarding default, and a nil log keeps it.
+func TestNew(t *testing.T) {
+	origins := []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}, {Name: "exec:///bin/sh", Kind: KindExec}}
+	log := slog.New(slog.DiscardHandler)
+	for _, tc := range []struct {
+		name    string
+		opts    []Option
+		origins []Origin
+		log     *slog.Logger
+	}{
+		{"defaults", nil, nil, nil},
+		{"origins", []Option{WithOrigins(origins)}, origins, nil},
+		{"log", []Option{WithLog(log)}, nil, log},
+		{"nil log keeps the default", []Option{WithLog(nil)}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(tc.opts...)
+			if len(m.origins) != len(tc.origins) {
+				t.Fatalf("origins = %v, want %v", m.origins, tc.origins)
+			}
+			for i := range tc.origins {
+				if m.origins[i] != tc.origins[i] {
+					t.Errorf("origin %d = %+v, want %+v", i, m.origins[i], tc.origins[i])
+				}
+			}
+			if m.log == nil {
+				t.Error("log = nil, want the discarding default")
+			}
+			if tc.log != nil && m.log != tc.log {
+				t.Error("log is not the one given")
+			}
+		})
+	}
+}
+
 // TestListsNoTools pins the surface while it is redesigned: the server
 // answers initialize and offers nothing.
 func TestListsNoTools(t *testing.T) {
-	cs := connect(t, nil)
+	cs := connect(t, New())
 	if caps := cs.InitializeResult().Capabilities; caps.Tools != nil {
 		t.Errorf("capabilities.tools = %+v, want none", caps.Tools)
 	}
 }
 
-// TestHandlerAcceptsAForwardedHost pins the loopback: the router listens on
+// TestCloseTwice pins the closer: the run's defer and whatever else ends it
+// may both close it.
+func TestCloseTwice(t *testing.T) {
+	m := New()
+	for range 2 {
+		if err := m.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}
+}
+
+// TestServeAcceptsAForwardedHost pins the loopback: the router listens on
 // 127.0.0.1 and the tunnel forwards the public hostname as Host, which the
 // SDK calls DNS rebinding and refuses unless told the secret is the guard.
-func TestHandlerAcceptsAForwardedHost(t *testing.T) {
-	h, closer := Handler(nil, slog.New(slog.DiscardHandler))
-	defer closer.Close()
-	srv := httptest.NewServer(h)
+func TestServeAcceptsAForwardedHost(t *testing.T) {
+	m := New()
+	defer m.Close()
+	srv := httptest.NewServer(m)
 	defer srv.Close()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(body))

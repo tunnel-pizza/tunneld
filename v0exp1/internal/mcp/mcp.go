@@ -14,6 +14,7 @@ import (
 	"net/http"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
 // Kind is what an origin is.
@@ -41,37 +42,58 @@ type Origin struct {
 	Spawner Spawner // nil when the origin cannot start a process
 }
 
-// server is one run's MCP server over its origins. It offers no tools yet:
-// the surface is being redesigned, and the origins are kept for what comes
-// back.
-type server struct {
+// Option configures a McpImpl.
+type Option = v1.Option[*McpImpl]
+
+// McpImpl is the Mcp contract: one run's MCP server over its origins, an
+// http.Handler to mount on the control path and an io.Closer for the run's
+// end. It offers no tools yet: the surface is being redesigned, and the
+// origins are kept for what comes back.
+type McpImpl struct {
 	origins []Origin
-	log     *slog.Logger
+	log     v1.Logger
+
+	server  *sdk.Server
+	handler http.Handler
 }
 
-// Close has nothing to end while there are no tools. Callable more than once.
-func (s *server) Close() error { return nil }
-
-// Handler answers the MCP endpoint for these origins, index n being origin
-// n, logging on log. The closer ends whatever the server started.
+// New returns a McpImpl configured by opts: no origins, and a log that
+// discards.
 //
 // Stateless, and a request's end cancels the call it carried. Localhost
 // protection is off because it would refuse exactly the shape every request
 // here has: the router listens on 127.0.0.1 and the tunnel forwards the
 // public hostname as Host. The secret in front of this handler is the guard,
 // not the address.
-func Handler(origins []Origin, log *slog.Logger) (http.Handler, io.Closer) {
-	srv, closer := newServer(origins, log)
-	h := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, &sdk.StreamableHTTPOptions{
+func New(opts ...Option) *McpImpl {
+	m := v1.Apply(&McpImpl{log: slog.New(slog.DiscardHandler)}, opts...)
+	m.server = sdk.NewServer(&sdk.Implementation{Name: "tunneld", Version: "0"}, nil)
+	m.handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return m.server }, &sdk.StreamableHTTPOptions{
 		Stateless:                    true,
 		DisableLocalhostProtection:   true,
 		PropagateRequestCancellation: true,
 	})
-	return h, closer
+	return m
 }
 
-// newServer builds the SDK server, with no tools registered.
-func newServer(origins []Origin, log *slog.Logger) (*sdk.Server, io.Closer) {
-	s := &server{origins: origins, log: log}
-	return sdk.NewServer(&sdk.Implementation{Name: "tunneld", Version: "0"}, nil), s
+// WithOrigins sets the run's origins, index n being origin n: the index the
+// routing parameter and the stderr map use.
+func WithOrigins(origins []Origin) Option {
+	return func(m *McpImpl) { m.origins = origins }
 }
+
+// WithLog sets where the server logs. Nil keeps the one it has.
+func WithLog(log v1.Logger) Option {
+	return func(m *McpImpl) {
+		if log != nil {
+			m.log = log
+		}
+	}
+}
+
+// ServeHTTP answers the MCP endpoint.
+func (m *McpImpl) ServeHTTP(w http.ResponseWriter, r *http.Request) { m.handler.ServeHTTP(w, r) }
+
+// Close ends whatever the server started, which is nothing while there are
+// no tools. Callable more than once.
+func (m *McpImpl) Close() error { return nil }

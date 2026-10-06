@@ -541,10 +541,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// path below, behind the tunnel secret, and closed before the bound
 	// origins are, since what it holds are processes on them.
 	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(); m != nil {
-		h, closer := m.Handler(mcpOrigins(origins, bound.Spawners()), log)
-		defer closer.Close()
-		agents = append(agents, router.WithHandler(router.ControlPath+"mcp", h))
+	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithLog(log)); m != nil {
+		defer m.Close()
+		agents = append(agents, router.WithHandler(router.ControlPath+"mcp", m))
 	}
 
 	// The cache this run reads and writes through. Off is a cache that finds
