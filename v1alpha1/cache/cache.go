@@ -127,6 +127,9 @@ type CacheImpl struct {
 	// carries it, inside its envelope.
 	secret []byte
 	log    v1.Logger
+	// auth answers a PATCH refused for its grant, so the 401 says what a
+	// client may do about it.
+	auth auth.Auth
 
 	// mu is held by Load and Save for the whole call: the router loads from
 	// its own goroutine while the run saves from another.
@@ -195,6 +198,7 @@ func New(opts ...Option) *CacheImpl {
 		mutables: map[string]mutableVar{},
 		grants:   map[[32]byte]grant{},
 		now:      time.Now,
+		auth:     auth.New(),
 	}
 	if base, err := os.UserCacheDir(); err == nil {
 		c.dir = filepath.Join(base, dirName)
@@ -353,6 +357,15 @@ func (c *CacheImpl) Secret() []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.secret
+}
+
+// WithAuth sets what answers a refused grant's 401. Nil keeps the one it has.
+func WithAuth(a auth.Auth) Option {
+	return func(c *CacheImpl) {
+		if a != nil {
+			c.auth = a
+		}
+	}
 }
 
 // WithLog sets where the cache says what it did. Nil keeps the one it has.
@@ -619,7 +632,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				var ok bool
 				if g, ok = c.liveGrant(bearer); !ok {
 					// Expired or used between authorize and here.
-					auth.Unauthorized(w, "")
+					c.auth.Unauthorized(w, r)
 					return
 				}
 				for _, name := range slices.Sorted(maps.Keys(vars)) {

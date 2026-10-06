@@ -308,6 +308,7 @@ func TestAuthorize(t *testing.T) {
 	ping := strings.TrimSuffix(env, ".env") + "ping"
 	login := strings.TrimSuffix(env, ".env") + "login"
 	logout := strings.TrimSuffix(env, ".env") + "logout"
+	metadata := strings.TrimSuffix(env, ".env") + ".well-known/oauth-protected-resource"
 	for name, tc := range map[string]struct {
 		method, url, auth string
 		wantStatus        int
@@ -325,11 +326,14 @@ func TestAuthorize(t *testing.T) {
 		"ping by POST, auth":            {"POST", ping, tokenOf(secret), 405},
 		// No auth here, so nothing is on the mux at login and logout: a 404
 		// is the mux asked, a 401 the guard refusing.
-		"login by GET reaches the mux":   {"GET", login, "", 404},
-		"login by HEAD reaches the mux":  {"HEAD", login, "", 404},
-		"login by POST reaches the mux":  {"POST", login, "", 404},
-		"logout by POST reaches the mux": {"POST", logout, "", 404},
-		"login by PUT, no auth":          {"PUT", login, "", 401},
+		"login by GET reaches the mux":         {"GET", login, "", 404},
+		"login by HEAD reaches the mux":        {"HEAD", login, "", 404},
+		"login by POST reaches the mux":        {"POST", login, "", 404},
+		"logout by POST reaches the mux":       {"POST", logout, "", 404},
+		"login by PUT, no auth":                {"PUT", login, "", 401},
+		"the metadata by GET reaches the mux":  {"GET", metadata, "", 404},
+		"the metadata by HEAD reaches the mux": {"HEAD", metadata, "", 404},
+		"the metadata by POST, no auth":        {"POST", metadata, "", 401},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp, body := ask(t, tc.method, tc.url, tc.auth)
@@ -338,6 +342,11 @@ func TestAuthorize(t *testing.T) {
 			}
 			if tc.wantStatus == 401 && body != "" {
 				t.Errorf("a refusal said %q, want a bare 401", body)
+			}
+			// With no auth handed over, a refusal is still RFC 9728's.
+			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + `/_tunneld/.well-known/oauth-protected-resource"`
+			if got := resp.Header.Get("WWW-Authenticate"); tc.wantStatus == 401 && got != want {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 			}
 		})
 	}
@@ -1262,6 +1271,10 @@ func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.R
 	}
 }
 func (authOf) Header() (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+func (authOf) Unauthorized(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("WWW-Authenticate", "Fake")
+	w.WriteHeader(401)
+}
 
 // gateOf is an Auth whose public challenge is whatever gate holds, so a
 // handler can change it mid-request the way a grant's PATCH does.
@@ -1451,5 +1464,15 @@ func TestWithMcp(t *testing.T) {
 				t.Errorf("POST = %d %q, want %d %q", resp.StatusCode, body, tc.wantStatus, tc.wantBody)
 			}
 		})
+	}
+}
+
+// TestAuthorizeRefusesThroughTheAuth pins who answers a refusal under the
+// ControlPath: the auth handed over, through its Unauthorized.
+func TestAuthorizeRefusesThroughTheAuth(t *testing.T) {
+	url := controlOf(t, New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", []byte("s3cr3t"), runKey}), WithAuth(authOf{})), ".env")
+	resp, _ := ask(t, "GET", url, "")
+	if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != "Fake" {
+		t.Errorf("GET .env = %d, WWW-Authenticate %q; want the auth's 401", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
 	}
 }

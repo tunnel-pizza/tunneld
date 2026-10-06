@@ -186,12 +186,17 @@ else is the origins', passed through exactly as it was sent.
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
 | `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` redacted (`Basic pw="$pbkdf2-sha256$i=600000$…$…"`: every parameter as set, but pw's salt and hash; the file on disk keeps them), or a bare `404` before the first save |
+| `GET /_tunneld/.well-known/oauth-protected-resource` | none | this tunnel's OAuth protected-resource metadata ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)): the tunnel's hostname as the `resource`, and the provider (`https://tunnel.pizza`, or `--provider`'s) as its authorization server |
 | `POST /_tunneld/mcp` | token | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
 
 Everything but `ping` needs `Authorization: token <secret>`, the running
 tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
 whoever holds the spec holds the token. Without it, or before the run has
-saved, the answer is a bare `401`, whether or not the path exists. A run with
+saved, the answer is a `401` with no body, whether or not the path exists. Its
+`WWW-Authenticate` is [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)'s
+`Bearer resource_metadata="https://<host>/_tunneld/.well-known/oauth-protected-resource"`,
+pointing at the metadata above, password or not: a tunnel's password opens
+its origins, never `/_tunneld/`. A run with
 `--no-cache` saves nothing and so authorizes nothing but `ping`.
 
 Every answer under `/_tunneld/`, a `401` included, carries `X-Cache-Key`: the

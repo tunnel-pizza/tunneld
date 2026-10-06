@@ -2,6 +2,7 @@ package auth
 
 import (
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -39,6 +40,7 @@ type Auth interface {
 	Set(value string) error
 	Value() string
 	Header() (key, value string)
+	Unauthorized(w http.ResponseWriter, r *http.Request)
 }
 
 // Option configures an AuthImpl.
@@ -56,6 +58,7 @@ type state struct {
 // a tunnel serves.
 type AuthImpl struct {
 	secret func() []byte
+	server func() string
 	log    v1.Logger
 	now    func() time.Time
 	state  atomic.Pointer[state]
@@ -64,11 +67,27 @@ type AuthImpl struct {
 
 // New returns an AuthImpl with nothing set: everything passes.
 func New(opts ...Option) *AuthImpl {
-	a := &AuthImpl{secret: func() []byte { return nil }, log: slog.New(slog.DiscardHandler), now: time.Now}
+	a := &AuthImpl{
+		secret: func() []byte { return nil },
+		server: func() string { return "https://" + v1.DefaultProvider },
+		log:    slog.New(slog.DiscardHandler),
+		now:    time.Now,
+	}
 	a.state.Store(&state{})
 	v1.Apply(a, opts...)
 	a.guard = newGuard(a.now)
 	return a
+}
+
+// WithAuthorizationServer is where the authorization server the resource
+// metadata names is read from, on every request: the provider's origin, which
+// is only settled once the command has read its flags. Nil keeps tunnel.pizza.
+func WithAuthorizationServer(server func() string) Option {
+	return func(a *AuthImpl) {
+		if server != nil {
+			a.server = server
+		}
+	}
 }
 
 // WithSecret is where the tunnel secret is read from, on every request: it
@@ -186,7 +205,7 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			}
 		}
 		if pageLoad(r) {
-			http.Redirect(w, r, "/_tunneld/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+			http.Redirect(w, r, v1.ControlPath+"login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 			return
 		}
 		// Header's public form, but Basic needs a realm (RFC 7617): a
@@ -198,7 +217,7 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			}
 			out[i] = c.Public()
 		}
-		Unauthorized(w, strings.Join(out, ", "))
+		unauthorized(w, strings.Join(out, ", "))
 	})
 }
 
@@ -275,16 +294,52 @@ func (e *edgeWriter) Unwrap() http.ResponseWriter { return e.ResponseWriter }
 
 // refuse answers status with headers only: an app's fetch or an SDK never
 // meets a body it was not written for.
-// Unauthorized is every 401 tunneld sends, the gate's, the control path's and
-// the cache's: no body, and WWW-Authenticate when there is a challenge to
-// answer. A refusal under the control path passes none, since a password
-// does not open it; only the secret does.
-func Unauthorized(w http.ResponseWriter, challenge string) {
-	if challenge != "" {
-		w.Header().Set("WWW-Authenticate", challenge)
-	}
+// ResourceMetadata is where, under the ControlPath, auth serves this
+// tunnel's OAuth protected-resource metadata (RFC 9728): beside its other
+// pages rather than at the root's /.well-known, which is the origins'.
+const ResourceMetadata = ".well-known/oauth-protected-resource"
+
+// Unauthorized is the 401 for whatever the password does not open, the
+// ControlPath's and a lost grant's: RFC 9110 has every 401 carry a challenge,
+// and this one is RFC 9728's, a Bearer naming this tunnel's resource
+// metadata, which names the provider as the authorization server. Password
+// or not: the password opens the origins, never the ControlPath.
+func (a *AuthImpl) Unauthorized(w http.ResponseWriter, r *http.Request) {
+	unauthorized(w, `Bearer resource_metadata="https://`+r.Host+v1.ControlPath+ResourceMetadata+`"`)
+}
+
+// unauthorized is every 401 tunneld sends, the gate's and Unauthorized's: no
+// body, and the challenge it is given.
+func unauthorized(w http.ResponseWriter, challenge string) {
+	w.Header().Set("WWW-Authenticate", challenge)
 	w.Header().Set("Content-Length", "0")
 	w.WriteHeader(http.StatusUnauthorized)
+}
+
+// metadata is RFC 9728's protected-resource metadata: this tunnel's hostname
+// as the resource, and the provider as the server a token for it comes from.
+type metadata struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	ScopesSupported        []string `json:"scopes_supported"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+}
+
+// resourceMetadata answers ResourceMetadata, to anyone: it is what a client
+// refused by Unauthorized reads to learn where to get a token.
+func (a *AuthImpl) resourceMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(metadata{
+		Resource:               "https://" + r.Host,
+		AuthorizationServers:   []string{a.server()},
+		ScopesSupported:        []string{"openid", "profile"},
+		BearerMethodsSupported: []string{"header"},
+	})
 }
 
 func refuse(w http.ResponseWriter, status int, kv ...string) {
@@ -351,8 +406,9 @@ func safeNext(next string) string {
 // Handlers is the login page and logout, under the router's control path.
 func (a *AuthImpl) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
 	return map[string]func(http.ResponseWriter, *http.Request){
-		path + "login":  a.login,
-		path + "logout": a.logout,
+		path + "login":          a.login,
+		path + "logout":         a.logout,
+		path + ResourceMetadata: a.resourceMetadata,
 	}
 }
 

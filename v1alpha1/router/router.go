@@ -56,7 +56,9 @@ const Cookie = "tunneld-origin"
 // cleans the paths it serves, answering "/a//b" or "/a/../b" with a redirect
 // to the clean form; in front of the origins that would rewrite what they are
 // sent. Under this prefix only tunneld's own paths are cleaned.
-const ControlPath = "/_tunneld/"
+//
+// Declared in v1, so auth, which the router imports, can name it too.
+const ControlPath = v1.ControlPath
 
 // unreachableHeader marks tunneld's own answer for an origin nothing is
 // listening on, its value that origin's host. The page the answer carries
@@ -492,16 +494,17 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // "Authorization: token <secret>", the running tunnel's secret as the cache
 // WithCache handed over holds it, base64-encoded (the encoding the spec's own
 // JSON gives it, so whoever holds the spec holds the token), except a path
-// and method authMethods has: ping, login and logout by the methods a
-// visitor uses, and a PATCH of .env carrying "Bearer <grant>".
+// and method authMethods has: ping, login, logout and the resource metadata
+// by the methods a visitor uses, and a PATCH of .env carrying "Bearer
+// <grant>".
 //
 // A CORS preflight never reaches it: cors, in front, answers that. Anything
-// else is a bare 401, no-store, before the mux sees it,
-// registered endpoint or not, so nothing under the prefix can be probed
-// without it.
+// else is the auth's Unauthorized, a bodyless 401 naming the resource
+// metadata, before the mux sees it, registered endpoint or not, so nothing
+// under the prefix can be probed without it.
 //
-// Fails closed: with no cache, or no secret yet, nothing but ping, login and
-// logout answers. Compared in constant time, so the time a refusal takes says
+// Fails closed: with no cache, or no secret yet, nothing but ping, login,
+// logout and the resource metadata answers. Compared in constant time, so the time a refusal takes says
 // nothing about how much of a guess was right.
 func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	e := r.env
@@ -543,9 +546,16 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		auth.Unauthorized(w, "")
+		if a == nil {
+			a = fallback
+		}
+		a.Unauthorized(w, req)
 	})
 }
+
+// fallback is what a router handed no auth refuses through, so its 401 still
+// carries a challenge.
+var fallback auth.Auth = auth.New()
 
 // gated stamps an answer with X-Tunneld-Authenticate, the challenges in
 // public: nothing a 401 would not say to anyone, said ahead so a caller (the
@@ -613,14 +623,17 @@ func (u *unstored) Write(b []byte) (int, error) {
 func (u *unstored) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 
 // authMethods is every path under the ControlPath a request reaches without
-// the secret, by its name there and the methods it may use: ping, login and logout, which a
-// visitor without the secret asks, and .env, which the owner's browser
+// the secret, by its name there and the methods it may use: ping, login,
+// logout and the resource metadata, which a visitor without the secret asks,
+// and .env, which the owner's browser
 // PATCHes with a live grant the cache issued to the secret's holder.
 var authMethods = map[string][]string{
 	"ping":   {http.MethodGet, http.MethodHead},
 	"login":  {http.MethodGet, http.MethodHead, http.MethodPost},
 	"logout": {http.MethodGet, http.MethodHead, http.MethodPost},
-	".env":   {http.MethodPatch},
+	// What a client refused a 401 reads to learn where a token comes from.
+	auth.ResourceMetadata: {http.MethodGet, http.MethodHead},
+	".env":                {http.MethodPatch},
 }
 
 // corsMethods is every path under the ControlPath a browser calls across

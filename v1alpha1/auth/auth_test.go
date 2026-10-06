@@ -3,11 +3,13 @@ package auth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -57,23 +59,72 @@ func TestHeader(t *testing.T) {
 	}
 }
 
-// TestUnauthorized pins every 401 tunneld sends: no body, Content-Length 0,
-// and WWW-Authenticate only when there is a challenge to answer.
+// TestUnauthorized pins the 401 for whatever the password does not open:
+// RFC 9728's Bearer challenge, naming this tunnel's protected-resource
+// metadata, password or not; no body.
 func TestUnauthorized(t *testing.T) {
-	for name, tc := range map[string]struct{ challenge, want string }{
-		"a challenge": {`Basic realm="h", charset="UTF-8"`, `Basic realm="h", charset="UTF-8"`},
-		"none":        {"", ""},
-	} {
+	for name, a := range map[string]*AuthImpl{"public": New(), "protected": protected(t)} {
 		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/_tunneld/.env", nil)
+			req.Host = "h.example"
 			rec := httptest.NewRecorder()
-			Unauthorized(rec, tc.challenge)
+			a.Unauthorized(rec, req)
 			if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 || rec.Header().Get("Content-Length") != "0" {
 				t.Errorf("%d, %d bytes, Content-Length %q; want a bodyless 401", rec.Code, rec.Body.Len(), rec.Header().Get("Content-Length"))
 			}
-			if got := rec.Header().Values("WWW-Authenticate"); strings.Join(got, "|") != tc.want {
-				t.Errorf("WWW-Authenticate = %q, want %q", got, tc.want)
+			want := `Bearer resource_metadata="https://h.example/_tunneld/.well-known/oauth-protected-resource"`
+			if got := rec.Header().Values("WWW-Authenticate"); len(got) != 1 || got[0] != want {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// TestProtectedResource pins the metadata the 401 points at (RFC 9728): this
+// tunnel as the resource, the provider as its authorization server, by GET
+// or HEAD.
+func TestProtectedResource(t *testing.T) {
+	const path = "/_tunneld/.well-known/oauth-protected-resource"
+	for name, tc := range map[string]struct {
+		opts   []Option
+		server string
+	}{
+		"by default, tunnel.pizza": {nil, "https://tunnel.pizza"},
+		"the provider it is given": {[]Option{WithAuthorizationServer(func() string { return "https://p.example" })}, "https://p.example"},
+		"nil keeps tunnel.pizza":   {[]Option{WithAuthorizationServer(nil)}, "https://tunnel.pizza"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := New(tc.opts...).Handlers("/_tunneld/")[path]
+			if h == nil {
+				t.Fatalf("no handler at %s", path)
+			}
+			req := httptest.NewRequest("GET", path, nil)
+			req.Host = "h.example"
+			rec := serve(http.HandlerFunc(h), req)
+			if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("%d, Content-Type %q; want 200 application/json", rec.Code, rec.Header().Get("Content-Type"))
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]any{
+				"resource":                 "https://h.example",
+				"authorization_servers":    []any{tc.server},
+				"scopes_supported":         []any{"openid", "profile"},
+				"bearer_methods_supported": []any{"header"},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("metadata = %v, want %v", got, want)
+			}
+		})
+	}
+	h := New().Handlers("/_tunneld/")[path]
+	if rec := serve(http.HandlerFunc(h), httptest.NewRequest("HEAD", path, nil)); rec.Code != 200 {
+		t.Errorf("HEAD = %d, want 200", rec.Code)
+	}
+	if rec := serve(http.HandlerFunc(h), httptest.NewRequest("POST", path, nil)); rec.Code != 405 || rec.Header().Get("Allow") != "GET, HEAD" {
+		t.Errorf("POST = %d, Allow %q; want 405 and GET, HEAD", rec.Code, rec.Header().Get("Allow"))
 	}
 }
 

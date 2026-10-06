@@ -7,6 +7,7 @@
 package v1alpha1
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -240,6 +241,13 @@ func (b *BuilderImpl) secret() []byte {
 	return b.runCache.Secret()
 }
 
+// authorizationServer is the provider's origin, as the --provider flag or its
+// default settles it: what the default auth names as the server a token for
+// this tunnel comes from.
+func (b *BuilderImpl) authorizationServer() string {
+	return router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider))
+}
+
 // WithRun replaces what takes a run's tunnel from its spec to its end. The
 // default is run.New().
 func WithRun(r Run) Option {
@@ -310,7 +318,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
-		WithAuth(auth.New(auth.WithSecret(b.secret), auth.WithLog(log.Logger()))),
+		WithAuth(auth.New(auth.WithSecret(b.secret), auth.WithAuthorizationServer(b.authorizationServer), auth.WithLog(log.Logger()))),
 		WithRun(run.New()),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),
