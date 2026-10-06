@@ -19,10 +19,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
@@ -249,7 +252,15 @@ func (c cacheOf) Handlers(path string) map[string]func(http.ResponseWriter, *htt
 	}
 }
 func (c cacheOf) Secret() []byte { return c.secret }
-func (c cacheOf) Key() string    { return c.key }
+
+// The rest of cache.Cache, which the router never asks of it.
+func (cacheOf) Load(...cache.Option) string   { return "" }
+func (cacheOf) Save(...cache.Option)          {}
+func (cacheOf) String() string                { return "" }
+func (cacheOf) Spec() <-chan string           { return nil }
+func (cacheOf) Mutable(string) (string, bool) { return "", false }
+func (cacheOf) SetMutable(string, string)     {}
+func (c cacheOf) Key() string                 { return c.key }
 
 // runKey is the key cacheOf names its run by in these tests.
 const runKey = "0123456789abcdef"
@@ -315,6 +326,7 @@ func TestAuthorize(t *testing.T) {
 		// No auth here, so nothing is on the mux at login and logout: a 404
 		// is the mux asked, a 401 the guard refusing.
 		"login by GET reaches the mux":   {"GET", login, "", 404},
+		"login by HEAD reaches the mux":  {"HEAD", login, "", 404},
 		"login by POST reaches the mux":  {"POST", login, "", 404},
 		"logout by POST reaches the mux": {"POST", logout, "", 404},
 		"login by PUT, no auth":          {"PUT", login, "", 401},
@@ -1175,12 +1187,64 @@ func TestProxyMarksUncachedResponses(t *testing.T) {
 	}
 }
 
+// TestEveryAnswerIsUnstored pins the rule the router keeps for everything it
+// serves, not only what it proxies: an answer that says nothing about
+// caching goes out "Cache-Control: no-store" — a page in front of the
+// origins (the panel's place), the agent server, a control endpoint — and
+// one that does say keeps exactly what it said, once.
+func TestEveryAnswerIsUnstored(t *testing.T) {
+	secret := []byte("s3cr3t")
+	silent := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "page") })
+	says := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "max-age=60")
+		io.WriteString(w, "page")
+	})
+	for name, tc := range map[string]struct {
+		front      http.Handler // answers in front of the origins, nil for none
+		mcp        http.Handler // the agent server, nil for none
+		path, auth string
+		want       string
+	}{
+		"a page in front, silent": {silent, nil, "/", "", "no-store"},
+		"a page in front, says":   {says, nil, "/", "", "max-age=60"},
+		"the agent server":        {nil, silent, ControlPath + "mcp", tokenOf(secret), "no-store"},
+		"the agent server, says":  {nil, says, ControlPath + "mcp", tokenOf(secret), "max-age=60"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts := []Option{WithOrigins(listOf(t, echo(t, "A"))), WithCache(cacheOf{"x\n", secret, runKey})}
+			if tc.front != nil {
+				opts = append(opts, WithWrap(func(http.Handler) http.Handler { return tc.front }))
+			}
+			if tc.mcp != nil {
+				opts = append(opts, WithMcp(&mcpOf{tc.mcp}))
+			}
+			r := New()
+			u, err := r.Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatalf("Route: %v", err)
+			}
+			t.Cleanup(r.Cancel)
+			method := "GET"
+			if tc.mcp != nil {
+				method = "POST"
+			}
+			resp, _ := ask(t, method, strings.TrimSuffix(u.String(), "/")+tc.path, tc.auth)
+			if got := resp.Header.Values("Cache-Control"); len(got) != 1 || got[0] != tc.want {
+				t.Errorf("%s %s = %d, Cache-Control %q; want exactly %q", method, tc.path, resp.StatusCode, got, tc.want)
+			}
+		})
+	}
+}
+
 // cacheOf's Grant: one fixed grant, "g00d", is live.
 func (c cacheOf) Grant(bearer string) bool { return bearer == "g00d" }
 
 // authOf stands in for auth: it refuses every visitor unless pass is set,
 // answers login and logout, and says its challenge in public.
-type authOf struct{ pass bool }
+type authOf struct {
+	auth.Auth // the rest, which the router never asks of it
+	pass      bool
+}
 
 func (a authOf) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1197,7 +1261,55 @@ func (authOf) Handlers(path string) map[string]func(http.ResponseWriter, *http.R
 		path + "logout": func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "logout") },
 	}
 }
-func (authOf) Public(host string) []string { return []string{`Basic realm="` + host + `"`} }
+func (authOf) Header(bool) (string, string) { return v1.AuthenticateHeader, `Basic realm="x"` }
+
+// gateOf is an Auth whose public challenge is whatever gate holds, so a
+// handler can change it mid-request the way a grant's PATCH does.
+type gateOf struct {
+	authOf
+	gate *atomic.Value
+}
+
+func (g gateOf) Header(bool) (string, string) {
+	v, _ := g.gate.Load().(string)
+	return v1.AuthenticateHeader, v
+}
+
+// TestAuthenticateHeader pins X-Tunneld-Authenticate: the router stamps every
+// answer under the ControlPath with the gate as a 401 would say it — ping,
+// a served endpoint, a refusal — and none when the tunnel is public. Read as
+// the status is written, so an answer that changed the gate says the new one.
+func TestAuthenticateHeader(t *testing.T) {
+	secret := []byte("s3cr3t")
+	gate := &atomic.Value{}
+	gate.Store(`Basic realm="old"`)
+	respec := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		gate.Store(`Basic realm="new"`)
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	written := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })}
+	for name, tc := range map[string]struct {
+		mcp                v0exp1.Mcp
+		method, path, auth string
+		gate, want         string
+	}{
+		"ping":                         {nil, "GET", "ping", "", `Basic realm="old"`, `Basic realm="old"`},
+		"a refusal":                    {nil, "GET", "nope", "", `Basic realm="old"`, `Basic realm="old"`},
+		"an answer that only writes":   {written, "POST", "mcp", tokenOf(secret), `Basic realm="old"`, `Basic realm="old"`},
+		"an answer that changed it":    {respec, "POST", "mcp", tokenOf(secret), `Basic realm="old"`, `Basic realm="new"`},
+		"a public tunnel says nothing": {nil, "GET", "ping", "", "", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gate.Store(tc.gate)
+			r := New(WithCache(cacheOf{"x\n", secret, runKey}), WithAuth(gateOf{gate: gate}), WithMcp(tc.mcp))
+			u := strings.TrimSuffix(controlOf(t, r, ""), "/") + "/" + tc.path
+			resp, _ := ask(t, tc.method, u, tc.auth)
+			if got := resp.Header.Values(v1.AuthenticateHeader); (tc.want == "" && got != nil) || (tc.want != "" && (len(got) != 1 || got[0] != tc.want)) {
+				t.Errorf("%s = %d, %s %q; want %q", tc.path, resp.StatusCode, v1.AuthenticateHeader, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestAuth pins how the router carries auth: outermost on the visitor side,
 // the control path outside it; login and logout need no secret; ping says the
@@ -1298,10 +1410,11 @@ func TestProviderOrigin(t *testing.T) {
 	}
 }
 
-// mcpOf is an Mcp answering with h.
+// mcpOf is a v0exp1.Mcp answering with h.
 type mcpOf struct{ h http.Handler }
 
 func (m mcpOf) Handler() http.Handler { return m.h }
+func (mcpOf) Close() error            { return nil }
 
 // TestWithMcp pins the agent server's place: ControlPath+"mcp" on the mux,
 // behind authorize — a bare 401 without the secret, the server's own answer

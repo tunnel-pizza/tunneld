@@ -9,10 +9,7 @@ package v1alpha1
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
-	"net/url"
-	"os"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -31,6 +28,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
 )
@@ -63,74 +61,14 @@ func WithTunnelFactory(from func(spec string) libtunnel.TunnelV1) Option {
 	return func(b *BuilderImpl) { b.newTunnel = from }
 }
 
-// Cache persists a tunnel's spec between runs, filed under the name the
-// origins give it.
-//
-// Save takes what the run settled on as well, keyed by the variable that names
-// each knob. It is written beside the spec and never read back: a file whose
-// name is a hash otherwise says nothing about the run that wrote it, and a
-// cache that fed configuration back into the next run would pin a choice made
-// once into every run afterwards.
-//
-// Both take the run's facts as the options they are given, as Route and Open
-// do: the origins whose key names the file, and for Save the spec and the
-// tracking to write, and the run's logger. String is the file as the cache
-// last saved it, "" before then. Handlers is what the cache answers under a
-// path, by ServeMux pattern — the router hands it its control path — and the
-// default cache's .env there is String, served as a remote copy. Secret is the running tunnel's secret the run last saved with, nil before
-// then: what the router authorizes its control path against. Key is the key
-// of the run the cache is for, "" before it knows: what the router names the
-// run by on every answer from its control path, refusals included. Spec is
-// every spec the cache takes, the run's own saves among them: a new one while
-// the run waits is a new tunnel. Grant is whether a bearer token is a live,
-// unused grant the cache issued on GET .env, for the router to let that one
-// PATCH through. Mutable is what the file said about a variable a PATCH may
-// change, set says whether it said anything at all (an empty line is a
-// choice); SetMutable records what the builder settled, for the file.
-type Cache interface {
-	Load(opts ...cache.Option) string
-	Save(opts ...cache.Option)
-	String() string
-	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
-	Secret() []byte
-	Key() string
-	Spec() <-chan string
-	Grant(bearer string) bool
-	Mutable(name string) (string, bool)
-	SetMutable(name, value string)
-}
+// Cache is cache.Cache.
+type Cache = cache.Cache
 
-// Pid is how a run is found and handed back from outside it, by the npm
-// launcher.
-//
-// Register marks the run as running, for the launcher's -k to find and end,
-// until release is called, and refuses with v1.ErrRunning when the same run
-// is already going. Detach, once the addresses are out, hands the run
-// back from a launcher waiting on it — pointing its stdout and stderr at out,
-// or nowhere when out is nil, and telling the launcher — and reports whether
-// one was waiting.
-type Pid interface {
-	Register(origins Origins, log v1.Logger) (release func(), err error)
-	Detach(out *os.File, log v1.Logger) bool
-}
+// Pid is pid.Pid.
+type Pid = pid.Pid
 
-// Log is a run's own logging: one logger from New on, and where its lines go.
-//
-// Logger is the logger, the same every time. To points what --log-level shows
-// at a handler, or nowhere; Mute and Detach keep lines off it while a frame
-// draws, and for the rest of a detached run. Lines is the recent ones, for a
-// terminal's log view. Open starts the run's log file once its key is known,
-// File is that file, and Close ends it.
-type Log interface {
-	Logger() *slog.Logger
-	To(h slog.Handler, level slog.Level)
-	Lines() []string
-	Mute(muted bool)
-	Detach()
-	Open(origins Origins)
-	File() *os.File
-	Close()
-}
+// Log is logs.Log.
+type Log = logs.Log
 
 // WithLog replaces a run's logging. The default is logs.New(), which New also
 // hands the console and the binder; a replacement leaves their log view and
@@ -195,41 +133,11 @@ func WithCacheDir(dir string) Option {
 	return WithCache(cache.New(cache.WithDir(dir)))
 }
 
-// Console is the screen a run was started on, when it turns out to be one.
-//
-// For is the whole of it, and it answers rather than asks: given the bound
-// origins and the command's own streams, it says nil when there is no screen —
-// nothing to show, or nowhere to show it — and one ready to be handed over
-// otherwise. Nothing out here counts origins or tests a stream — the binder
-// already decided the first by carrying Show, and the second is a question
-// about streams that the thing drawing on them should be the one to ask.
-//
-// What comes back is what the browser package takes when it decides a console
-// is what this run gets shown on: one interface, declared where the console
-// is, named by the package that chooses between it and a tab.
-type Console interface {
-	For(bound attach.Bound, streams console.Streams) console.Screen
-}
+// Console is console.Console.
+type Console = console.Console
 
-// Display puts the tunnel in front of a person: it answers the bare public
-// address when several origins have to share it, and it opens that address
-// once the edge serves it.
-//
-// URL and Panel are two halves of one decision and answer over the same
-// condition — "" and a nil wrapper when there is no panel to serve — so the
-// caller reads an answer rather than asking whether to ask. Panel is handed
-// to the Router, which puts it in front of the origins.
-//
-// Open reads the same way. It is told what the run is doing, in the options it
-// takes, and decides for itself whether that means a browser — there is no
-// "should I" for a caller to answer, and no second place where opening one is
-// decided.
-type Display interface {
-	URL(enabled bool, public *url.URL, origins Origins) string
-	Panel(enabled bool, origins Origins, log v1.Logger) func(next http.Handler) http.Handler
-	Open(ctx context.Context, log v1.Logger, opts ...display.Option)
-	QR(addr string) ([]string, error)
-}
+// Display is display.Display.
+type Display = display.Display
 
 // WithDisplay replaces what serves the tunnel's bare address and opens it
 // once the tunnel is live. The default is display.New(display.WithMotd(board)):
@@ -241,32 +149,8 @@ func WithDisplay(display Display) Option {
 	return func(b *BuilderImpl) { b.display = display }
 }
 
-// Router puts several origins behind the one address a tunnel forwards to.
-// Every rule that picks an origin for a request — the bare ?n parameter, the
-// +ws origin for a handshake, a same-host Referer, the sticky cookie — is
-// tunneld's convention, so it is served here on a loopback listener rather
-// than asked of the tunnel engine, which is handed one URL and knows nothing
-// of origins (#176).
-//
-// Route answers with that URL, the router's own — a lone origin's run
-// included, so tunneld's /_tunneld/ control path answers on every tunnel.
-// What it routes is the run's,
-// handed over in the options it takes, as Display's Open is: the dialable
-// origins, the index of the one marked +ws, what the display's Panel answered
-// to put in front, and the run's logger.
-//
-// Unanswered dials each http and https origin once and says which indexes
-// nothing answered on, so the run can report that the address is up and the
-// thing behind it is not. It is the router's because the router is what dials
-// origins: a failed dial is what it answers visitors with a page for.
-//
-// Cancel takes the router down. Not ctx: the router outlives the run for as
-// long as the tunnel drains, so the caller cancels it once the tunnel is done.
-type Router interface {
-	Route(ctx context.Context, opts ...router.Option) (*url.URL, error)
-	Unanswered(ctx context.Context, origins Origins) []int
-	Cancel()
-}
+// Router is router.Router.
+type Router = router.Router
 
 // WithRouter replaces what stands between the tunnel and the origins. The
 // default is router.New().
@@ -310,35 +194,11 @@ func WithIdentity(i Identity) Option {
 	return func(b *BuilderImpl) { b.identity = i }
 }
 
-// Motd is what the provider said with the spec, kept for every surface that
-// shows it.
-//
-// Learn takes the strings as libtunnel hands them over — data URLs, severity
-// inside the markdown — once the URL is live, which is when the spec, and so
-// the messages, are known. That is the whole of what the builder asks of it:
-// the frame and the panel read the same instance through interfaces they
-// declare themselves (attach.Motd, display.Motd), so the one instance New
-// builds is shared into both, the way the log ring is. Nothing goes to
-// stderr; a rendered notice among the addresses was noise on the console,
-// and the console frame shows it where the reader is looking anyway.
-type Motd interface {
-	Learn(raw []string, log v1.Logger)
-}
+// Motd is motd.Motd.
+type Motd = motd.Motd
 
-// Auth stands between a visitor and everything the tunnel serves: the
-// origins, the panel, every terminal. The router keeps its control path
-// outside it, and puts its Handlers (the login page, logout) under that path
-// without asking for the secret, since a visitor logging in has none. Set is
-// what the builder calls with the password it settled, and what a PATCH to
-// .env calls through the cache; Value and Public say it back, privately and
-// as a visitor may see it.
-type Auth interface {
-	Handler(next http.Handler) http.Handler
-	Handlers(path string) map[string]func(http.ResponseWriter, *http.Request)
-	Set(value string) error
-	Value() string
-	Public(host string) []string
-}
+// Auth is auth.Auth.
+type Auth = auth.Auth
 
 // Run is one run's tunnel, from its spec to its end: minted from the spec,
 // brought up and put in front of everybody — the addresses, the map, the bound

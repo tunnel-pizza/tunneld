@@ -40,6 +40,25 @@ type Message struct {
 	Body      string // the markdown with the alert line and the "> " prefixes removed
 }
 
+// Motd is what the provider said with the spec, kept for every surface that
+// shows it.
+//
+// Learn takes the strings as libtunnel hands them over — data URLs, severity
+// inside the markdown — once the URL is live, which is when the spec, and so
+// the messages, are known: what the run asks of it. The frame reads Lines,
+// a width's worth for its banner row, and the panel reads HTML, both from
+// the one instance New builds and shares into both, the way the log ring is;
+// Changed is closed by the next Learn, so a frame already drawn redraws.
+// Nothing goes to stderr; a rendered notice among the addresses was noise on
+// the console, and the console frame shows it where the reader is looking
+// anyway.
+type Motd interface {
+	Learn(raw []string, log v1.Logger)
+	Lines(width int) []string
+	HTML() []Rendered
+	Changed() <-chan struct{}
+}
+
 // Option configures a MotdImpl.
 type Option = v1.Option[*MotdImpl]
 

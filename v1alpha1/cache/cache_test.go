@@ -602,8 +602,7 @@ func mutableCache(t *testing.T) (*cache.CacheImpl, *[]string) {
 				}
 				return nil
 			},
-			func(v string) { applied = append(applied, v) }),
-		cache.WithPublic(func(host string) []string { return []string{`Basic realm="` + host + `"`} }))
+			func(v string) { applied = append(applied, v) }))
 	<-c.Spec() // the save's own spec, as the run would take it
 	return c, &applied
 }
@@ -627,8 +626,9 @@ func TestMutables(t *testing.T) {
 	c, applied := mutableCache(t)
 	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
 
-	if rec := call(c, "PATCH", "", line); rec.Code != 200 || !strings.Contains(rec.Body.String(), line) {
-		t.Fatalf("PATCH with the secret's path = %d %q, want 200 and the file", rec.Code, rec.Body)
+	served := v1.WWWAuthenticateEnv + `='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`
+	if rec := call(c, "PATCH", "", line); rec.Code != 200 || !strings.Contains(rec.Body.String(), served) {
+		t.Fatalf("PATCH with the secret's path = %d %q, want 200 and the file, the password redacted", rec.Code, rec.Body)
 	}
 	if len(*applied) != 1 || (*applied)[0] != authValue {
 		t.Errorf("applied %q", *applied)
@@ -713,8 +713,9 @@ func TestGrants(t *testing.T) {
 		t.Errorf("a refused value = %d, grant live %v; want 400 and the grant kept", rec.Code, c.Grant(grant))
 	}
 	rec := call(c, "PATCH", "Bearer "+grant, line)
-	if rec.Code != 204 || rec.Body.Len() != 0 || rec.Header().Get(v1.AuthenticateHeader) != `Basic realm="h.tunneled.pizza"` {
-		t.Errorf("grant PATCH = %d, body %q, header %q", rec.Code, rec.Body, rec.Header().Get(v1.AuthenticateHeader))
+	// The gate's header is the router's to stamp, not the cache's.
+	if rec.Code != 204 || rec.Body.Len() != 0 || rec.Header().Values(v1.AuthenticateHeader) != nil {
+		t.Errorf("grant PATCH = %d, body %q, header %q", rec.Code, rec.Body, rec.Header().Values(v1.AuthenticateHeader))
 	}
 	if c.Grant(grant) {
 		t.Error("a used grant is still live")
@@ -822,8 +823,11 @@ func TestInMemoryCache(t *testing.T) {
 	if rec := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"='"+authValue+"'"); rec.Code != 200 {
 		t.Errorf("in-memory PATCH = %d", rec.Code)
 	}
-	if rec := call(c, "GET", "", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), authValue) {
-		t.Errorf("in-memory GET = %d %q", rec.Code, rec.Body)
+	if v, _ := c.Mutable(v1.WWWAuthenticateEnv); v != authValue {
+		t.Errorf("in-memory Mutable = %q, want what the PATCH set", v)
+	}
+	if rec := call(c, "GET", "", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), v1.WWWAuthenticateEnv+`='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`) {
+		t.Errorf("in-memory GET = %d %q, want the password redacted", rec.Code, rec.Body)
 	}
 }
 
@@ -889,7 +893,7 @@ func TestIfMatchForms(t *testing.T) {
 }
 
 // TestServedFileHidesThePassword pins what .env hands its reader: the
-// password variable in its redacted form, never the hash, in a GET and in a
+// password variable redacted, never its salt or hash, in a GET and in a
 // PATCH's answer alike, while the file on disk keeps the hash so a restart
 // is still protected. The ETag names what is served, so If-Match works on
 // what a reader actually read. And no hop may transform it (a compressing
@@ -897,23 +901,29 @@ func TestIfMatchForms(t *testing.T) {
 func TestServedFileHidesThePassword(t *testing.T) {
 	c, o, path := fixed(t, "http://localhost:3000")
 	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithSecret([]byte("s")),
-		cache.WithMutable(v1.WWWAuthenticateEnv, func(string) error { return nil }, func(string) {}),
-		cache.WithRedact(v1.WWWAuthenticateEnv, func(string) string { return `Basic charset="UTF-8"` }))
+		cache.WithMutable(v1.WWWAuthenticateEnv, func(string) error { return nil }, func(string) {}))
 	<-c.Spec()
 	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
 	patch := call(c, "PATCH", "", line)
-	if patch.Code != 200 || strings.Contains(patch.Body.String(), "pbkdf2") {
+	if patch.Code != 200 || strings.Contains(patch.Body.String(), "UFtjhDQ2") {
 		t.Errorf("PATCH answered %d with the hash: %q", patch.Code, patch.Body)
 	}
 	get := call(c, "GET", "", "")
-	if strings.Contains(get.Body.String(), "pbkdf2") || !strings.Contains(get.Body.String(), v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
-		t.Errorf("GET .env = %q, want the redacted form", get.Body)
+	if strings.Contains(get.Body.String(), "UFtjhDQ2") || !strings.Contains(get.Body.String(), v1.WWWAuthenticateEnv+`='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`) {
+		t.Errorf("GET .env = %q, want the password redacted", get.Body)
 	}
+	// A value that does not parse as a challenge says only that it is set.
+	if patch := call(c, "PATCH", "", v1.WWWAuthenticateEnv+"='Basic nope'"); patch.Code != 200 ||
+		strings.Contains(patch.Body.String(), "nope") || !strings.Contains(patch.Body.String(), "(set)") {
+		t.Errorf("PATCH of an unparsable value answered %d %q, want it shown as (set)", patch.Code, patch.Body)
+	}
+	call(c, "PATCH", "", line) // the password again, for what follows
+	get = call(c, "GET", "", "")
 	if cc := get.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") || !strings.Contains(cc, "no-transform") {
 		t.Errorf("Cache-Control = %q, want no-store and no-transform", cc)
 	}
 	disk, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(disk), "pbkdf2") {
+	if err != nil || !strings.Contains(string(disk), "UFtjhDQ2") {
 		t.Errorf("the file on disk lost the hash (%v):\n%s", err, disk)
 	}
 	req := httptest.NewRequest("PATCH", "/_tunneld/.env", strings.NewReader(line))

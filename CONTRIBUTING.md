@@ -27,7 +27,7 @@ Deep-link by filename; line numbers will drift.
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
 | The MCP server served to agents on the control path, toolless while it is redesigned | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
-| Ring of tunneld's own log lines (`attach.Logs`) | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
+| Ring of tunneld's own log lines (`logs.Log`)   | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Password protection: the challenge, PBKDF2 checks, the cookie, the login page (`Auth`) | [`v1alpha1/auth/`](./v1alpha1/auth) |
 | Drawing a served terminal on the local console  | [`v1alpha1/console/`](./v1alpha1/console)                        |
@@ -959,9 +959,13 @@ contract, not a function. Seven things move together, and
 `TestNewWiresEveryCollaborator` plus the assertion block catch the ones that
 are easy to forget:
 
-1. the interface in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go), beside
-   the others, with flag-settled configuration as method arguments rather
-   than constructor state;
+1. the interface in `v1alpha1/<name>/<name>.go`, beside its `XImpl`, with
+   flag-settled configuration as method arguments rather than constructor
+   state, and an alias for it in [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)
+   beside the others (`type Cache = cache.Cache`). One interface each: every
+   package that takes one (the run, the router, a frame) imports it from
+   there rather than declaring a narrower copy, and a fake that needs only
+   part of it embeds the interface for the rest;
 2. `v1alpha1/<name>/<name>.go` with `XImpl`, `type Option =
    v1.Option[*XImpl]`, `New(opts ...Option) *XImpl`, and a `With*` per
    tunable;

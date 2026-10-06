@@ -24,6 +24,8 @@ import (
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -108,7 +110,9 @@ func TestCopyOutput(t *testing.T) {
 
 // testLogs is a stand-in for tunneld's own recent lines. One line, so a frame
 // showing them draws something a test can find.
-type testLogs struct{}
+type testLogs struct {
+	logs.Log // the rest, which a frame never asks of it
+}
 
 func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
 
@@ -117,6 +121,11 @@ func (testLogs) Lines() []string { return []string{"a line tunneld wrote"} }
 type testMotd []string
 
 func (m testMotd) Lines(int) []string { return []string(m) }
+
+// The rest of motd.Motd, which a frame never asks of it.
+func (testMotd) Learn([]string, v1.Logger) {}
+func (testMotd) HTML() []motd.Rendered     { return nil }
+func (testMotd) Changed() <-chan struct{}  { return nil }
 
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a

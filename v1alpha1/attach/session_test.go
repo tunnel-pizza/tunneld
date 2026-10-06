@@ -12,6 +12,7 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
@@ -469,8 +470,9 @@ func (l *lockedBuffer) String() string {
 // changingMotd is a banner that can change under a session, as the real motd
 // does when a messages-only spec arrives.
 type changingMotd struct {
-	rows    []string
-	changed chan struct{}
+	motd.Motd // the rest, which a frame never asks of it
+	rows      []string
+	changed   chan struct{}
 }
 
 func (m *changingMotd) Lines(int) []string       { return m.rows }
@@ -526,11 +528,12 @@ func TestMotdChangeResizesThePane(t *testing.T) {
 // swappingMotd closes and replaces its channel on each change, as the real
 // motd does, may be changed from another goroutine, and says when it is read.
 type swappingMotd struct {
-	mu      sync.Mutex
-	rows    []string
-	changed chan struct{}
-	asked   chan struct{} // a Changed call
-	read    chan struct{} // a Lines call
+	motd.Motd // the rest, which a frame never asks of it
+	mu        sync.Mutex
+	rows      []string
+	changed   chan struct{}
+	asked     chan struct{} // a Changed call
+	read      chan struct{} // a Lines call
 }
 
 func signal(c chan struct{}) {

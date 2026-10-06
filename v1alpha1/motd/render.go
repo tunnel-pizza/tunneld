@@ -133,7 +133,9 @@ func plainText(body string) string {
 			b.Write(n.Value)
 		case *gmast.AutoLink:
 			if url := n.URL(src); linkable(url) {
-				b.WriteString(ansi.SetHyperlink(string(url)) + string(n.Label(src)) + ansi.ResetHyperlink())
+				b.WriteString(ansi.SetHyperlink(string(url)))
+				b.Write(n.Label(src))
+				b.WriteString(ansi.ResetHyperlink())
 			} else {
 				b.Write(n.Label(src))
 			}

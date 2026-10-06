@@ -53,6 +53,24 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// TestRedacted pins what .env's reader is shown of a stored challenge: every
+// parameter as given, in the order its scheme takes them, quoted again where
+// it needs it, but pw's salt and hash, which are what would let a reader
+// guess the password offline.
+func TestRedacted(t *testing.T) {
+	cs, err := Parse(`basic realm="old \"x\" example", pw="` + vector + `", charset="latin1"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `Basic pw="$pbkdf2-sha256$i=600000$…$…", realm="old \"x\" example", charset="latin1"`
+	if got := cs[0].Redacted(); got != want {
+		t.Errorf("Redacted = %q, want %q", got, want)
+	}
+	if got := cs[0].Redacted(); strings.Contains(got, "dHVubmVs") || strings.Contains(got, "UFtjhDQ2") {
+		t.Errorf("Redacted = %q, carries the salt or the hash", got)
+	}
+}
+
 // TestPublic pins what a visitor is sent: by allow-list, byte for byte MDN's
 // Basic example, realm from the request's host whatever was stored, and never
 // pw; an empty host leaves the realm out.

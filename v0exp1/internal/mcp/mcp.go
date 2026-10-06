@@ -4,17 +4,18 @@
 // yet: the agent surface is being redesigned.
 //
 // The types a caller hands in are declared here and aliased by v0exp1,
-// which is the only package allowed to import this one.
+// which is the only package allowed to import this one; a spawner is
+// attach.Spawner, the one interface every origin's provider implements.
 package mcp
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
 // Kind is what an origin is.
@@ -26,20 +27,21 @@ const (
 	KindHTTP   Kind = "http"   // an address the tunnel dials
 )
 
-// Spawner starts one private process on an origin, over pipes, and reports
-// how it ended: the exit code, -1 when a signal ended it. err is a failure
-// to start, never a non-zero exit. The process ends with ctx. The same shape
-// as attach.Spawner, declared here so this package imports nothing of
-// v1alpha1's.
-type Spawner interface {
-	Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (exit int, err error)
-}
-
 // Origin is what the server knows about one origin of the run.
 type Origin struct {
-	Name    string  // the origin as shown, e.g. exec:///bin/sh
-	Kind    Kind    // what it is
-	Spawner Spawner // nil when the origin cannot start a process
+	Name    string         // the origin as shown, e.g. exec:///bin/sh
+	Kind    Kind           // what it is
+	Spawner attach.Spawner // nil when the origin cannot start a process
+}
+
+// Mcp serves one run's origins to agents over streamable HTTP, named by the
+// index the routing parameter uses. It offers no tools yet: the agent
+// surface is being redesigned.
+type Mcp interface {
+	// Handler answers the MCP endpoint, to mount on the control path.
+	Handler() http.Handler
+	// Close ends whatever the server started. Callable more than once.
+	io.Closer
 }
 
 // Option configures a McpImpl.

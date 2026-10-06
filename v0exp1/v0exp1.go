@@ -14,9 +14,7 @@
 package v0exp1
 
 import (
-	"io"
 	"log/slog"
-	"net/http"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp"
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -46,15 +44,9 @@ type Builtin interface {
 	Run() int
 }
 
-// Mcp serves one run's origins to agents over streamable HTTP, named by the
-// index the routing parameter uses. It offers no tools yet: the agent
-// surface is being redesigned.
-type Mcp interface {
-	// Handler answers the MCP endpoint, to mount on the control path.
-	Handler() http.Handler
-	// Close ends whatever the server started. Callable more than once.
-	io.Closer
-}
+// Mcp is mcp.Mcp: the MCP server, a handler to mount on the control path and
+// a closer for the run's end.
+type Mcp = mcp.Mcp
 
 // McpOption configures the MCP server. Prefixed, as every Mcp name here is,
 // because this package is every experiment's and Option alone would claim
@@ -80,10 +72,6 @@ const (
 	McpAttach = mcp.KindAttach
 	McpHTTP   = mcp.KindHTTP
 )
-
-// McpSpawner starts one private process on an origin. attach.Spawner has the
-// same method, so a bound origin's spawner is one as it stands.
-type McpSpawner = mcp.Spawner
 
 // ErrBuiltinNoTerminal is Builtin.Origin's answer on a platform with no
 // pseudo-terminals.

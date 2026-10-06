@@ -38,6 +38,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"rsc.io/qr"
@@ -850,8 +851,9 @@ func (f *fakeIdentity) Token(_ context.Context, names []string, _ v1.Logger) str
 // and prints one line per message, so a case can see the run reach it and
 // where its output landed.
 type fakeMotd struct {
-	learned []string
-	onLearn func() // what else lands while the run learns
+	motd.Motd // the rest, which the builder never asks of it
+	learned   []string
+	onLearn   func() // what else lands while the run learns
 }
 
 func (f *fakeMotd) Learn(raw []string, _ v1.Logger) {
@@ -1065,7 +1067,7 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if got, want := h.tunnels[0].headers, []string{"User-Agent: " + UserAgent()}; !slices.Equal(got, want) {
+		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": "}; !slices.Equal(got, want) {
 			t.Errorf("headers = %q, want %q", got, want)
 		}
 	})
@@ -3453,9 +3455,9 @@ func TestAReSentSpecSettlesTheCache(t *testing.T) {
 }
 
 // TestEveryMintSaysTheVisibility pins X-Tunneld-Authenticate on the mint
-// request: the gate's public challenges, realm left out, when the tunnel is
-// protected, and no header at all when it is public, so a provider treats a
-// public run exactly as before.
+// request, always: the gate's public challenges, realm left out, when the
+// tunnel is protected, and an empty value when it is public, which a
+// provider reads as public just as it read no header before.
 func TestEveryMintSaysTheVisibility(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
@@ -3464,7 +3466,7 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 		want []string
 	}{
 		"protected": {pw, []string{v1.AuthenticateHeader + `: Basic charset="UTF-8"`}},
-		"public":    {"", nil},
+		"public":    {"", []string{v1.AuthenticateHeader + ": "}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tun := live(public)
@@ -3490,10 +3492,9 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 	}
 }
 
-// TestDotenvServesNoHash pins the builder's wiring of the password's
-// redaction: a run's .env, as served, says the challenge in public form and
-// never carries the hash, so nobody reading it (tunnel.pizza included)
-// receives the password's hash.
+// TestDotenvServesNoHash pins the password on a run's .env end to end: as
+// served, it says the challenge with pw's salt and hash redacted, so nobody
+// reading it (tunnel.pizza included) receives what would crack the password.
 func TestDotenvServesNoHash(t *testing.T) {
 	const public = "https://foo.tunneled.pizza/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
@@ -3506,7 +3507,7 @@ func TestDotenvServesNoHash(t *testing.T) {
 	rec := httptest.NewRecorder()
 	serve(rec, httptest.NewRequest("GET", router.ControlPath+".env", nil))
 	body := rec.Body.String()
-	if rec.Code != 200 || strings.Contains(body, "pbkdf2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic charset="UTF-8"'`) {
-		t.Errorf("GET .env = %d %q, want the public form and no hash", rec.Code, body)
+	if rec.Code != 200 || strings.Contains(body, "UFtjhDQ2") || !strings.Contains(body, v1.WWWAuthenticateEnv+`='Basic pw="$pbkdf2-sha256$i=600000$…$…"'`) {
+		t.Errorf("GET .env = %d %q, want the password redacted", rec.Code, body)
 	}
 }

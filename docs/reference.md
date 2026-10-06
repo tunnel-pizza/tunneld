@@ -185,7 +185,7 @@ else is the origins', passed through exactly as it was sent.
 | Path | Auth | Answers |
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
-| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` in its public form (`Basic charset="UTF-8"`, realm and hash left out; the file on disk keeps them), or a bare `404` before the first save |
+| `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` redacted (`Basic pw="$pbkdf2-sha256$i=600000$…$…"`: every parameter as set, but pw's salt and hash; the file on disk keeps them), or a bare `404` before the first save |
 | `POST /_tunneld/mcp` | token | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
 
 Everything but `ping` needs `Authorization: token <secret>`, the running
@@ -1041,9 +1041,9 @@ Changing it on a running tunnel is a `PATCH` to `/_tunneld/.env`:
 
 - with the tunnel secret (`Authorization: token <secret>`), as for any
   variable, answered `200` with the file as `GET` serves it. A protected
-  run's file comes back with the password in its public form, which is not
-  a challenge `PATCH` takes (no `pw`): to write the whole file back, leave
-  that line out; or
+  run's file comes back with the password's salt and hash redacted, which is
+  not a challenge `PATCH` takes: to write the whole file back, leave that
+  line out; or
 - with a **grant**: every `GET /_tunneld/.env` made with the secret answers an
   `X-Tunneld-Grant`, a single-use token good for a minute that may change only
   `TUNNELD_WWW_AUTHENTICATE`, never the spec. tunnel.pizza hands it to the
@@ -1066,8 +1066,9 @@ A PATCH carrying `LIBTUNNEL_SPEC` while the run is still taking the last one
 Every mint tells the provider what the tunnel's gate is:
 `X-Tunneld-Authenticate` with the challenge as a visitor would see it (no
 realm), absent when the tunnel is public. tunnel.pizza leaves "This tunnel is
-publicly accessible." out of a protected tunnel's messages. `/_tunneld/ping` answers `X-Tunneld-Authenticate` with the challenge
-as a visitor would see it, absent when the tunnel is public.
+publicly accessible." out of a protected tunnel's messages. Every answer under `/_tunneld/`, `ping` among them, carries `X-Tunneld-Authenticate`
+with the challenge in public form, realm left out, absent when the tunnel is
+public.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so
 a client cannot send the tunnel's password and the app's at once. Get the
