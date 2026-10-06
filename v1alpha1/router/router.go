@@ -522,16 +522,10 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 		if r.cors(w, req) {
 			return
 		}
-		if !allowed(c, req) {
+		if !allowed(w, req, c, a) {
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
-		}
-		if req.URL.Path == ControlPath+"ping" && a != nil {
-			// The challenges in public: nothing a 401 would not say to anyone.
-			for _, v := range a.Public(req.Host) {
-				w.Header().Add(v1.AuthenticateHeader, v)
-			}
 		}
 		next.ServeHTTP(w, req)
 	})
@@ -574,9 +568,18 @@ func (r *RouterImpl) cors(w http.ResponseWriter, req *http.Request) bool {
 
 // allowed reports whether req may reach the mux: a page a visitor without
 // the secret asks for, the secret itself, or a live grant on a PATCH of .env.
-func allowed(c Cache, req *http.Request) bool {
+// Ping also carries a's challenges on w.
+func allowed(w http.ResponseWriter, req *http.Request, c Cache, a Auth) bool {
 	switch req.URL.Path {
-	case ControlPath + "ping", ControlPath + "login", ControlPath + "logout":
+	case ControlPath + "ping":
+		// The challenges in public: nothing a 401 would not say to anyone.
+		if a != nil {
+			for _, v := range a.Public(req.Host) {
+				w.Header().Add(v1.AuthenticateHeader, v)
+			}
+		}
+		return true
+	case ControlPath + "login", ControlPath + "logout":
 		return true
 	}
 	if c == nil {
