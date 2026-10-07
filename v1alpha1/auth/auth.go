@@ -609,6 +609,8 @@ type page struct {
 	Host, Next, Error string
 	Password, SSO     bool
 	SignIn, Label     string
+	// Notice is news that is not an error: "Signed out of <host>."
+	Notice string
 }
 
 func (a *AuthImpl) render(w http.ResponseWriter, r *http.Request, status int, p page) {
@@ -686,5 +688,18 @@ func (a *AuthImpl) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
-	http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
+	next := safeNext(r.URL.Query().Get("next"))
+	s := a.state.Load()
+	if len(s.challenges) == 0 {
+		http.Redirect(w, r, next, http.StatusSeeOther)
+		return
+	}
+	// The login page itself, not a redirect to next: through the gate, a
+	// Single Sign-On tunnel would send the browser to the provider, which
+	// still has its session and remembered consent, and it would be signed
+	// straight back in. Signing in again is the page's button.
+	a.render(w, r, http.StatusOK, page{
+		Next: next, Password: s.basic, SSO: s.bearer,
+		Notice: "Signed out of " + r.Host + ".",
+	})
 }
