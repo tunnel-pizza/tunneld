@@ -211,7 +211,9 @@ nothing else does. A `GET` or `HEAD` of `/.well-known/oauth-protected-resource`
 goes to the origin first; only a `404`, or no origin listening, is answered
 with tunneld's metadata: the tunnel's hostname as the `resource`, and the
 provider (`https://tunnel.pizza`, or `--provider`'s) as its authorization
-server. Anything else the origin answers, its own metadata or a `401` from
+server. Its `scopes_supported`, like the MCP server's below, are `openid`,
+`profile` and `offline_access`: a client registered for refresh tokens asks
+for one and stays signed in past its access token's hour. Anything else the origin answers, its own metadata or a `401` from
 protection of its own, is what the client gets. Behind a password the origin
 is out of reach, so the gate answers it with tunneld's. A run with
 `--no-cache` saves nothing and so authorizes nothing but `ping`.
@@ -1152,7 +1154,7 @@ TUNNELD_WWW_AUTHENTICATE='Bearer realm="<host>", sub="github:1234567 github:7654
 `<provider>:<id>` (GitHub's numeric user id, which a rename never reassigns),
 at most 100. tunnel.pizza's status page writes it for you. `sub` is never sent
 to a visitor; the public form is
-`Bearer realm="<host>", resource_metadata="https://<host>/.well-known/oauth-protected-resource", scope="openid profile"`.
+`Bearer realm="<host>", resource_metadata="https://<host>/.well-known/oauth-protected-resource", scope="openid profile offline_access"`.
 `Basic` and `Bearer` may be set together: either lets a visitor in. The
 tunnel's [owner](#the-owner), when its mint named one, counts as listed
 without being in `sub`.

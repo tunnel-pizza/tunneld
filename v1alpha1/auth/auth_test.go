@@ -167,7 +167,7 @@ func TestHeader(t *testing.T) {
 	if err := a.Set(ssoValue); err != nil {
 		t.Fatal(err)
 	}
-	want := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile"`
+	want := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access"`
 	if _, v := a.Header(); v != want {
 		t.Errorf("SSO Header() = %q, want %q", v, want)
 	}
@@ -240,7 +240,7 @@ func TestProtectedResource(t *testing.T) {
 			want := map[string]any{
 				"resource":                 "https://h.example",
 				"authorization_servers":    []any{tc.server},
-				"scopes_supported":         []any{"openid", "profile"},
+				"scopes_supported":         []any{"openid", "profile", "offline_access"},
 				"bearer_methods_supported": []any{"header"},
 			}
 			if !reflect.DeepEqual(got, want) {
@@ -782,7 +782,7 @@ func TestBearer(t *testing.T) {
 func TestBearerGate(t *testing.T) {
 	a := ssoAuth(t, fakeOidc())
 	h := a.Handler(origin())
-	public := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile"`
+	public := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access"`
 	req := func(auth string) *http.Request {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r.Host = ssoHost

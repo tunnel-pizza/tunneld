@@ -102,7 +102,7 @@ func TestPublic(t *testing.T) {
 		"no realm stored":  {`Basic pw="` + vector + `"`, `Basic charset="UTF-8"`},
 		"quoted again":     {`Basic realm="a \\ \"b\"", pw="` + vector + `"`, `Basic realm="a \\ \"b\"", charset="UTF-8"`},
 		"bearer": {`Bearer realm="h.tunneled.pizza", sub="github:1"`,
-			`Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile"`},
+			`Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cs, err := Parse(tc.value)
@@ -133,11 +133,11 @@ func TestPublicFor(t *testing.T) {
 	if got, want := cs[0].publicFor("asked.example"), `Basic realm="stored", charset="UTF-8"`; got != want {
 		t.Errorf("Basic publicFor = %q, want %q", got, want)
 	}
-	want := `Bearer realm="stored.example", resource_metadata="https://asked.example/.well-known/oauth-protected-resource", scope="openid profile"`
+	want := `Bearer realm="stored.example", resource_metadata="https://asked.example/.well-known/oauth-protected-resource", scope="openid profile offline_access"`
 	if got := cs[1].publicFor("asked.example"); got != want {
 		t.Errorf("Bearer publicFor = %q, want %q", got, want)
 	}
-	if got, want := cs[1].publicFor(""), `Bearer realm="stored.example", scope="openid profile"`; got != want {
+	if got, want := cs[1].publicFor(""), `Bearer realm="stored.example", scope="openid profile offline_access"`; got != want {
 		t.Errorf("Bearer publicFor no host = %q, want %q", got, want)
 	}
 }

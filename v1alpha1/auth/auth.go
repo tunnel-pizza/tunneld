@@ -524,7 +524,7 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(metadata{
 		Resource:               resource,
 		AuthorizationServers:   []string{a.server()},
-		ScopesSupported:        []string{"openid", "profile"},
+		ScopesSupported:        []string{"openid", "profile", "offline_access"},
 		BearerMethodsSupported: []string{"header"},
 	})
 }
