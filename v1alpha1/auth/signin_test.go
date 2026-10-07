@@ -197,6 +197,20 @@ func TestSignIn(t *testing.T) {
 			t.Errorf("the page offers no way to try again:\n%s", rec.Body)
 		}
 	})
+	t.Run("logout stays out: the sign-in is a link, never started for you", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		muxOf(a).ServeHTTP(rec, at("GET", "/_tunneld/logout?next=/app"))
+		body := rec.Body.String()
+		if rec.Code != 200 || rec.Header().Get("Location") != "" || !strings.Contains(body, "Signed out of "+ssoHost+".") ||
+			!strings.Contains(body, "Sign in with tunnel.pizza") || !strings.Contains(body, "sso=1") {
+			t.Errorf("%d to %q, page:\n%s", rec.Code, rec.Header().Get("Location"), body)
+		}
+		for _, c := range rec.Result().Cookies() {
+			if strings.HasPrefix(c.Name, flowCookie) && c.MaxAge >= 0 {
+				t.Errorf("logout began a sign-in: %s", c.Name)
+			}
+		}
+	})
 	t.Run("a password POST to a bearer-only tunnel goes to sign in", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := at("POST", "/_tunneld/login")

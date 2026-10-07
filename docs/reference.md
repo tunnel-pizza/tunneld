@@ -1068,7 +1068,9 @@ What a visitor gets:
 
 - **A browser** opening a page is sent to `/_tunneld/login`, enters the
   password, and gets a cookie (`__Host-tunneld-auth`, 30 days, `HttpOnly`,
-  `Secure`, host-only). `/_tunneld/logout` signs it out. Changing the password, or the
+  `Secure`, host-only). `/_tunneld/logout` signs it out and leaves the
+  browser on the login page, signed out; on a public tunnel it goes back to
+  `next`. Changing the password, or the
   tunnel's secret, signs everyone out.
 - **Anything else** (curl, `fetch`, an SDK) gets a `401` with
   `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"` and no body (the
@@ -1161,6 +1163,9 @@ What a visitor gets:
   provider, signs in, and comes back with the same `__Host-tunneld-auth`
   cookie a password gives. Someone signed in but not listed gets a `403` page saying
   who they signed in as, with a way to use another account.
+  `/_tunneld/logout` leaves the browser on the login page, signed out:
+  signing in again is its button, and the provider may not ask anything if
+  the browser is still signed in there and allowed this tunnel before.
 - **A program** with an access token from the provider sends
   `Authorization: Bearer <token>`. tunneld checks it against the provider's
   published keys ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)): issued

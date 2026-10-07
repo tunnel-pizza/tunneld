@@ -461,16 +461,26 @@ func TestLogin(t *testing.T) {
 	if rec := serve(mux, httptest.NewRequest("PUT", "/_tunneld/login", nil)); rec.Code != 405 {
 		t.Errorf("PUT = %d, want 405", rec.Code)
 	}
+	// Signed out, and staying out: the login page itself, never a redirect
+	// back through the gate, which on a Single Sign-On tunnel would sign
+	// the browser straight back in.
 	for _, method := range []string{"GET", "POST"} {
 		rec := serve(mux, httptest.NewRequest(method, "/_tunneld/logout?next=/app", nil))
-		if rec.Code != 303 || rec.Header().Get("Location") != "/app" || !strings.Contains(rec.Header().Get("Set-Cookie"), "Max-Age=0") {
-			t.Errorf("%s logout: %d %q %q", method, rec.Code, rec.Header().Get("Location"), rec.Header().Get("Set-Cookie"))
+		body := rec.Body.String()
+		if rec.Code != 200 || rec.Header().Get("Location") != "" || !strings.Contains(rec.Header().Get("Set-Cookie"), "Max-Age=0") ||
+			!strings.Contains(body, "Signed out of example.com.") || !strings.Contains(body, `name="password"`) ||
+			!strings.Contains(body, `value="/app"`) {
+			t.Errorf("%s logout: %d %q %q\n%s", method, rec.Code, rec.Header().Get("Location"), rec.Header().Get("Set-Cookie"), body)
 		}
 	}
 	public := New()
 	mp := http.NewServeMux()
 	for p, h := range public.Handlers("/_tunneld/") {
 		mp.HandleFunc(p, h)
+	}
+	// A public tunnel has nothing to stay out of: back to where it was.
+	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/logout?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" {
+		t.Errorf("public logout: %d to %q, want 303 /app", rec.Code, rec.Header().Get("Location"))
 	}
 	if rec := serve(mp, httptest.NewRequest("GET", "/_tunneld/login?next=/app", nil)); rec.Code != 303 || rec.Header().Get("Location") != "/app" {
 		t.Errorf("login with nothing set: %d %q; want 303 /app", rec.Code, rec.Header().Get("Location"))
