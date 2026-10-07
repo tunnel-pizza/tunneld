@@ -281,6 +281,34 @@ func TestSecret(t *testing.T) {
 	}
 }
 
+// TestOwner pins the tunnel's owner: what the latest save was given, which
+// the run takes from the mint's answer. The file says it as TUNNELD_OWNER,
+// for whoever opens it, and drops the line when a save names nobody: the
+// owner is whatever the provider last said, nothing kept from before.
+func TestOwner(t *testing.T) {
+	c, o, path := fixed(t, "http://localhost:3000")
+	if c.Owner() != "" {
+		t.Errorf("Owner() before a save = %q, want none", c.Owner())
+	}
+	line := v1.OwnerEnv + "='github:7'"
+	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithOwner("github:7"), cache.WithLog(discard()))
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if c.Owner() != "github:7" || !strings.Contains(string(body), line+"\n") || !strings.Contains(c.String(), line+"\n") {
+		t.Errorf("Owner() = %q, file:\n%s\nwant github:7 and %s", c.Owner(), body, line)
+	}
+	c.Save(cache.WithOwner(""))
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if c.Owner() != "" || strings.Contains(string(body), v1.OwnerEnv) {
+		t.Errorf("after a save naming nobody, Owner() = %q, file:\n%s\nwant none, and no %s line", c.Owner(), body, v1.OwnerEnv)
+	}
+}
+
 // TestKey pins that Key is the key of the run the cache is for: nothing
 // before it has been given origins, then theirs, following the last call
 // that named some.
@@ -620,6 +648,15 @@ func call(c *cache.CacheImpl, method, auth, body string) *httptest.ResponseRecor
 	return rec
 }
 
+// granted is c's Bearer of a request carrying auth as its Authorization. A
+// grant names nobody, so sub is always "".
+func granted(c *cache.CacheImpl, auth string) bool {
+	req := httptest.NewRequest("PATCH", "/_tunneld/.env", nil)
+	req.Header.Set("Authorization", auth)
+	sub, ok, err := c.Bearer(req)
+	return ok && err == nil && sub == ""
+}
+
 // TestMutables pins the variable a PATCH may change beside the spec: checked
 // before anything is applied, kept apart from tracking so a respec's save
 // cannot drop it, and written as a bare line when cleared.
@@ -704,36 +741,44 @@ func TestGrants(t *testing.T) {
 	if grant == "" || !strings.Contains(get.Header().Get("Cache-Control"), "no-store") {
 		t.Fatalf("GET .env issued no grant (%q) or is cacheable", grant)
 	}
-	if !c.Grant(grant) || !c.Grant(grant) {
+	if !granted(c, "Bearer "+grant) || !granted(c, "Bearer "+grant) {
 		t.Fatal("Grant consumed on lookup, or does not know its own grant")
+	}
+	// The scheme is case-insensitive (RFC 9110 §11.1), and only Bearer's.
+	if !granted(c, "bearer "+grant) || granted(c, "token "+grant) || granted(c, "Bearer") {
+		t.Error("the grant read under another spelling of the scheme")
 	}
 	if rec := call(c, "PATCH", "Bearer "+grant, "LIBTUNNEL_SPEC='x'"); rec.Code != 403 {
 		t.Errorf("a grant naming LIBTUNNEL_SPEC = %d, want 403", rec.Code)
 	}
-	if rec := call(c, "PATCH", "Bearer "+grant, v1.WWWAuthenticateEnv+"=bad"); rec.Code != 400 || !c.Grant(grant) {
-		t.Errorf("a refused value = %d, grant live %v; want 400 and the grant kept", rec.Code, c.Grant(grant))
+	if rec := call(c, "PATCH", "Bearer "+grant, v1.WWWAuthenticateEnv+"=bad"); rec.Code != 400 || !granted(c, "Bearer "+grant) {
+		t.Errorf("a refused value = %d, grant live %v; want 400 and the grant kept", rec.Code, granted(c, "Bearer "+grant))
 	}
 	rec := call(c, "PATCH", "Bearer "+grant, line)
 	// The gate's header is the router's to stamp, not the cache's.
 	if rec.Code != 204 || rec.Body.Len() != 0 || rec.Header().Values(v1.AuthenticateHeader) != nil {
 		t.Errorf("grant PATCH = %d, body %q, header %q", rec.Code, rec.Body, rec.Header().Values(v1.AuthenticateHeader))
 	}
-	if c.Grant(grant) {
+	if granted(c, "Bearer "+grant) {
 		t.Error("a used grant is still live")
 	}
 	if rec := call(c, "PATCH", "Bearer "+grant, line); rec.Code != 401 || rec.Body.Len() != 0 {
 		t.Errorf("a used grant = %d, want a bodyless 401", rec.Code)
 	}
+	lower := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
+	if rec := call(c, "PATCH", "bearer "+lower, line); rec.Code != 204 || granted(c, "Bearer "+lower) {
+		t.Errorf("a grant PATCH with a lowercase scheme = %d, grant still live %v; want 204, used", rec.Code, granted(c, "Bearer "+lower))
+	}
 	first := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
 	for range 32 {
 		call(c, "GET", "", "")
 	}
-	if c.Grant(first) {
+	if granted(c, "Bearer "+first) {
 		t.Error("the 33rd grant did not forget the first")
 	}
 	g := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
 	c.Save(cache.WithSecret([]byte("new")))
-	if c.Grant(g) {
+	if granted(c, "Bearer "+g) {
 		t.Error("a grant survived a new secret")
 	}
 }
@@ -746,11 +791,11 @@ func TestGrantsExpire(t *testing.T) {
 	cache.WithClock(func() time.Time { return now })(c)
 	grant := call(c, "GET", "", "").Header().Get(v1.GrantHeader)
 	now = now.Add(time.Minute)
-	if !c.Grant(grant) {
+	if !granted(c, "Bearer "+grant) {
 		t.Error("a grant expired at its minute, want live until after it")
 	}
 	now = now.Add(time.Second)
-	if c.Grant(grant) {
+	if granted(c, "Bearer "+grant) {
 		t.Error("a grant outlived its minute")
 	}
 	line := v1.WWWAuthenticateEnv + "='" + authValue + "'"
@@ -759,7 +804,7 @@ func TestGrantsExpire(t *testing.T) {
 		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
 	}
 	// With no auth handed over, the refusal is still RFC 9728's.
-	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource"`; got != want {
+	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", error="invalid_token"`; got != want {
 		t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 	}
 	// Handed one, the auth answers it.

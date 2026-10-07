@@ -501,6 +501,9 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		cache.WithSpec(saved),
 		cache.WithTracking(tracking),
 		cache.WithSecret(tun.Secret()),
+		// Whatever the mint answered, nobody included: nothing kept from
+		// before.
+		cache.WithOwner(tun.Headers().Get(v1.OwnerHeader)),
 		cache.WithLog(log),
 	)
 

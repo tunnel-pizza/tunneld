@@ -10,7 +10,6 @@ import (
 	"cmp"
 	"context"
 	"io"
-	"net/http"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -96,27 +95,6 @@ func WithPid(p Pid) Option {
 func WithCache(c Cache) Option {
 	return func(b *BuilderImpl) { b.cache = c }
 }
-
-// noCache is the cache a run with caching off reads and writes through: a
-// Load that finds nothing and a Save that keeps nothing. WithCache(nil) and
-// --no-cache both land here inside Run, so the load and the save are one line
-// each rather than a branch around a nil.
-type noCache struct{}
-
-func (noCache) Load(...cache.Option) string { return "" }
-func (noCache) Save(...cache.Option)        {}
-func (noCache) String() string              { return "" }
-func (noCache) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) {
-	return nil
-}
-func (noCache) Secret() []byte                { return nil }
-func (noCache) Key() string                   { return "" }
-func (noCache) Grant(string) bool             { return false }
-func (noCache) Mutable(string) (string, bool) { return "", false }
-func (noCache) SetMutable(string, string)     {}
-
-// Spec is never a new spec: a run with caching off keeps its tunnel.
-func (noCache) Spec() <-chan string { return nil }
 
 // WithCacheDir caches specs in dir rather than under the user's cache
 // directory — a mounted volume in a container, a temporary directory in a
@@ -241,6 +219,15 @@ func (b *BuilderImpl) secret() []byte {
 	return b.runCache.Secret()
 }
 
+// owner is who the mint said owns the running tunnel, as the run last saved
+// it: "" before then, and when it named nobody.
+func (b *BuilderImpl) owner() string {
+	if b.runCache == nil {
+		return ""
+	}
+	return b.runCache.Owner()
+}
+
 // authorizationServer is the provider's origin, as the --provider flag or its
 // default settles it: what the default auth names as the server a token for
 // this tunnel comes from.
@@ -309,8 +296,8 @@ func New(opts ...Option) *BuilderImpl {
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
-	// The builder first, so the default auth can read the run's secret off
-	// it: which cache a run uses is only settled in Command.
+	// The builder first, so the default auth can read the run's secret and
+	// owner off it: which cache a run uses is only settled in Command.
 	b := &BuilderImpl{log: log}
 	b = v1.Apply(b,
 		WithMultiview(v1.DefaultMultiview),
@@ -318,7 +305,7 @@ func New(opts ...Option) *BuilderImpl {
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
-		WithAuth(auth.New(auth.WithSecret(b.secret), auth.WithAuthorizationServer(b.authorizationServer), auth.WithLog(log.Logger()))),
+		WithAuth(auth.New(auth.WithSecret(b.secret), auth.WithOwner(b.owner), auth.WithAuthorizationServer(b.authorizationServer), auth.WithLog(log.Logger()))),
 		WithRun(run.New()),
 		WithTunnelFactory(libtunnel.From),
 		WithCache(cache.New()),

@@ -38,7 +38,8 @@
     justify-content: center;
     font: 1rem/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  form { width: 100%; max-width: 22rem; margin: 0 auto; display: grid; gap: .75rem; }
+  main { width: 100%; max-width: 22rem; margin: 0 auto; display: grid; gap: .75rem; }
+  form { display: grid; gap: .75rem; }
   h1 { margin: 0; font-size: 1.125rem; font-weight: 600; word-break: break-all; }
   p { margin: 0; color: var(--muted); font-size: .9375rem; }
   .error { color: var(--live); }
@@ -51,17 +52,34 @@
     color: var(--ink);
   }
   button { background: var(--ink); color: var(--paper); border-color: var(--ink); cursor: pointer; }
+  a.button {
+    display: block;
+    text-align: center;
+    text-decoration: none;
+    font: inherit;
+    padding: .625rem .75rem;
+    border-radius: .5rem;
+    border: 1px solid var(--ink);
+    background: var(--ink);
+    color: var(--paper);
+  }
+  form + a.button { background: var(--well); color: var(--ink); border-color: var(--rule); }
 </style>
 </head>
 <body>
-<form method="post" action="/_tunneld/login">
+<main>
   <h1>{{.Host}}</h1>
-  <p>This tunnel is password protected.</p>
+  {{if .Password}}<p>This tunnel is password protected.</p>{{else}}<p>This tunnel asks you to sign in.</p>{{end}}
   {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
-  <input type="text" name="username" value="{{.Host}}" autocomplete="username" readonly hidden>
-  <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
-  <input type="hidden" name="next" value="{{.Next}}">
-  <button type="submit">Continue</button>
-</form>
+  {{if .Password}}
+  <form method="post" action="/_tunneld/login">
+    <input type="text" name="username" value="{{.Host}}" autocomplete="username" readonly hidden>
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
+    <input type="hidden" name="next" value="{{.Next}}">
+    <button type="submit">Continue</button>
+  </form>
+  {{end}}
+  {{if .SSO}}<a class="button" href="{{.SignIn}}">{{.Label}}</a>{{end}}
+</main>
 </body>
 </html>

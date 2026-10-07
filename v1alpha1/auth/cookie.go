@@ -11,8 +11,10 @@ import (
 	"time"
 )
 
-// CookieName is the cookie a browser that logged in carries.
-const CookieName = "tunneld-auth"
+// CookieName is the cookie a browser that logged in carries. __Host-, so it
+// is host-only on Path=/: the shared domain is not a public suffix, and a
+// sibling tunnel could otherwise set one that shadows it.
+const CookieName = "__Host-tunneld-auth"
 
 // cookieLife is how long a login lasts: Max-Age and the payload's exp.
 const cookieLife = 30 * 24 * time.Hour
@@ -32,18 +34,18 @@ func cookieKey(secret []byte) []byte {
 	return key
 }
 
-// payload is what a cookie says: the scheme that let the visitor in, when,
-// and until when. Versioned with the cookie, so a later tier (SSO's sub) adds
-// a field without a change of format.
+// payload is what a cookie says: the scheme that let the visitor in, who
+// (for a scheme that names someone: Bearer), when, and until when.
 type payload struct {
 	S   string `json:"s"`
+	Sub string `json:"sub,omitempty"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
 }
 
-// mintCookie is v1.<payload>.<mac>, both base64url.
-func mintCookie(key []byte, scheme, value string, now time.Time) string {
-	body, _ := json.Marshal(payload{S: scheme, Iat: now.Unix(), Exp: now.Add(cookieLife).Unix()})
+// mintCookie is v1.<payload>.<mac>, both base64url. sub is "" for Basic.
+func mintCookie(key []byte, scheme, sub, value string, now time.Time) string {
+	body, _ := json.Marshal(payload{S: scheme, Sub: sub, Iat: now.Unix(), Exp: now.Add(cookieLife).Unix()})
 	p := base64.RawURLEncoding.EncodeToString(body)
 	return "v1." + p + "." + base64.RawURLEncoding.EncodeToString(mac(key, p, value))
 }
@@ -56,25 +58,32 @@ func mac(key []byte, p, value string) []byte {
 	return m.Sum(nil)
 }
 
-// readCookie reports whether token is a valid cookie for value: version v1,
-// MAC matching in constant time, not expired, and naming a scheme the value
-// still has. Anything else is no cookie, never an error.
-func readCookie(key []byte, token, value string, schemes []string, now time.Time) bool {
+// readCookie is the sub of token when it is a valid cookie for value: version
+// v1, MAC matching in constant time, not expired, naming a scheme the value
+// still has and, for Bearer, a sub it still lists. ok is false for anything
+// else, never an error.
+func readCookie(key []byte, token, value string, schemes, subs []string, now time.Time) (sub string, ok bool) {
 	if key == nil {
-		return false
+		return "", false
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] != "v1" {
-		return false
+		return "", false
 	}
 	got, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil || !hmac.Equal(got, mac(key, parts[1], value)) {
-		return false
+		return "", false
 	}
 	body, err := base64.RawURLEncoding.DecodeString(parts[1])
 	var p payload
 	if err != nil || json.Unmarshal(body, &p) != nil {
-		return false
+		return "", false
 	}
-	return now.Unix() < p.Exp && slices.Contains(schemes, p.S)
+	if now.Unix() >= p.Exp || !slices.Contains(schemes, p.S) {
+		return "", false
+	}
+	if p.S == "bearer" && !slices.Contains(subs, p.Sub) {
+		return "", false
+	}
+	return p.Sub, true
 }

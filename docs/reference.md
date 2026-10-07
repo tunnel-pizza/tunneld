@@ -186,15 +186,25 @@ else is the origins', passed through exactly as it was sent.
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
 | `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` redacted (`Basic pw="$pbkdf2-sha256$i=600000$…$…"`: every parameter as set, but pw's salt and hash; the file on disk keeps them), or a bare `404` before the first save |
-| `POST /_tunneld/mcp` | token | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
+| `POST /_tunneld/mcp` | token, or a token for it from the [owner](#the-owner) or, on an SSO tunnel, a listed person | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
+| `GET /_tunneld/client.json` | none | the tunnel's own OAuth client, a [Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/): see [Single Sign-On](#single-sign-on) |
+| `GET /_tunneld/callback` | none | where the provider sends a browser back after it signs in |
 
-Everything but `ping` needs `Authorization: token <secret>`, the running
-tunnel's secret base64-encoded — the encoding the spec's own JSON gives it, so
-whoever holds the spec holds the token. Without it, or before the run has
-saved, the answer is a `401` with no body, whether or not the path exists. Its
-`WWW-Authenticate` is [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)'s
-`Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource"`,
-password or not: a tunnel's password opens its origins, never `/_tunneld/`.
+Everything but `ping`, the login pages and the sign-in's two routes needs
+`Authorization: token <secret>`, the running tunnel's secret base64-encoded —
+the encoding the spec's own JSON gives it, so whoever holds the spec holds the
+token. On a tunnel set to [Single Sign-On](#single-sign-on), a listed
+person's access token opens it too, `.env` excepted: `.env` takes the secret
+(and, for `PATCH`, a grant) and nothing else, whatever the protection.
+`/_tunneld/mcp` takes only a token issued for it. Without one of these, or
+before the run has saved, the answer is a `401` with no body, whether or not
+the path exists. Its `WWW-Authenticate` is
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728)'s
+`Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource"`
+(for `/_tunneld/mcp` on a tunnel set to Single Sign-On,
+`…/oauth-protected-resource/_tunneld/mcp`), with
+`error="invalid_token"` when a Bearer credential was sent: a tunnel's password
+opens its origins, never `/_tunneld/`.
 
 That metadata URL is the origins' path, and tunneld answers it only when
 nothing else does. A `GET` or `HEAD` of `/.well-known/oauth-protected-resource`
@@ -205,6 +215,15 @@ server. Anything else the origin answers, its own metadata or a `401` from
 protection of its own, is what the client gets. Behind a password the origin
 is out of reach, so the gate answers it with tunneld's. A run with
 `--no-cache` saves nothing and so authorizes nothing but `ping`.
+
+`/.well-known/oauth-protected-resource/_tunneld/mcp` is the MCP server's own
+metadata, with `https://<host>/_tunneld/mcp` as the `resource`. It names
+tunneld's own server, so tunneld answers it and the origin is never asked.
+It exists only where a token can open the MCP server: a tunnel set to
+[Single Sign-On](#single-sign-on), or one whose mint named an
+[owner](#the-owner). Anywhere else it is a bare `404`, so an MCP client is
+never sent to sign in for a token the tunnel would refuse, and takes the
+secret instead (see [Agents](#agents)).
 
 Every answer under `/_tunneld/`, a `401` included, carries `X-Cache-Key`: the
 run's cache key, the name of the `<key>.env` its spec is saved in.
@@ -220,12 +239,34 @@ A run serves one [MCP](https://modelcontextprotocol.io) server to agents, over
 streamable HTTP at `/_tunneld/mcp`. It is for whoever holds the tunnel's
 secret, like everything else under `/_tunneld/`: a password on the tunnel
 does not open it, and the secret opens it whether or not there is a
-password.
+password. An access token issued for `https://<host>/_tunneld/mcp` opens it
+too, from the tunnel's [owner](#the-owner) on any tunnel, or from a listed
+person on one set to [Single Sign-On](#single-sign-on). Whether a token is
+issued for the MCP server at all is the provider's to decide.
 
 ```sh
 claude mcp add --transport http tunneld https://<host>/_tunneld/mcp \
   --header "Authorization: token <secret>"
 ```
+
+With a token, the client finds the provider on its own from the `401`:
+
+```sh
+claude mcp add --transport http tunneld https://<host>/_tunneld/mcp
+```
+
+#### The owner
+
+A mint answer may name the tunnel's owner: `X-Tunneld-Owner: github:<id>`,
+in the form a provider token's `sub` takes. On tunnel.pizza that is the
+GitHub account whose token minted the tunnel, nobody for an anonymous mint
+(tunnel.pizza#56; until it ships, no mint names an owner).
+tunneld takes whatever the latest mint answered: the owner counts as listed
+for the MCP server on any tunnel, and as listed on a tunnel set to Single
+Sign-On. A password tunnel still asks its owner for the password at the
+gate. The run writes the owner into the cache file as `TUNNELD_OWNER`, for
+whoever opens it, and drops the line when a mint names nobody; the line is
+never read back, and setting `TUNNELD_OWNER` yourself does nothing.
 
 It offers no tools yet: the agent surface is being redesigned, and a client
 that connects gets an empty list.
@@ -1001,7 +1042,9 @@ bypasses the logger, a panic's trace included, lands there too. The file is
 written by the Go side alone; the npm launcher only reads it, for the path
 its summary prints.
 
-## Password protection
+## Protection
+
+### Password
 
 A tunnel can ask for a password before anything behind it answers: the app,
 the multiview panel, every terminal. Set it in the environment:
@@ -1013,9 +1056,10 @@ TUNNELD_WWW_AUTHENTICATE='Basic pw="$pbkdf2-sha256$i=600000$<salt>$<hash>"' tunn
 The value is a `WWW-Authenticate` challenge whose `pw` parameter is the
 password's PBKDF2-SHA256 hash (600,000 iterations, a 16-byte salt, the
 password NFC-normalized), never the password itself. tunnel.pizza's status
-page sets it for you, hashing in your browser. Only `Basic` is taken, once,
-with `pw` and optionally `realm` and `charset`; anything else stops the run
-with an error naming the variable.
+page sets it for you, hashing in your browser. `Basic` is taken once, with
+`pw` and optionally `realm` and `charset`; `Bearer`, once, is
+[Single Sign-On](#single-sign-on); anything else stops the run with an error
+naming the variable.
 
 There is **no flag** for it, on purpose: a command line is readable by every
 user on the machine through `ps`, and lands in shell history.
@@ -1023,8 +1067,8 @@ user on the machine through `ps`, and lands in shell history.
 What a visitor gets:
 
 - **A browser** opening a page is sent to `/_tunneld/login`, enters the
-  password, and gets a cookie (`tunneld-auth`, 30 days, `HttpOnly`,
-  `Secure`). `/_tunneld/logout` signs it out. Changing the password, or the
+  password, and gets a cookie (`__Host-tunneld-auth`, 30 days, `HttpOnly`,
+  `Secure`, host-only). `/_tunneld/logout` signs it out. Changing the password, or the
   tunnel's secret, signs everyone out.
 - **Anything else** (curl, `fetch`, an SDK) gets a `401` with
   `WWW-Authenticate: Basic realm="<realm>", charset="UTF-8"` and no body (the
@@ -1036,9 +1080,10 @@ What a visitor gets:
   `via=basic`); a right Basic one is not, since an API client sends it on
   every request, and neither is a refusal while an address is held.
 - The login page can't be framed by another site (`frame-ancestors 'self'`;
-  the multiview panel's tiles may show it), and a sibling tunnel's
-  `tunneld-auth` cookie sent ahead of this tunnel's own doesn't lock a
-  visitor out: the first four are tried.
+  the multiview panel's tiles may show it). The cookie is `__Host-`, so no
+  other tunnel on the shared domain can set one that shadows it, and one the
+  app sets under the same name on a longer path doesn't lock a visitor out:
+  the first four are tried.
 - While a password is set, every response carries
   `Cloudflare-CDN-Cache-Control: no-store`, so the edge never hands a cached
   copy to someone who did not log in.
@@ -1092,6 +1137,53 @@ curl -c jar -u ':<tunnel password>' https://<host>/
 curl -b jar -u '<app user>:<app password>' https://<host>/api
 ```
 
+### Single Sign-On
+
+A tunnel can let in only the people it lists, signed in through the provider
+(tunnel.pizza, or `--provider`'s):
+
+```sh
+TUNNELD_WWW_AUTHENTICATE='Bearer realm="<host>", sub="github:1234567 github:7654321"' tunneld :3000
+```
+
+`realm` is the tunnel's hostname and `sub` the people, space-separated, each
+`<provider>:<id>` (GitHub's numeric user id, which a rename never reassigns),
+at most 100. tunnel.pizza's status page writes it for you. `sub` is never sent
+to a visitor; the public form is
+`Bearer realm="<host>", resource_metadata="https://<host>/.well-known/oauth-protected-resource", scope="openid profile"`.
+`Basic` and `Bearer` may be set together: either lets a visitor in. The
+tunnel's [owner](#the-owner), when its mint named one, counts as listed
+without being in `sub`.
+
+What a visitor gets:
+
+- **A browser** opening a page is sent through `/_tunneld/login` to the
+  provider, signs in, and comes back with the same `__Host-tunneld-auth`
+  cookie a password gives. Someone signed in but not listed gets a `403` page saying
+  who they signed in as, with a way to use another account.
+- **A program** with an access token from the provider sends
+  `Authorization: Bearer <token>`. tunneld checks it against the provider's
+  published keys ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)): issued
+  by the provider, for this hostname (or for `/_tunneld/mcp`, for the MCP
+  server), unexpired, for someone listed. A good one reaches the app without
+  `Authorization`; a bad one is a `401` with `error="invalid_token"`; someone
+  not listed a `403`, no body; the provider unreachable a `503` with
+  `Retry-After: 30`. MCP clients find all of this on their own from the `401`.
+- **The app** behind the tunnel gets `X-Tunneld-Sub: github:<id>` on every
+  request Single Sign-On let in. tunneld drops any `X-Tunneld-Sub` a visitor
+  sends, protected or not, so the app can trust it.
+- A listed person's token opens everything a visitor reaches, the panel
+  (`/`) and every terminal (`/?n=…`) included, and under `/_tunneld/` the MCP
+  server, given a token issued for it. It never opens `/_tunneld/.env`, which
+  takes the tunnel secret (or, for `PATCH`, a grant) as on any tunnel. The
+  tunnel secret still opens all of `/_tunneld/`.
+- Changing the list signs everyone out, as changing a password does.
+
+**An app with its own Bearer auth.** On a tunnel set to Single Sign-On, an
+`Authorization: Bearer` from a visitor with no tunneld cookie is tunneld's to
+judge and never reaches the app. Sign in in a browser first; with the cookie,
+the app's own `Bearer` passes untouched.
+
 ## Environment
 
 Every knob with an env-expressible value has a mirror constant in `v1`, and
@@ -1109,7 +1201,8 @@ after construction still lands.
 | `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection; see [Password protection](#password-protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
+| `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
+| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound
