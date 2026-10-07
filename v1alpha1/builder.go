@@ -554,7 +554,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	spec := b.cache
 	switch {
 	case spec == nil:
-		spec = noCache{}
+		spec = cache.None{}
 	case b.noCache:
 		// --no-cache is about the hostname, not the control path: an
 		// in-memory cache keeps the spec, the secret and .env for this run

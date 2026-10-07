@@ -191,7 +191,7 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |
 | `--provider <host>` | `TUNNELD_PROVIDER` | Mint against another provider. Default `tunnel.pizza`. |
 | *(the arguments)* | `TUNNELD_ORIGINS` | Origins, comma-separated. |
-| — | `TUNNELD_WWW_AUTHENTICATE` | Password-protect the tunnel. Environment only: a command line is readable by every user. See [Password protection](./docs/reference.md#password-protection). |
+| — | `TUNNELD_WWW_AUTHENTICATE` | Password-protect the tunnel, or let in only the people it lists (Single Sign-On). Environment only: a command line is readable by every user. See [Protection](./docs/reference.md#protection). |
 
 stdout carries the public addresses and nothing else, one per line, so they're
 easy to pipe. Everything meant for a person goes to stderr. `tunneld version`
@@ -310,6 +310,7 @@ And the rest of what tunneld requires directly:
 | [`github.com/spf13/cobra`](https://github.com/spf13/cobra), [`github.com/spf13/pflag`](https://github.com/spf13/pflag), [`github.com/spf13/viper`](https://github.com/spf13/viper) | The command line and its environment. |
 | [`github.com/yuin/goldmark`](https://github.com/yuin/goldmark) | Messages of the day. |
 | [`rsc.io/qr`](https://github.com/rsc/qr) | The QR code a phone reads. |
+| [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose) | Checking the tokens the provider signs, for Single Sign-On. |
 | [`github.com/pkg/browser`](https://github.com/pkg/browser) | Opening the tab. |
 | [`github.com/go-logr/logr`](https://github.com/go-logr/logr), [`k8s.io/klog/v2`](https://github.com/kubernetes/klog) | cri-streaming's logs, routed into tunneld's own. |
 | [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys), [`golang.org/x/term`](https://pkg.go.dev/golang.org/x/term) | The system calls under a program's terminal, and raw mode on your console. |

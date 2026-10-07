@@ -7,6 +7,7 @@ package router
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -341,6 +343,9 @@ func TestAuthorize(t *testing.T) {
 			}
 			// With no auth handed over, a refusal is still RFC 9728's.
 			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + `/.well-known/oauth-protected-resource"`
+			if strings.HasPrefix(tc.auth, "Bearer ") {
+				want += `, error="invalid_token"`
+			}
 			if got := resp.Header.Get("WWW-Authenticate"); tc.wantStatus == 401 && got != want {
 				t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 			}
@@ -1241,8 +1246,12 @@ func TestEveryAnswerIsUnstored(t *testing.T) {
 	}
 }
 
-// cacheOf's Grant: one fixed grant, "g00d", is live.
-func (c cacheOf) Grant(bearer string) bool { return bearer == "g00d" }
+// cacheOf's Bearer: one fixed grant, "g00d", is live.
+func (c cacheOf) Owner() string { return "" }
+
+func (c cacheOf) Bearer(r *http.Request) (string, bool, error) {
+	return "", r.Header.Get("Authorization") == "Bearer g00d", nil
+}
 
 // authOf stands in for auth: it refuses every visitor unless pass is set,
 // answers login and logout, and says its challenge in public.
@@ -1270,6 +1279,236 @@ func (authOf) Header() (string, string) { return v1.AuthenticateHeader, `Basic r
 func (authOf) Unauthorized(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("WWW-Authenticate", "Fake")
 	w.WriteHeader(401)
+}
+func (authOf) Bearer(*http.Request, string) (string, bool, error) { return "", false, nil }
+
+// bearerOf is an auth whose Bearer says what it is told, and records what
+// resource it was asked about.
+type bearerOf struct {
+	authOf
+	sub  string
+	ok   bool
+	err  error
+	mu   *sync.Mutex
+	seen *[]string
+}
+
+func (b bearerOf) Bearer(_ *http.Request, resource string) (string, bool, error) {
+	b.mu.Lock()
+	*b.seen = append(*b.seen, resource)
+	b.mu.Unlock()
+	return b.sub, b.ok, b.err
+}
+
+// TestAuthorizeTakesABearer pins the control path on a tunnel set to Single
+// Sign-On: after the secret, a token goes to the auth's Bearer, with the MCP
+// server as the resource for /_tunneld/mcp and the hostname for any other
+// control route but .env; a listed one is through, an unlisted one a bare
+// 403, the issuer down a bare 503 to come back to, anything else the auth's
+// 401.
+func TestAuthorizeTakesABearer(t *testing.T) {
+	secret := []byte("s3cr3t")
+	hello := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "hello") })}
+	for name, tc := range map[string]struct {
+		ok        bool
+		err       error
+		wantMcp   int // POST /_tunneld/mcp
+		wantOther int // GET of a control route nothing answers: 404 once through
+		retry     string
+	}{
+		"listed":     {true, nil, 200, 404, ""},
+		"not listed": {false, auth.ErrNotListed, 403, 403, ""},
+		"down":       {false, auth.ErrUnavailable, 503, 503, "30"},
+		"invalid":    {false, auth.ErrInvalidToken, 401, 401, ""},
+		"no token":   {false, nil, 401, 401, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seen []string
+			a := bearerOf{sub: "github:1", ok: tc.ok, err: tc.err, mu: &mu, seen: &seen}
+			r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey}), WithAuth(a), WithMcp(hello))
+			base := strings.TrimSuffix(controlOf(t, r, ".env"), ".env")
+			for _, c := range []struct {
+				method, path string
+				want         int
+			}{{"POST", "mcp", tc.wantMcp}, {"GET", "nope", tc.wantOther}} {
+				resp, body := ask(t, c.method, base+c.path, "Bearer t0ken")
+				retry := tc.retry
+				if c.want == 404 {
+					retry = ""
+				}
+				if resp.StatusCode != c.want || resp.Header.Get("Retry-After") != retry {
+					t.Errorf("%s %s = %d, Retry-After %q; want %d, %q", c.method, c.path, resp.StatusCode, resp.Header.Get("Retry-After"), c.want, retry)
+				}
+				if c.want >= 401 && c.want != 404 && body != "" {
+					t.Errorf("%s %s said %q, want no body", c.method, c.path, body)
+				}
+				if c.want == 401 && resp.Header.Get("WWW-Authenticate") != "Fake" {
+					t.Errorf("a 401 not the auth's: %q", resp.Header.Get("WWW-Authenticate"))
+				}
+			}
+			host := "https://" + strings.TrimPrefix(strings.TrimSuffix(base, "/_tunneld/"), "http://")
+			mu.Lock()
+			defer mu.Unlock()
+			if len(seen) != 2 || seen[0] != host+"/_tunneld/mcp" || seen[1] != host {
+				t.Errorf("Bearer asked about %q, want the MCP server then %q", seen, host)
+			}
+		})
+	}
+	t.Run("the secret is asked first", func(t *testing.T) {
+		var mu sync.Mutex
+		var seen []string
+		r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey}), WithAuth(bearerOf{mu: &mu, seen: &seen}))
+		if resp, _ := ask(t, "GET", controlOf(t, r, ".env"), tokenOf(secret)); resp.StatusCode != 200 {
+			t.Errorf("GET .env with the secret = %d", resp.StatusCode)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(seen) != 0 {
+			t.Errorf("Bearer was asked %q with the secret right", seen)
+		}
+	})
+}
+
+// TestAListedTokenNeverOpensDotenv pins .env on a tunnel set to Single
+// Sign-On: exactly as on any other, the secret or, for PATCH, a live grant.
+// A provider token, listed or not, is never asked about there and meets the
+// secret path's refusal, by any method.
+func TestAListedTokenNeverOpensDotenv(t *testing.T) {
+	secret := []byte("s3cr3t")
+	var mu sync.Mutex
+	var seen []string
+	listed := bearerOf{sub: "github:1", ok: true, mu: &mu, seen: &seen}
+	r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey}), WithAuth(listed))
+	env := controlOf(t, r, ".env")
+	for _, method := range []string{"GET", "HEAD", "PATCH", "POST", "DELETE"} {
+		resp, body := ask(t, method, env, "Bearer a-listed-jwt")
+		if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != "Fake" || body != "" {
+			t.Errorf("%s .env with a listed token = %d %q, WWW-Authenticate %q; want the auth's bare 401",
+				method, resp.StatusCode, body, resp.Header.Get("WWW-Authenticate"))
+		}
+	}
+	mu.Lock()
+	asked := len(seen)
+	mu.Unlock()
+	if asked != 0 {
+		t.Errorf("Bearer was asked %d times about .env, want never", asked)
+	}
+	// What opened .env before still does.
+	if resp, _ := ask(t, "GET", env, tokenOf(secret)); resp.StatusCode != 200 {
+		t.Errorf("GET .env with the secret = %d, want 200", resp.StatusCode)
+	}
+	if resp, _ := ask(t, "PATCH", env, "Bearer g00d"); resp.StatusCode == 401 {
+		t.Errorf("PATCH .env with a live grant = 401, want through the guard")
+	}
+}
+
+// TestTheSignInNeedsNoSecret pins the sign-in's two routes under the
+// control path: the client document by GET and HEAD, the callback by GET,
+// nothing else.
+func TestTheSignInNeedsNoSecret(t *testing.T) {
+	r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", []byte("s3cr3t"), runKey}))
+	base := strings.TrimSuffix(controlOf(t, r, ".env"), ".env")
+	for name, tc := range map[string]struct {
+		method, path string
+		want         int
+	}{
+		"client by GET":  {"GET", "client.json", 404},
+		"client by HEAD": {"HEAD", "client.json", 404},
+		"callback":       {"GET", "callback", 404},
+		"client by POST": {"POST", "client.json", 401},
+		"callback POST":  {"POST", "callback", 401},
+	} {
+		// No auth handed over, so nothing is on the mux there: a 404 is the
+		// mux asked, a 401 the guard refusing.
+		if resp, _ := ask(t, tc.method, base+tc.path, ""); resp.StatusCode != tc.want {
+			t.Errorf("%s: %s %s = %d, want %d", name, tc.method, tc.path, resp.StatusCode, tc.want)
+		}
+	}
+}
+
+// TestAForgedSubWithNoAuth pins X-Tunneld-Sub as tunneld's alone on a
+// router handed no auth too: a visitor's own never reaches the origin.
+func TestAForgedSubWithNoAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Sub", r.Header.Get(auth.SubHeader))
+	}))
+	t.Cleanup(srv.Close)
+	r := New()
+	u, err := r.Route(t.Context(), WithOrigins(listOf(t, srv)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.Cancel)
+	req, err := http.NewRequestWithContext(t.Context(), "GET", u.String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(auth.SubHeader, "github:1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Sub"); got != "" {
+		t.Errorf("the origin saw a forged sub %q", got)
+	}
+}
+
+// TestMCPResourceMetadata pins the MCP server's own metadata at the root
+// (RFC 9728 §3.1): tunneld's alone, whatever the origin would say there. On a
+// tunnel set to Single Sign-On it names the MCP server as the resource and
+// the MCP server's 401 points at it; anywhere else it is a bare 404 and the
+// 401 is the rest of the ControlPath's, since a token could not open it.
+func TestMCPResourceMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Origin", "1")
+		io.WriteString(w, `{"resource":"mine"}`)
+	}))
+	t.Cleanup(srv.Close)
+	sso := auth.New()
+	if err := sso.Set(`Bearer realm="h.example", sub="github:1"`); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		a   auth.Auth
+		sso bool
+	}{"single sign-on": {sso, true}, "an auth without it": {auth.New(), false}, "none handed over": {nil, false}} {
+		a := tc.a
+		t.Run(name, func(t *testing.T) {
+			r := New(WithMcp(&mcpOf{http.NotFoundHandler()}))
+			opts := []Option{WithOrigins(listOf(t, srv))}
+			if a != nil {
+				opts = append(opts, WithAuth(a))
+			}
+			u, err := r.Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(r.Cancel)
+			base := strings.TrimSuffix(u.String(), "/")
+			resp, body := ask(t, "GET", base+auth.MCPMetadataPath, "")
+			if resp.Header.Get("X-Origin") != "" {
+				t.Errorf("the origin answered the MCP metadata: %q", body)
+			}
+			var got map[string]any
+			if tc.sso && (json.Unmarshal([]byte(body), &got) != nil || got["resource"] != "https://"+resp.Request.URL.Host+"/_tunneld/mcp") {
+				t.Errorf("%d %q; want the MCP server as the resource", resp.StatusCode, body)
+			}
+			if !tc.sso && (resp.StatusCode != 404 || body != "") {
+				t.Errorf("%d %q; want a bare 404 without Single Sign-On", resp.StatusCode, body)
+			}
+			resp, _ = ask(t, "POST", base+ControlPath+"mcp", "")
+			meta := auth.MetadataPath
+			if tc.sso {
+				meta = auth.MCPMetadataPath
+			}
+			want := `Bearer resource_metadata="https://` + resp.Request.URL.Host + meta + `"`
+			if resp.StatusCode != 401 || resp.Header.Get("WWW-Authenticate") != want {
+				t.Errorf("POST mcp = %d, WWW-Authenticate %q; want 401, %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"), want)
+			}
+		})
+	}
 }
 
 // gateOf is an Auth whose public challenge is whatever gate holds, so a

@@ -202,7 +202,7 @@ func New(opts ...Option) *RouterImpl {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "pong")
 	})
-	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{}}, opts...)
+	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{auth: fallback, cache: cache.None{}}}, opts...)
 }
 
 // WithOrigins sets the origins to route between: the dialable list, in the
@@ -264,16 +264,18 @@ func WithMcp(m v0exp1.Mcp) Option {
 // c is also what the ControlPath is authorized against: its secret is the
 // token every request under it but ping has to carry (see authorize). The
 // file holds the credential for the tunnel's public hostname, so it is
-// served only to whoever already has the secret it contains.
+// served only to whoever already has the secret it contains. Nil is
+// cache.None: no secret, so nothing but what publicMethods has answers.
 func WithCache(c cache.Cache) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		e.cache = c
 		if c == nil {
+			e.cache = cache.None{}
 			return
 		}
+		e.cache = c
 		for pattern := range c.Handlers(ControlPath) {
 			if e.registered[pattern] {
 				continue
@@ -286,10 +288,7 @@ func WithCache(c cache.Cache) Option {
 				e.mu.Lock()
 				c := e.cache
 				e.mu.Unlock()
-				var h func(http.ResponseWriter, *http.Request)
-				if c != nil {
-					h = c.Handlers(ControlPath)[pattern]
-				}
+				h := c.Handlers(ControlPath)[pattern]
 				if h == nil {
 					w.WriteHeader(http.StatusNotFound)
 					return
@@ -301,18 +300,20 @@ func WithCache(c cache.Cache) Option {
 }
 
 // WithAuth puts a in front of everything a visitor reaches and its pages
-// (login, logout) under ControlPath, which need no secret. Which auth answers
-// is asked on every request, so applied again it replaces the auth rather
-// than registering a page twice.
+// (login, logout, the sign-in's) under ControlPath, which need no secret.
+// Which auth answers is asked on every request, so applied again it replaces
+// the auth rather than registering a page twice. Nil is fallback, with no
+// pages of its own.
 func WithAuth(a auth.Auth) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		e.auth = a
 		if a == nil {
+			e.auth = fallback
 			return
 		}
+		e.auth = a
 		for pattern := range a.Handlers(ControlPath) {
 			if e.registered[pattern] {
 				continue
@@ -325,10 +326,7 @@ func WithAuth(a auth.Auth) Option {
 				e.mu.Lock()
 				a := e.auth
 				e.mu.Unlock()
-				var h func(http.ResponseWriter, *http.Request)
-				if a != nil {
-					h = a.Handlers(ControlPath)[pattern]
-				}
+				h := a.Handlers(ControlPath)[pattern]
 				if h == nil {
 					w.WriteHeader(http.StatusNotFound)
 					return
@@ -463,11 +461,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	route.env.mu.Lock()
 	gate := route.env.auth
 	route.env.mu.Unlock()
-	if gate == nil {
-		site = metadata(site, fallback)
-	} else {
-		site = gate.Handler(metadata(site, gate))
-	}
+	site = gate.Handler(metadata(site, gate))
 	control := route.cors(route.authorize(route.mux))
 	routing, stop := context.WithCancel(context.WithoutCancel(ctx))
 	srv := &http.Server{
@@ -493,22 +487,25 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	return local, nil
 }
 
-// authorize guards the ControlPath: every request under it needs
-// "Authorization: token <secret>", the running tunnel's secret as the cache
-// WithCache handed over holds it, base64-encoded (the encoding the spec's own
-// JSON gives it, so whoever holds the spec holds the token), except a path
-// and method authMethods has: ping, login, logout and the resource metadata
-// by the methods a visitor uses, and a PATCH of .env carrying "Bearer
-// <grant>".
+// authorize guards the ControlPath. In order: a path and method
+// publicMethods has (ping, login, logout, the sign-in's client document and
+// callback) is open; "Authorization: token <secret>", the running tunnel's
+// secret as the cache WithCache handed over holds it, base64-encoded (the
+// encoding the spec's own JSON gives it, so whoever holds the spec holds the
+// token), opens everything; then whatever authMethods asserts for the path
+// and method: a PATCH of .env carrying "Bearer <grant>", and on a tunnel set
+// to Single Sign-On a token the auth's Bearer admits, the MCP server's own
+// for ControlPath+"mcp", anywhere but .env.
 //
-// A CORS preflight never reaches it: cors, in front, answers that. Anything
-// else is the auth's Unauthorized, a bodyless 401 naming the resource
-// metadata, before the mux sees it, registered endpoint or not, so nothing
-// under the prefix can be probed without it.
+// A CORS preflight never reaches it: cors, in front, answers that. A token
+// Bearer refuses is a bare 403 (not listed) or 503 (the issuer down);
+// anything else is the auth's Unauthorized, a bodyless 401 naming the
+// resource metadata, before the mux sees it, registered endpoint or not, so
+// nothing under the prefix can be probed without it.
 //
-// Fails closed: with no cache, or no secret yet, nothing but ping, login,
-// logout and the resource metadata answers. Compared in constant time, so the time a refusal takes says
-// nothing about how much of a guess was right.
+// Fails closed: with no cache, or no secret yet, nothing but what
+// publicMethods has answers. Compared in constant time, so the time a refusal
+// takes says nothing about how much of a guess was right.
 func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 	e := r.env
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -516,48 +513,66 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 		c, a := e.cache, e.auth
 		e.mu.Unlock()
 		// Every answer under the ControlPath names the run, a refusal too.
-		if c != nil {
-			if key := c.Key(); key != "" {
-				w.Header().Set(CacheKeyHeader, key)
-			}
+		if key := c.Key(); key != "" {
+			w.Header().Set(CacheKeyHeader, key)
 		}
 		// And says the gate, as a 401 from an origin would (gated).
-		if a != nil {
-			w = &gated{ResponseWriter: w, gate: a.Header}
-		}
+		w = &gated{ResponseWriter: w, gate: a.Header}
 		name := strings.TrimPrefix(req.URL.Path, ControlPath)
-		if slices.Contains(authMethods[name], req.Method) {
-			switch name {
-			case ".env":
-				// Only with a live grant; anything else meets the secret below.
-				if bearer, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer "); ok && c != nil && c.Grant(bearer) {
-					next.ServeHTTP(w, req)
-					return
-				}
-			default:
-				next.ServeHTTP(w, req)
-				return
-			}
+		if slices.Contains(publicMethods[name], req.Method) {
+			next.ServeHTTP(w, req)
+			return
 		}
-		// Anything else needs the secret.
-		var secret []byte
-		if c != nil {
-			secret = c.Secret()
-		}
+		// The secret opens everything, and is asked first.
+		secret := c.Secret()
 		want := "token " + base64.StdEncoding.EncodeToString(secret)
 		if len(secret) > 0 && subtle.ConstantTimeCompare([]byte(req.Header.Get("Authorization")), []byte(want)) == 1 {
 			next.ServeHTTP(w, req)
 			return
 		}
-		if a == nil {
-			a = fallback
+		methods, ok := authMethods[name]
+		if !ok {
+			methods = authMethods["*"]
+		}
+		for _, m := range methods {
+			if !slices.Contains(m.methods, req.Method) {
+				continue
+			}
+			switch ok, err := m.assert(a, c, req); {
+			case ok:
+				next.ServeHTTP(w, req)
+				return
+			case refused(w, err):
+				return
+			}
 		}
 		a.Unauthorized(w, req)
 	})
 }
 
-// fallback is what a router handed no auth refuses through, so its 401 still
-// carries a challenge, and serves the metadata that challenge names.
+// refused answers a credential that was sent and turned away for a reason
+// other than not being good, bodyless: the issuer down is a 503 to come back
+// to, someone not listed a 403. False, answering nothing, for anything else,
+// which the caller refuses its own way.
+func refused(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, auth.ErrUnavailable):
+		w.Header().Set("Retry-After", "30")
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	case errors.Is(err, auth.ErrNotListed):
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusForbidden)
+	default:
+		return false
+	}
+	return true
+}
+
+// fallback is the auth of a router handed none: with nothing set, its gate
+// passes everything but a visitor's own X-Tunneld-Sub, and says no gate; its
+// 401 still carries a challenge, and it serves the metadata that challenge
+// names.
 var fallback auth.Auth = auth.New()
 
 // gated stamps an answer with X-Tunneld-Authenticate, the challenges in
@@ -625,16 +640,57 @@ func (u *unstored) Write(b []byte) (int, error) {
 // through it.
 func (u *unstored) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 
-// authMethods is every path under the ControlPath a request reaches without
-// the secret, by its name there and the methods it may use: ping, login,
-// logout and the resource metadata, which a visitor without the secret asks,
-// and .env, which the owner's browser
-// PATCHes with a live grant the cache issued to the secret's holder.
-var authMethods = map[string][]string{
-	"ping":   {http.MethodGet, http.MethodHead},
-	"login":  {http.MethodGet, http.MethodHead, http.MethodPost},
-	"logout": {http.MethodGet, http.MethodHead, http.MethodPost},
-	".env":   {http.MethodPatch},
+// publicMethods is every path under the ControlPath anyone reaches, with no
+// credential at all, by its name there and the methods it may use: ping,
+// and the pages a visitor without the secret needs to sign in and out.
+var publicMethods = map[string][]string{
+	"ping":        {http.MethodGet, http.MethodHead},
+	"login":       {http.MethodGet, http.MethodHead, http.MethodPost},
+	"logout":      {http.MethodGet, http.MethodHead, http.MethodPost},
+	"client.json": {http.MethodGet, http.MethodHead},
+	"callback":    {http.MethodGet},
+}
+
+// authMethods is every path under the ControlPath a credential other than
+// the secret opens, by its name there, "*" standing for every name not
+// listed: for each set of methods, assert says whether the request carries
+// that credential, given the auth and the cache as handed over. A request none admits is the auth's Unauthorized; an error one
+// returns is answered by refused.
+var authMethods = map[string][]struct {
+	methods []string
+	assert  func(auth.Auth, cache.Cache, *http.Request) (bool, error)
+}{
+	// The tunnel's credential: a provider token never opens it, only the
+	// secret or, from the owner's browser, a live grant the cache issued to
+	// the secret's holder.
+	".env": {
+		{[]string{http.MethodPatch}, func(_ auth.Auth, c cache.Cache, r *http.Request) (bool, error) {
+			_, ok, err := c.Bearer(r)
+			return ok, err
+		}},
+	},
+	// On a tunnel set to Single Sign-On, a listed person's token issued for
+	// the MCP server.
+	"mcp": {
+		{[]string{
+			http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+			http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
+		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (bool, error) {
+			_, ok, err := a.Bearer(r, "https://"+r.Host+ControlPath+"mcp")
+			return ok, err
+		}},
+	},
+	// Every name not listed above: on a tunnel set to Single Sign-On, a
+	// listed person's token for the tunnel.
+	"*": {
+		{[]string{
+			http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+			http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
+		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (bool, error) {
+			_, ok, err := a.Bearer(r, "https://"+r.Host)
+			return ok, err
+		}},
+	},
 }
 
 // corsMethods is every path under the ControlPath a browser calls across
@@ -677,23 +733,46 @@ func (r *RouterImpl) cors(next http.Handler) http.Handler {
 	})
 }
 
-// metadata answers auth.MetadataPath from the origins first, and with a's
-// RFC 9728 metadata only when they have none there: a 404, or nothing
-// listening. Anything else the origin says, a 401 from protection of its own
-// included, is the origin's, so tunneld never stands in front of an origin
-// that guards itself. GET and HEAD only; any other method is the origin's
-// whatever it answers.
+// metadataPaths is every RFC 9728 metadata document tunneld answers outside
+// the ControlPath, by path: for each set of methods, serve answers it, with
+// next the origins. A method not listed is the origin's, whatever it
+// answers.
+var metadataPaths = map[string][]struct {
+	methods []string
+	serve   func(a auth.Auth, next http.Handler, w http.ResponseWriter, r *http.Request)
+}{
+	// The origins' path: theirs first, and a's only when they have none
+	// there, a 404 or nothing listening. Anything else the origin says, a 401
+	// from protection of its own included, is the origin's, so tunneld never
+	// stands in front of an origin that guards itself.
+	auth.MetadataPath: {
+		{[]string{http.MethodGet, http.MethodHead}, func(a auth.Auth, next http.Handler, w http.ResponseWriter, r *http.Request) {
+			h := &held{ResponseWriter: w, header: http.Header{}}
+			next.ServeHTTP(h, r)
+			if h.missing {
+				a.ResourceMetadata(w, r)
+			}
+		}},
+	},
+	// The MCP server's own: tunneld's alone, the origin never asked.
+	auth.MCPMetadataPath: {
+		{[]string{http.MethodGet, http.MethodHead}, func(a auth.Auth, _ http.Handler, w http.ResponseWriter, r *http.Request) {
+			a.ResourceMetadata(w, r)
+		}},
+	},
+}
+
+// metadata answers what metadataPaths has, with a's RFC 9728 metadata, in
+// front of next; everything else goes on to next untouched.
 func metadata(next http.Handler, a auth.Auth) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != auth.MetadataPath || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
-			next.ServeHTTP(w, r)
-			return
+		for _, m := range metadataPaths[r.URL.Path] {
+			if slices.Contains(m.methods, r.Method) {
+				m.serve(a, next, w, r)
+				return
+			}
 		}
-		h := &held{ResponseWriter: w, header: http.Header{}}
-		next.ServeHTTP(h, r)
-		if h.missing {
-			a.ResourceMetadata(w, r)
-		}
+		next.ServeHTTP(w, r)
 	})
 }
 

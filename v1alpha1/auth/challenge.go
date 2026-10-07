@@ -7,14 +7,15 @@
 //
 //	Basic realm="0t8qsb6pq3.tunneled.pizza", pw="$pbkdf2-sha256$i=600000$…$…"
 //
-// Parsed generically, then handed to a verifier by scheme, so a later tier
-// (Bearer) is a verifier and a row in the allow-list, not a new parser.
+// Parsed generically, then handed to a verifier by scheme: Basic carries a
+// password's hash, Bearer the list of who may sign in through the provider.
 package auth
 
 import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -37,7 +38,7 @@ type schemeRule struct {
 }
 
 // schemes is every scheme with a verifier. Only IANA-registered schemes, never
-// an invented one: Basic today; Bearer is a later tier.
+// an invented one.
 var schemes = map[string]schemeRule{
 	"basic": {
 		name:     "Basic",
@@ -45,21 +46,76 @@ var schemes = map[string]schemeRule{
 		allowed:  []string{"pw", "realm", "charset"},
 		check:    func(c Challenge) error { _, err := parsePHC(c.Params["pw"]); return err },
 	},
+	"bearer": {
+		name:     "Bearer",
+		required: []string{"realm", "sub"},
+		allowed:  []string{"realm", "sub"},
+		check:    checkBearer,
+	},
+}
+
+// maxSubs bounds a Bearer's list: every entry is compared on every request.
+const maxSubs = 100
+
+// hostname is what a Host header holds: labels and dots, an optional port.
+var hostname = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$`)
+
+// checkBearer is Bearer's rule: realm is the tunnel's hostname, since the
+// public form builds resource_metadata from it, and sub lists who may enter.
+func checkBearer(c Challenge) error {
+	if !hostname.MatchString(c.Params["realm"]) {
+		return fmt.Errorf("realm %q is not a hostname", c.Params["realm"])
+	}
+	_, err := parseSubs(c.Params["sub"])
+	return err
+}
+
+// parseSubs is a Bearer's sub: space-separated <provider>:<id>, the provider
+// lowercase letters, the id 1 to 64 visible ASCII characters, neither quote
+// nor backslash.
+func parseSubs(s string) ([]string, error) {
+	subs := strings.Fields(s)
+	if len(subs) == 0 {
+		return nil, errors.New("sub lists nobody")
+	}
+	if len(subs) > maxSubs {
+		return nil, fmt.Errorf("sub lists %d, at most %d", len(subs), maxSubs)
+	}
+	for _, sub := range subs {
+		provider, id, _ := strings.Cut(sub, ":")
+		if provider == "" || strings.ContainsFunc(provider, func(r rune) bool { return r < 'a' || r > 'z' }) ||
+			id == "" || len(id) > 64 || strings.ContainsFunc(id, func(r rune) bool { return r < 0x21 || r > 0x7e || r == '"' || r == '\\' }) {
+			return nil, fmt.Errorf("sub %q is not <provider>:<id>", sub)
+		}
+	}
+	return subs, nil
 }
 
 func (c Challenge) scheme() string { return strings.ToLower(c.Scheme) }
 
-// Public is the challenge as a visitor may see it: the canonical scheme, the
-// realm as stored (left out when none was), and charset="UTF-8" for Basic
-// (RFC 7617). Nothing else, pw least of all.
-func (c Challenge) Public() string {
+// Public is the challenge as a visitor may see it, the host it names being
+// its stored realm: see publicFor.
+func (c Challenge) Public() string { return c.publicFor(c.Params["realm"]) }
+
+// publicFor is the challenge as a visitor of host may see it: the canonical
+// scheme and the realm as stored (left out when none was); for Basic,
+// charset="UTF-8" (RFC 7617); for Bearer, host's resource_metadata (RFC 9728
+// §5.1, left out when host is "") and the scopes to ask for (RFC 6750 §3).
+// Nothing else, pw and sub least of all.
+func (c Challenge) publicFor(host string) string {
 	rule := schemes[c.scheme()]
 	var params []string
 	if realm, ok := c.Params["realm"]; ok {
 		params = append(params, `realm="`+quoted.Replace(realm)+`"`)
 	}
-	if rule.name == "Basic" {
+	switch rule.name {
+	case "Basic":
 		params = append(params, `charset="UTF-8"`)
+	case "Bearer":
+		if host != "" {
+			params = append(params, `resource_metadata="https://`+quoted.Replace(host)+MetadataPath+`"`)
+		}
+		params = append(params, `scope="openid profile"`)
 	}
 	if len(params) == 0 {
 		return rule.name
@@ -140,7 +196,7 @@ func Parse(value string) ([]Challenge, error) {
 	for _, c := range out {
 		rule, ok := schemes[c.scheme()]
 		if !ok {
-			return nil, fmt.Errorf("%s: not a scheme this tunnel can verify (Basic is)", c.Scheme)
+			return nil, fmt.Errorf("%s: not a scheme this tunnel can verify (Basic and Bearer are)", c.Scheme)
 		}
 		for key := range c.Params {
 			if !slices.Contains(rule.allowed, key) {

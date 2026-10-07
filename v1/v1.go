@@ -275,6 +275,12 @@ const (
 	// A PATCH to /_tunneld/.env can change it on a running tunnel.
 	WWWAuthenticateEnv = "TUNNELD_WWW_AUTHENTICATE"
 
+	// OwnerEnv is the line the cache file says the tunnel's owner on, as the
+	// latest mint answered it (OwnerHeader), absent when it named nobody.
+	// Written by the run for whoever opens the file, never read: not from
+	// the file, not from the environment.
+	OwnerEnv = "TUNNELD_OWNER"
+
 	// UserAgentHeader names which tunneld is asking, on every mint request.
 	UserAgentHeader = "User-Agent"
 
@@ -291,6 +297,13 @@ const (
 	// GrantHeader carries a single-use grant to PATCH /_tunneld/.env, on every
 	// answer to GET /_tunneld/.env made with the tunnel secret.
 	GrantHeader = "X-Tunneld-Grant"
+
+	// OwnerHeader is who the provider says owns a tunnel, on its mint answer,
+	// in the form a provider access token's sub takes ("github:<id>"):
+	// absent when the mint named nobody. The owner's token opens the MCP
+	// server on any tunnel, and the owner counts as listed on one set to
+	// Single Sign-On.
+	OwnerHeader = "X-Tunneld-Owner"
 
 	// CommandName is the built command's default name, overridable with
 	// WithName so an embedding program can mount it under its own verb.

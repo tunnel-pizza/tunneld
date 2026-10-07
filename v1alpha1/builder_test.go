@@ -368,6 +368,8 @@ type fakeTunnel struct {
 	// serialized, when set, is what Serialize hands back: a real envelope,
 	// for a case about envelopes.
 	serialized string
+	// answered is what Headers hands back: the mint's response header.
+	answered http.Header
 	// ctx is what WithContext was handed: the context the tunnel lives on.
 	// Like a real tunnel, it ends when that does — unless it lingers, still
 	// draining, until the test ends it.
@@ -490,7 +492,8 @@ func (f *fakeTunnel) WithLocalURL(u *url.URL) libtunnel.TunnelV1 {
 	f.locals = append(f.locals, u)
 	return f
 }
-func (f *fakeTunnel) Messages() []string { return f.messages }
+func (f *fakeTunnel) Messages() []string   { return f.messages }
+func (f *fakeTunnel) Headers() http.Header { return f.answered }
 
 // fakeCache answers Load with a fixed spec and records the rest. onSave is
 // how a case ends the run: cancelling the context, failing the tunnel, or
@@ -504,6 +507,7 @@ type fakeCache struct {
 	tracking map[string]string
 	secret   []byte
 	key      string
+	owner    string
 	onSave   func()
 	order    *[]string
 	// specs is what Spec hands out, nil for a cache that never has a new
@@ -556,8 +560,8 @@ func (f *fakeAuth) Set(v string) error {
 // Spec is every spec the fake takes, as the real cache hands them on.
 func (f *fakeCache) Spec() <-chan string { return f.specs }
 
-// Grant is no grant: the fake issues none.
-func (f *fakeCache) Grant(string) bool { return false }
+// Bearer is no grant: the fake issues none.
+func (f *fakeCache) Bearer(*http.Request) (string, bool, error) { return "", false, nil }
 
 // fakePid records a run's registration in the order of effects, and says a
 // launcher was waiting when waiting is set.
@@ -598,6 +602,7 @@ func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 // Secret is the secret the fake was saved with, and Key the key of the
 // origins it was saved under.
 func (f *fakeCache) Secret() []byte { return f.secret }
+func (f *fakeCache) Owner() string  { return f.owner }
 func (f *fakeCache) Key() string    { return f.key }
 
 // String is the file the fake saved, rendered as the real cache renders it,
@@ -626,7 +631,7 @@ func (f *fakeCache) Save(opts ...cache.Option) {
 			f.spec = m[1]
 		}
 	}
-	f.saved, f.tracking, f.secret, f.key = true, c.Tracking(), c.Secret(), c.Key()
+	f.saved, f.tracking, f.secret, f.key, f.owner = true, c.Tracking(), c.Secret(), c.Key(), c.Owner()
 	if f.specs != nil && echoed {
 		select {
 		case <-f.specs:
@@ -1515,6 +1520,24 @@ func TestRun(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
+		}
+	})
+	t.Run("the run saves the owner the mint named, and none when it named none", func(t *testing.T) {
+		for _, owner := range []string{"github:7", ""} {
+			tun := live(public)
+			if owner != "" {
+				tun.answered = http.Header{v1.OwnerHeader: {owner}}
+			}
+			h := newRunHarness(t, tun, ":3000")
+			h.cache.owner = "github:before"
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if h.cache.owner != owner || h.b.owner() != owner {
+				t.Errorf("mint named %q: the run saved %q, the builder reads %q", owner, h.cache.owner, h.b.owner())
+			}
 		}
 	})
 	t.Run("the router serves what the run saved", func(t *testing.T) {
@@ -3555,5 +3578,21 @@ func TestTheDefaultAuthNamesTheProvider(t *testing.T) {
 				t.Errorf("metadata = %s, want %s", rec.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+// TestTheDefaultAuthReadsTheOwner pins the default auth's owner: the one the
+// run's cache last saved, read when asked, so a new tunnel's owner is the one
+// that counts. Seen through the MCP server's metadata, which only a tunnel a
+// token can open publishes.
+func TestTheDefaultAuthReadsTheOwner(t *testing.T) {
+	for owner, want := range map[string]int{"github:7": 200, "": 404} {
+		b := New()
+		b.runCache = &fakeCache{owner: owner}
+		rec := httptest.NewRecorder()
+		b.auth.ResourceMetadata(rec, httptest.NewRequest("GET", auth.MCPMetadataPath, nil))
+		if rec.Code != want {
+			t.Errorf("owner %q: MCP metadata = %d, want %d", owner, rec.Code, want)
+		}
 	}
 }

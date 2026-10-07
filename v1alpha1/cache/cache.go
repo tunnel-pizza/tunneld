@@ -67,14 +67,17 @@ const dirName = "tunneld"
 // tracking to write, and the run's logger. String is the file as the cache
 // last saved it, "" before then. Handlers is what the cache answers under a
 // path, by ServeMux pattern — the router hands it its control path — and the
-// default cache's .env there is String, served as a remote copy. Secret is the running tunnel's secret the run last saved with, nil before
-// then: what the router authorizes its control path against. Key is the key
-// of the run the cache is for, "" before it knows: what the router names the
-// run by on every answer from its control path, refusals included. Spec is
-// every spec the cache takes, the run's own saves among them: a new one while
-// the run waits is a new tunnel. Grant is whether a bearer token is a live,
-// unused grant the cache issued on GET .env, for the router to let that one
-// PATCH through. Mutable is what the file said about a variable a PATCH may
+// default cache's .env there is String, served as a remote copy. Secret is
+// the running tunnel's secret the run last saved with, nil before then: what
+// the router authorizes its control path against. Key is the key of the run
+// the cache is for, "" before it knows: what the router names the run by on
+// every answer from its control path, refusals included. Spec is every spec
+// the cache takes, the run's own saves among them: a new one while the run
+// waits is a new tunnel. Bearer is whether a request's Bearer credential is a
+// live, unused grant the cache issued on GET .env, for the router to let that
+// one PATCH through. Owner is who the mint said owns the running tunnel, as
+// the run last saved it, "" for nobody: whose token the auth admits to the
+// MCP server. Mutable is what the file said about a variable a PATCH may
 // change, set says whether it said anything at all (an empty line is a
 // choice); SetMutable records what the builder settled, for the file.
 type Cache interface {
@@ -85,7 +88,8 @@ type Cache interface {
 	Secret() []byte
 	Key() string
 	Spec() <-chan string
-	Grant(bearer string) bool
+	Bearer(r *http.Request) (sub string, ok bool, err error)
+	Owner() string
 	Mutable(name string) (string, bool)
 	SetMutable(name, value string)
 }
@@ -126,7 +130,9 @@ type CacheImpl struct {
 	// tunnel. Kept in memory only, never written: the file's spec already
 	// carries it, inside its envelope.
 	secret []byte
-	log    v1.Logger
+	// owner is who the mint said owns the running tunnel, "" for nobody.
+	owner string
+	log   v1.Logger
 	// auth answers a PATCH refused for its grant, so the 401 says what a
 	// client may do about it.
 	auth auth.Auth
@@ -272,6 +278,12 @@ func WithSecret(secret []byte) Option {
 	}
 }
 
+// WithOwner sets the running tunnel's owner, as its mint answered it: ""
+// for nobody, which drops the file's TUNNELD_OWNER line.
+func WithOwner(owner string) Option {
+	return func(c *CacheImpl) { c.owner = owner }
+}
+
 // WithMutable registers how name, one of MUTABLE_VARS other than the spec,
 // is checked and applied: validate is pure; apply commits and cannot fail
 // once validate has passed. A PATCH naming a variable with nothing
@@ -296,13 +308,60 @@ func (c *CacheImpl) SetMutable(name, value string) {
 	c.mutable[name] = value
 }
 
-// Grant reports whether bearer is a live, unused grant. It does not use it:
-// the PATCH it authorizes does, once applied.
-func (c *CacheImpl) Grant(bearer string) bool {
+// None is the cache that keeps nothing: a Load that finds nothing, a Save
+// that keeps nothing, no secret, no key, no endpoints and no grants. A run
+// with caching off reads and writes through it, and a router handed no cache
+// authorizes against it, so neither branches around a nil.
+type None struct{}
+
+var _ Cache = None{}
+
+func (None) Load(...Option) string { return "" }
+func (None) Save(...Option)        {}
+func (None) String() string        { return "" }
+func (None) Handlers(string) map[string]func(http.ResponseWriter, *http.Request) {
+	return nil
+}
+func (None) Secret() []byte                             { return nil }
+func (None) Key() string                                { return "" }
+func (None) Bearer(*http.Request) (string, bool, error) { return "", false, nil }
+func (None) Mutable(string) (string, bool)              { return "", false }
+func (None) Owner() string                              { return "" }
+func (None) SetMutable(string, string)                  {}
+
+// Spec is never a new spec: a run with caching off keeps its tunnel.
+func (None) Spec() <-chan string { return nil }
+
+// Owner is who the mint said owns the running tunnel, as the run last saved
+// it; "" before then, and when the mint named nobody.
+func (c *CacheImpl) Owner() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, ok := c.liveGrant(bearer)
-	return ok
+	return c.owner
+}
+
+// Bearer reports whether r carries a live, unused grant as its Bearer
+// credential, in auth.Auth's Bearer's shape. It does not use it: the PATCH
+// it authorizes does, once applied. sub is always "": a grant names nobody,
+// only what it may change. err is always nil: a grant that is not live is no
+// grant.
+func (c *CacheImpl) Bearer(r *http.Request) (sub string, ok bool, err error) {
+	bearer, sent := grantOf(r)
+	if !sent {
+		return "", false, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok = c.liveGrant(bearer)
+	return "", ok, nil
+}
+
+// grantOf is r's Authorization credential when its scheme is Bearer,
+// compared case-insensitively (RFC 9110 §11.1).
+func grantOf(r *http.Request) (string, bool) {
+	scheme, token, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+	token = strings.TrimSpace(token)
+	return token, strings.EqualFold(scheme, "Bearer") && token != ""
 }
 
 // liveGrant finds bearer's grant, dropping it if expired; callers hold c.mu.
@@ -626,7 +685,7 @@ func (c *CacheImpl) dotenvHandler() http.HandlerFunc {
 				http.Error(w, "the file changed since it was read", http.StatusPreconditionFailed)
 				return
 			}
-			bearer, granted := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			bearer, granted := grantOf(r)
 			var g grant
 			if granted {
 				var ok bool
@@ -814,6 +873,10 @@ func (c *CacheImpl) renderFor(served bool) string {
 		return ""
 	}
 	lines := []string{assign(ltv1.SpecEnv, c.spec)}
+	// Never read back: the owner is the latest mint's answer, not the file's.
+	if c.owner != "" {
+		lines = append(lines, assign(v1.OwnerEnv, c.owner))
+	}
 
 	// Everything the run settled on, after the one line that does something.
 	// Sorted, so the same run twice writes the same file and a diff between
