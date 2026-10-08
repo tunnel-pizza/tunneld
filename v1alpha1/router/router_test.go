@@ -1631,7 +1631,19 @@ func TestAuth(t *testing.T) {
 		t.Errorf("OPTIONS with no Access-Control-Request-Method = %d, want 401", bare.StatusCode)
 	}
 	if ping := preflight("https://tunnel.pizza", "/_tunneld/ping"); ping.Header.Get("Access-Control-Allow-Origin") != "" {
-		t.Error("CORS answered on a path other than .env")
+		t.Error("CORS answered on a path other than .env and token")
+	}
+	if tok := preflight("https://tunnel.pizza", "/_tunneld/token"); tok.StatusCode != 204 ||
+		tok.Header.Get("Access-Control-Allow-Origin") != "https://tunnel.pizza" ||
+		!strings.Contains(tok.Header.Get("Access-Control-Allow-Methods"), "POST") {
+		t.Errorf("preflight for token: %d %v", tok.StatusCode, tok.Header)
+	}
+	if tok := preflight("https://evil.example", "/_tunneld/token"); tok.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Error("token answered CORS for another origin")
+	}
+	// Public: the exchange's own checks answer, never the guard's 401.
+	if resp, _ := ask(t, "POST", base+"/_tunneld/token", ""); resp.StatusCode == 401 {
+		t.Error("the guard stood in front of /_tunneld/token")
 	}
 	// Every answer to a PATCH from the provider's origin, a 401 included.
 	req, _ := http.NewRequest("PATCH", env, nil)

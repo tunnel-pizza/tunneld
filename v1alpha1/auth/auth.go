@@ -592,14 +592,15 @@ func safeNext(next string) string {
 	return (&url.URL{Path: clean, RawQuery: u.RawQuery}).String()
 }
 
-// Handlers is the login page, logout, and the sign-in's client document and
-// callback, under the router's control path.
+// Handlers is the login page, logout, the sign-in's client document and
+// callback, and the token exchange, under the router's control path.
 func (a *AuthImpl) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
 	return map[string]func(http.ResponseWriter, *http.Request){
 		path + "login":       a.login,
 		path + "logout":      a.logout,
 		path + "client.json": a.client,
 		path + "callback":    a.callback,
+		path + "token":       a.token,
 	}
 }
 

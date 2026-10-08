@@ -4,7 +4,12 @@ import (
 	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -98,4 +103,96 @@ func selfIssued(token, host string) bool {
 	}
 	var c jwt.Claims
 	return tok.UnsafeClaimsWithoutVerification(&c) == nil && c.Issuer == "https://"+host
+}
+
+const (
+	exchangeGrant   = "urn:ietf:params:oauth:grant-type:token-exchange"
+	accessTokenType = "urn:ietf:params:oauth:token-type:access_token"
+	tokenScope      = "tunnel:token"
+)
+
+// tokenLifetimes is what expires_in may ask, in seconds; 0 is no expiry.
+var tokenLifetimes = []int{604800, 2592000, 5184000, 7776000, 0}
+
+// tokenError is an RFC 6749 §5.2 answer.
+func tokenError(w http.ResponseWriter, status int, code, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
+}
+
+// token is RFC 8693 token exchange for the owner: the provider's subject
+// token (scope tunnel:token, issued to the provider itself, for this
+// tunnel, naming its owner) traded for a token this tunnel signs, for one
+// of tokenLifetimes. Nothing is kept; the subject token is checked offline.
+func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	ok, reason := false, ""
+	defer func() { a.log.Info("a token", "ok", ok, "reason", reason) }()
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") || r.ParseForm() != nil {
+		reason = "form"
+		tokenError(w, http.StatusBadRequest, "invalid_request", "a form body is required")
+		return
+	}
+	f := r.PostForm
+	if f.Get("grant_type") != exchangeGrant {
+		reason = "grant_type"
+		tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "only token exchange is offered")
+		return
+	}
+	if f.Get("subject_token") == "" || f.Get("subject_token_type") != accessTokenType {
+		reason = "subject_token"
+		tokenError(w, http.StatusBadRequest, "invalid_request", "an access token is the subject token")
+		return
+	}
+	life, err := strconv.Atoi(f.Get("expires_in"))
+	if err != nil || !slices.Contains(tokenLifetimes, life) {
+		reason = "expires_in"
+		tokenError(w, http.StatusBadRequest, "invalid_request", "expires_in must be 604800, 2592000, 5184000, 7776000 or 0")
+		return
+	}
+	key := tokenKey(a.secret())
+	if key == nil {
+		reason = "starting"
+		w.Header().Set("Retry-After", "2")
+		tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "this tunnel is still starting")
+		return
+	}
+	owner := a.owner()
+	if owner == "" {
+		reason = "owner"
+		tokenError(w, http.StatusBadRequest, "invalid_grant", "this tunnel has no owner")
+		return
+	}
+	c, err := a.oidc.VerifyAccessClaims(r.Context(), f.Get("subject_token"), "https://"+r.Host)
+	if errors.Is(err, ErrUnavailable) {
+		reason = "provider"
+		w.Header().Set("Retry-After", "30")
+		tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "the provider could not be reached")
+		return
+	}
+	if err != nil || c.ClientID != a.server() || !slices.Contains(strings.Fields(c.Scope), tokenScope) || c.Subject != owner {
+		reason = "subject"
+		tokenError(w, http.StatusBadRequest, "invalid_grant", "not the owner's subject token for this tunnel")
+		return
+	}
+	tok, err := mintToken(key, r.Host, owner, a.now(), time.Duration(life)*time.Second)
+	if err != nil {
+		reason = "sign"
+		tokenError(w, http.StatusInternalServerError, "server_error", "the token could not be signed")
+		return
+	}
+	ok = true
+	body := map[string]any{"access_token": tok, "issued_token_type": accessTokenType, "token_type": "Bearer"}
+	if life > 0 {
+		body["expires_in"] = life
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
 }

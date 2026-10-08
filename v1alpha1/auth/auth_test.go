@@ -81,10 +81,14 @@ func fakeOidc() *oidcOf {
 	site, mcp := []string{"https://" + ssoHost}, []string{"https://" + ssoHost + "/_tunneld/mcp"}
 	return &oidcOf{
 		tokens: map[string]grantFor{
-			"listed":   {sub: "github:1", aud: site},
-			"also":     {sub: "github:2", aud: append(site, mcp...)},
-			"unlisted": {sub: "github:9", aud: site},
-			"mcp-only": {sub: "github:1", aud: mcp},
+			"listed":        {sub: "github:1", aud: site},
+			"also":          {sub: "github:2", aud: append(site, mcp...)},
+			"unlisted":      {sub: "github:9", aud: site},
+			"mcp-only":      {sub: "github:1", aud: mcp},
+			"subject":       {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
+			"subject-other": {sub: "github:2", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
+			"mcp-client":    {sub: "github:1", aud: site, clientID: "https://inspector.example/client.json", scope: "openid tunnel:token"},
+			"no-scope":      {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "openid profile"},
 		},
 		sub: "github:1", username: "alice",
 	}

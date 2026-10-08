@@ -1,6 +1,12 @@
 package auth
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +103,142 @@ func TestSelfIssued(t *testing.T) {
 	}
 	if selfIssued(tok, "other.tunneled.pizza") || selfIssued("listed", ssoHost) || selfIssued("", ssoHost) {
 		t.Error("recognised something else")
+	}
+}
+
+func exchangeAuth(t *testing.T, o *oidcOf, owner string) *AuthImpl {
+	t.Helper()
+	a := New(WithSecret(func() []byte { return []byte("s3cr3t") }), WithOidc(o),
+		WithAuthorizationServer(func() string { return fakeIssuer }))
+	a.now = func() time.Time { return tokenNow }
+	if err := a.Set(value); err != nil {
+		t.Fatal(err)
+	}
+	return owned(a, owner)
+}
+
+func exchange(a *AuthImpl, form url.Values) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/_tunneld/token", strings.NewReader(form.Encode()))
+	r.Host = ssoHost
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	a.token(rec, r)
+	return rec
+}
+
+func exchangeForm(subject, expiresIn string) url.Values {
+	return url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":      {subject},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"expires_in":         {expiresIn},
+	}
+}
+
+func TestExchangeMints(t *testing.T) {
+	for _, life := range []int{604800, 2592000, 5184000, 7776000, 0} {
+		a := exchangeAuth(t, fakeOidc(), "github:1")
+		rec := exchange(a, exchangeForm("subject", strconv.Itoa(life)))
+		var body struct {
+			AccessToken     string `json:"access_token"`
+			IssuedTokenType string `json:"issued_token_type"`
+			TokenType       string `json:"token_type"`
+			ExpiresIn       *int   `json:"expires_in"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" ||
+			body.TokenType != "Bearer" || body.IssuedTokenType != "urn:ietf:params:oauth:token-type:access_token" {
+			t.Fatalf("%d: %d %s", life, rec.Code, rec.Body)
+		}
+		if (life == 0) != (body.ExpiresIn == nil) || (life != 0 && *body.ExpiresIn != life) {
+			t.Errorf("%d: expires_in %v", life, body.ExpiresIn)
+		}
+		if err := verifyToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", body.AccessToken, tokenNow); err != nil {
+			t.Errorf("%d: minted token does not verify: %v", life, err)
+		}
+	}
+}
+
+func TestExchangeRefuses(t *testing.T) {
+	base := exchangeForm("subject", "2592000")
+	with := func(k, v string) url.Values {
+		f := url.Values{}
+		for key, vs := range base {
+			f[key] = vs
+		}
+		if v == "" {
+			f.Del(k)
+		} else {
+			f.Set(k, v)
+		}
+		return f
+	}
+	for name, tc := range map[string]struct {
+		form  url.Values
+		owner string
+		down  bool
+		code  int
+		err   string
+	}{
+		"another grant":           {with("grant_type", "authorization_code"), "github:1", false, 400, "unsupported_grant_type"},
+		"no subject token":        {with("subject_token", ""), "github:1", false, 400, "invalid_request"},
+		"another token type":      {with("subject_token_type", "urn:ietf:params:oauth:token-type:id_token"), "github:1", false, 400, "invalid_request"},
+		"expires_in missing":      {with("expires_in", ""), "github:1", false, 400, "invalid_request"},
+		"expires_in not allowed":  {with("expires_in", "30"), "github:1", false, 400, "invalid_request"},
+		"expires_in not a number": {with("expires_in", "forever"), "github:1", false, 400, "invalid_request"},
+		"no owner":                {base, "", false, 400, "invalid_grant"},
+		"not a provider token":    {with("subject_token", "nope"), "github:1", false, 400, "invalid_grant"},
+		"an MCP client's token":   {with("subject_token", "mcp-client"), "github:1", false, 400, "invalid_grant"},
+		"without tunnel:token":    {with("subject_token", "no-scope"), "github:1", false, 400, "invalid_grant"},
+		"someone else's":          {with("subject_token", "subject-other"), "github:1", false, 400, "invalid_grant"},
+		"provider down":           {base, "github:1", true, 503, "temporarily_unavailable"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := fakeOidc()
+			o.down = tc.down
+			rec := exchange(exchangeAuth(t, o, tc.owner), tc.form)
+			var body struct{ Error string }
+			_ = json.Unmarshal(rec.Body.Bytes(), &body)
+			if rec.Code != tc.code || body.Error != tc.err || rec.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("%d %q; want %d %q", rec.Code, body.Error, tc.code, tc.err)
+			}
+			if strings.Contains(rec.Body.String(), "access_token") {
+				t.Error("refused, but a token went out")
+			}
+		})
+	}
+	t.Run("no secret yet", func(t *testing.T) {
+		a := owned(New(WithOidc(fakeOidc()), WithAuthorizationServer(func() string { return fakeIssuer })), "github:1")
+		rec := exchange(a, base)
+		if rec.Code != 503 || rec.Header().Get("Retry-After") != "2" {
+			t.Errorf("%d, Retry-After %q", rec.Code, rec.Header().Get("Retry-After"))
+		}
+	})
+	t.Run("GET", func(t *testing.T) {
+		a := exchangeAuth(t, fakeOidc(), "github:1")
+		r := httptest.NewRequest("GET", "/_tunneld/token", nil)
+		rec := httptest.NewRecorder()
+		a.token(rec, r)
+		if rec.Code != 405 || rec.Header().Get("Allow") != "POST" {
+			t.Errorf("%d Allow %q", rec.Code, rec.Header().Get("Allow"))
+		}
+	})
+}
+
+func TestExchangeLogsNoToken(t *testing.T) {
+	var buf bytes.Buffer
+	a := exchangeAuth(t, fakeOidc(), "github:1")
+	WithLog(slog.New(slog.NewTextHandler(&buf, nil)))(a)
+	rec := exchange(a, exchangeForm("subject", "604800"))
+	var body struct {
+		AccessToken string `json:"access_token"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	log := buf.String()
+	if !strings.Contains(log, `msg="a token"`) || !strings.Contains(log, "ok=true") {
+		t.Errorf("log %q", log)
+	}
+	if body.AccessToken == "" || strings.Contains(log, body.AccessToken) {
+		t.Error("the minted token reached the log")
 	}
 }
