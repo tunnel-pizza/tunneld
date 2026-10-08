@@ -1232,7 +1232,8 @@ curl -H "Authorization: Bearer $TOKEN" https://<host>/
 - **At the gate**, a Bearer token whose `iss` is the tunnel itself is checked
   with that key: unexpired, for the owner the mint named. A good one reaches
   the app without `Authorization` (on Single Sign-On, with
-  `X-Tunneld-Sub` naming the owner); a bad one is a `401`.
+  `X-Tunneld-Sub` naming the owner); a bad one is a `401`; before the run
+  has a secret, a `503` with `Retry-After: 2`.
 - **Revoking.** There is no list and no per-token revoke: a new secret
   (tunnel.pizza's Reset Tunnel) changes the key, which ends every token the
   tunnel ever minted, and every sign-in.

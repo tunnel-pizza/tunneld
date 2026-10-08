@@ -368,3 +368,38 @@ func TestExchangeLogsOnlyVerifiedAsks(t *testing.T) {
 		})
 	}
 }
+
+// TestTokenNamesNoSubOnPassword pins X-Tunneld-Sub as Single Sign-On's
+// alone: a Password tunnel's origin never gets one, a tunnel token included.
+func TestTokenNamesNoSubOnPassword(t *testing.T) {
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	for v, want := range map[string]string{value: "", ssoValue: "github:1", value + ", " + ssoValue: "github:1"} {
+		a := New(WithSecret(func() []byte { return []byte("s3cr3t") }), WithOidc(fakeOidc()))
+		if err := a.Set(v); err != nil {
+			t.Fatal(err)
+		}
+		owned(a, "github:1")
+		r := httptest.NewRequest("GET", "/x", nil)
+		r.Host = ssoHost
+		r.Header.Set("Authorization", "Bearer "+tok)
+		if rec := serve(a.Handler(origin()), r); rec.Code != 200 || rec.Header().Get("X-Sub") != want {
+			t.Errorf("%s: %d, sub %q; want 200, %q", v, rec.Code, rec.Header().Get("X-Sub"), want)
+		}
+	}
+}
+
+// TestTokenWhileStarting pins a tunnel token before the run has a secret as
+// a retry, as the exchange answers the same state: never a final 401.
+func TestTokenWhileStarting(t *testing.T) {
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	a := owned(New(), "github:1")
+	if err := a.Set(value); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", "/x", nil)
+	r.Host = ssoHost
+	r.Header.Set("Authorization", "Bearer "+tok)
+	if rec := serve(a.Handler(origin()), r); rec.Code != 503 || rec.Header().Get("Retry-After") != "2" {
+		t.Errorf("%d, Retry-After %q; want 503, 2", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}

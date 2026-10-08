@@ -263,8 +263,18 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		// The tunnel's own tokens (tunnel.pizza#58), on any protected tunnel:
 		// checked with the key the secret derives, so a reset ends them.
 		if token, sent := bearerToken(r); sent && selfIssued(token, r.Host) {
+			// No secret yet is no key yet: the run is starting, so a retry.
+			if len(a.secret()) == 0 {
+				refuse(w, http.StatusServiceUnavailable, "Retry-After", "2")
+				return
+			}
 			if a.ownToken(r) {
-				a.pass(w, r, next, true, a.owner())
+				// X-Tunneld-Sub is Single Sign-On's alone.
+				sub := ""
+				if s.bearer {
+					sub = a.owner()
+				}
+				a.pass(w, r, next, true, sub)
 				return
 			}
 			unauthorized(w, s.challenge(r.Host, "invalid_token"))
