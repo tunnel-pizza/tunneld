@@ -189,8 +189,10 @@ else is the origins', passed through exactly as it was sent.
 | `POST /_tunneld/mcp` | token, or a token for it from the [owner](#the-owner) or, on an SSO tunnel, a listed person | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
 | `GET /_tunneld/client.json` | none | the tunnel's own OAuth client, a [Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/): see [Single Sign-On](#single-sign-on) |
 | `GET /_tunneld/callback` | none | where the provider sends a browser back after it signs in |
+| `POST /_tunneld/token` | none (a subject token in the body) | the owner's [tunnel token](#tunnel-tokens), traded for the provider's subject token ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)) |
 
-Everything but `ping`, the login pages and the sign-in's two routes needs
+Everything but `ping`, the login pages, the sign-in's two routes and the
+token exchange needs
 `Authorization: token <secret>`, the running tunnel's secret base64-encoded —
 the encoding the spec's own JSON gives it, so whoever holds the spec holds the
 token. On a tunnel set to [Single Sign-On](#single-sign-on), a listed
@@ -1197,6 +1199,44 @@ What a visitor gets:
 `Authorization: Bearer` from a visitor with no tunneld cookie is tunneld's to
 judge and never reaches the app. Sign in in a browser first; with the cookie,
 the app's own `Bearer` passes untouched.
+
+### Tunnel tokens
+
+The tunnel's [owner](#the-owner) can have the tunnel mint a long-lived token
+for scripts and CI jobs, from tunnel.pizza's status page (⋯ → Create
+token…). It works on any protected tunnel, Password, Single Sign-On or both:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://<host>/
+```
+
+- **Minting.** The owner's browser asks the provider for a 60-second subject
+  token, then sends it to `POST /_tunneld/token` as a form:
+  `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
+  `subject_token`, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`
+  and `expires_in`, one of `604800`, `2592000`, `5184000`, `7776000` (7, 30,
+  60, 90 days) or `0` for none. tunneld checks the subject token against the
+  provider's published keys: issued by the provider, to the provider itself
+  (`client_id`), with scope `tunnel:token` (which no OAuth client can ask
+  for), for this hostname, naming the owner. The answer is RFC 8693's:
+  `access_token`, `issued_token_type`, `token_type: Bearer` and, unless there
+  is none, `expires_in`. A refusal is `400` with an RFC 6749 error; a tunnel
+  with no secret yet a `503` with `Retry-After: 2`; the provider unreachable
+  a `503` with `Retry-After: 30`. CORS answers the provider's origin only.
+  Nothing is stored, here or at the provider.
+- **The token** is a JWT (`EdDSA`, `typ` `at+jwt`): `iss` and `aud`
+  `https://<host>`, `sub` the owner, `client_id` the tunnel's own, `iat`,
+  `exp` unless it has no expiry, and a random `jti`. It is signed with an
+  Ed25519 key derived from the tunnel's secret (HKDF-SHA256, info
+  `tunneld token key`).
+- **At the gate**, a Bearer token whose `iss` is the tunnel itself is checked
+  with that key: unexpired, for the owner the mint named. A good one reaches
+  the app without `Authorization` (on Single Sign-On, with
+  `X-Tunneld-Sub` naming the owner); a bad one is a `401`; before the run
+  has a secret, a `503` with `Retry-After: 2`.
+- **Revoking.** There is no list and no per-token revoke: a new secret
+  (tunnel.pizza's Reset Tunnel) changes the key, which ends every token the
+  tunnel ever minted, and every sign-in.
 
 ## Environment
 

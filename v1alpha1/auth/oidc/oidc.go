@@ -60,6 +60,7 @@ const (
 type Oidc interface {
 	Endpoints(ctx context.Context) (Discovery, error)
 	VerifyAccess(ctx context.Context, token, resource string) (sub string, err error)
+	VerifyAccessClaims(ctx context.Context, token, resource string) (AccessClaims, error)
 	Exchange(ctx context.Context, code, verifier, redirectURI, clientID, assertion string) (idToken string, err error)
 	VerifyID(ctx context.Context, token, clientID, nonce string) (IDClaims, error)
 }
@@ -353,18 +354,30 @@ type accessClaims struct {
 	Scope    string `json:"scope"`
 }
 
+// AccessClaims is what a caller reads of an access token VerifyAccessClaims
+// accepted: who, which client it was issued to, and its scope.
+type AccessClaims struct {
+	Subject, ClientID, Scope string
+}
+
 // VerifyAccess is the subject of token when it is an access token the issuer
 // signed for resource (RFC 9068 §4): iss the issuer, aud holding resource,
 // sub, exp and iat present, exp and iat within clockSkew.
 func (o *OidcImpl) VerifyAccess(ctx context.Context, token, resource string) (string, error) {
+	c, err := o.VerifyAccessClaims(ctx, token, resource)
+	return c.Subject, err
+}
+
+// VerifyAccessClaims is VerifyAccess, with the token's client_id and scope.
+func (o *OidcImpl) VerifyAccessClaims(ctx context.Context, token, resource string) (AccessClaims, error) {
 	var c accessClaims
 	if err := o.verify(ctx, token, true, &c); err != nil {
-		return "", err
+		return AccessClaims{}, err
 	}
 	if err := checkClaims(c.Claims, o.issuer(), resource, o.now()); err != nil {
-		return "", err
+		return AccessClaims{}, err
 	}
-	return c.Subject, nil
+	return AccessClaims{Subject: c.Subject, ClientID: c.ClientID, Scope: c.Scope}, nil
 }
 
 // checkClaims is what every token here must carry: iss the issuer, aud

@@ -649,6 +649,7 @@ var publicMethods = map[string][]string{
 	"logout":      {http.MethodGet, http.MethodHead, http.MethodPost},
 	"client.json": {http.MethodGet, http.MethodHead},
 	"callback":    {http.MethodGet},
+	"token":       {http.MethodPost},
 }
 
 // authMethods is every path under the ControlPath a credential other than
@@ -695,9 +696,11 @@ var authMethods = map[string][]struct {
 
 // corsMethods is every path under the ControlPath a browser calls across
 // origins, by its name there and the methods its preflight allows: .env,
-// which the provider's page PATCHes with a grant.
+// which the provider's page PATCHes with a grant, and token, which the
+// owner's browser POSTs a subject token to.
 var corsMethods = map[string][]string{
-	".env": {http.MethodPatch},
+	".env":  {http.MethodPatch},
+	"token": {http.MethodPost},
 }
 
 // cors stands in front of the ControlPath's guard for a browser calling

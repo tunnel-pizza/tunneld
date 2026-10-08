@@ -230,7 +230,8 @@ func (s *state) verifyAny(password string) bool {
 // Handler stands in front of next, which is everything a visitor reaches
 // (the router keeps its control path outside it). A visitor's own
 // X-Tunneld-Sub is removed first, always. Then, in order: nothing set
-// passes; the RFC 9728 metadata passes; a valid cookie passes; with a Bearer
+// passes; the RFC 9728 metadata passes; a valid cookie passes; a token this
+// tunnel minted for its owner passes, whatever the protection; with a Bearer
 // challenge, a Bearer credential is judged and passes or is refused by what
 // went wrong; with a Basic one, Basic that verifies passes and gets the
 // cookie; anything else is a 303 to the login page for a browser page load,
@@ -255,7 +256,28 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			// beside the cookie. The tunnel's password never reaches the
 			// origin; an origin's own Basic or Bearer credential still does.
 			_, pw, basic := r.BasicAuth()
-			a.pass(w, r, next, basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny), sub)
+			consumed := basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny)
+			a.pass(w, r, next, consumed || a.ownToken(r), sub)
+			return
+		}
+		// The tunnel's own tokens (tunnel.pizza#58), on any protected tunnel:
+		// checked with the key the secret derives, so a reset ends them.
+		if token, sent := bearerToken(r); sent && selfIssued(token, r.Host) {
+			// No secret yet is no key yet: the run is starting, so a retry.
+			if len(a.secret()) == 0 {
+				refuse(w, http.StatusServiceUnavailable, "Retry-After", "2")
+				return
+			}
+			if a.ownToken(r) {
+				// X-Tunneld-Sub is Single Sign-On's alone.
+				sub := ""
+				if s.bearer {
+					sub = a.owner()
+				}
+				a.pass(w, r, next, true, sub)
+				return
+			}
+			unauthorized(w, s.challenge(r.Host, "invalid_token"))
 			return
 		}
 		if _, sent := bearerToken(r); sent && s.bearer {
@@ -592,14 +614,15 @@ func safeNext(next string) string {
 	return (&url.URL{Path: clean, RawQuery: u.RawQuery}).String()
 }
 
-// Handlers is the login page, logout, and the sign-in's client document and
-// callback, under the router's control path.
+// Handlers is the login page, logout, the sign-in's client document and
+// callback, and the token exchange, under the router's control path.
 func (a *AuthImpl) Handlers(path string) map[string]func(http.ResponseWriter, *http.Request) {
 	return map[string]func(http.ResponseWriter, *http.Request){
 		path + "login":       a.login,
 		path + "logout":      a.logout,
 		path + "client.json": a.client,
 		path + "callback":    a.callback,
+		path + "token":       a.token,
 	}
 }
 

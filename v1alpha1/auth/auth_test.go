@@ -58,8 +58,9 @@ const (
 
 // grantFor is who a fake token is, and what it is for.
 type grantFor struct {
-	sub string
-	aud []string
+	sub             string
+	aud             []string
+	clientID, scope string
 }
 
 // oidcOf stands in for the provider: a token in tokens is valid for its aud
@@ -80,10 +81,14 @@ func fakeOidc() *oidcOf {
 	site, mcp := []string{"https://" + ssoHost}, []string{"https://" + ssoHost + "/_tunneld/mcp"}
 	return &oidcOf{
 		tokens: map[string]grantFor{
-			"listed":   {"github:1", site},
-			"also":     {"github:2", append(site, mcp...)},
-			"unlisted": {"github:9", site},
-			"mcp-only": {"github:1", mcp},
+			"listed":        {sub: "github:1", aud: site},
+			"also":          {sub: "github:2", aud: append(site, mcp...)},
+			"unlisted":      {sub: "github:9", aud: site},
+			"mcp-only":      {sub: "github:1", aud: mcp},
+			"subject":       {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
+			"subject-other": {sub: "github:2", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
+			"mcp-client":    {sub: "github:1", aud: site, clientID: "https://inspector.example/client.json", scope: "openid tunnel:token"},
+			"no-scope":      {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "openid profile"},
 		},
 		sub: "github:1", username: "alice",
 	}
@@ -106,6 +111,15 @@ func (o *oidcOf) VerifyAccess(_ context.Context, token, resource string) (string
 		return "", oidc.ErrInvalidToken
 	}
 	return g.sub, nil
+}
+
+func (o *oidcOf) VerifyAccessClaims(ctx context.Context, token, resource string) (oidc.AccessClaims, error) {
+	sub, err := o.VerifyAccess(ctx, token, resource)
+	if err != nil {
+		return oidc.AccessClaims{}, err
+	}
+	g := o.tokens[token]
+	return oidc.AccessClaims{Subject: sub, ClientID: g.clientID, Scope: g.scope}, nil
 }
 
 func (o *oidcOf) Exchange(_ context.Context, code, verifier, redirectURI, clientID, assertion string) (string, error) {

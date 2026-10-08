@@ -258,6 +258,25 @@ func TestVerifyAccess(t *testing.T) {
 // issuer exactly (RFC 8414 §3.3), kept once fetched, forgotten when the
 // issuer changes, and an issuer that cannot be asked is ErrUnavailable,
 // never ErrInvalidToken.
+func TestVerifyAccessClaims(t *testing.T) {
+	iss := newIssuer(t)
+	o := against(iss)
+	tok := accessToken(t, iss, testKey(), func(c map[string]any) {
+		c["client_id"] = "https://tunnel.pizza"
+		c["scope"] = "tunnel:token"
+	})
+	c, err := o.VerifyAccessClaims(t.Context(), tok, "https://"+host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Subject != "github:1" || c.ClientID != "https://tunnel.pizza" || c.Scope != "tunnel:token" {
+		t.Errorf("claims %+v", c)
+	}
+	if _, err := o.VerifyAccessClaims(t.Context(), tok, "https://elsewhere.example"); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("another resource: %v, want ErrInvalidToken", err)
+	}
+}
+
 func TestDiscovery(t *testing.T) {
 	t.Run("kept once fetched", func(t *testing.T) {
 		iss := newIssuer(t)
