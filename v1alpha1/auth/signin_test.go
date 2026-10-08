@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 // muxOf is a's Handlers on a ServeMux, as the router puts them.
@@ -62,20 +65,26 @@ func TestSeal(t *testing.T) {
 }
 
 // TestClientDocument pins tunneld's Client ID Metadata Document: its own URL
-// as client_id, the hostname as its name, one callback, a public client.
+// as client_id, the hostname as its name, one callback, and the key derived
+// from the tunnel secret; none before there is a secret.
 func TestClientDocument(t *testing.T) {
-	m := muxOf(New())
+	m := muxOf(New(WithSecret(func() []byte { return []byte("s3cr3t") })))
 	rec := httptest.NewRecorder()
 	m.ServeHTTP(rec, at("GET", "/_tunneld/client.json"))
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 || rec.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("%d %q %v", rec.Code, rec.Body, err)
 	}
+	var key map[string]any
+	raw, _ := json.Marshal(assertionJWK(assertionKey([]byte("s3cr3t"))))
+	_ = json.Unmarshal(raw, &key)
 	want := map[string]any{
 		"client_id": testClient, "client_name": ssoHost,
 		"redirect_uris":              []any{"https://" + ssoHost + "/_tunneld/callback"},
-		"token_endpoint_auth_method": "none", "grant_types": []any{"authorization_code"},
-		"response_types": []any{"code"}, "scope": "openid profile",
+		"token_endpoint_auth_method": "private_key_jwt",
+		"jwks":                       map[string]any{"keys": []any{key}},
+		"grant_types":                []any{"authorization_code"},
+		"response_types":             []any{"code"}, "scope": "openid profile",
 	}
 	if !equalJSON(got, want) {
 		t.Errorf("client document = %v, want %v", got, want)
@@ -84,6 +93,11 @@ func TestClientDocument(t *testing.T) {
 	m.ServeHTTP(rec, at("POST", "/_tunneld/client.json"))
 	if rec.Code != 405 {
 		t.Errorf("POST = %d, want 405", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	muxOf(New()).ServeHTTP(rec, at("GET", "/_tunneld/client.json"))
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "2" {
+		t.Errorf("no secret: %d, Retry-After %q; want 503/2", rec.Code, rec.Header().Get("Retry-After"))
 	}
 }
 
@@ -279,6 +293,21 @@ func TestCallback(t *testing.T) {
 		req.AddCookie(c)
 		if rec := serve(a.Handler(origin()), req); rec.Code != 200 || rec.Header().Get("X-Sub") != "github:1" {
 			t.Errorf("the cookie at the gate: %d, sub %q; want 200 github:1", rec.Code, rec.Header().Get("X-Sub"))
+		}
+	})
+	t.Run("the code exchange is signed with the tunnel's own key", func(t *testing.T) {
+		o := fakeOidc()
+		callback(t, o, nil)
+		tok, err := jwt.ParseSigned(o.assertion, []jose.SignatureAlgorithm{jose.EdDSA})
+		if err != nil {
+			t.Fatalf("assertion: %v", err)
+		}
+		var c jwt.Claims
+		if err := tok.Claims(assertionJWK(assertionKey([]byte("s3cr3t"))).Key, &c); err != nil {
+			t.Fatalf("assertion signature: %v", err)
+		}
+		if c.Issuer != testClient || c.Subject != testClient || !c.Audience.Contains(fakeIssuer) {
+			t.Errorf("assertion iss %q sub %q aud %v; want the client twice and the issuer", c.Issuer, c.Subject, c.Audience)
 		}
 	})
 	t.Run("the owner, though not listed, signs in", func(t *testing.T) {

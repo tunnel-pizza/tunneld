@@ -16,6 +16,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth/oidc"
 )
@@ -178,11 +179,18 @@ func (a *AuthImpl) signIn(w http.ResponseWriter, r *http.Request, s *state, next
 }
 
 // client answers this tunnel's Client ID Metadata Document: its own URL as
-// client_id, its hostname as its name, one callback, a public client.
+// client_id, its hostname as its name, one callback, authenticated by the key
+// derived from the tunnel secret (RFC 7523 §2.2).
 func (a *AuthImpl) client(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	secret := a.secret()
+	if secret == nil {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -191,7 +199,8 @@ func (a *AuthImpl) client(w http.ResponseWriter, r *http.Request) {
 		"client_id":                  clientID(r.Host),
 		"client_name":                r.Host,
 		"redirect_uris":              []string{redirectURI(r.Host)},
-		"token_endpoint_auth_method": "none",
+		"token_endpoint_auth_method": "private_key_jwt",
+		"jwks":                       map[string]any{"keys": []jose.JSONWebKey{assertionJWK(assertionKey(secret))}},
 		"grant_types":                []string{"authorization_code"},
 		"response_types":             []string{"code"},
 		"scope":                      "openid profile",
@@ -248,7 +257,12 @@ func (a *AuthImpl) callback(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusOK, "Sign-in failed. Try again.")
 		return
 	}
-	token, err := a.oidc.Exchange(r.Context(), q.Get("code"), f.Verifier, redirectURI(r.Host), clientID(r.Host))
+	assertion, err := clientAssertion(assertionKey(a.secret()), clientID(r.Host), d.Issuer, a.now())
+	if err != nil {
+		fail(http.StatusInternalServerError, "Sign-in failed. Try again.")
+		return
+	}
+	token, err := a.oidc.Exchange(r.Context(), q.Get("code"), f.Verifier, redirectURI(r.Host), clientID(r.Host), assertion)
 	var who oidc.IDClaims
 	if err == nil {
 		who, err = a.oidc.VerifyID(r.Context(), token, clientID(r.Host), f.Nonce)

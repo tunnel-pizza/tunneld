@@ -73,6 +73,7 @@ type oidcOf struct {
 	down, exchangeDown bool
 	verifier, nonce    string
 	sub, username      string
+	assertion          string
 }
 
 func fakeOidc() *oidcOf {
@@ -107,7 +108,8 @@ func (o *oidcOf) VerifyAccess(_ context.Context, token, resource string) (string
 	return g.sub, nil
 }
 
-func (o *oidcOf) Exchange(_ context.Context, code, verifier, redirectURI, clientID string) (string, error) {
+func (o *oidcOf) Exchange(_ context.Context, code, verifier, redirectURI, clientID, assertion string) (string, error) {
+	o.assertion = assertion
 	if o.down || o.exchangeDown {
 		return "", oidc.ErrUnavailable
 	}
