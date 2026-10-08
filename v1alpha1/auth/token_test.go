@@ -242,3 +242,74 @@ func TestExchangeLogsNoToken(t *testing.T) {
 		t.Error("the minted token reached the log")
 	}
 }
+
+func TestGateTakesItsOwnTokens(t *testing.T) {
+	mintAt := func(secret string, at time.Time) string {
+		tok, _ := mintToken(tokenKey([]byte(secret)), ssoHost, "github:1", at, time.Hour)
+		return tok
+	}
+	mint := func(secret string) string { return mintAt(secret, time.Now()) }
+	good := mint("s3cr3t")
+	ask := func(a *AuthImpl, bearer string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/x", nil)
+		r.Host = ssoHost
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		return serve(a.Handler(origin()), r)
+	}
+	both := value + ", " + ssoValue
+	for name, v := range map[string]string{"Password": value, "Single Sign-On": ssoValue, "both": both} {
+		t.Run(name, func(t *testing.T) {
+			a := New(WithSecret(func() []byte { return []byte("s3cr3t") }), WithOidc(fakeOidc()))
+			if err := a.Set(v); err != nil {
+				t.Fatal(err)
+			}
+			owned(a, "github:1")
+			rec := ask(a, good)
+			if rec.Code != 200 || rec.Header().Get("X-Authorization") != "" {
+				t.Errorf("%d, origin saw Authorization %q; want 200, stripped", rec.Code, rec.Header().Get("X-Authorization"))
+			}
+			for bad, tok := range map[string]string{
+				"expired":                  mintAt("s3cr3t", time.Now().Add(-3*time.Hour)),
+				"after the secret changed": mint("0ld"),
+			} {
+				if rec := ask(a, tok); rec.Code != 401 || rec.Header().Get("X-Authorization") != "" {
+					t.Errorf("%s: %d", bad, rec.Code)
+				}
+			}
+			owned(a, "github:2")
+			if rec := ask(a, good); rec.Code != 401 {
+				t.Errorf("after the owner changed: %d", rec.Code)
+			}
+		})
+	}
+	t.Run("a provider token on a Password tunnel is still ignored", func(t *testing.T) {
+		a := owned(pwAuth(t, fakeOidc()), "github:1")
+		r := httptest.NewRequest("GET", "/x", nil)
+		r.Host = ssoHost
+		r.Header.Set("Authorization", "Bearer listed")
+		if rec := serve(a.Handler(origin()), r); rec.Code != 401 || !strings.HasPrefix(rec.Header().Get("WWW-Authenticate"), "Basic") {
+			t.Errorf("%d %q; want the Basic challenge", rec.Code, rec.Header().Get("WWW-Authenticate"))
+		}
+	})
+	t.Run("a public tunnel passes everything, untouched", func(t *testing.T) {
+		a := owned(New(WithSecret(func() []byte { return []byte("s3cr3t") })), "github:1")
+		if rec := ask(a, good); rec.Code != 200 || rec.Header().Get("X-Authorization") != "Bearer "+good {
+			t.Errorf("%d, origin saw %q", rec.Code, rec.Header().Get("X-Authorization"))
+		}
+	})
+	t.Run("an ownerless tunnel takes none", func(t *testing.T) {
+		a := protected(t)
+		if rec := ask(a, good); rec.Code != 401 {
+			t.Errorf("%d", rec.Code)
+		}
+	})
+	t.Run("on Single Sign-On a bad one is invalid_token", func(t *testing.T) {
+		a := owned(ssoAuth(t, fakeOidc()), "github:1")
+		rec := ask(a, mint("0ld"))
+		if rec.Code != 401 || !strings.Contains(rec.Header().Get("WWW-Authenticate"), `error="invalid_token"`) {
+			t.Errorf("%d %q", rec.Code, rec.Header().Get("WWW-Authenticate"))
+		}
+	})
+}

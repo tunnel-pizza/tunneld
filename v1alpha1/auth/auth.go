@@ -230,7 +230,8 @@ func (s *state) verifyAny(password string) bool {
 // Handler stands in front of next, which is everything a visitor reaches
 // (the router keeps its control path outside it). A visitor's own
 // X-Tunneld-Sub is removed first, always. Then, in order: nothing set
-// passes; the RFC 9728 metadata passes; a valid cookie passes; with a Bearer
+// passes; the RFC 9728 metadata passes; a valid cookie passes; a token this
+// tunnel minted for its owner passes, whatever the protection; with a Bearer
 // challenge, a Bearer credential is judged and passes or is refused by what
 // went wrong; with a Basic one, Basic that verifies passes and gets the
 // cookie; anything else is a 303 to the login page for a browser page load,
@@ -256,6 +257,16 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			// origin; an origin's own Basic or Bearer credential still does.
 			_, pw, basic := r.BasicAuth()
 			a.pass(w, r, next, basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny), sub)
+			return
+		}
+		// The tunnel's own tokens (tunnel.pizza#58), on any protected tunnel:
+		// checked with the key the secret derives, so a reset ends them.
+		if token, sent := bearerToken(r); sent && selfIssued(token, r.Host) {
+			if verifyToken(tokenKey(a.secret()), r.Host, a.owner(), token, a.now()) == nil {
+				a.pass(w, r, next, true, a.owner())
+				return
+			}
+			unauthorized(w, s.challenge(r.Host, "invalid_token"))
 			return
 		}
 		if _, sent := bearerToken(r); sent && s.bearer {
