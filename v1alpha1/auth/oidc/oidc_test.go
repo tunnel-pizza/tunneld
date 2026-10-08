@@ -454,12 +454,15 @@ func idToken(t *testing.T, iss *issuer, key *rsa.PrivateKey, edit func(map[strin
 }
 
 // TestExchange pins the code's trade at the token endpoint (RFC 6749 §4.1.3,
-// RFC 7636 §4.5): a form POST as a public client, every parameter there; a
-// refusal is ErrRefused, an issuer that cannot answer ErrUnavailable.
+// RFC 7636 §4.5, RFC 7523 §2.2): a form POST, every parameter there, the
+// client's assertion included; a refusal is ErrRefused, an issuer that cannot
+// answer ErrUnavailable.
 func TestExchange(t *testing.T) {
 	want := url.Values{
 		"grant_type": {"authorization_code"}, "code": {"c0de"}, "client_id": {testClient},
 		"redirect_uri": {"https://" + host + "/_tunneld/callback"}, "code_verifier": {"v3rifier"},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {"an-assertion"},
 	}
 	for name, tc := range map[string]struct {
 		token   func(url.Values) (int, any)
@@ -491,7 +494,7 @@ func TestExchange(t *testing.T) {
 			if tc.down {
 				iss.down.Store(true)
 			}
-			got, err := o.Exchange(t.Context(), "c0de", "v3rifier", want.Get("redirect_uri"), testClient)
+			got, err := o.Exchange(t.Context(), "c0de", "v3rifier", want.Get("redirect_uri"), testClient, "an-assertion")
 			if tc.wantErr == nil && (err != nil || got != "the-id-token") {
 				t.Fatalf("Exchange = %q, %v; want the-id-token", got, err)
 			}
@@ -499,6 +502,20 @@ func TestExchange(t *testing.T) {
 				t.Fatalf("Exchange = %q, %v; want %v", got, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestExchangePublic pins a public client's trade: no assertion, so neither
+// assertion parameter is sent.
+func TestExchangePublic(t *testing.T) {
+	iss := newIssuer(t, withToken(func(f url.Values) (int, any) {
+		if f.Has("client_assertion") || f.Has("client_assertion_type") {
+			return 400, map[string]string{"error": "invalid_request"}
+		}
+		return 200, map[string]string{"id_token": "the-id-token"}
+	}))
+	if got, err := against(iss).Exchange(t.Context(), "c0de", "v3rifier", "https://"+host+"/_tunneld/callback", testClient, ""); err != nil || got != "the-id-token" {
+		t.Fatalf("Exchange = %q, %v; want the-id-token", got, err)
 	}
 }
 

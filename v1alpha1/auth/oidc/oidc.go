@@ -60,7 +60,7 @@ const (
 type Oidc interface {
 	Endpoints(ctx context.Context) (Discovery, error)
 	VerifyAccess(ctx context.Context, token, resource string) (sub string, err error)
-	Exchange(ctx context.Context, code, verifier, redirectURI, clientID string) (idToken string, err error)
+	Exchange(ctx context.Context, code, verifier, redirectURI, clientID, assertion string) (idToken string, err error)
 	VerifyID(ctx context.Context, token, clientID, nonce string) (IDClaims, error)
 }
 
@@ -382,12 +382,12 @@ func checkClaims(c jwt.Claims, issuer, audience string, now time.Time) error {
 	return nil
 }
 
-// Exchange trades code for an ID token at the issuer's token endpoint, as the
-// public client clientID with PKCE's verifier (RFC 6749 §4.1.3, RFC 7636
-// §4.5). An issuer that would not trade, a 4xx naming an error (RFC 6749
+// Exchange trades code for an ID token at the issuer's token endpoint, as
+// clientID with PKCE's verifier (RFC 6749 §4.1.3, RFC 7636 §4.5), signed with
+// assertion when there is one (RFC 7523 §2.2). An issuer that would not trade, a 4xx naming an error (RFC 6749
 // §5.2), is ErrRefused; anything else that is not an ID token (a 5xx, a rate
 // limit, a page from something in front of the endpoint) is ErrUnavailable.
-func (o *OidcImpl) Exchange(ctx context.Context, code, verifier, redirectURI, clientID string) (string, error) {
+func (o *OidcImpl) Exchange(ctx context.Context, code, verifier, redirectURI, clientID, assertion string) (string, error) {
 	d, err := o.Endpoints(ctx)
 	if err != nil {
 		return "", err
@@ -398,6 +398,10 @@ func (o *OidcImpl) Exchange(ctx context.Context, code, verifier, redirectURI, cl
 		"redirect_uri":  {redirectURI},
 		"client_id":     {clientID},
 		"code_verifier": {verifier},
+	}
+	if assertion != "" {
+		form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+		form.Set("client_assertion", assertion)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {

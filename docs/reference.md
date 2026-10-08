@@ -1168,6 +1168,13 @@ What a visitor gets:
   `/_tunneld/logout` leaves the browser on the login page, signed out:
   signing in again is its button, and the provider may not ask anything if
   the browser is still signed in there and allowed this tunnel before.
+  The tunnel signs in as its own OAuth client, `/_tunneld/client.json`, which
+  names a key of its own (`private_key_jwt`, one Ed25519 key in `jwks`)
+  derived from the tunnel's secret with HKDF-SHA256, so whoever holds the
+  spec holds the key. tunneld signs the sign-in's code exchange with it
+  ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.2), and the
+  provider checks it against that document. Before the run has a secret,
+  the document is a `503` with `Retry-After: 2`.
 - **A program** with an access token from the provider sends
   `Authorization: Bearer <token>`. tunneld checks it against the provider's
   published keys ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)): issued
