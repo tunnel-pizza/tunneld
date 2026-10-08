@@ -256,13 +256,14 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			// beside the cookie. The tunnel's password never reaches the
 			// origin; an origin's own Basic or Bearer credential still does.
 			_, pw, basic := r.BasicAuth()
-			a.pass(w, r, next, basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny), sub)
+			consumed := basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny)
+			a.pass(w, r, next, consumed || a.ownToken(r), sub)
 			return
 		}
 		// The tunnel's own tokens (tunnel.pizza#58), on any protected tunnel:
 		// checked with the key the secret derives, so a reset ends them.
 		if token, sent := bearerToken(r); sent && selfIssued(token, r.Host) {
-			if verifyToken(tokenKey(a.secret()), r.Host, a.owner(), token, a.now()) == nil {
+			if a.ownToken(r) {
 				a.pass(w, r, next, true, a.owner())
 				return
 			}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
@@ -318,4 +319,52 @@ func TestGateTakesItsOwnTokens(t *testing.T) {
 			t.Errorf("%d %q", rec.Code, rec.Header().Get("WWW-Authenticate"))
 		}
 	})
+}
+
+// TestCookieHolderTunnelToken pins that a tunnel token never reaches the
+// origin, a tunneld cookie beside it or not; an origin's own Bearer still does.
+func TestCookieHolderTunnelToken(t *testing.T) {
+	a := owned(protected(t), "github:1")
+	h := a.Handler(origin())
+	cookie := mintCookie(cookieKey([]byte("s3cr3t")), "basic", "", value, a.now())
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	ask := func(bearer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.Host = ssoHost
+		req.AddCookie(&http.Cookie{Name: CookieName, Value: cookie})
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		return serve(h, req)
+	}
+	if rec := ask(tok); rec.Code != 200 || rec.Header().Get("X-Authorization") != "" {
+		t.Errorf("the tunnel token reached the origin: %d %q", rec.Code, rec.Header().Get("X-Authorization"))
+	}
+	if rec := ask("the-apps-own"); rec.Code != 200 || rec.Header().Get("X-Authorization") != "Bearer the-apps-own" {
+		t.Errorf("the origin's own Bearer: %d %q, want it intact", rec.Code, rec.Header().Get("X-Authorization"))
+	}
+}
+
+// TestExchangeLogsOnlyVerifiedAsks pins that the exchange, which anyone can
+// reach, writes a line only for a subject token the provider signed: a
+// refusal before that would let anyone grow the log at request rate.
+func TestExchangeLogsOnlyVerifiedAsks(t *testing.T) {
+	for name, tc := range map[string]struct {
+		form   url.Values
+		logged bool
+	}{
+		"another grant":          {url.Values{"grant_type": {"password"}}, false},
+		"expires_in not allowed": {exchangeForm("subject", "30"), false},
+		"not a provider token":   {exchangeForm("nope", "604800"), false},
+		"someone else's":         {exchangeForm("subject-other", "604800"), true},
+		"minted":                 {exchangeForm("subject", "604800"), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			a := exchangeAuth(t, fakeOidc(), "github:1")
+			WithLog(slog.New(slog.NewTextHandler(&buf, nil)))(a)
+			exchange(a, tc.form)
+			if got := strings.Contains(buf.String(), `msg="a token"`); got != tc.logged {
+				t.Errorf("logged %v, want %v: %q", got, tc.logged, buf.String())
+			}
+		})
+	}
 }

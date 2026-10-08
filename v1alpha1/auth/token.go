@@ -99,6 +99,14 @@ func verifyToken(key ed25519.PrivateKey, host, owner, token string, now time.Tim
 	return nil
 }
 
+// ownToken is whether r's Bearer is a token this tunnel minted for its owner
+// and that still verifies: it lets r in, and never reaches the origin.
+func (a *AuthImpl) ownToken(r *http.Request) bool {
+	token, sent := bearerToken(r)
+	return sent && selfIssued(token, r.Host) &&
+		verifyToken(tokenKey(a.secret()), r.Host, a.owner(), token, a.now()) == nil
+}
+
 // selfIssued is whether token says, unverified, that host issued it: which
 // rule at the gate judges it, never whether it passes.
 func selfIssued(token, host string) bool {
@@ -137,8 +145,14 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	ok, reason := false, ""
-	defer func() { a.log.Info("a token", "ok", ok, "reason", reason) }()
+	// Logged only once the provider's signature verified: anyone can reach
+	// this, and a line per refusal would let them grow the log at will.
+	verified, ok, reason := false, false, ""
+	defer func() {
+		if verified {
+			a.log.Info("a token", "ok", ok, "reason", reason)
+		}
+	}()
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") || r.ParseForm() != nil {
 		reason = "form"
@@ -182,6 +196,7 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "the provider could not be reached")
 		return
 	}
+	verified = err == nil
 	if err != nil || c.ClientID != a.server() || !slices.Contains(strings.Fields(c.Scope), tokenScope) || c.Subject != owner {
 		reason = "subject"
 		tokenError(w, http.StatusBadRequest, "invalid_grant", "not the owner's subject token for this tunnel")
