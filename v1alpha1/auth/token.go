@@ -42,9 +42,14 @@ type tokenClaims struct {
 	ClientID string `json:"client_id"`
 }
 
+var errLifetime = errors.New("auth: a token's lifetime cannot be negative")
+
 // mintToken is an RFC 9068 access token for sub on host, signed with key,
-// for lifetime; 0 has no exp.
+// for lifetime; 0 has no exp, and a negative one is refused.
 func mintToken(key ed25519.PrivateKey, host, sub string, now time.Time, lifetime time.Duration) (string, error) {
+	if lifetime < 0 {
+		return "", errLifetime
+	}
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.EdDSA, Key: key}, (&jose.SignerOptions{}).WithType("at+jwt"))
 	if err != nil {
 		return "", err

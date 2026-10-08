@@ -62,6 +62,12 @@ func TestMintedTokenShape(t *testing.T) {
 	}
 }
 
+func TestMintRefusesANegativeLifetime(t *testing.T) {
+	if tok, err := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", tokenNow, -time.Hour); err == nil || tok != "" {
+		t.Errorf("minted %q, %v; want no token and an error", tok, err)
+	}
+}
+
 func TestVerifyToken(t *testing.T) {
 	key := tokenKey([]byte("s3cr3t"))
 	good, _ := mintToken(key, ssoHost, "github:1", tokenNow, 7*24*time.Hour)
