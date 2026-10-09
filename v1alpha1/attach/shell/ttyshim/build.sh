@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds ttyshim.c for one architecture into ttyshim-<arch>.so beside it, then
+# Builds c/ttyshim.c for one architecture into ttyshim-<arch>.so beside it, then
 # gates it with symbols.sh. amd64 also refreshes the xterm-256color terminfo
 # entry and its licence from the same image.
 #
@@ -16,7 +16,7 @@ esac
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../../.." && pwd)"
 rel=v1alpha1/attach/shell/ttyshim
-src="${2:-$rel/ttyshim.c}"
+src="${2:-$rel/c/ttyshim.c}"
 out="${3:-$rel/ttyshim-$arch.so}"
 cflags="${TTYSHIM_CFLAGS:--O2 -s -shared -fPIC -Wall -Wextra -Werror -ftls-model=initial-exec -fno-stack-protector -U_FORTIFY_SOURCE}"
 
@@ -35,7 +35,7 @@ docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   echo "$dlver { global: dlsym; local: *; };" > /tmp/stub/dl.map
   gcc -shared -fPIC -Wl,-soname,libdl.so.2 -Wl,--version-script=/tmp/stub/dl.map /tmp/stub/dl.c -o /tmp/stub/libdl.so.2
   gcc $cflags $extra -ffile-prefix-map=/w/= "$src" -L/tmp/stub -Wl,--no-as-needed -l:libdl.so.2 -o "$out"
-  if [ "$arch" = amd64 ] && [ "$src" = "$rel/ttyshim.c" ]; then
+  if [ "$arch" = amd64 ] && [ "$src" = "$rel/c/ttyshim.c" ]; then
     entry=$(find /usr/share/terminfo /lib/terminfo -name xterm-256color | head -1)
     mkdir -p "$rel/terminfo/x"
     cp "$entry" "$rel/terminfo/x/xterm-256color"

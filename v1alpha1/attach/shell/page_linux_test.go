@@ -1,11 +1,19 @@
 package shell
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/ttyshim"
 )
 
 // TestPageLayout pins the bytes the shim reads: magic, version, the socket,
@@ -111,4 +119,106 @@ func TestPageCloseRemovesIt(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("the page is still there: %v", err)
 	}
+}
+
+// runShimmed runs script under sh with the shim preloaded on one end of a
+// socketpair, the way rung 2 does, and returns everything it printed.
+func runShimmed(t *testing.T, script string, keys string) (string, *page) {
+	t.Helper()
+	obj := ttyshim.Object()
+	if obj == nil {
+		t.Skip("no shim for this platform")
+	}
+	dir := t.TempDir()
+	so := filepath.Join(dir, "ttyshim.so")
+	if err := os.WriteFile(so, obj, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours, theirs := os.NewFile(uintptr(fds[0]), "tty"), os.NewFile(uintptr(fds[1]), "tty-peer")
+	defer func() { _ = ours.Close() }()
+	var st unix.Stat_t
+	if err := unix.Fstat(fds[1], &st); err != nil {
+		t.Fatal(err)
+	}
+	p, err := newPage(filepath.Join(dir, "tty"), uint64(st.Dev), st.Ino, 40, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	cmd := exec.Command("/bin/sh", "-c", script)
+	cmd.Env = append(os.Environ(), "LD_PRELOAD="+so, "TUNNELD_TTY="+p.path, "TUNNELD_TTY_SHIM="+so)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = theirs, theirs, theirs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = theirs.Close()
+	if keys != "" {
+		_, _ = ours.WriteString(keys)
+	}
+	var out bytes.Buffer
+	done := make(chan struct{})
+	go func() { _, _ = out.ReadFrom(ours); close(done) }()
+	_ = cmd.Wait()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("output never ended; so far %q", out.String())
+	}
+	return out.String(), p
+}
+
+// TestPageThroughTheShim pins the shim against the page from a real program:
+// the socket is a terminal and nothing else is, the size and the settings
+// are the page's both ways, /dev/tty is the socket, and env -i keeps all of
+// it.
+func TestPageThroughTheShim(t *testing.T) {
+	for _, tc := range []struct {
+		name, script, keys, want string
+	}{
+		{"stdin and stdout are a terminal", `test -t 0 && test -t 1 && echo T`, "", "T"},
+		{"a pipe is still a pipe", `echo x | sh -c 'test -t 0 && echo T || echo P'`, "", "P"},
+		{"the size is the page's", `stty size`, "", "40 120"},
+		{"/dev/tty is the socket", `echo via-tty > /dev/tty`, "", "via-tty"},
+		{"/dev/tty after stdio is gone", `( exec 0<&- 1>&- 2>&-; echo late > /dev/tty )`, "", "late"},
+		{"env -i keeps the terminal", `env -i /bin/sh -c 'test -t 0 && echo T'`, "", "T"},
+		{"reads come from the socket", `read line < /dev/tty; echo "got $line"`, "hello\n", "got hello"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, p := runShimmed(t, tc.script, tc.keys)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("printed %q, want %q in it", out, tc.want)
+			}
+			if !p.loaded() {
+				t.Error("the shim never marked the page")
+			}
+		})
+	}
+
+	t.Run("stty raw reaches the page", func(t *testing.T) {
+		_, p := runShimmed(t, `stty raw -echo`, "")
+		s := p.settings()
+		if s.lflag&(lICANON|lECHO) != 0 {
+			t.Errorf("lflag = %#x after stty raw -echo; want ICANON and ECHO clear", s.lflag)
+		}
+	})
+	t.Run("tcsetpgrp reaches the page", func(t *testing.T) {
+		out, p := runShimmed(t, fmt.Sprintf(`exec %s -c 'set -m; sleep 0.1; true'`, shellWithJobControl(t)), "")
+		if p.foreground() == 0 {
+			t.Errorf("no foreground group recorded; printed %q", out)
+		}
+	})
+}
+
+// shellWithJobControl is a shell whose set -m moves the foreground group:
+// bash where there is one, else the system sh.
+func shellWithJobControl(t *testing.T) string {
+	if path, err := exec.LookPath("bash"); err == nil {
+		return path
+	}
+	return "/bin/sh"
 }
