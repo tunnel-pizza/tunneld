@@ -10,12 +10,15 @@ import (
 
 // snapshot is the terminal as it stands, as bytes that leave a fresh xterm in
 // the same state: a reset, the title, the main screen's history and rows,
-// the alternate screen if the program is on it, the cursor, and every
-// private mode the program has set. Taken under the screen lock, so it is
-// consistent with the stream up to the chunk before it.
+// the alternate screen if the program is on it, every private mode the
+// program has set, the scroll region, the cursor, and the pen. Taken under
+// the screen lock, so it is consistent with the stream up to the chunk
+// before it.
 //
-// History rows end in CR LF, so a line the emulator wrapped is several rows
-// here: vt keeps no wrap flag to join them by.
+// vt keeps no wrap flag, so a row that fills its last column and is followed
+// by one with content is taken to have wrapped: it is written without CR LF
+// and the tab's xterm wraps it too. A line the program ended exactly at the
+// margin is joined to the next the same way.
 func (s *session) snapshot() []byte {
 	s.screen.RLock()
 	defer s.screen.RUnlock()
@@ -28,11 +31,6 @@ func (s *session) snapshot() []byte {
 
 	w, h := s.em.Width(), s.em.Height()
 	var st styled
-	kept := s.em.ScrollbackLen()
-	for y := range kept {
-		st.row(&b, w, func(x int) *uv.Cell { return s.em.ScrollbackCellAt(x, y) })
-		b.WriteString("\r\n")
-	}
 	// The main screen's rows follow the history as more lines, so what is on
 	// screen is the last h lines written and the history is above them. On
 	// the alternate screen the main one is what was kept as it went behind,
@@ -45,11 +43,24 @@ func (s *session) snapshot() []byte {
 	case s.behind != nil:
 		main = *s.behind
 	}
+	kept := s.em.ScrollbackLen()
+	rows := make([]func(x int) *uv.Cell, 0, kept+h)
+	for y := range kept {
+		rows = append(rows, func(x int) *uv.Cell { return s.em.ScrollbackCellAt(x, y) })
+	}
 	for y := range h {
-		st.row(&b, w, func(x int) *uv.Cell { return main.CellAt(x, y) })
-		if y < h-1 {
-			b.WriteString("\r\n")
+		rows = append(rows, func(x int) *uv.Cell { return main.CellAt(x, y) })
+	}
+	for i, at := range rows {
+		st.row(&b, w, at)
+		if i == len(rows)-1 {
+			break
 		}
+		if filled(w, at) && !empty(w, rows[i+1]) {
+			continue
+		}
+		st.reset(&b)
+		b.WriteString("\r\n")
 	}
 	if alt {
 		st.reset(&b)
@@ -64,18 +75,58 @@ func (s *session) snapshot() []byte {
 	}
 	st.reset(&b)
 
-	pos := s.em.CursorPosition()
-	b.WriteString(ansi.CursorPosition(pos.X+1, pos.Y+1))
 	for _, m := range s.modesSet() {
 		if m == 1049 {
 			continue // set above, with its screen
 		}
 		fmt.Fprintf(&b, "\x1b[?%dh", m)
 	}
+	em, _ := readEmState(s.em.Emulator)
+	if em.modes[ansi.ModeAutoWrap].IsReset() {
+		b.WriteString(ansi.ResetModeAutoWrap)
+	}
+	if em.modes[ansi.ModeNumericKeypad].IsSet() {
+		b.WriteString(ansi.KeypadApplicationMode)
+	}
+	region := em.scroll
+	if region.Empty() {
+		region = uv.Rect(0, 0, w, h)
+	}
+	if region.Min.Y != 0 || region.Max.Y != h {
+		b.WriteString(ansi.SetTopBottomMargins(region.Min.Y+1, region.Max.Y))
+	}
+	if em.modes[ansi.ModeLeftRightMargin].IsSet() && (region.Min.X != 0 || region.Max.X != w) {
+		b.WriteString(ansi.SetLeftRightMargins(region.Min.X+1, region.Max.X))
+	}
+	pos := s.em.CursorPosition()
+	if em.modes[ansi.ModeOrigin].IsSet() {
+		pos = pos.Sub(region.Min)
+	}
+	b.WriteString(ansi.CursorPosition(pos.X+1, pos.Y+1))
+	st.set(&b, em.pen, em.link)
 	if s.cursorHidden() {
 		b.WriteString(ansi.ResetModeTextCursorEnable)
 	}
 	return b.Bytes()
+}
+
+// filled reports whether a row's last column has something in it.
+func filled(w int, at func(x int) *uv.Cell) bool {
+	c := at(w - 1)
+	if wideTail(c) && w > 1 {
+		c = at(w - 2)
+	}
+	return !blankCell(c)
+}
+
+// empty reports whether a row draws nothing.
+func empty(w int, at func(x int) *uv.Cell) bool {
+	for x := range w {
+		if !blankCell(at(x)) {
+			return false
+		}
+	}
+	return true
 }
 
 // styled writes cells as text with the SGR and hyperlink transitions between
@@ -125,7 +176,7 @@ func (st *styled) set(b *bytes.Buffer, style uv.Style, link uv.Link) {
 		if link.URL == "" {
 			b.WriteString(ansi.ResetHyperlink())
 		} else {
-			b.WriteString(ansi.SetHyperlink(link.URL))
+			b.WriteString(ansi.SetHyperlink(link.URL, link.Params))
 		}
 		st.link = link
 	}

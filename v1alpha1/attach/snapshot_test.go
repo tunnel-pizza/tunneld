@@ -31,6 +31,14 @@ func TestSnapshotRoundTrips(t *testing.T) {
 		{"the alternate screen", "main text\r\n\x1b[?1049h\x1b[2;3Halt text", ""},
 		{"the main screen behind the alternate one", "main text\r\nmore\x1b[?1049h\x1b[2;3Halt text", "\x1b[?1049l"},
 		{"a moved cursor", "abc\x1b[3;5H", ""},
+		{"a hyperlink with an id", "\x1b]8;id=x1;https://example.com\x1b\\here\x1b]8;;\x1b\\", ""},
+		{"a background colour on rows that scroll", strings.Repeat("\x1b[41mX\x1b[m\r\n", 8) + "end", ""},
+		{"a pen left set", "\x1b[31;42mred", "more"},
+		{"a link left open", "\x1b]8;id=y;https://example.com\x1b\\open", "more"},
+		{"a scroll region", "\x1b[2;4r\x1b[4;1H", "a\r\nb\r\nc\r\nd"},
+		{"origin mode", "\x1b[2;4r\x1b[?6h\x1b[2;3H", "x"},
+		{"autowrap off", "\x1b[?7l", strings.Repeat("w", 25)},
+		{"a wrapped line", strings.Repeat("a", 20) + "bb\r\n" + long.String(), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newFrameHarness(t)
@@ -88,11 +96,11 @@ func TestSnapshotRoundTrips(t *testing.T) {
 func TestSnapshotCarriesTheModes(t *testing.T) {
 	h := newFrameHarness(t)
 	s := h.s
-	if _, err := s.scan.Write([]byte("\x1b]2;my title\x07\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?25l")); err != nil {
+	if _, err := s.scan.Write([]byte("\x1b]2;my title\x07\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?25l\x1b=")); err != nil {
 		t.Fatal(err)
 	}
 	snap := string(s.snapshot())
-	for _, want := range []string{"\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?25l", "\x1b]2;my title\x07"} {
+	for _, want := range []string{"\x1b[?1000h", "\x1b[?1006h", "\x1b[?2004h", "\x1b[?25l", "\x1b]2;my title\x07", "\x1b="} {
 		if !strings.Contains(snap, want) {
 			t.Errorf("snapshot lacks %q", want)
 		}
@@ -117,5 +125,43 @@ func sameCell(a, b *uv.Cell) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.Content == b.Content && a.Width == b.Width && a.Style.Equal(&b.Style) && a.Link.URL == b.Link.URL
+	return a.Content == b.Content && a.Width == b.Width && a.Style.Equal(&b.Style) && a.Link == b.Link
+}
+
+// TestSnapshotJoinsWrappedRows pins that a line the emulator wrapped comes
+// back as one line a tab's xterm wrapped too, and that a full row followed
+// by an empty one keeps the empty one.
+func TestSnapshotJoinsWrappedRows(t *testing.T) {
+	h := newFrameHarness(t)
+	s := h.s
+	s.screen.Lock()
+	s.em.Resize(20, 5)
+	s.screen.Unlock()
+	full := strings.Repeat("a", 20)
+	if _, err := s.scan.Write([]byte(full + "bb\r\n" + full + "\r\n\r\nc")); err != nil {
+		t.Fatal(err)
+	}
+	snap := string(s.snapshot())
+	if !strings.Contains(snap, full+"bb") {
+		t.Errorf("a wrapped line is split in the snapshot: %q", snap)
+	}
+	if !strings.Contains(snap, full+"\r\n\r\nc") {
+		t.Errorf("a full row before an empty one lost the empty one: %q", snap)
+	}
+}
+
+// TestSnapshotPlacesTheCursorLast pins the order a terminal needs: setting
+// origin mode or a scroll region homes the cursor, so the cursor goes after
+// both, relative to the region when origin mode is on.
+func TestSnapshotPlacesTheCursorLast(t *testing.T) {
+	h := newFrameHarness(t)
+	s := h.s
+	if _, err := s.scan.Write([]byte("\x1b[2;4r\x1b[?6h\x1b[2;3H")); err != nil {
+		t.Fatal(err)
+	}
+	snap := string(s.snapshot())
+	mode, region, cup := strings.Index(snap, "\x1b[?6h"), strings.Index(snap, "\x1b[2;4r"), strings.LastIndex(snap, "\x1b[2;3H")
+	if mode < 0 || region < 0 || cup < 0 || cup < mode || cup < region {
+		t.Errorf("want ?6h, the region, then the cursor at 2;3 in the region; got %q", snap)
+	}
 }
