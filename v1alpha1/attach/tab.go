@@ -101,6 +101,37 @@ type chrome struct {
 	Motd        []chromeMotd `json:"motd"`
 	Restartable bool         `json:"restartable"`
 	Notice      string       `json:"notice"`
+	Commands    []stripCmd   `json:"commands"`
+}
+
+// stripCmd is one button of a tab's command strip: its key, its label, and
+// the page's name for what it does.
+type stripCmd struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Cmd   string `json:"cmd"`
+}
+
+// tabOnly are the strip's commands the console has no entry for: a console
+// copies and searches with its own terminal and scrollback mode.
+var tabOnly = []stripCmd{{"c", "copy all", "copy"}, {"s", "save", "save"}, {"/", "search", "search"}}
+
+// pageRuns is which of the console's commands the page has a way to run,
+// each by the console's label.
+var pageRuns = map[string]bool{"detach": true, "exit": true, "restart": true, "logs": true, "qr": true}
+
+// strip is what a tab's command strip offers now: the page's own commands,
+// then the console's that the page can run, by the console's keys and labels
+// and offered when the console offers them.
+func (s *session) strip() []stripCmd {
+	out := append([]stripCmd(nil), tabOnly...)
+	f := frame{sess: s}
+	for _, a := range commands {
+		if pageRuns[a.label] && a.when(f) {
+			out = append(out, stripCmd{Key: string(a.key), Label: a.label, Cmd: a.label})
+		}
+	}
+	return out
 }
 
 type chromeMotd struct {
@@ -128,6 +159,7 @@ func (s *session) chromeBytes(v *viewer) []byte {
 		Motd:        []chromeMotd{},
 		Restartable: s.restartable(),
 		Notice:      s.notice,
+		Commands:    s.strip(),
 	}
 	// The panel's own rendering of the provider's markdown, which the page
 	// shows as the panel does. None in a tile: the panel shows them once.

@@ -99,7 +99,9 @@
   .chip.key { background: #3a2a00; color: #f0c050; font-weight: 700; }
   .copied { background: #203a20; color: #a8d070; }
   #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
-  #term { width: 100%; height: 100%; }
+  /* Full size, since the fit addon measures it; the screen inside is
+     centred when the shared size is smaller than this window. */
+  #term { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
   /* Over the terminal rather than beside it: opening one must not resize
      the pane every viewer shares. */
   #strip, #search { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; }
@@ -148,15 +150,7 @@
     <span class="chip">Enter next · Shift-Enter previous · Esc close</span>
   </div>
   <div id="strip" hidden>
-    <button data-cmd="copy"><span class="chip key">c</span> Copy all</button>
-    <button data-cmd="save"><span class="chip key">s</span> Save</button>
-    <button data-cmd="search"><span class="chip key">/</span> Search</button>
-    <button data-cmd="logs"><span class="chip key">l</span> Logs</button>
-    <button data-cmd="qr"><span class="chip key">q</span> QR</button>
-    <button data-cmd="restart" hidden><span class="chip key">r</span> Restart</button>
-    <button data-cmd="detach"><span class="chip key">d</span> Detach</button>
-    <button data-cmd="exit"><span class="chip key">x</span> Exit</button>
-    <button data-cmd="close"><span class="chip key">esc</span> Close</button>
+    <button data-cmd="close"><span class="chip key">esc</span> close</button>
   </div>
 </div>
 <div id="bottom" class="bar">
@@ -236,7 +230,18 @@
       d.insertAdjacentHTML('beforeend', m.html || '');
       return d;
     }));
-    document.querySelector('[data-cmd=restart]').hidden = !c.restartable;
+    // The strip's commands are the session's, by its keys and labels; close
+    // is the page's own and stays last.
+    keys = { Escape: 'close' };
+    strip.replaceChildren(...(c.commands || []).map((a) => {
+      keys[a.key] = a.cmd;
+      const b = document.createElement('button');
+      b.dataset.cmd = a.cmd;
+      const k = document.createElement('span'); k.className = 'chip key'; k.textContent = a.key;
+      const l = document.createElement('span'); l.className = 'label'; l.textContent = a.label;
+      b.append(k, ' ', l);
+      return b;
+    }), closeButton);
     if (c.cols && c.rows && (term.cols !== c.cols || term.rows !== c.rows)) term.resize(c.cols, c.rows);
     publish();
   };
@@ -353,6 +358,9 @@
   // first. With it open, single keys run the commands and nothing reaches
   // the program.
   const strip = $('strip');
+  const closeButton = strip.querySelector('[data-cmd=close]');
+  // Key to command, filled from the chrome's commands.
+  let keys = { Escape: 'close' };
   const openStrip = (open) => { strip.hidden = !open; if (!open) term.focus(); };
   // The whole buffer as plain text, one \n per line, a wrapped line whole.
   const plain = () => {
@@ -382,15 +390,14 @@
     exit: () => { if (confirm('End the whole run, for every viewer?')) fetch('/attach/exit' + location.search, { method: 'POST' }); },
     close: () => openStrip(false),
   };
-  const keys = { c: 'copy', s: 'save', '/': 'search', l: 'logs', q: 'qr', r: 'restart', d: 'detach', x: 'exit', Escape: 'close' };
-  strip.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) { commands[b.dataset.cmd](); if (b.dataset.cmd !== 'search') openStrip(false); } });
+  strip.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b && commands[b.dataset.cmd]) { commands[b.dataset.cmd](); if (b.dataset.cmd !== 'search') openStrip(false); } });
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== 'keydown') return true;
     if (e.key === 'k' && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); openStrip(strip.hidden); return false; }
     if (!strip.hidden) {
       e.preventDefault();
       const cmd = keys[e.key];
-      if (cmd && !(cmd === 'restart' && !state.restartable)) { commands[cmd](); if (cmd !== 'search') openStrip(false); }
+      if (cmd && commands[cmd]) { commands[cmd](); if (cmd !== 'search') openStrip(false); }
       return false;
     }
     if (!$('overlay').hidden && e.key === 'Escape') { e.preventDefault(); show(null); return false; }

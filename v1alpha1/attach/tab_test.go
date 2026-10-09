@@ -471,3 +471,55 @@ func TestARestartWaitsForTheChunkInHand(t *testing.T) {
 	<-revived
 	target.awaitRun(t, 2)
 }
+
+// TestTheStripOffersTheConsolesCommands pins that a tab's command strip is
+// the console's table where the two share a command, by the same key and
+// label, plus the page's own, and offers restart only where there is one.
+func TestTheStripOffersTheConsolesCommands(t *testing.T) {
+	stripOf := func(s *session) map[string]string {
+		t.Helper()
+		raw := s.chromeBytes(&viewer{token: "t"})
+		enc := strings.TrimSuffix(string(raw[len(chromeIntro)+len(";t;"):]), "\x1b\\")
+		js, err := base64.StdEncoding.DecodeString(enc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var c struct {
+			Commands []struct{ Key, Label, Cmd string }
+		}
+		if err := json.Unmarshal(js, &c); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]string{}
+		for _, a := range c.Commands {
+			out[a.Key] = a.Label + "=" + a.Cmd
+		}
+		return out
+	}
+	got := stripOf(newFrameHarness(t).s)
+	for _, a := range commands {
+		switch a.key {
+		case 'd', 'x', 'l', 'q':
+			if want := a.label + "=" + a.label; got[string(a.key)] != want {
+				t.Errorf("strip has %q for %c, want the console's %q", got[string(a.key)], a.key, want)
+			}
+		case 'r', '[', 'm':
+			if _, ok := got[string(a.key)]; ok {
+				t.Errorf("strip offers %c, which this target or a tab has no use for", a.key)
+			}
+		}
+	}
+	for _, k := range []string{"c", "s", "/"} {
+		if got[k] == "" {
+			t.Errorf("strip lacks the page's own %q", k)
+		}
+	}
+	target := newRerunTarget(true)
+	target.holdFrom = 1
+	t.Cleanup(target.release)
+	s := serveFake(t, target).session
+	target.awaitRun(t, 1)
+	if got := stripOf(s); got["r"] != "restart=restart" {
+		t.Errorf("a restartable target's strip has %q for r", got["r"])
+	}
+}
