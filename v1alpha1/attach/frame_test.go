@@ -2523,3 +2523,39 @@ func TestTheFilterEditsByCharacterAndSaysWhenItIsBad(t *testing.T) {
 		t.Errorf("an unbalanced ( shows %q, want it called a bad pattern", r)
 	}
 }
+
+// TestADragAfterADoubleOrTripleClickKeepsItsUnit pins that dragging on from
+// a double click grows the selection a word at a time, either way, and from
+// a triple click a row at a time.
+func TestADragAfterADoubleOrTripleClickKeepsItsUnit(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("hello wide world x\r\nsecond row"); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	at := func(x, y int) (int, int) { return pane.Min.X + x, pane.Min.Y + y }
+	drag := func(n, fromX, fromY, toX, toY int) string {
+		t.Helper()
+		h.f.lastPress = time.Time{}
+		x, y := at(fromX, fromY)
+		for i := range n {
+			h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			if i < n-1 {
+				h.mouse(t, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+			}
+		}
+		tx, ty := at(toX, toY)
+		h.mouse(t, tea.MouseMotionMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		h.mouse(t, tea.MouseReleaseMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		return h.f.sel.text(h.f.composed())
+	}
+	if got := drag(2, 1, 0, 13, 0); got != "hello wide world" {
+		t.Errorf("double click on hello, drag into world: %q", got)
+	}
+	if got := drag(2, 13, 0, 7, 0); got != "wide world" {
+		t.Errorf("double click on world, drag back into wide: %q", got)
+	}
+	if got := drag(3, 3, 0, 2, 1); got != "hello wide world x\nsecond row" {
+		t.Errorf("triple click, drag to the next row: %q", got)
+	}
+}

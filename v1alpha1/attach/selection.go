@@ -24,11 +24,14 @@ type selection struct {
 // ordered returns the two ends first-to-last in stream order.
 func (s selection) ordered() (from, to uv.Position) {
 	from, to = s.anchor, s.head
-	if to.Y < from.Y || (to.Y == from.Y && to.X < from.X) {
+	if before(to, from) {
 		from, to = to, from
 	}
 	return from, to
 }
+
+// before reports whether a comes before b in stream order.
+func before(a, b uv.Position) bool { return a.Y < b.Y || (a.Y == b.Y && a.X < b.X) }
 
 // empty reports a selection with nothing in it: a click that did not drag.
 func (s selection) empty() bool { return s.anchor == s.head }
