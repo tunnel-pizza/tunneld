@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,11 +25,20 @@ func TestOpenPTMX(t *testing.T) {
 	if _, err := io.WriteString(slave, "through-the-pair\n"); err != nil {
 		t.Fatalf("writing the slave: %v", err)
 	}
+	// Read until the line's CR LF: the master may hand the line and what
+	// output processing added to it over in separate reads.
 	got := make(chan string, 1)
 	go func() {
+		var read []byte
 		b := make([]byte, 64)
-		n, _ := master.Read(b)
-		got <- string(b[:n])
+		for !strings.HasSuffix(string(read), "\n") {
+			n, err := master.Read(b)
+			read = append(read, b[:n]...)
+			if err != nil {
+				break
+			}
+		}
+		got <- string(read)
 	}()
 	select {
 	case s := <-got:
