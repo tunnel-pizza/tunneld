@@ -77,3 +77,21 @@ func TestSelectionHighlightTogglesReverse(t *testing.T) {
 		t.Errorf("rendered = %q, want a reverse SGR in it", buf.Render())
 	}
 }
+
+// TestWordAtAndRowOf pins what a double and a triple click select.
+func TestWordAtAndRowOf(t *testing.T) {
+	buf := uv.NewScreenBuffer(20, 2)
+	uv.NewStyledString("foo bar-baz.qux x").Draw(buf, buf.Bounds())
+	if got := wordAt(buf, uv.Pos(6, 0)); got != (selection{anchor: uv.Pos(4, 0), head: uv.Pos(14, 0)}) {
+		t.Errorf("wordAt(6,0) = %+v, want bar-baz.qux", got)
+	}
+	if got := wordAt(buf, uv.Pos(3, 0)); !got.empty() {
+		t.Errorf("wordAt on a space = %+v, want nothing", got)
+	}
+	if got := wordAt(buf, uv.Pos(16, 0)); got != (selection{anchor: uv.Pos(16, 0), head: uv.Pos(16, 0)}) {
+		t.Errorf("wordAt(16,0) = %+v, want the one-letter word x", got)
+	}
+	if got := rowOf(buf, 0); got != (selection{anchor: uv.Pos(0, 0), head: uv.Pos(19, 0)}) {
+		t.Errorf("rowOf(0) = %+v, want the whole row", got)
+	}
+}

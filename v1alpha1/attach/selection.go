@@ -2,6 +2,7 @@ package attach
 
 import (
 	"strings"
+	"unicode"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -23,11 +24,14 @@ type selection struct {
 // ordered returns the two ends first-to-last in stream order.
 func (s selection) ordered() (from, to uv.Position) {
 	from, to = s.anchor, s.head
-	if to.Y < from.Y || (to.Y == from.Y && to.X < from.X) {
+	if before(to, from) {
 		from, to = to, from
 	}
 	return from, to
 }
+
+// before reports whether a comes before b in stream order.
+func before(a, b uv.Position) bool { return a.Y < b.Y || (a.Y == b.Y && a.X < b.X) }
 
 // empty reports a selection with nothing in it: a click that did not drag.
 func (s selection) empty() bool { return s.anchor == s.head }
@@ -96,4 +100,36 @@ func (s selection) text(buf uv.ScreenBuffer) string {
 		lines = append(lines, strings.TrimRight(b.String(), " "))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// wordChar is a character a double-click's word runs through: letters,
+// digits and the punctuation that joins paths, hosts and flags.
+func wordChar(c *uv.Cell) bool {
+	if c == nil || c.Content == "" {
+		return false
+	}
+	r := []rune(c.Content)[0]
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-./:@", r)
+}
+
+// wordAt is the word under pos, or an empty selection at pos when there is
+// none there.
+func wordAt(buf uv.ScreenBuffer, pos uv.Position) selection {
+	if !wordChar(buf.CellAt(pos.X, pos.Y)) {
+		return selection{anchor: pos, head: pos}
+	}
+	from, to := pos.X, pos.X
+	for from > 0 && wordChar(buf.CellAt(from-1, pos.Y)) {
+		from--
+	}
+	w := buf.Bounds().Dx()
+	for to+1 < w && wordChar(buf.CellAt(to+1, pos.Y)) {
+		to++
+	}
+	return selection{anchor: uv.Pos(from, pos.Y), head: uv.Pos(to, pos.Y)}
+}
+
+// rowOf is row y whole.
+func rowOf(buf uv.ScreenBuffer, y int) selection {
+	return selection{anchor: uv.Pos(0, y), head: uv.Pos(buf.Bounds().Dx()-1, y)}
 }

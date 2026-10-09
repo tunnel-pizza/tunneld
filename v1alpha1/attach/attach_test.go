@@ -330,6 +330,13 @@ func TestPage(t *testing.T) {
 		// own build line, or anywhere a program's output points.
 		{"the page sends no Referer", "/", http.StatusOK, `<meta name="referrer" content="no-referrer">`},
 		{"and opens a link with no Referer and no opener", "/", http.StatusOK, `'noopener,noreferrer'`},
+		// xterm sends Shift+Enter as a bare CR, the same as Enter; the page
+		// sends ESC CR, which a program reads as a newline, not a submit.
+		{"and sends Shift+Enter as a newline", "/", http.StatusOK, `send(STDIN, encoder.encode('\x1b\r'));`},
+		// The tunnel's own address opens on Cmd or Ctrl+click only: a plain
+		// click is the frame's, and a double one copies it. A panel's tile
+		// links to the same host with its ↗ chip, which opens on any click.
+		{"and opens its own address only on Cmd or Ctrl+click", "/", http.StatusOK, `if (!embedded && sameHost(uri) && !event.metaKey && !event.ctrlKey) return;`},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}
@@ -1734,7 +1741,7 @@ func TestBindHandsAProgramItsArguments(t *testing.T) {
 	}
 }
 
-// TestRestartRunsTheProgramAgainAndKeepsTheViewers pins ^K r's contract: the
+// TestRestartRunsTheProgramAgainAndKeepsTheViewers pins ^K q r's contract: the
 // running program is ended and started over, and a viewer watching through
 // the socket is still there for the second run — where a run ending on its
 // own drops every viewer, this end is not theirs. The first run's exit is

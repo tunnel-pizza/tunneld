@@ -14,7 +14,7 @@ npx tunneld
 ```
 
 <!-- TODO(#180): a screen recording goes here: the frame coming up in a tab,
-     the wheel, ^K q and a phone reading it, a panel with two tiles. -->
+     the wheel, ^K r and a phone reading it, a panel with two tiles. -->
 
 ## Try it
 
@@ -89,7 +89,7 @@ one tile per origin, the app in one and the shell's terminal in the other. Each
 tile also has an address of its own, `?0`, `?1` and so on, for sending just
 that one.
 
-**A phone:** press <kbd>Ctrl</kbd>+<kbd>K</kbd> then <kbd>q</kbd> in any frame
+**A phone:** press <kbd>Ctrl</kbd>+<kbd>K</kbd> then <kbd>r</kbd> in any frame
 and the address shows up as a QR code. Point the camera at it.
 
 ## Keys
@@ -100,16 +100,18 @@ except one.
 | Key | |
 | --- | --- |
 | <kbd>Ctrl</kbd>+<kbd>K</kbd> | Opens the frame's commands. The program never sees it. |
-| then <kbd>q</kbd> | Shows the address as a QR code, for a phone. |
-| then <kbd>d</kbd> | Detach. This screen lets go and the session carries on. |
-| then <kbd>x</kbd> | Exit. Ends the run: the tunnel, every origin, and every program it started. |
-| then <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
+| then <kbd>q</kbd> | The ways out, on a row of their own: |
+| then <kbd>q</kbd> <kbd>q</kbd> | Quit. Ends the run: the tunnel, every origin, and every program it started. |
+| then <kbd>q</kbd> <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
+| then <kbd>q</kbd> <kbd>d</kbd> | Detach. This screen lets go and the session carries on. |
+| then <kbd>r</kbd> | Shows the address as a QR code, for a phone. |
 | then <kbd>l</kbd> | Shows tunneld's own recent log lines. |
-| then <kbd>[</kbd> | On the console, scrollback mode: your terminal selects natively, the arrows scroll, <kbd>c</kbd> copies everything, <kbd>f</kbd> drops the border, <kbd>esc</kbd> goes back. |
-| then <kbd>m</kbd> | On the console, releases the mouse for native selection (or asks for it again). |
+| then <kbd>c</kbd> | Copies everything: the history and the screen. |
+| then <kbd>f</kbd> | Follow on or off. Off, the view stays put while output arrives below it; on is the live screen again. |
 | then <kbd>esc</kbd> | Never mind. |
 | wheel | Scrolls back through what went past. Any key returns to the live screen. |
-| drag | Selects, and copies to your clipboard. |
+| drag | Selects, and copies to your clipboard. Double-click a word, triple-click a row, Shift-click to extend. |
+| double-click the address | Copies the tunnel's address. <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+click opens it. |
 
 On a container, Ctrl+C and Ctrl+D ask to be pressed twice, because once its
 main process exits there's nothing to come back to. On a program they go
@@ -312,6 +314,7 @@ And the rest of what tunneld requires directly:
 | [`github.com/spf13/cobra`](https://github.com/spf13/cobra), [`github.com/spf13/pflag`](https://github.com/spf13/pflag), [`github.com/spf13/viper`](https://github.com/spf13/viper) | The command line and its environment. |
 | [`github.com/yuin/goldmark`](https://github.com/yuin/goldmark) | Messages of the day. |
 | [`rsc.io/qr`](https://github.com/rsc/qr) | The QR code a phone reads. |
+| [`github.com/shirou/gopsutil/v4`](https://github.com/shirou/gopsutil) | How much memory is free, which sizes the terminal's history. |
 | [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose) | Checking the tokens the provider signs, for Single Sign-On. |
 | [`github.com/pkg/browser`](https://github.com/pkg/browser) | Opening the tab. |
 | [`github.com/go-logr/logr`](https://github.com/go-logr/logr), [`k8s.io/klog/v2`](https://github.com/kubernetes/klog) | cri-streaming's logs, routed into tunneld's own. |

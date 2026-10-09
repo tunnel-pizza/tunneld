@@ -6,11 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -396,18 +398,21 @@ func TestOrdinaryKeysReachTheContainerUnchanged(t *testing.T) {
 // TestLeavingRestoresTheConsoleBeforeTheRunEnds.
 func TestCommandModeEndsTheRun(t *testing.T) {
 	h := newFrameHarness(t)
-	h.s.quit = func() { t.Error("x ended the run from inside Update; the program dies before the console is restored") }
+	h.s.quit = func() {
+		t.Error("q q ended the run from inside Update; the program dies before the console is restored")
+	}
 
 	h.press(t, commandKey)
+	h.press(t, typing('q'))
 	h.silent(t)
 
-	if cmd := h.press(t, typing('x')); cmd == nil {
-		t.Error("x returned no command, want the frame to quit with it")
+	if cmd := h.press(t, typing('q')); cmd == nil {
+		t.Error("q q returned no command, want the frame to quit with it")
 	} else if _, quit := cmd().(tea.QuitMsg); !quit {
-		t.Errorf("x produced %T, want QuitMsg", cmd())
+		t.Errorf("q q produced %T, want QuitMsg", cmd())
 	}
 	if !h.f.exiting {
-		t.Error("x did not record the ask to end the run")
+		t.Error("q q did not record the ask to end the run")
 	}
 	h.silent(t) // and nothing was typed at the target on the way
 }
@@ -419,6 +424,7 @@ func TestDetachLeavesTheSessionAlone(t *testing.T) {
 	h := newFrameHarness(t)
 
 	h.press(t, commandKey)
+	h.press(t, typing('q'))
 	if cmd := h.press(t, typing('d')); cmd == nil {
 		t.Error("d returned no command, want the frame to quit with it")
 	}
@@ -583,7 +589,7 @@ func TestViewIsBordered(t *testing.T) {
 	// And the commands replace it once it is open, in the same row.
 	h.press(t, commandKey)
 	after := strings.Split(h.f.View().Content, "\n")
-	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "detach") {
+	if got := stripSGR(after[len(after)-1]); !strings.Contains(got, "logs") {
 		t.Errorf("bottom border in command mode = %q, want the commands in it", got)
 	}
 }
@@ -1516,7 +1522,7 @@ func TestTheBoxIsThePane(t *testing.T) {
 	}
 }
 
-// TestTheAddressIsAQRCodeAway pins the view: ^K q draws the public address as
+// TestTheAddressIsAQRCodeAway pins the view: ^K r draws the public address as
 // a code with the address under it, keys are spent on reading rather than
 // reaching the program, the cursor is withheld, and esc is the way back.
 func TestTheAddressIsAQRCodeAway(t *testing.T) {
@@ -1525,7 +1531,7 @@ func TestTheAddressIsAQRCodeAway(t *testing.T) {
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 
 	h.press(t, commandKey)
-	h.press(t, typing('q'))
+	h.press(t, typing('r'))
 
 	pane := stripSGR(h.f.View().Content)
 	if !strings.ContainsAny(pane, "█▀▄") {
@@ -1563,7 +1569,7 @@ func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
 	h.window(60, 10) // 58×8: a code is 29×15 with its quiet zone
 	h.s.announce("https://striped-worm.tunneled.pizza/?0")
 	h.press(t, commandKey)
-	h.press(t, typing('q'))
+	h.press(t, typing('r'))
 
 	pane := stripSGR(h.f.View().Content)
 	if strings.ContainsAny(pane, "█▀▄") {
@@ -1576,7 +1582,7 @@ func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
 	h.press(t, tea.Key{Code: tea.KeyEscape})
 	h.s.announce("")
 	h.press(t, commandKey)
-	h.press(t, typing('q'))
+	h.press(t, typing('r'))
 	if pane := stripSGR(h.f.View().Content); !strings.Contains(pane, "no address yet") {
 		t.Errorf("pane = %q, want it saying there is no address yet", pane)
 	}
@@ -1812,12 +1818,13 @@ func TestTheFrameDrawsEveryRowAfterAResize(t *testing.T) {
 	}
 }
 
-// TestRestartIsOfferedOnlyWhereItWorks pins the hint: r appears in the
-// command menu for a program that can be started over, and not for a
-// container, where the key would promise something it cannot do.
+// TestRestartIsOfferedOnlyWhereItWorks pins the quit menu: r appears in it
+// for a program that can be started over, and not for a container, where the
+// key would promise something it cannot do.
 func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
 	h := newFrameHarness(t) // a container: not repeatable
 	h.press(t, commandKey)
+	h.press(t, typing('q'))
 	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, " r ") {
 		t.Errorf("bottom border = %q, offers r for a container", bottom)
 	}
@@ -1825,6 +1832,7 @@ func TestRestartIsOfferedOnlyWhereItWorks(t *testing.T) {
 
 	h.s.Target = newRerunTarget(true) // a program that can run again and can be ended
 	h.press(t, commandKey)
+	h.press(t, typing('q'))
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, " r ") || !strings.Contains(bottom, "restart") {
 		t.Errorf("bottom border = %q, want r restart offered for a program", bottom)
 	}
@@ -1881,10 +1889,10 @@ func TestBannerSitsAboveTheBox(t *testing.T) {
 				t.Fatalf("bottom border = %q, want the view scrolled back one line", bottom)
 			}
 		},
-		// The QR code, ^K q.
+		// The QR code, ^K r.
 		func() {
 			h.press(t, commandKey)
-			h.press(t, typing('q'))
+			h.press(t, typing('r'))
 			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "back to the terminal") {
 				t.Fatalf("bottom border = %q, want the QR view", bottom)
 			}
@@ -2080,8 +2088,7 @@ func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 }
 
 // consoleHarness is a frame on the console rather than in a tab: the one
-// whose viewer's terminal is the process's own, which is where scrollback
-// mode and the mouse toggle are offered.
+// that lingers, whose viewer's terminal is the process's own.
 func consoleHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newFrameHarness(t)
@@ -2090,89 +2097,20 @@ func consoleHarness(t *testing.T) *harness {
 	return h
 }
 
-// enterScrollback is ^K [ on h's frame.
-func (h *harness) enterScrollback(t *testing.T) {
+// command is ^K then key on h's frame.
+func (h *harness) command(t *testing.T, key rune) tea.Cmd {
 	t.Helper()
 	h.press(t, commandKey)
-	h.press(t, typing('['))
+	return h.press(t, typing(key))
 }
 
-// TestScrollbackModeReleasesTheMouse pins the mode's point: while it is on,
-// the frame declares no mouse mode, so the viewer's terminal selects natively
-// again, and leaving it asks for the mouse back.
-func TestScrollbackModeReleasesTheMouse(t *testing.T) {
-	h := consoleHarness(t)
-	// A drag under way when the mode starts gets no release: the mouse is
-	// let go. It must not stay highlighted.
-	pane := h.f.pane()
-	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X, Y: pane.Min.Y, Button: tea.MouseLeft})
-	h.mouse(t, tea.MouseMotionMsg{X: pane.Min.X + 3, Y: pane.Min.Y, Button: tea.MouseLeft})
-	h.enterScrollback(t)
-	if !h.f.reading {
-		t.Fatal("^K [ did not enter scrollback mode")
-	}
-	if h.f.selecting || reversed(h.f.View().Content) {
-		t.Error("a drag under way outlived entering the mode")
-	}
-	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("MouseMode in scrollback = %v, want none: the terminal selects", got)
-	}
-	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "scrollback") {
-		t.Errorf("bottom border = %q, want it saying the mode is on", bottom)
-	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
-	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("after esc: reading %v, MouseMode %v; want live, the mouse asked for again", h.f.reading, h.f.View().MouseMode)
-	}
-}
-
-// TestScrollbackModeKeysMoveTheHistory pins the keys in the mode: the arrows
-// (which a terminal's wheel becomes once the mouse is released), page keys,
-// home and end move this viewer through the history, typing reaches nobody,
-// and q leaves for the live screen.
-func TestScrollbackModeKeysMoveTheHistory(t *testing.T) {
+// TestCommandCCopiesEverything pins ^K c: the whole history and the live
+// screen, which a selection cannot reach past the pane.
+func TestCommandCCopiesEverything(t *testing.T) {
 	h := consoleHarness(t)
 	rows := defaultRows - chromeHeight
 	h.scrollOff(t, 1, 3*rows)
-	live := h.paneRow(t, 0)
-	h.enterScrollback(t)
-
-	h.press(t, tea.Key{Code: tea.KeyUp})
-	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 2*rows) {
-		t.Errorf("after up, top row = %q, want one line back", got)
-	}
-	h.press(t, tea.Key{Code: tea.KeyHome})
-	if got := h.paneRow(t, 0); got != "line 001" {
-		t.Errorf("after home, top row = %q, want the first line kept", got)
-	}
-	h.press(t, tea.Key{Code: tea.KeyPgDown})
-	if got := h.paneRow(t, 0); got != fmt.Sprintf("line %03d", 1+rows) {
-		t.Errorf("after pgdn, top row = %q, want a page on", got)
-	}
-	h.press(t, typing('x'))
-	h.silent(t)
-	if !h.f.reading {
-		t.Error("typing left the mode, want it going nowhere")
-	}
-	h.press(t, tea.Key{Code: tea.KeyEnd})
-	if got := h.paneRow(t, 0); got != live {
-		t.Errorf("after end, top row = %q, want the live screen's %q", got, live)
-	}
-	h.press(t, typing('q'))
-	if h.f.reading || h.f.scrolled {
-		t.Error("q did not return to the live screen")
-	}
-	h.silent(t)
-}
-
-// TestScrollbackModeCopiesEverything pins c: the whole history and the live
-// screen, which a native selection cannot reach past the pane.
-func TestScrollbackModeCopiesEverything(t *testing.T) {
-	h := consoleHarness(t)
-	rows := defaultRows - chromeHeight
-	h.scrollOff(t, 1, 3*rows)
-	h.enterScrollback(t)
-	cmd := h.press(t, typing('c'))
+	cmd := h.command(t, 'c')
 	if cmd == nil {
 		t.Fatal("c produced no command, want the copy")
 	}
@@ -2189,124 +2127,31 @@ func TestScrollbackModeCopiesEverything(t *testing.T) {
 	if !strings.HasPrefix(string(text), "line 001\n") || !strings.HasSuffix(string(text), fmt.Sprintf("line %03d", 3*rows)) {
 		t.Errorf("copied %q…%q, want every line from the first kept to the live screen's last", string(text)[:20], string(text)[len(text)-20:])
 	}
-	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied") {
-		t.Errorf("bottom border = %q, want it saying the copy went", bottom)
+	want := fmt.Sprintf("copied (%d lines)", 3*rows)
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, want) {
+		t.Errorf("bottom border = %q, want %q", bottom, want)
 	}
-	if !h.f.reading {
-		t.Error("c left the mode")
-	}
+	h.silent(t)
 }
 
-// TestTheBareViewDropsTheBorder pins f in the mode: no border, bar or labels
-// to pick up in a native selection, and f again brings them back.
-func TestTheBareViewDropsTheBorder(t *testing.T) {
-	h := consoleHarness(t)
-	if _, err := h.s.em.WriteString("hello"); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	h.enterScrollback(t)
-	h.press(t, typing('f'))
-	content := stripSGR(h.f.View().Content)
-	if strings.ContainsAny(content, "│╭╮╰╯─") || !strings.HasPrefix(content, "hello") {
-		t.Errorf("bare view = %q…, want the pane alone from the top left", content[:min(40, len(content))])
-	}
-	h.press(t, typing('f'))
-	if !strings.ContainsAny(stripSGR(h.f.View().Content), "│") {
-		t.Error("f again did not bring the border back")
-	}
-}
-
-// TestTheMouseToggle pins ^K m on the console: the mouse released outside
-// the mode for a viewer who would rather select natively than scroll with
-// the wheel, except to a program that asked for it.
-func TestTheMouseToggle(t *testing.T) {
-	h := consoleHarness(t)
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("MouseMode after ^K m = %v, want none", got)
-	}
-	if _, err := h.s.scan.Write([]byte("\x1b[?1000h")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("MouseMode with a program that asked = %v, want it reported", got)
-	}
-	if _, err := h.s.scan.Write([]byte("\x1b[?1000l")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("MouseMode after ^K m twice = %v, want cell motion again", got)
-	}
-}
-
-// TestATabHasNoScrollbackMode pins the tab as it was: the page keeps the
-// mouse and xterm selects natively, so neither key does anything there, and
-// neither is offered.
-func TestATabHasNoScrollbackMode(t *testing.T) {
-	h := newFrameHarness(t)
-	h.press(t, commandKey)
-	if hint := stripSGR(bottomOf(h)); strings.Contains(hint, "scrollback") || strings.Contains(hint, "mouse") {
-		t.Errorf("a tab's commands = %q, want neither key offered", hint)
-	}
-	h.press(t, typing('['))
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("a tab after ^K [ and ^K m: reading %v, MouseMode %v; want neither", h.f.reading, h.f.View().MouseMode)
-	}
-	c := consoleHarness(t)
-	c.s.Target = newRerunTarget(true) // a program: restart offered too
-	c.press(t, commandKey)
-	if hint := stripSGR(bottomOf(c)); !strings.Contains(hint, " [  scroll") || !strings.Contains(hint, " m  mouse") || !strings.Contains(hint, "restart") {
-		t.Errorf("the console's commands at 80 columns = %q, want restart, [ and m all offered whole", hint)
-	}
-}
-
-// TestTheChipsSurviveScrollbackAt80Columns pins the bottom row in the mode
-// on an ordinary console: the copy's chip and how far back the reader is
-// both show beside the mode's keys.
+// TestTheChipsSurviveScrollbackAt80Columns pins the right of the bottom row
+// at 80 columns: the copy's chip and how far back the reader is, both.
 func TestTheChipsSurviveScrollbackAt80Columns(t *testing.T) {
 	h := consoleHarness(t)
 	h.f.getenv = func(k string) string { return map[string]string{"TMUX": "/tmp/t,1,0"}[k] }
 	h.scrollOff(t, 1, 3*(defaultRows-chromeHeight))
-	h.enterScrollback(t)
-	h.press(t, tea.Key{Code: tea.KeyUp})
-	h.press(t, tea.Key{Code: tea.KeyUp})
-	h.press(t, typing('c'))
+	pane := h.f.pane()
+	h.wheel(t, tea.MouseWheelUp, pane.Min.X, pane.Min.Y)
+	h.wheel(t, tea.MouseWheelUp, pane.Min.X, pane.Min.Y)
+	h.command(t, 'c')
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "sent to tmux") || !strings.Contains(bottom, "↑2") {
 		t.Errorf("bottom border = %q, want the copy's chip and ↑2", bottom)
 	}
 }
 
-// TestTheEndDoesNotCutScrollbackShort pins a run ending under a reader in
-// the mode: the wheel (arrows now) and the mode's keys keep reading rather
-// than counting as "any key to exit"; leaving the mode is what hands over to
-// the ended frame.
-func TestTheEndDoesNotCutScrollbackShort(t *testing.T) {
-	h := consoleHarness(t)
-	h.scrollOff(t, 1, 3*(defaultRows-chromeHeight))
-	h.enterScrollback(t)
-	h.f.ended = true
-	h.press(t, tea.Key{Code: tea.KeyUp})
-	if h.f.exiting || !h.f.reading {
-		t.Fatalf("an arrow after the end: exiting %v, reading %v; want still reading", h.f.exiting, h.f.reading)
-	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
-	if h.f.exiting || h.f.reading {
-		t.Fatalf("esc after the end: exiting %v, reading %v; want out of the mode, not gone", h.f.exiting, h.f.reading)
-	}
-	h.press(t, typing('x'))
-	if !h.f.exiting {
-		t.Error("a key on the ended frame did not exit")
-	}
-}
-
 // TestCopyingTooMuchHistoryCopiesItsEnd pins c over a history longer than a
 // terminal will take: rather than nothing, the end that fits, from a whole
-// line, and a chip saying it is only the end.
+// line, and a chip counting the lines that went.
 func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	h := consoleHarness(t)
 	var b strings.Builder
@@ -2319,8 +2164,7 @@ func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	if _, err := h.s.em.WriteString(b.String()); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	h.enterScrollback(t)
-	cmd := h.press(t, typing('c'))
+	cmd := h.command(t, 'c')
 	if cmd == nil {
 		t.Fatal("c over a long history sent nothing, want its end")
 	}
@@ -2337,21 +2181,465 @@ func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	if first := strings.SplitN(string(text), "\n", 2)[0]; len(first) != len(last) {
 		t.Errorf("copied text starts %q, want a whole line", first)
 	}
-	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied (end)") {
-		t.Errorf("bottom border = %q, want it saying only the end was copied", bottom)
+	// 74,994 bytes encoded carry 56,244 of text; each line is 65 bytes and a
+	// newline, the last with none, so whole lines from the end: 852.
+	fits := (osc52Max/4*3-len(last))/(len(last)+1) + 1
+	if fits != 852 {
+		t.Fatalf("the arithmetic says %d lines fit, want 852", fits)
+	}
+	want := fmt.Sprintf("copied (%d lines)", fits)
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, want) {
+		t.Errorf("bottom border = %q, want %q", bottom, want)
 	}
 }
 
-// TestTheAltScreenModeOffersNoScrolling pins the hint on the alternate
-// screen, which has no history: the mode copies and goes bare there, and
-// offers no keys that would do nothing.
-func TestTheAltScreenModeOffersNoScrolling(t *testing.T) {
-	h := consoleHarness(t)
-	if _, err := h.s.em.WriteString("\x1b[?1049h"); err != nil {
-		t.Fatalf("write: %v", err)
+// TestEveryCommandIsOfferedAndHandled pins the one table: every key the
+// bottom row offers has a handler, and every handler is offered somewhere.
+func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.linger = true
+	h.press(t, commandKey)
+	hint := ansi.Strip(bottomOf(h))
+	offered := h.f.offered()
+	for _, a := range offered {
+		if !strings.Contains(hint, " "+string(a.key)+" ") || !strings.Contains(hint, a.label) {
+			t.Errorf("%q %q is in the table but not the hint %q", string(a.key), a.label, hint)
+		}
+		if a.run == nil && a.sub == nil {
+			t.Errorf("%q has no handler and no menu", string(a.key))
+		}
 	}
-	h.enterScrollback(t)
-	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑↓") {
-		t.Errorf("bottom border = %q, offers scrolling where there is nothing to scroll", bottom)
+	var check func(menu []action)
+	check = func(menu []action) {
+		for _, a := range menu {
+			if a.when == nil {
+				t.Errorf("%q says nothing about when it is offered", string(a.key))
+			}
+			if a.run == nil && a.sub == nil {
+				t.Errorf("%q has no handler and no menu", string(a.key))
+			}
+			check(a.sub)
+		}
+	}
+	check(commands)
+	if len(offered) < 5 {
+		t.Errorf("offered %d commands on a console; want at least q l r f c", len(offered))
+	}
+}
+
+// TestClicksSelectWordsAndRows pins the console's clicks: a second press on
+// the same cell within the window selects the word, a third the row, and a
+// Shift-press extends what is selected to the click.
+func TestClicksSelectWordsAndRows(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.linger = true
+	if _, err := h.s.em.WriteString("hello wide world x\r\nsecond"); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	press := func(x, y int, mod tea.KeyMod) tea.Cmd {
+		h.mouse(t, tea.MouseClickMsg{X: pane.Min.X + x, Y: pane.Min.Y + y, Button: tea.MouseLeft, Mod: mod})
+		return h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + x, Y: pane.Min.Y + y, Button: tea.MouseLeft})
+	}
+	copied := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		msg, ok := cmd().(tea.RawMsg)
+		return ok && strings.HasPrefix(fmt.Sprint(msg.Msg), "\x1b]52;c;")
+	}
+	press(7, 0, 0)
+	if !copied(press(7, 0, 0)) {
+		t.Fatal("a double click copied nothing")
+	}
+	if got := h.f.sel.text(h.f.composed()); got != "wide" {
+		t.Errorf("double click selected %q, want wide", got)
+	}
+	press(7, 0, 0)
+	if got := h.f.sel.text(h.f.composed()); got != "hello wide world x" {
+		t.Errorf("triple click selected %q, want the row", got)
+	}
+	press(2, 1, tea.ModShift)
+	if got := h.f.sel.text(h.f.composed()); got != "hello wide world x\nsec" {
+		t.Errorf("shift-click selected %q, want the row extended to the click", got)
+	}
+	h.f.lastPress = h.f.lastPress.Add(-2 * clickWindow)
+	press(1, 0, 0)
+	if h.f.selected {
+		t.Error("a single click after the window left a selection")
+	}
+	h.f.lastPress = h.f.lastPress.Add(-2 * clickWindow)
+	press(17, 0, 0)
+	if !copied(press(17, 0, 0)) || h.f.sel.text(h.f.composed()) != "x" {
+		t.Errorf("a double click on a one-letter word selected %q, want x copied", h.f.sel.text(h.f.composed()))
+	}
+}
+
+// TestFollowPausesAndResumes pins ^K f: following is the live screen, and
+// the ^K row says which, follow drawn on red when it is off. ^K f from live pauses the view where it is: new output
+// fills the blank rows under the cursor and then arrives below the view, the
+// badge counting it.
+// ^K f again, or any key for the program, is the live screen. The wheel turns
+// following off the same way.
+func TestFollowPausesAndResumes(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	write := func(s string) {
+		t.Helper()
+		if _, err := (&sink{s: h.s}).Write([]byte(s)); err != nil {
+			t.Fatal(err)
+		}
+		h.mouse(t, paneMsg{})
+	}
+	view := func() string { return stripSGR(h.f.View().Content) }
+	row := func() string { return stripSGR(bottomOf(h)) }
+	// The SGR the label is drawn in: the last one before it.
+	red := func() bool {
+		raw := bottomOf(h)
+		i := strings.Index(raw, "follow")
+		if i < 0 {
+			t.Fatalf("the row %q has no follow", stripSGR(raw))
+		}
+		return strings.Contains(raw[strings.LastIndex(raw[:i], "\x1b["):i], "48;5;160")
+	}
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&b, "line %02d\r\n", i)
+	}
+	write(b.String())
+
+	h.press(t, commandKey)
+	if !strings.Contains(row(), " follow ") || strings.Contains(row(), "follow:") || red() || !strings.Contains(row(), " c ") || strings.Contains(row(), "[") {
+		t.Errorf("^K shows %q, want f follow plain and c copy, and no scrollback mode", row())
+	}
+	h.press(t, typing('f'))
+	if !h.f.scrolled || strings.Contains(row(), "follow:off") || strings.Contains(row(), "↑") {
+		t.Errorf("paused with nothing below yet, the row is %q (scrolled %v), want paused and no badge", row(), h.f.scrolled)
+	}
+	var more strings.Builder
+	for i := 21; i <= 30; i++ {
+		fmt.Fprintf(&more, "line %02d\r\n", i)
+	}
+	write(more.String())
+	if v := view(); strings.Contains(v, "line 30") || !strings.Contains(v, "line 12") {
+		t.Errorf("paused, new output moved the view: %q", v)
+	}
+	if !strings.Contains(row(), "↑10") {
+		t.Errorf("paused under ten new lines, the row is %q, want ↑10", row())
+	}
+	h.press(t, commandKey)
+	if !red() {
+		t.Errorf("^K while paused shows %q, want follow on red", row())
+	}
+	h.press(t, typing('f'))
+	if h.f.scrolled || !strings.Contains(view(), "line 30") {
+		t.Error("^K f did not return to the live screen")
+	}
+	h.silent(t)
+
+	pane := h.f.pane()
+	h.wheel(t, tea.MouseWheelUp, pane.Min.X, pane.Min.Y)
+	h.press(t, commandKey)
+	if !red() {
+		t.Errorf("^K after the wheel shows %q, want follow on red", row())
+	}
+	h.press(t, typing('f'))
+	if h.f.scrolled {
+		t.Error("^K f after the wheel did not return to the live screen")
+	}
+	h.press(t, commandKey)
+	h.press(t, typing('f'))
+	h.press(t, typing('x'))
+	if h.f.scrolled {
+		t.Error("a key while paused did not return to the live screen")
+	}
+}
+
+// TestATabAndTheConsoleOfferTheSameCommands pins one design for both: the
+// frame in a browser tab offers every command the console's does, follow
+// and copy among them, and draws the same row for them.
+func TestATabAndTheConsoleOfferTheSameCommands(t *testing.T) {
+	tab, con := newFrameHarness(t), consoleHarness(t)
+	tab.f.command, con.f.command = true, true
+	keys := func(h *harness) (out string) {
+		for _, a := range h.f.offered() {
+			out += string(a.key)
+		}
+		return out
+	}
+	if got, want := keys(tab), keys(con); got != want {
+		t.Errorf("a tab offers %q, the console %q", got, want)
+	}
+	if !strings.Contains(keys(tab), "f") || !strings.Contains(keys(tab), "c") || strings.ContainsAny(keys(tab), "[m") {
+		t.Errorf("a tab offers %q, want follow and copy, and no scrollback mode or mouse toggle", keys(tab))
+	}
+	if got, want := stripSGR(tab.f.hint()), stripSGR(con.f.hint()); got != want {
+		t.Errorf("a tab's row is %q, the console's %q", got, want)
+	}
+}
+
+// TestADragAfterADoubleOrTripleClickKeepsItsUnit pins that dragging on from
+// a double click grows the selection a word at a time, either way, and from
+// a triple click a row at a time.
+func TestADragAfterADoubleOrTripleClickKeepsItsUnit(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("hello wide world x\r\nsecond row"); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	at := func(x, y int) (int, int) { return pane.Min.X + x, pane.Min.Y + y }
+	drag := func(n, fromX, fromY, toX, toY int) string {
+		t.Helper()
+		h.f.lastPress = time.Time{}
+		x, y := at(fromX, fromY)
+		for i := range n {
+			h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			if i < n-1 {
+				h.mouse(t, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+			}
+		}
+		tx, ty := at(toX, toY)
+		h.mouse(t, tea.MouseMotionMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		h.mouse(t, tea.MouseReleaseMsg{X: tx, Y: ty, Button: tea.MouseLeft})
+		return h.f.sel.text(h.f.composed())
+	}
+	if got := drag(2, 1, 0, 13, 0); got != "hello wide world" {
+		t.Errorf("double click on hello, drag into world: %q", got)
+	}
+	if got := drag(2, 13, 0, 7, 0); got != "wide world" {
+		t.Errorf("double click on world, drag back into wide: %q", got)
+	}
+	if got := drag(3, 3, 0, 2, 1); got != "hello wide world x\nsecond row" {
+		t.Errorf("triple click, drag to the next row: %q", got)
+	}
+}
+
+// TestAClearedTerminalIsRepainted pins the frame's answer to a terminal that
+// clears itself behind its back, as VS Code's Cmd+K does: asked where its
+// cursor is, a terminal that answers somewhere other than where the frame
+// put it gets the whole frame again, and one that answers where the frame
+// put it gets nothing. With no cursor drawn there is nothing to compare, and
+// nothing is asked.
+func TestAClearedTerminalIsRepainted(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("$ "); err != nil {
+		t.Fatal(err)
+	}
+	want := h.f.View().Cursor
+	if want == nil {
+		t.Fatal("no cursor drawn at a prompt")
+	}
+	asks := func(cmd tea.Cmd) bool {
+		t.Helper()
+		if cmd == nil {
+			return false
+		}
+		cmds := []tea.Cmd{cmd}
+		if batch, ok := cmd().(tea.BatchMsg); ok {
+			cmds = batch
+		}
+		for _, c := range cmds {
+			got := make(chan tea.Msg, 1)
+			go func() { got <- c() }()
+			select {
+			case msg := <-got:
+				if raw, ok := msg.(tea.RawMsg); ok && raw.Msg == ansi.RequestExtendedCursorPositionReport {
+					return true
+				}
+			case <-time.After(50 * time.Millisecond): // the next probe's tick
+			}
+		}
+		return false
+	}
+
+	if cmd := h.mouse(t, tea.CursorPositionMsg{X: 0, Y: 0}); cmd != nil {
+		t.Error("a position nobody asked for was acted on")
+	}
+	if !asks(h.mouse(t, probeMsg{})) {
+		t.Fatal("the probe did not ask the terminal where its cursor is")
+	}
+	if cmd := h.mouse(t, tea.CursorPositionMsg{X: want.X, Y: want.Y}); cmd != nil {
+		t.Errorf("a terminal with the cursor where the frame left it got %T", cmd())
+	}
+	h.mouse(t, probeMsg{})
+	cmd := h.mouse(t, tea.CursorPositionMsg{X: want.X, Y: 0})
+	if cmd == nil || !reflect.DeepEqual(cmd(), tea.ClearScreen()) {
+		t.Error("a terminal with the cursor moved to its top row was not repainted")
+	}
+
+	if _, err := h.s.scan.Write([]byte("\x1b[?25l")); err != nil {
+		t.Fatal(err)
+	}
+	if asks(h.mouse(t, probeMsg{})) {
+		t.Error("asked for the cursor with none drawn")
+	}
+}
+
+// TestTheQuitMenu pins ^K q: a row of its own with quit, restart where there
+// is one, and detach; q ends the run, d this viewer alone; anything else
+// closes it having done nothing, the way the top row does.
+func TestTheQuitMenu(t *testing.T) {
+	h := newFrameHarness(t)
+	h.press(t, commandKey)
+	top := stripSGR(bottomOf(h))
+	for _, gone := range []string{"detach", "exit", "restart"} {
+		if strings.Contains(top, gone) {
+			t.Errorf("the top row %q still offers %s", top, gone)
+		}
+	}
+	if !strings.Contains(top, " r ") || !strings.Contains(top, "qr") {
+		t.Errorf("the top row %q lacks r qr", top)
+	}
+	var order string
+	for _, a := range h.f.offered() {
+		order += string(a.key)
+	}
+	if order != "qlrcf" {
+		t.Errorf("the top row is %q, want q l r c f in that order", order)
+	}
+	h.press(t, typing('q'))
+	sub := stripSGR(bottomOf(h))
+	if !h.f.command || !strings.Contains(sub, "quit") || !strings.Contains(sub, " d ") || !strings.Contains(sub, "detach") || strings.Contains(sub, "logs") {
+		t.Errorf("^K q shows %q (command %v), want the quit menu alone", sub, h.f.command)
+	}
+	if strings.Contains(sub, "restart") {
+		t.Errorf("^K q offers restart for a target that cannot: %q", sub)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.command || h.f.exiting {
+		t.Errorf("esc in the quit menu: command %v exiting %v; want it closed, nothing done", h.f.command, h.f.exiting)
+	}
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "commands") {
+		t.Errorf("after esc the row is %q, want ^K commands", bottom)
+	}
+	h.press(t, commandKey)
+	h.press(t, typing('q'))
+	cmd := h.press(t, typing('q'))
+	if !h.f.exiting || cmd == nil {
+		t.Errorf("^K q q: exiting %v, command %v; want the run ended", h.f.exiting, cmd)
+	} else if _, quit := cmd().(tea.QuitMsg); !quit {
+		t.Errorf("^K q q produced %T, want QuitMsg", cmd())
+	}
+}
+
+// TestTheCopyChipCountsTheLinesCopied pins the number ^K c reports against
+// what was written, not against the copy: one line, a history longer than
+// the screen, and a history past what a terminal will take, where the count
+// is the lines from the first one that fit to the last one written.
+func TestTheCopyChipCountsTheLinesCopied(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	for _, tc := range []struct {
+		name  string
+		lines int
+		text  func(i int) string
+		cut   bool
+	}{
+		{"one line", 1, func(int) string { return "hello" }, false},
+		{"thirty lines", 30, func(i int) string { return fmt.Sprintf("line %02d", i) }, false},
+		{"past the cap", 1200, func(i int) string { return fmt.Sprintf("%04d %s", i, long) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := consoleHarness(t)
+			var b strings.Builder
+			for i := 1; i <= tc.lines; i++ {
+				if i > 1 {
+					b.WriteString("\r\n")
+				}
+				b.WriteString(tc.text(i))
+			}
+			if _, err := h.s.em.WriteString(b.String()); err != nil {
+				t.Fatal(err)
+			}
+			cmd := h.command(t, 'c')
+			if cmd == nil {
+				t.Fatal("^K c sent nothing")
+			}
+			raw, _ := cmd().(tea.RawMsg)
+			b64 := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprint(raw.Msg), "\x1b]52;c;"), "\a")
+			text, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.lines
+			if tc.cut {
+				var first int
+				if _, err := fmt.Sscanf(string(text), "%04d ", &first); err != nil {
+					t.Fatalf("the copy starts %.10q, want a numbered line", text)
+				}
+				want = tc.lines - first + 1
+				if want >= tc.lines {
+					t.Fatalf("a history past the cap was copied whole")
+				}
+			}
+			chip := fmt.Sprintf("copied (%d lines)", want)
+			if want == 1 {
+				chip = "copied (1 line)"
+			}
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, chip) {
+				t.Errorf("bottom border = %q, want %q", bottom, chip)
+			}
+		})
+	}
+}
+
+// TestAPressAloneRedrawsNothing pins a click on a link reaching the terminal
+// drawing the frame: xterm forgets the link under the pointer when its row
+// is redrawn, so a press that has not dragged must leave the row as it was,
+// or the click that follows opens nothing. A drag highlights as before.
+func TestAPressAloneRedrawsNothing(t *testing.T) {
+	h := consoleHarness(t)
+	if _, err := h.s.scan.Write([]byte("an OSC 8 link: \x1b]8;;https://example.com\x1b\\example link\x1b]8;;\x1b\\\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	row := func() string { return strings.Split(h.f.View().Content, "\n")[pane.Min.Y] }
+	before := row()
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X + 18, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if got := row(); got != before {
+		t.Errorf("a press redrew its row:\n  before %q\n  after  %q", before, got)
+	}
+	h.mouse(t, tea.MouseMotionMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if !reversed(row()) {
+		t.Error("a drag did not highlight")
+	}
+	h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
+}
+
+// TestClickingTheAddressCopiesIt pins a double click on the top border's
+// address copying it. A single click copies nothing: it may be the Cmd click
+// that opens it, and a terminal does not report Cmd. Nor does a click on the
+// border elsewhere.
+func TestClickingTheAddressCopiesIt(t *testing.T) {
+	h := consoleHarness(t)
+	const addr = "https://striped-worm.tunneled.pizza/?0"
+	h.s.announce(addr)
+	click := func(x, y int) tea.Cmd {
+		h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		return h.mouse(t, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	}
+	y, x := -1, -1
+	for i, l := range strings.Split(h.f.View().Content, "\n") {
+		if j := strings.Index(stripSGR(l), addr); j >= 0 {
+			y, x = i, utf8.RuneCountInString(stripSGR(l)[:j])
+			break
+		}
+	}
+	if y < 0 {
+		t.Fatal("the address is not drawn in the border")
+	}
+	if cmd := click(1, y); cmd != nil {
+		t.Errorf("a click on the border away from the address produced %T", cmd())
+	}
+	h.f.lastAddress = time.Time{}
+	if cmd := click(x+5, y); cmd != nil {
+		t.Errorf("a single click on the address produced %T, want nothing", cmd())
+	}
+	cmd := click(x+5, y)
+	if cmd == nil {
+		t.Fatal("a double click on the address copied nothing")
+	}
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(addr)) + "\a"
+	if raw, ok := cmd().(tea.RawMsg); !ok || fmt.Sprint(raw.Msg) != want {
+		t.Errorf("a click on the address sent %#v, want the address in OSC 52", cmd())
 	}
 }

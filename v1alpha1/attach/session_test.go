@@ -3,6 +3,7 @@ package attach
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
@@ -420,10 +422,10 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 	left := make(chan error, 1)
 	go func() { left <- h.s.viewLocally(ctx, in, &out) }()
 
-	// ^K x: the command key, then the one that ends the run. Bubble Tea reads
-	// keys as soon as the program is up, whatever the size negotiation is
-	// still waiting on, so nothing has to settle first.
-	if _, err := keys.Write([]byte{0x0b, 'x'}); err != nil {
+	// ^K q q: the command key, the quit menu, then the one that ends the
+	// run. Bubble Tea reads keys as soon as the program is up, whatever the
+	// size negotiation is still waiting on, so nothing has to settle first.
+	if _, err := keys.Write([]byte{0x0b, 'q', 'q'}); err != nil {
 		t.Fatalf("typing: %v", err)
 	}
 
@@ -433,7 +435,7 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 			t.Fatalf("viewLocally: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the console viewer did not leave on ^K x")
+		t.Fatal("the console viewer did not leave on ^K q q")
 	}
 	select {
 	case seen := <-asked:
@@ -444,7 +446,7 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 			t.Errorf("the run was asked to end with the mouse still reporting; output so far:\n%q", seen)
 		}
 	default:
-		t.Fatal("^K x on the console did not ask the run to end")
+		t.Fatal("^K q q on the console did not ask the run to end")
 	}
 }
 
@@ -611,5 +613,52 @@ func TestFollowMotdSeesAChangeDuringTheLast(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("change %d was never applied", i+1)
 		}
+	}
+}
+
+// sizeRecorder is a program that reports every window size it is sent.
+type sizeRecorder struct{ got chan tea.WindowSizeMsg }
+
+func (r sizeRecorder) Init() tea.Cmd { return nil }
+func (r sizeRecorder) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m, ok := msg.(tea.WindowSizeMsg); ok {
+		r.got <- m
+	}
+	return r, nil
+}
+func (r sizeRecorder) View() tea.View { return tea.View{} }
+
+// TestARepeatedSizeIsNotARedraw pins follow passing a viewer's size on only
+// when it changes. The page sends its size every 30 seconds as a heartbeat,
+// and Bubble Tea erases and redraws the whole screen for every size it is
+// given, which in xterm drops the link under the pointer.
+func TestARepeatedSizeIsNotARedraw(t *testing.T) {
+	h := newFrameHarness(t)
+	rec := sizeRecorder{got: make(chan tea.WindowSizeMsg, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 8)}
+	v.prog = tea.NewProgram(rec, tea.WithContext(ctx), tea.WithInput(nil), tea.WithOutput(io.Discard), tea.WithoutRenderer(), tea.WithoutSignals())
+	go func() { _, _ = v.prog.Run() }()
+	resize := make(chan remotecommand.TerminalSize, 4)
+	go h.s.follow(ctx, cancel, v, resize)
+	for _, sz := range []remotecommand.TerminalSize{{Width: 80, Height: 24}, {Width: 80, Height: 24}, {Width: 100, Height: 30}} {
+		resize <- sz
+	}
+	var got []string
+	timeout := time.After(time.Second)
+	for len(got) < 3 {
+		select {
+		case m := <-rec.got:
+			if m.Width > 0 {
+				got = append(got, fmt.Sprintf("%dx%d", m.Width, m.Height))
+			}
+			continue
+		case <-timeout:
+		}
+		break
+	}
+	if strings.Join(got, " ") != "80x24 100x30" {
+		t.Errorf("the program was sent %v, want 80x24 then 100x30", got)
 	}
 }
