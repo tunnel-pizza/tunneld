@@ -2126,8 +2126,9 @@ func TestCommandCCopiesEverything(t *testing.T) {
 	if !strings.HasPrefix(string(text), "line 001\n") || !strings.HasSuffix(string(text), fmt.Sprintf("line %03d", 3*rows)) {
 		t.Errorf("copied %q…%q, want every line from the first kept to the live screen's last", string(text)[:20], string(text)[len(text)-20:])
 	}
-	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied") {
-		t.Errorf("bottom border = %q, want it saying the copy went", bottom)
+	want := fmt.Sprintf("copied (%d lines)", 3*rows)
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, want) {
+		t.Errorf("bottom border = %q, want %q", bottom, want)
 	}
 	h.silent(t)
 }
@@ -2149,7 +2150,7 @@ func TestTheChipsSurviveScrollbackAt80Columns(t *testing.T) {
 
 // TestCopyingTooMuchHistoryCopiesItsEnd pins c over a history longer than a
 // terminal will take: rather than nothing, the end that fits, from a whole
-// line, and a chip saying it is only the end.
+// line, and a chip counting the lines that went.
 func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	h := consoleHarness(t)
 	var b strings.Builder
@@ -2179,8 +2180,15 @@ func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	if first := strings.SplitN(string(text), "\n", 2)[0]; len(first) != len(last) {
 		t.Errorf("copied text starts %q, want a whole line", first)
 	}
-	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied (end)") {
-		t.Errorf("bottom border = %q, want it saying only the end was copied", bottom)
+	// 74,994 bytes encoded carry 56,244 of text; each line is 65 bytes and a
+	// newline, the last with none, so whole lines from the end: 852.
+	fits := (osc52Max/4*3-len(last))/(len(last)+1) + 1
+	if fits != 852 {
+		t.Fatalf("the arithmetic says %d lines fit, want 852", fits)
+	}
+	want := fmt.Sprintf("copied (%d lines)", fits)
+	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, want) {
+		t.Errorf("bottom border = %q, want %q", bottom, want)
 	}
 }
 
@@ -2510,5 +2518,65 @@ func TestTheQuitMenu(t *testing.T) {
 		t.Errorf("^K q q: exiting %v, command %v; want the run ended", h.f.exiting, cmd)
 	} else if _, quit := cmd().(tea.QuitMsg); !quit {
 		t.Errorf("^K q q produced %T, want QuitMsg", cmd())
+	}
+}
+
+// TestTheCopyChipCountsTheLinesCopied pins the number ^K c reports against
+// what was written, not against the copy: one line, a history longer than
+// the screen, and a history past what a terminal will take, where the count
+// is the lines from the first one that fit to the last one written.
+func TestTheCopyChipCountsTheLinesCopied(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	for _, tc := range []struct {
+		name  string
+		lines int
+		text  func(i int) string
+		cut   bool
+	}{
+		{"one line", 1, func(int) string { return "hello" }, false},
+		{"thirty lines", 30, func(i int) string { return fmt.Sprintf("line %02d", i) }, false},
+		{"past the cap", 1200, func(i int) string { return fmt.Sprintf("%04d %s", i, long) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := consoleHarness(t)
+			var b strings.Builder
+			for i := 1; i <= tc.lines; i++ {
+				if i > 1 {
+					b.WriteString("\r\n")
+				}
+				b.WriteString(tc.text(i))
+			}
+			if _, err := h.s.em.WriteString(b.String()); err != nil {
+				t.Fatal(err)
+			}
+			cmd := h.command(t, 'c')
+			if cmd == nil {
+				t.Fatal("^K c sent nothing")
+			}
+			raw, _ := cmd().(tea.RawMsg)
+			b64 := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprint(raw.Msg), "\x1b]52;c;"), "\a")
+			text, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.lines
+			if tc.cut {
+				var first int
+				if _, err := fmt.Sscanf(string(text), "%04d ", &first); err != nil {
+					t.Fatalf("the copy starts %.10q, want a numbered line", text)
+				}
+				want = tc.lines - first + 1
+				if want >= tc.lines {
+					t.Fatalf("a history past the cap was copied whole")
+				}
+			}
+			chip := fmt.Sprintf("copied (%d lines)", want)
+			if want == 1 {
+				chip = "copied (1 line)"
+			}
+			if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, chip) {
+				t.Errorf("bottom border = %q, want %q", bottom, chip)
+			}
+		})
 	}
 }

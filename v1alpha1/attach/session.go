@@ -210,6 +210,7 @@ func (s *session) watch() {
 // terminal origin is not worth taking it down.
 func newSession(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
+	em.SetScrollbackSize(historyLines())
 
 	s := &session{
 		Target:  target,

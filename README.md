@@ -313,6 +313,7 @@ And the rest of what tunneld requires directly:
 | [`github.com/spf13/cobra`](https://github.com/spf13/cobra), [`github.com/spf13/pflag`](https://github.com/spf13/pflag), [`github.com/spf13/viper`](https://github.com/spf13/viper) | The command line and its environment. |
 | [`github.com/yuin/goldmark`](https://github.com/yuin/goldmark) | Messages of the day. |
 | [`rsc.io/qr`](https://github.com/rsc/qr) | The QR code a phone reads. |
+| [`github.com/shirou/gopsutil/v4`](https://github.com/shirou/gopsutil) | How much memory is free, which sizes the terminal's history. |
 | [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose) | Checking the tokens the provider signs, for Single Sign-On. |
 | [`github.com/pkg/browser`](https://github.com/pkg/browser) | Opening the tab. |
 | [`github.com/go-logr/logr`](https://github.com/go-logr/logr), [`k8s.io/klog/v2`](https://github.com/kubernetes/klog) | cri-streaming's logs, routed into tunneld's own. |

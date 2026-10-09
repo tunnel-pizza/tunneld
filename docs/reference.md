@@ -524,7 +524,9 @@ shared session for everybody watching.
 The wheel is decided per notch. A program that asked for the mouse gets it as a
 mouse event; a full-screen program gets it as arrow keys, the way a terminal
 with alternate scroll would send it; otherwise it is the frame's, and scrolls
-back through what the terminal kept — up to ten thousand lines. Scrolling is
+back through what the terminal kept — as many lines as a sixteenth of the
+memory free when the session starts holds, at about 12 KB a line, from a
+thousand to a hundred thousand. A container's memory limit counts. Scrolling is
 per viewer, so two people can be reading different places in one terminal. The
 bottom border says how far back you are, output arriving while you read stays
 below you rather than pulling you down to it, and the first key you press puts
@@ -549,9 +551,9 @@ wrapping, in pieces screen keeps whole. A copy longer than a terminal will take
 (74,994 bytes encoded) is not sent, and the border says `too large to copy`.
 
 The frame's selection is the pane's rows on screen. For more than a screen,
-`Ctrl+K` then `c` copies the whole history and the live screen (or, past
-what a terminal will take, the end of it, and the border says `copied
-(end)`). `Ctrl+K` then `f` turns following off: the view stays where it is
+`Ctrl+K` then `c` copies the whole history and the live screen, or past
+what a terminal will take (74,994 bytes encoded) the end of it, from a whole
+line; the border says how many lines went, as `copied (852 lines)`. `Ctrl+K` then `f` turns following off: the view stays where it is
 and output arrives below it, with the border saying how far behind it is,
 the way the wheel leaves it; the commands' row draws `follow` on red while it
 is off. `Ctrl+K` then `f` again,

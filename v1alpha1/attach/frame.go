@@ -654,19 +654,18 @@ func (f frame) behind() int {
 }
 
 // fitting is text cut to the end that a terminal will take as one copy (see
-// osc52Max), from the start of a line, and whether that is all of it. The
-// end, because what somebody copying a long history most often wants is what
-// just happened.
-func fitting(text string) (string, bool) {
+// osc52Max), from the start of a line. The end, because what somebody
+// copying a long history most often wants is what just happened.
+func fitting(text string) string {
 	limit := osc52Max / 4 * 3 // the bytes that encode to it
 	if len(text) <= limit {
-		return text, true
+		return text
 	}
 	tail := text[len(text)-limit:]
 	if i := strings.IndexByte(tail, '\n'); i >= 0 {
 		tail = tail[i+1:]
 	}
-	return tail, false
+	return tail
 }
 
 // everything is the whole history and the live screen as text, for ^K c:
@@ -714,11 +713,17 @@ var commands = []action{
 	}},
 	// The whole history and the live screen: what a selection cannot reach
 	// past the pane.
+	// The chip counts the lines that went: past what a terminal will take,
+	// that is the end of it (see fitting).
 	{key: 'c', label: "copy", when: always, run: func(f frame) (frame, tea.Cmd) {
-		text, whole := fitting(f.everything())
+		text := fitting(f.everything())
 		f, cmd := f.copy(text)
-		if !whole && cmd != nil {
-			f.clip = "copied (end)"
+		if cmd != nil {
+			if n := strings.Count(text, "\n") + 1; n == 1 {
+				f.clip += " (1 line)"
+			} else {
+				f.clip += fmt.Sprintf(" (%d lines)", n)
+			}
 		}
 		return f, cmd
 	}},
