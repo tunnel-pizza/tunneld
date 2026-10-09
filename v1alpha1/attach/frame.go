@@ -199,6 +199,9 @@ type frame struct {
 	lastPress time.Time
 	lastAt    uv.Position
 	clicks    int
+	// unit is the word or row a double or triple click selected, which a
+	// drag from it grows by.
+	unit selection
 
 	// reading is scrollback mode (^K [): the history
 	// is this viewer's to move through with the keys, typing reaches nobody,
@@ -354,7 +357,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseMotionMsg:
 		if f.selecting {
-			f.sel.head = f.onPane(msg.X, msg.Y)
+			f.sel = f.dragTo(f.onPane(msg.X, msg.Y))
 		}
 		return f, nil
 
@@ -568,14 +571,41 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	switch f.clicks {
 	case 2:
 		f.sel = wordAt(f.composed(), pos)
+		f.unit = f.sel
 	case 3:
 		f.sel = rowOf(f.composed(), pos.Y)
+		f.unit = f.sel
 	default:
 		f.clicks = 1
 		f.sel = selection{anchor: pos, head: pos}
 	}
 	f.selecting = true
 	return f
+}
+
+// dragTo is the selection with the pointer at pos: from the anchor to pos
+// after a single click, and after a double or triple click the unit it
+// selected grown to take in the word or row under pos, whichever side of
+// the unit that is.
+func (f frame) dragTo(pos uv.Position) selection {
+	var under selection
+	switch f.clicks {
+	case 2:
+		under = wordAt(f.composed(), pos)
+	case 3:
+		under = rowOf(f.composed(), pos.Y)
+	default:
+		return selection{anchor: f.sel.anchor, head: pos}
+	}
+	from, to := f.unit.ordered()
+	uFrom, uTo := under.ordered()
+	if before(uFrom, from) {
+		return selection{anchor: to, head: uFrom}
+	}
+	if before(to, uTo) {
+		to = uTo
+	}
+	return selection{anchor: from, head: to}
 }
 
 // released finishes a selection and copies it (see copy). A press with no
