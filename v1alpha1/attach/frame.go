@@ -53,13 +53,6 @@ var (
 	qualStyle   = uv.Style{Fg: ansi.IndexedColor(207)}
 	countStyle  = uv.Style{Fg: ansi.IndexedColor(255)}
 	chipStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), Attrs: uv.AttrBold}
-	// popoutStyle is the chip an embedded frame puts in its corner: the chip,
-	// with its underline coloured like its ground. xterm marks every link
-	// cell with a dashed underline in the cell's underline colour, and a
-	// chip the panel's neighbours draw without one would otherwise be the
-	// odd one out; drawn in the chip's own orange the mark is still there
-	// for a terminal that wants it and invisible on the one that shows it.
-	popoutStyle = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(214), UnderlineColor: ansi.IndexedColor(214), Attrs: uv.AttrBold}
 	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
 	copyStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(114), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
@@ -223,13 +216,6 @@ type frame struct {
 	// having ended while lingering.
 	linger bool
 	ended  bool
-
-	// embedded is this viewer being a tile in the multiview panel, which
-	// already shows what the provider said, once, in its own bar above every
-	// tile. A frame that drew the bar as well would put the same warning on the
-	// page once per terminal plus the panel's own, so an embedded frame draws
-	// none. The page says which it is on the socket's path; see index.html.
-	embedded bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -752,35 +738,15 @@ func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 // everywhere; putting them on the box is what puts the notice at the same
 // place relative to the screen everywhere too, instead of a screen-height
 // above it in a window much larger than the smallest.
-//
-// Embedded in the panel, the box is the window. The panel lays a frame of its
-// own around every origin that has none, on this terminal's own grid of rows
-// and columns, and those frames fill their tiles; a box the size of the
-// smallest viewer's screen would stop a row or two short of its neighbours
-// and read as the odd one out. So an embedded viewer's border runs to its
-// edges and the screen sits inside it, top left, with the room left over
-// dark — the corner chip still says whose size the screen is.
 func (f frame) box() uv.Rectangle {
-	if f.embedded {
-		return uv.Rect(0, 0, f.width, f.height)
-	}
 	banner := f.barRows()
 	w, h := f.sess.paneSize()
 	w, h = min(f.width, w+chromeWidth), min(f.height, h+chromeHeight+banner)
 	return uv.Rect((f.width-w)/2, (f.height-h)/2, w, h)
 }
 
-// barRows is how many rows this frame's own bar takes: the session's count, or
-// none for a viewer embedded in the panel, whose bar is the panel's. The pane
-// is sized for the session's count either way — it is one screen shared by
-// every viewer — so an embedded box is that many rows shorter than its window
-// and centres in it like any box smaller than its window does.
-func (f frame) barRows() int {
-	if f.embedded {
-		return 0
-	}
-	return f.sess.bannerRows()
-}
+// barRows is how many rows the messages of the day take above the box.
+func (f frame) barRows() int { return f.sess.bannerRows() }
 
 // frameRect is the box less its bar: the rectangle the border is drawn
 // around, and the one the labels in the border are measured against.
@@ -920,11 +886,8 @@ func (f frame) View() tea.View {
 // separately, so a message with no severity leaves the row exactly as it was
 // drawn. An island of colour in the middle of the row reads as a chip;
 // spanning the box is what makes it a notice.
-//
-// An embedded viewer draws none: the panel around it is showing the same
-// messages already. See embedded.
 func (f frame) drawBanner(buf uv.ScreenBuffer) {
-	if f.embedded || f.sess.motd == nil {
+	if f.sess.motd == nil {
 		return
 	}
 	box := f.box()
@@ -1343,12 +1306,6 @@ func printable(r rune) rune {
 // which is what makes it worth showing — it is the address to send somebody
 // else, and for one origin among several it carries the routing parameter that
 // reaches this one.
-//
-// Embedded in the panel, the corner holds a chip instead: the panel's own
-// frames carry their controls there as chips, and the address in full is
-// the panel's to show, once, in its tab. The chip is the same hyperlink, so
-// a click on it opens the origin in a tab of its own — the panel's popout,
-// drawn by the terminal.
 func (f frame) where() string {
 	addr := f.sess.announced()
 	if addr == "" {
@@ -1359,9 +1316,6 @@ func (f frame) where() string {
 	// with exactly the text it would have had, which is why it costs nothing
 	// to send. It occupies no columns either, so the alignment either side of
 	// it is unaffected.
-	if f.embedded {
-		return " " + ansi.SetHyperlink(addr) + popoutStyle.Styled(" ↗ ") + ansi.ResetHyperlink() + " "
-	}
 	return addrStyle.Styled(" " + ansi.SetHyperlink(addr) + addr + ansi.ResetHyperlink() + " ")
 }
 

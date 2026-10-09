@@ -1990,95 +1990,6 @@ func TestBannerNeverEatsTheWholeWindow(t *testing.T) {
 	_ = h.f.View() // must not panic
 }
 
-// TestAnEmbeddedViewerDrawsNoBar pins a viewer framed by the multiview panel:
-// the panel already shows what the provider said, once, above every tile, so
-// the frame inside a tile draws no bar of its own. The pane is still the
-// session's, shorter by the bar everyone else has, so the box has a spare row
-// in the window and the border is where the box starts.
-//
-// The same session with the flag down is the control: the bar is still there
-// for a viewer in its own right. TestBannerSitsAboveTheBox covers that viewer
-// whole.
-func TestAnEmbeddedViewerDrawsNoBar(t *testing.T) {
-	h := newFrameHarness(t)
-	h.s.motd = testMotd{"WARNING public"}
-	h.f.embedded = true
-	h.window(defaultCols, defaultRows)
-
-	lines := strings.Split(h.f.View().Content, "\n")
-	if !strings.Contains(lines[0], "╭") {
-		t.Errorf("row 0 = %q, want the box's top border", stripSGR(lines[0]))
-	}
-	for i, line := range lines {
-		if strings.Contains(stripSGR(line), "WARNING") {
-			t.Errorf("row %d = %q, want no bar in an embedded viewer", i, stripSGR(line))
-		}
-	}
-	if pane := h.f.pane(); pane.Min.Y != 1 {
-		t.Errorf("pane starts at row %d, want 1 (the border alone)", pane.Min.Y)
-	}
-
-	h.f.embedded = false
-	lines = strings.Split(h.f.View().Content, "\n")
-	if got := strings.TrimSpace(stripSGR(lines[0])); got != "WARNING public" {
-		t.Errorf("row 0 = %q, want the bar back for a viewer in its own right", got)
-	}
-}
-
-// TestAnEmbeddedBoxIsTheWindow pins the panel case: a viewer framed by the
-// panel draws its border at its window's edges whatever size the shared
-// screen settled on, so its frame fills its tile the way the panel's own
-// frames fill theirs. The screen stays where the border puts it, top left.
-func TestAnEmbeddedBoxIsTheWindow(t *testing.T) {
-	h := newFrameHarness(t)
-	h.f.embedded = true
-	h.window(160, 50)
-	h.s.em.Resize(78, 22) // the smallest viewer is much smaller than this one
-
-	if box := h.f.box(); box != uv.Rect(0, 0, 160, 50) {
-		t.Errorf("box = %v, want the whole 160x50 window", box)
-	}
-	lines := strings.Split(h.f.View().Content, "\n")
-	if !strings.Contains(lines[0], "╭") || !strings.Contains(stripSGR(lines[len(lines)-1]), "╰") {
-		t.Errorf("border is not at the window's top and bottom rows")
-	}
-	if pane := h.f.pane(); pane.Min.X != 1 || pane.Min.Y != 1 {
-		t.Errorf("pane starts at %v, want (1,1) inside the border", pane.Min)
-	}
-}
-
-// TestAnEmbeddedCornerIsAPopout pins the panel's corner: a viewer framed by
-// the panel gets a chip that opens the origin in a tab where a viewer of its
-// own gets the address in full. Both are the same hyperlink; only the text
-// under it changes, so a terminal that drops OSC 8 still shows a chip and a
-// panel's tab still says where.
-func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
-	h := newFrameHarness(t)
-	h.s.announce("https://striped-worm.tunneled.pizza/?0")
-
-	own := h.f.View().Content
-	if !strings.Contains(stripSGR(own), "striped-worm.tunneled.pizza/?0") {
-		t.Errorf("a viewer of its own does not see the address: %q", stripSGR(strings.Split(own, "\n")[0]))
-	}
-
-	h.f.embedded = true
-	top := strings.Split(h.f.View().Content, "\n")[0]
-	if strings.Contains(stripSGR(top), "striped-worm") {
-		t.Errorf("an embedded viewer still shows the address: %q", stripSGR(top))
-	}
-	if !strings.Contains(top, "↗") {
-		t.Errorf("an embedded viewer has no popout chip: %q", stripSGR(top))
-	}
-	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneled.pizza/?0") {
-		t.Errorf("the chip is not a hyperlink to the address")
-	}
-	// The link's underline is drawn in the chip's own orange (SGR 58), so
-	// xterm's dashed mark on a link cell disappears into the chip.
-	if !strings.Contains(top, "58;5;214") {
-		t.Errorf("the chip's underline is not coloured like its ground: %q", top)
-	}
-}
-
 // consoleHarness is a frame on the console rather than in a tab: the one
 // whose viewer's terminal is the process's own, which is where scrollback
 // mode and the mouse toggle are offered.
@@ -2239,29 +2150,6 @@ func TestTheMouseToggle(t *testing.T) {
 	h.press(t, typing('m'))
 	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
 		t.Errorf("MouseMode after ^K m twice = %v, want cell motion again", got)
-	}
-}
-
-// TestATabHasNoScrollbackMode pins the tab as it was: the page keeps the
-// mouse and xterm selects natively, so neither key does anything there, and
-// neither is offered.
-func TestATabHasNoScrollbackMode(t *testing.T) {
-	h := newFrameHarness(t)
-	h.press(t, commandKey)
-	if hint := stripSGR(bottomOf(h)); strings.Contains(hint, "scrollback") || strings.Contains(hint, "mouse") {
-		t.Errorf("a tab's commands = %q, want neither key offered", hint)
-	}
-	h.press(t, typing('['))
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("a tab after ^K [ and ^K m: reading %v, MouseMode %v; want neither", h.f.reading, h.f.View().MouseMode)
-	}
-	c := consoleHarness(t)
-	c.s.Target = newRerunTarget(true) // a program: restart offered too
-	c.press(t, commandKey)
-	if hint := stripSGR(bottomOf(c)); !strings.Contains(hint, " [  scroll") || !strings.Contains(hint, " m  mouse") || !strings.Contains(hint, "restart") {
-		t.Errorf("the console's commands at 80 columns = %q, want restart, [ and m all offered whole", hint)
 	}
 }
 

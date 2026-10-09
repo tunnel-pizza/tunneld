@@ -670,6 +670,31 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 		log.Info("a viewer asked the run to end", "target", target.Name())
 		s.asked.close()
 	}, log)
+	// The notice is page chrome, not container output: it states how the
+	// container was started, which was already true before the socket opened
+	// and is not changed by anything printed after it. html/template escapes
+	// it like any other value — it is our own prose, but it travels next to a
+	// name the operator typed.
+	//
+	// notice names what a container was started without, or "" when it was
+	// started with both -t and -i and there is nothing to explain.
+	//
+	// The wording names the docker run flag rather than the symptom, because
+	// that is the lever: nothing tunneld can do fixes a container already
+	// running without a TTY, and the reader's next move is to restart it.
+	var notice string
+	noticer, told := s.target.(Noticer)
+	switch {
+	case told:
+		notice = noticer.Notice()
+	case !s.target.TTY() && !s.target.Stdin():
+		notice = "no TTY and no stdin (started without -it) — output only"
+	case !s.target.TTY():
+		notice = "no TTY (started without -t) — no line editing, no resize"
+	case !s.target.Stdin():
+		notice = "stdin closed (started without -i) — keystrokes go nowhere"
+	}
+	s.session.notice = notice
 
 	mux := http.NewServeMux()
 	// "GET /{$}" is the root exactly, not a prefix — an origin's stray request
@@ -680,30 +705,6 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 	// and answered with a plain error rather than a half-written page.
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		var rendered strings.Builder
-		// The notice is page chrome, not container output: it states how the
-		// container was started, which was already true before the socket opened
-		// and is not changed by anything printed after it. html/template escapes
-		// it like any other value — it is our own prose, but it travels next to a
-		// name the operator typed.
-		//
-		// notice names what a container was started without, or "" when it was
-		// started with both -t and -i and there is nothing to explain.
-		//
-		// The wording names the docker run flag rather than the symptom, because
-		// that is the lever: nothing tunneld can do fixes a container already
-		// running without a TTY, and the reader's next move is to restart it.
-		var notice string
-		noticer, told := s.target.(Noticer)
-		switch {
-		case told:
-			notice = noticer.Notice()
-		case !s.target.TTY() && !s.target.Stdin():
-			notice = "no TTY and no stdin (started without -it) — output only"
-		case !s.target.TTY():
-			notice = "no TTY (started without -t) — no line editing, no resize"
-		case !s.target.Stdin():
-			notice = "stdin closed (started without -i) — keystrokes go nowhere"
-		}
 		// Origin is what the frame puts in its top-left corner, said again
 		// here because the overlay covers that corner: a page that has lost
 		// its socket should still name what it was showing.
@@ -714,7 +715,7 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 		data := struct {
 			Notice string
 			Origin string
-		}{notice, s.target.Origin()}
+		}{s.session.notice, s.target.Origin()}
 		if err := page.Execute(&rendered, data); err != nil {
 			s.log.Error("attach render failed", "container", s.target.Name(), "error", err)
 			http.Error(w, "attach: "+err.Error(), http.StatusInternalServerError)

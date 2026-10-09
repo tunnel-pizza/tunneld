@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -124,8 +125,14 @@ func (m testMotd) Lines(int) []string { return []string(m) }
 
 // The rest of motd.Motd, which a frame never asks of it.
 func (testMotd) Learn([]string, v1.Logger) {}
-func (testMotd) HTML() []motd.Rendered     { return nil }
-func (testMotd) Changed() <-chan struct{}  { return nil }
+func (m testMotd) HTML() []motd.Rendered {
+	out := make([]motd.Rendered, 0, len(m))
+	for _, l := range m {
+		out = append(out, motd.Rendered{Severity: motd.SeverityWarning, Label: "WARNING", HTML: template.HTML(l)})
+	}
+	return out
+}
+func (testMotd) Changed() <-chan struct{} { return nil }
 
 // fakeTarget stands in for a container. Every failure mode this package has to
 // handle — no TTY, no stdin, a stream that ends — is a field here rather than a
@@ -686,61 +693,48 @@ func TestColourSurvivesTheFrame(t *testing.T) {
 	stdoutUntil(t, c, "\x1b[31mred")
 }
 
-// TestAnEmbeddedSocketDrawsNoBar pins the path a framed page dials: a viewer
-// on /attach/embedded gets its frame without the provider's bar, because the
-// multiview panel around it already shows that bar once. A viewer on /attach,
-// on a session with the same message, is the control — it is what shows the
-// message is there to be drawn, and that WARNING arrives whole on the wire.
-func TestAnEmbeddedSocketDrawsNoBar(t *testing.T) {
+// TestAnEmbeddedSocketGetsNoMotd pins the path a framed page dials: a tab on
+// /attach/embedded is told it is embedded and given none of the provider's
+// messages, because the multiview panel around it shows them once. A tab on
+// /attach, on a session with the same message, is the control.
+func TestAnEmbeddedSocketGetsNoMotd(t *testing.T) {
 	serve := func(t *testing.T) *Server {
-		s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, testMotd{"WARNING public"}, nil, newAsk(), slog.New(slog.DiscardHandler))
+		s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, testMotd{"public"}, nil, newAsk(), slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("Serve: %v", err)
 		}
 		t.Cleanup(func() { _ = s.Close() })
 		return s
 	}
-
-	t.Run("a viewer in its own right draws the bar", func(t *testing.T) {
-		c := dialPath(t, serve(t), "/attach")
+	firstChrome := func(t *testing.T, c *websocket.Conn) chrome {
+		t.Helper()
 		readFrame(t, c) // the established frame
-		stdoutUntil(t, c, "WARNING public")
-	})
-
-	t.Run("an embedded viewer draws none", func(t *testing.T) {
-		c := dialPath(t, serve(t), "/attach/embedded")
-		readFrame(t, c) // the established frame
-
-		// Everything the socket carries until the border has arrived and the
-		// socket has then gone quiet. Kept from the first byte rather than
-		// from the border on: the bar is drawn on the rows above the border,
-		// so it would arrive ahead of it.
-		//
-		// A read that times out ends the socket for reading, so the wait is
-		// one bounded read for the border and then a short one for quiet.
 		var seen strings.Builder
-		border := time.Now().Add(10 * time.Second)
-		for {
-			wait := border
-			if strings.Contains(seen.String(), "╭") {
-				wait = time.Now().Add(300 * time.Millisecond)
-			}
-			if err := c.SetReadDeadline(wait); err != nil {
-				t.Fatalf("set a read deadline: %v", err)
+		for !strings.Contains(seen.String(), "\x1b\\") {
+			if err := c.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				t.Fatal(err)
 			}
 			kind, data, err := c.ReadMessage()
 			if err != nil {
-				if !strings.Contains(seen.String(), "╭") {
-					t.Fatalf("never saw the border; got %q (%v)", seen.String(), err)
-				}
-				break
+				t.Fatalf("no chrome; got %q (%v)", seen.String(), err)
 			}
 			if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
 				seen.Write(data[1:])
 			}
 		}
-		if strings.Contains(seen.String(), "WARNING") {
-			t.Errorf("an embedded viewer was sent the bar: %q", seen.String())
+		return chromeOf(t, seen.String())
+	}
+
+	t.Run("a tab in its own right is given the message", func(t *testing.T) {
+		c := firstChrome(t, dialPath(t, serve(t), "/attach"))
+		if c.Embedded || len(c.Motd) != 1 || c.Motd[0].HTML != "public" {
+			t.Errorf("chrome = %+v; want not embedded, the one message", c)
+		}
+	})
+	t.Run("an embedded tab is given none", func(t *testing.T) {
+		c := firstChrome(t, dialPath(t, serve(t), "/attach/embedded"))
+		if !c.Embedded || len(c.Motd) != 0 {
+			t.Errorf("chrome = %+v; want embedded, no messages", c)
 		}
 	})
 }
@@ -787,10 +781,8 @@ func TestResize(t *testing.T) {
 	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
 	writeFrame(t, c, 4, `{"Width":120,"Height":50}`)
 
-	// The target is told the pane, not the window: the frame keeps
-	// chromeHeight rows and chromeWidth columns for its border, and a
-	// container sized to the whole window would draw its last row and column
-	// underneath one.
+	// A tab proposes the pane it can show, and the target is told exactly
+	// that: the page draws its chrome around the terminal, not in it.
 	//
 	// The session's settled window reaches the target too, and at no fixed
 	// point: a frame has no terminal to measure, so it answers the renderer's
@@ -799,8 +791,8 @@ func TestResize(t *testing.T) {
 	// because which of them lands first is not a property worth pinning.
 	settled := remotecommand.TerminalSize{Width: defaultCols - chromeWidth, Height: defaultRows - chromeHeight}
 	want := []remotecommand.TerminalSize{
-		{Width: 100 - chromeWidth, Height: 40 - chromeHeight},
-		{Width: 120 - chromeWidth, Height: 50 - chromeHeight},
+		{Width: 100, Height: 40},
+		{Width: 120, Height: 50},
 	}
 	for _, w := range want {
 		for {
@@ -1419,7 +1411,7 @@ func TestEveryRunIsToldItsSize(t *testing.T) {
 	awaitEnded(t, s)
 
 	// A viewer, whose window settles the session on a size of its own.
-	settled := remotecommand.TerminalSize{Width: 100 - chromeWidth, Height: 40 - chromeHeight}
+	settled := remotecommand.TerminalSize{Width: 100, Height: 40}
 	c := dial(t, s)
 	target.awaitRun(t, 2)
 	readFrame(t, c) // the established frame, before the socket carries anything else

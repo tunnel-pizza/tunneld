@@ -14,8 +14,8 @@ import (
 //
 // The frame draws it because the terminal cannot: a terminal that is
 // reporting the mouse to an application has handed selection over with it,
-// and only the application knows what is under the pointer. The browser tab
-// never sees one of these; the page keeps the mouse and selects natively.
+// and only the application knows what is under the pointer. A browser tab
+// runs no frame: xterm selects there.
 type selection struct {
 	anchor, head uv.Position
 }

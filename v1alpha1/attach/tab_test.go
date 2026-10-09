@@ -1,0 +1,233 @@
+package attach
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
+)
+
+// tabOut is a tab's STDOUT: what the session wrote, and a way to hold the
+// writer up so the tee fills.
+type tabOut struct {
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	hold chan struct{} // nil: never held
+}
+
+func (o *tabOut) Write(p []byte) (int, error) {
+	if o.hold != nil {
+		<-o.hold
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+func (o *tabOut) Close() error { return nil }
+func (o *tabOut) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
+}
+
+// openTab attaches one tab viewer to h's session and returns its output, its
+// stdin writer, and a cancel that is the socket closing.
+func openTab(t *testing.T, h *harness, out *tabOut) (typed *io.PipeWriter, cancel func()) {
+	t.Helper()
+	in, typed := io.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	resize := make(chan remotecommand.TerminalSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = h.s.AttachContainer(ctx, "", "", "", in, out, nil, true, resize)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		_ = typed.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("the tab never ended")
+		}
+	})
+	return typed, cancel
+}
+
+// await waits for want in out.
+func awaitTab(t *testing.T, out *tabOut, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(out.String(), want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("waited for %q; the tab got %q", want, out.String())
+}
+
+// chromeOf decodes the last chrome message in s.
+func chromeOf(t *testing.T, s string) chrome {
+	t.Helper()
+	i := strings.LastIndex(s, "\x1b]7770;")
+	if i < 0 {
+		t.Fatalf("no chrome message in %q", s)
+	}
+	rest := s[i+len("\x1b]7770;"):]
+	end := strings.Index(rest, "\x1b\\")
+	raw, err := base64.StdEncoding.DecodeString(rest[:end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c chrome
+	if err := json.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// TestTabGetsChromeSnapshotThenStream pins the order a tab's socket carries:
+// chrome state, a snapshot of what is on screen already, then the bytes
+// the program writes from then on, untouched.
+func TestTabGetsChromeSnapshotThenStream(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := (&sink{s: h.s}).Write([]byte("before\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	out := &tabOut{}
+	openTab(t, h, out)
+	awaitTab(t, out, "before")
+	got := out.String()
+	c := strings.Index(got, "\x1b]7770;")
+	r := strings.Index(got, "\x1bc")
+	if c != 0 || r < c {
+		t.Fatalf("chrome at %d, reset at %d; want the chrome first then the snapshot: %q", c, r, got)
+	}
+	ch := chromeOf(t, got)
+	if ch.Origin == "" || ch.Viewers != 2 || ch.Cols == 0 || ch.Rows == 0 {
+		t.Errorf("chrome = %+v; want the origin, 2 viewers (the harness's frame and this tab), a size", ch)
+	}
+	if _, err := (&sink{s: h.s}).Write([]byte("\x1b]52;c;aGk=\x07after \x1b[31mred\x1b[m\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	awaitTab(t, out, "after \x1b[31mred\x1b[m")
+	if !strings.Contains(out.String()[r:], "\x1b]52;c;aGk=\x07") {
+		t.Error("an OSC the program wrote did not reach the tab as it was")
+	}
+}
+
+// TestTabJoinSplitsTheStreamExactly pins that a tab joining between two
+// chunks sees the first in its snapshot and the second in its stream, and
+// neither twice.
+func TestTabJoinSplitsTheStreamExactly(t *testing.T) {
+	h := newFrameHarness(t)
+	w := &sink{s: h.s}
+	_, _ = w.Write([]byte("one\r\n"))
+	out := &tabOut{}
+	openTab(t, h, out)
+	awaitTab(t, out, "one")
+	_, _ = w.Write([]byte("two\r\n"))
+	awaitTab(t, out, "two")
+	got := out.String()
+	if strings.Count(got, "one") != 1 || strings.Count(got, "two") != 1 {
+		t.Errorf("one ×%d, two ×%d in %q; want each once", strings.Count(got, "one"), strings.Count(got, "two"), got)
+	}
+	if strings.Index(got, "one") > strings.Index(got, "two") {
+		t.Error("two came before one")
+	}
+}
+
+// TestTabFallingBehindIsResnapshotted pins the tee's limit: a tab that has not
+// read a mebibyte is not fed stale bytes, and does not miss any either — it
+// gets a fresh snapshot and everything after it.
+func TestTabFallingBehindIsResnapshotted(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{hold: make(chan struct{})}
+	openTab(t, h, out)
+	time.Sleep(50 * time.Millisecond) // the first writes are parked on hold
+	w := &sink{s: h.s}
+	chunk := []byte(strings.Repeat("x", 64<<10))
+	for range 20 { // 1.25 MiB, past the limit
+		_, _ = w.Write(chunk)
+	}
+	_, _ = w.Write([]byte("LAST\r\n"))
+	close(out.hold)
+	awaitTab(t, out, "LAST")
+	got := out.String()
+	if strings.Count(got, "\x1bc") < 2 {
+		t.Errorf("a tab past the limit should have been snapshotted again; resets: %d", strings.Count(got, "\x1bc"))
+	}
+	if strings.LastIndex(got, "\x1bc") > strings.LastIndex(got, "LAST") {
+		t.Error("the last chunk came before the fresh snapshot")
+	}
+}
+
+// TestTabTypesStraightToTheProgram pins a tab's STDIN reaching the program
+// as it was typed: xterm encoded it, and nothing here decodes it again.
+func TestTabTypesStraightToTheProgram(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{}
+	typed, _ := openTab(t, h, out)
+	awaitTab(t, out, "\x1bc")
+	_, _ = typed.Write([]byte("ls\r\x1b[A"))
+	select {
+	case got := <-h.typed:
+		if got != "ls\r\x1b[A" {
+			t.Errorf("the program read %q, want the bytes as typed", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing reached the program")
+	}
+}
+
+// TestTabEndsWhenTheRunDoes pins a tab's socket ending with the run, so the
+// page can say so, and staying through a restart.
+func TestTabEndsWhenTheRunDoes(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{}
+	in, _ := io.Pipe()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	resize := make(chan remotecommand.TerminalSize)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = h.s.AttachContainer(ctx, "", "", "", in, out, nil, true, resize)
+	}()
+	awaitTab(t, out, "\x1bc")
+	close(h.s.done)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tab outlived the run")
+	}
+}
+
+// TestTabChromeFollowsTheSession pins the chrome being sent again when
+// something it says changes: the title, the address, a viewer leaving.
+func TestTabChromeFollowsTheSession(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{}
+	openTab(t, h, out)
+	awaitTab(t, out, "\x1bc")
+	if _, err := h.s.scan.Write([]byte("\x1b]2;named\x07")); err != nil {
+		t.Fatal(err)
+	}
+	awaitTab(t, out, base64.StdEncoding.EncodeToString([]byte(`"title":"named"`))[:12])
+	h.s.announce("https://x.tunneled.test/")
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && chromeOf(t, out.String()).Address == "" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c := chromeOf(t, out.String()); c.Address != "https://x.tunneled.test/" || c.Title != "named" {
+		t.Errorf("chrome = %+v; want the address and the title", c)
+	}
+}

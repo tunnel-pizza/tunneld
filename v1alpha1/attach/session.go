@@ -12,7 +12,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
@@ -113,6 +112,12 @@ type session struct {
 	// race the emulator cannot prevent on its own. Never taken with mu held
 	// for longer than the call; a write can block on the pty's replies.
 	screen sync.RWMutex
+	// teeMu holds the stream still while a tab joins: sink.Write takes it
+	// around a chunk and its hand-off to the tabs, so a snapshot taken under
+	// it sits exactly between two chunks.
+	teeMu sync.Mutex
+	// notice is the page's line about what the target cannot do; see Serve.
+	notice string
 
 	// scan pulls the sequences a program uses to talk about itself out of its
 	// output before the emulator sees them. Built by watch, reset by revive.
@@ -175,6 +180,11 @@ type viewer struct {
 	// terminal. Buffered, and a send that finds it full drops: a viewer that
 	// has stopped reading holds nobody else up, the rule wake already follows.
 	said chan []byte
+	// tab is the program's stream queued for a browser tab, nil for a
+	// console viewer, whose frame draws from the emulator instead. embedded
+	// is the tab being a multiview tile.
+	tab      *tee
+	embedded bool
 }
 
 // embeddedKey marks an attach request's context as coming from a page framed
@@ -504,10 +514,14 @@ func (w *sink) Close() error { return nil }
 func (w *sink) Write(p []byte) (int, error) {
 	s := w.s
 	// Through the scanner, which writes the screen bytes to the emulator and
-	// hands every OSC and private mode to said. A frame woken before the
-	// emulator had the bytes would render the screen as it was, so the wake is
-	// after.
+	// hands every OSC and private mode to said, and to every tab as it is;
+	// under teeMu so a tab joining gets a snapshot on a chunk boundary. A
+	// frame woken before the emulator had the bytes would render the screen
+	// as it was, so the wake is after.
+	s.teeMu.Lock()
 	_, _ = s.scan.Write(p)
+	s.tees(p)
+	s.teeMu.Unlock()
 	s.wakeAll()
 	return len(p), nil
 }
@@ -613,16 +627,13 @@ func (s *session) forward(raw []byte) {
 	}
 }
 
-// AttachContainer joins a viewer to the shared session, which is what
+// AttachContainer joins a browser tab to the shared session, which is what
 // ServeAttach calls once per websocket.
 //
-// It does not reach the target at all. The viewer gets a frame of its own,
-// rendering the shared screen, and its window size is applied whenever it
-// arrives rather than waited for: a client that never sends one still gets a
-// working terminal at whatever size the session already settled on, and the
-// page's own size lands a moment later and redraws. Blocking on it here would
-// hang any client that does not send one, which the streaming protocol does
-// not require.
+// A tab is served the program's own stream: the chrome the page draws, a
+// snapshot of the terminal as it stands, then every byte the program writes
+// from there on, with its keystrokes written to the program as xterm
+// encoded them. The frame is the console's; see viewLocally.
 //
 // The resize channel closing is how the socket says it is gone. ServeAttach
 // opens that stream unconditionally and closes it when the connection ends,
@@ -638,43 +649,9 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	// page afterwards is the only one left to ask.
 	s.revive()
 
-	width, height := s.window()
 	embedded, _ := ctx.Value(embeddedKey{}).(bool)
-
-	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64)}
-	v.prog = tea.NewProgram(
-		frame{sess: s, v: v, width: width, height: height, embedded: embedded},
-		tea.WithContext(ctx),
-		tea.WithInput(in),
-		tea.WithOutput(out),
-		// Stated outright, because there is nothing here to detect it from.
-		// The output is a websocket rather than a terminal, so detection
-		// answers NoTTY, and NoTTY strips every escape on the way out — the
-		// container's colours, its bold, and the frame's own dim status line
-		// with them, leaving the whole screen monochrome. The environment
-		// cannot rescue it either: COLORTERM only upgrades a profile that is
-		// not already NoTTY.
-		//
-		// TrueColor because the terminal at the other end is xterm.js, and
-		// because it is the profile that passes what the app emitted through
-		// unchanged instead of quantising it on the way past.
-		tea.WithColorProfile(colorprofile.TrueColor),
-		// TERM still describes that terminal, for everything about it that is
-		// not colour.
-		tea.WithEnvironment([]string{"TERM=xterm-256color", "COLORTERM=truecolor"}),
-	)
-
-	s.join(v)
-	defer s.part(v)
-
-	go s.follow(ctx, cancel, v, resize)
-	go s.redraw(ctx, v)
-
-	final, err := v.prog.Run()
-	if err != nil && ctx.Err() == nil {
-		s.log.Debug("frame ended", "container", s.Name(), "error", err)
-	}
-	s.leave(final)
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64), tab: newTee(), embedded: embedded}
+	s.attachTab(ctx, cancel, v, in, out, resize)
 	return nil
 }
 
@@ -794,6 +771,7 @@ func (s *session) join(v *viewer) {
 	// watching, and that is now one more. Nothing else would tell them until
 	// the container next said something, which on a quiet shell is never.
 	s.wakeAll()
+	s.chromeChanged()
 }
 
 // part removes a viewer and renegotiates, since the smallest window may have
@@ -808,6 +786,7 @@ func (s *session) part(v *viewer) {
 	if present {
 		s.apply(context.Background(), negotiated)
 		s.wakeAll() // one fewer viewer, and every status line says so
+		s.chromeChanged()
 	}
 }
 
@@ -836,15 +815,22 @@ func (s *session) resizeViewer(v *viewer, width, height int) {
 // The caller holds the lock, and applies the result after releasing it.
 func (s *session) negotiate() remotecommand.TerminalSize {
 	var w, h uint16
+	banner := uint16(s.bannerRows())
 	for v := range s.viewers {
 		if v.size.Width == 0 || v.size.Height == 0 {
 			continue
 		}
-		if w == 0 || v.size.Width < w {
-			w = v.size.Width
+		// A tab says how big a pane it can show; a console says its window,
+		// which the frame's border and the banner take rows and columns of.
+		size := v.size
+		if v.tab != nil {
+			size = remotecommand.TerminalSize{Width: v.size.Width + chromeWidth, Height: v.size.Height + chromeHeight + banner}
 		}
-		if h == 0 || v.size.Height < h {
-			h = v.size.Height
+		if w == 0 || size.Width < w {
+			w = size.Width
+		}
+		if h == 0 || size.Height < h {
+			h = size.Height
 		}
 	}
 	if w == 0 || h == 0 {
@@ -891,9 +877,9 @@ func paneOf(window remotecommand.TerminalSize, banner int) remotecommand.Termina
 // the same for every viewer, which lets the pane's size stay one negotiation;
 // when the messages change mid-run, motdChanged negotiates again.
 //
-// The count is the session's, not any one frame's. A viewer embedded in the
-// panel draws no bar, and simply has this many spare rows around its box:
-// the screen stays one size for everybody rather than one per kind of viewer.
+// The count is the session's, not any one frame's: a tab's page draws the
+// messages outside its terminal, and a tile draws none, so a tab's proposed
+// pane is grown by them before the negotiation takes the smallest.
 func (s *session) bannerRows() int {
 	if s.motd == nil {
 		return 0
@@ -927,6 +913,7 @@ func (s *session) motdChanged() {
 	s.mu.Unlock()
 	s.apply(context.Background(), pane)
 	s.wakeAll()
+	s.chromeChanged()
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:
@@ -1013,6 +1000,7 @@ func (s *session) setName(cmd int, name string) {
 	if cmd == 0 || cmd == 1 {
 		s.setSubtitle(name)
 	}
+	s.chromeChanged()
 }
 
 // clipboardQuery reports whether an OSC 52 payload is a read request rather
@@ -1143,6 +1131,7 @@ func (s *session) announce(public string) {
 	s.public = public
 	s.mu.Unlock()
 	s.wakeAll()
+	s.chromeChanged()
 }
 
 // announced is the public address, or "" before the tunnel has said.
