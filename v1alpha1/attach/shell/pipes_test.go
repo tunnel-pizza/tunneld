@@ -56,14 +56,22 @@ func TestCooked(t *testing.T) {
 			var echo bytes.Buffer
 			stdin := &stdinFake{}
 			interrupted := 0
-			c := &cooked{echo: &echo, stdin: stdin, interrupt: func() { interrupted++ }}
+			c := &cooked{echo: &echo, stdin: stdin, signal: func(k signalKey) {
+				if k == sigInterrupt {
+					interrupted++
+				}
+			}}
 			// A byte at a time, as keys arrive, and all at once, as a paste
 			// does: the discipline has to read the same either way.
 			for _, whole := range []bool{false, true} {
 				echo.Reset()
 				stdin.Reset()
 				stdin.closed, interrupted = false, 0
-				*c = cooked{echo: &echo, stdin: stdin, interrupt: func() { interrupted++ }}
+				*c = cooked{echo: &echo, stdin: stdin, signal: func(k signalKey) {
+					if k == sigInterrupt {
+						interrupted++
+					}
+				}}
 				if whole {
 					_, _ = c.Write([]byte(tc.keys))
 				} else {
@@ -85,6 +93,81 @@ func TestCooked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCookedFollowsTheSettings pins the discipline when a program has set its
+// terminal: raw mode passes bytes through as they come, escape sequences
+// included; echo follows ECHO; the keys come from c_cc; ISIG off makes ^C a
+// byte.
+func TestCookedFollowsTheSettings(t *testing.T) {
+	raw := defaultMode
+	raw.lflag &^= lICANON | lECHO
+	rawNoSig := raw
+	rawNoSig.lflag &^= lISIG
+	quiet := defaultMode
+	quiet.lflag &^= lECHO
+	hashErase := defaultMode
+	hashErase.cc[vERASE] = '#'
+
+	for _, tc := range []struct {
+		name    string
+		mode    settings
+		keys    string
+		sent    string
+		echo    string
+		signals []signalKey
+	}{
+		{"raw passes keys as they come", raw, "ihi\x1b:wq\r", "ihi\x1b:wq\n", "", nil},
+		{"raw keeps arrows whole", raw, "\x1b[A", "\x1b[A", "", nil},
+		{"raw still signals", raw, "a\x03b", "ab", "", []signalKey{sigInterrupt}},
+		{"raw without ISIG sends ^C", rawNoSig, "\x03", "\x03", "", nil},
+		{"raw without ICRNL keeps CR", func() settings { s := raw; s.iflag &^= iICRNL; return s }(), "\r", "\r", "", nil},
+		{"ECHO off echoes nothing", quiet, "pw\r", "pw\n", "", nil},
+		{"the erase key comes from c_cc", hashErase, "lx#s\r", "ls\n", "lx\b \bs\r\n", nil},
+		{"^W erases a word", defaultMode, "git log\x17st\r", "git st\n", "git log\b \b\b \b\b \bst\r\n", nil},
+		{"^Z suspends", defaultMode, "\x1a", "", "^Z\r\n", []signalKey{sigSuspend}},
+		{"^\\ quits", defaultMode, "\x1c", "", "^\\\r\n", []signalKey{sigQuit}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var echo bytes.Buffer
+			stdin := &stdinFake{}
+			var got []signalKey
+			c := &cooked{echo: &echo, stdin: stdin, mode: func() settings { return tc.mode },
+				signal: func(k signalKey) { got = append(got, k) }}
+			_, _ = c.Write([]byte(tc.keys))
+			if stdin.String() != tc.sent {
+				t.Errorf("sent %q, want %q", stdin.String(), tc.sent)
+			}
+			if echo.String() != tc.echo {
+				t.Errorf("echoed %q, want %q", echo.String(), tc.echo)
+			}
+			if !slices.Equal(got, tc.signals) {
+				t.Errorf("signals %v, want %v", got, tc.signals)
+			}
+		})
+	}
+}
+
+// TestOproc pins output processing: CR before LF while OPOST and ONLCR are
+// both set, and nothing at all once a program clears OPOST, as vi does.
+func TestOproc(t *testing.T) {
+	plain := defaultMode
+	plain.oflag &^= oOPOST
+	for _, tc := range []struct {
+		name string
+		mode func() settings
+		in   string
+		want string
+	}{
+		{"pipes add the CR", nil, "a\nb\n", "a\r\nb\r\n"},
+		{"OPOST off adds nothing", func() settings { return plain }, "a\nb\n", "a\nb\n"},
+	} {
+		var got bytes.Buffer
+		n, err := oproc{w: &got, mode: tc.mode}.Write([]byte(tc.in))
+		if err != nil || n != len(tc.in) || got.String() != tc.want {
+			t.Errorf("%s: wrote %q (%d, %v), want %q (%d)", tc.name, got.String(), n, err, tc.want, len(tc.in))
+		}
 	}
 }
 
@@ -145,7 +228,7 @@ func TestOnlcr(t *testing.T) {
 		{"", ""},
 	} {
 		var got bytes.Buffer
-		n, err := onlcr{&got}.Write([]byte(tc.in))
+		n, err := oproc{w: &got}.Write([]byte(tc.in))
 		if err != nil || n != len(tc.in) {
 			t.Errorf("Write(%q) = %d, %v; want %d, nil", tc.in, n, err, len(tc.in))
 		}

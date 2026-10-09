@@ -62,14 +62,22 @@ func baseName(path string) string {
 	return strings.TrimSuffix(name, filepath.Ext(name))
 }
 
-// onlcr is what a terminal does to a program's output and a pipe does not:
-// every newline becomes a carriage return and a newline (the ONLCR output
-// setting). Without it a line feed only moves down, and the screen the frame
-// draws from starts each line where the last one ended.
-type onlcr struct{ w io.Writer }
+// oproc is a terminal's output processing: while OPOST and ONLCR are both set,
+// every newline becomes a carriage return and a newline. Without it a line
+// feed only moves down, and the screen the frame draws from starts each line
+// where the last one ended. A program that clears OPOST (vi) writes its own
+// CR LF, and must not get a second CR. mode nil is pipesMode.
+type oproc struct {
+	w    io.Writer
+	mode func() settings
+}
 
-func (o onlcr) Write(p []byte) (int, error) {
-	if bytes.IndexByte(p, '\n') < 0 {
+func (o oproc) Write(p []byte) (int, error) {
+	m := pipesMode
+	if o.mode != nil {
+		m = o.mode()
+	}
+	if m.oflag&oOPOST == 0 || m.oflag&oONLCR == 0 || bytes.IndexByte(p, '\n') < 0 {
 		return o.w.Write(p)
 	}
 	if _, err := o.w.Write(bytes.ReplaceAll(p, []byte("\n"), []byte("\r\n"))); err != nil {
@@ -95,7 +103,7 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	// program counts on. out and errw are one writer when the caller passes
 	// one, and stay one — exec gives both streams a single pipe when they
 	// compare equal, so what the program interleaves stays interleaved.
-	cmd.Stdout, cmd.Stderr = onlcr{out}, onlcr{errw}
+	cmd.Stdout, cmd.Stderr = oproc{w: out}, oproc{w: errw}
 	cmd.WaitDelay = pipeWait
 	ownGroup(cmd)
 	stdin, err := cmd.StdinPipe()
@@ -150,7 +158,10 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	if in == nil {
 		_ = stdin.Close()
 	} else {
-		keys := &cooked{echo: out, stdin: stdin, interrupt: func() {
+		keys := &cooked{echo: out, stdin: stdin, signal: func(k signalKey) {
+			if k != sigInterrupt {
+				return
+			}
 			if err := interrupt(cmd.Process); err != nil {
 				a.log.Debug("could not interrupt the program", "program", a.ref, "error", err)
 			}
@@ -164,18 +175,22 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	return nil
 }
 
-// cooked is the line discipline a terminal would have given the program:
-// keystrokes echoed back and gathered into lines, a line sent when Enter ends
-// it, and the few keys that edit or signal handled here rather than passed on.
-// What a person types at the page arrives as a terminal's keys — Enter is \r,
-// Backspace is DEL — and a program reading a pipe wants lines.
+// cooked is the line discipline a terminal would have given the program,
+// following the settings it last set (mode; nil is pipesMode). In canonical
+// mode keystrokes are echoed and gathered into lines, a line sent when Enter
+// ends it, and the keys that edit or signal handled here. In raw mode (vi,
+// readline) each byte goes to the program as it arrives, escape sequences
+// included. What a person types at the page arrives as a terminal's keys —
+// Enter is \r, Backspace is DEL.
 //
-// Arrow keys and other escape sequences are dropped: there is no line editing
-// to move through, and passed on they would be typed into the line as noise.
+// In canonical mode, arrow keys and other escape sequences are dropped: there
+// is no line editing to move through, and passed on they would be typed into
+// the line as noise.
 type cooked struct {
-	echo      io.Writer
-	stdin     io.WriteCloser
-	interrupt func()
+	echo   io.Writer
+	stdin  io.WriteCloser
+	mode   func() settings
+	signal func(signalKey)
 
 	line []byte
 	// esc is how far into an escape sequence the input is: 0 outside one, 1
@@ -187,15 +202,59 @@ type cooked struct {
 }
 
 func (c *cooked) Write(p []byte) (int, error) {
+	m := pipesMode
+	if c.mode != nil {
+		m = c.mode()
+	}
+	if m.lflag&lICANON == 0 {
+		return c.raw(p, m)
+	}
 	for _, b := range p {
-		if err := c.key(b); err != nil {
+		if err := c.key(b, m); err != nil {
 			return 0, err
 		}
 	}
 	return len(p), nil
 }
 
-func (c *cooked) key(b byte) error {
+// raw hands p to the program as it is, but for the keys ISIG makes signals
+// and the CR that ICRNL makes a newline.
+func (c *cooked) raw(p []byte, m settings) (int, error) {
+	c.line, c.esc, c.cr = c.line[:0], 0, false
+	out := make([]byte, 0, len(p))
+	flush := func() error {
+		if len(out) == 0 {
+			return nil
+		}
+		if m.lflag&lECHO != 0 {
+			c.say(string(out))
+		}
+		_, err := c.stdin.Write(out)
+		out = out[:0]
+		return err
+	}
+	for _, b := range p {
+		if m.lflag&lISIG != 0 {
+			if k, ok := m.signalFor(b); ok {
+				if err := flush(); err != nil {
+					return 0, err
+				}
+				c.signal(k)
+				continue
+			}
+		}
+		if b == '\r' && m.iflag&iICRNL != 0 {
+			b = '\n'
+		}
+		out = append(out, b)
+	}
+	if err := flush(); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (c *cooked) key(b byte, m settings) error {
 	switch c.esc {
 	case 1:
 		c.esc = 0
@@ -211,25 +270,31 @@ func (c *cooked) key(b byte) error {
 	}
 	cr := c.cr
 	c.cr = false
-	switch b {
-	case 0x1b:
+	if m.lflag&lISIG != 0 {
+		if k, ok := m.signalFor(b); ok {
+			c.echoed(m, caret(b)+"\r\n")
+			c.line = c.line[:0]
+			c.signal(k)
+			return nil
+		}
+	}
+	switch {
+	case b == 0x1b:
 		c.esc = 1
-	case '\r', '\n':
+	case b == '\r' || b == '\n':
 		if b == '\n' && cr {
 			return nil
 		}
 		c.cr = b == '\r'
-		c.say("\r\n")
+		c.echoed(m, "\r\n")
 		return c.send(true)
-	case 0x7f, 0x08: // Backspace, Ctrl-H
-		c.erase(1)
-	case 0x15: // Ctrl-U
-		c.erase(utf8.RuneCount(c.line))
-	case 0x03: // Ctrl-C
-		c.say("^C\r\n")
-		c.line = c.line[:0]
-		c.interrupt()
-	case 0x04: // Ctrl-D: end of input on an empty line, else the line as it is
+	case b == 0x08 || (m.cc[vERASE] != 0 && b == m.cc[vERASE]):
+		c.erase(m, 1)
+	case m.cc[vKILL] != 0 && b == m.cc[vKILL]:
+		c.erase(m, utf8.RuneCount(c.line))
+	case m.cc[vWERASE] != 0 && b == m.cc[vWERASE]:
+		c.erase(m, wordRunes(c.line))
+	case m.cc[vEOF] != 0 && b == m.cc[vEOF]:
 		if len(c.line) == 0 {
 			return c.stdin.Close()
 		}
@@ -239,7 +304,7 @@ func (c *cooked) key(b byte) error {
 			return nil
 		}
 		c.line = append(c.line, b)
-		c.say(string([]byte{b}))
+		c.echoed(m, string([]byte{b}))
 	}
 	return nil
 }
@@ -257,12 +322,41 @@ func (c *cooked) send(newline bool) error {
 }
 
 // erase takes n characters off the end of the line, and off the screen.
-func (c *cooked) erase(n int) {
+func (c *cooked) erase(m settings, n int) {
 	for ; n > 0 && len(c.line) > 0; n-- {
 		_, size := utf8.DecodeLastRune(c.line)
 		c.line = c.line[:len(c.line)-size]
-		c.say("\b \b")
+		c.echoed(m, "\b \b")
+	}
+}
+
+// echoed shows s while ECHO is set.
+func (c *cooked) echoed(m settings, s string) {
+	if m.lflag&lECHO != 0 {
+		c.say(s)
 	}
 }
 
 func (c *cooked) say(s string) { _, _ = io.WriteString(c.echo, s) }
+
+// wordRunes is how many runes ^W takes off line: trailing spaces, then the
+// word before them.
+func wordRunes(line []byte) int {
+	s := []rune(string(line))
+	n := 0
+	for n < len(s) && s[len(s)-1-n] == ' ' {
+		n++
+	}
+	for n < len(s) && s[len(s)-1-n] != ' ' {
+		n++
+	}
+	return n
+}
+
+// caret is how a terminal echoes a control key: ^C, and ^? for DEL.
+func caret(b byte) string {
+	if b == 0x7f {
+		return "^?"
+	}
+	return "^" + string(rune(b+0x40))
+}
