@@ -21,7 +21,7 @@ Deep-link by filename; line numbers will drift.
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and the agent server `WithMcp` puts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
-| `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
+| `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation; `tab.go` serves a browser tab the program's stream with `snapshot.go`'s catch-up, `frame.go` is the console's | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, `Resolve`, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
@@ -511,14 +511,18 @@ Two things there will bite if you change them without knowing why:
   produced it. Replaying bytes into a fresh terminal is what used to leave the
   app and the browser disagreeing about where the cursor was, so the app's next
   redraw landed at the wrong origin and drew over the restored screen.
-- **One frame per viewer, one emulator between them.**
-  [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea model
-  rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
-  feeds. Per viewer, because command mode is per viewer — a shared model would
-  put everyone into it when one person opened it — and because a frame
-  that is new renders a whole screen, which is what a late joiner needs anyway.
-  The split is worth keeping: `session.go` is locks, pipes and goroutines,
-  `frame.go` is a value type with none of them.
+- **One emulator between the viewers; a frame on the console, the stream in
+  a tab.** [`attach/frame.go`](./v1alpha1/attach/frame.go) is a Bubble Tea
+  model rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
+  feeds, one per console viewer, because command mode is per viewer. A browser
+  tab runs no frame: [`tab.go`](./v1alpha1/attach/tab.go) sends it the chrome
+  as OSC 7770 JSON, then [`snapshot.go`](./v1alpha1/attach/snapshot.go)'s
+  rendering of the emulator as bytes, then the program's own stream through a
+  bounded per-tab tee that re-snapshots rather than drop bytes, so xterm does
+  the terminal's work. Anything that changes the emulator other than the
+  stream (a restart's reset) has to reach the tabs too, or they and the
+  snapshot disagree. The split is worth keeping: `session.go` is locks, pipes
+  and goroutines, `frame.go` is a value type with none of them.
 - **A frame has no terminal to measure.** Its output is a websocket, so the
   renderer's first size report is zero, and a renderer that believes it has no
   rows draws none. The frame waits `sizeGrace` before answering, because the

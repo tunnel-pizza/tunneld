@@ -520,7 +520,7 @@ Every key reaches the program or the container except one:
 it is the cheaper of the two on offer. The other candidate, `Ctrl-D`, ends a
 shared session for everybody watching.
 
-The wheel is decided per notch. A program that asked for the mouse gets it as a
+On the console the wheel is decided per notch. A program that asked for the mouse gets it as a
 mouse event; a full-screen program gets it as arrow keys, the way a terminal
 with alternate scroll would send it; otherwise it is the frame's, and scrolls
 back through what the terminal kept — up to ten thousand lines. Scrolling is
@@ -529,34 +529,51 @@ bottom border says how far back you are, output arriving while you read stays
 below you rather than pulling you down to it, and the first key you press puts
 you back on the live screen and still reaches the program.
 
-The frame asks whatever it is drawn on for the mouse — your terminal on the
-console, xterm in the tab — which is what makes the wheel reach it, and what
-stops either from doing its own drag-select. So the frame does that too, the
-same way in both places: drag across the pane and the stretch is highlighted
-and copied to your clipboard on release, with `copied` in the bottom border to
-say so. In the tab the copy goes through the browser's clipboard API; on the
-console it goes through OSC 52, which iTerm2 honours once "Applications in
-terminal may access clipboard" is on, VS Code's terminal honours as is, and
-Terminal.app does not — there the highlight shows and nothing is copied.
-Inside tmux the copy goes twice, plain and in tmux's passthrough: tmux
-forwards the first with `set-clipboard on` and the second with
-`allow-passthrough on`, and its defaults are neither, so the border says `sent
-to tmux` rather than claiming it landed. Inside screen it goes in screen's own
-wrapping, in pieces screen keeps whole. A copy longer than a terminal will take
-(74,994 bytes encoded) is not sent, and the border says `too large to copy`.
+**In a browser tab** the terminal is xterm on the program's own stream, so
+selecting and copying are the browser's: drag, double-click a word,
+triple-click a line, Shift-click to extend, `Cmd`/`Ctrl+C` (or
+`Ctrl+Shift+C`) with a selection, or the right-click menu, to copy; with no
+selection `Ctrl+C` is the program's. The wheel scrolls 10,000 lines of
+history, and a tab opened later gets the screen as it stands, the history
+and a full-screen program's screen included. Around the terminal the page
+draws the address (a link), the messages of the day, and the bottom bar;
+`Ctrl+K` opens the commands: `c` copies the whole buffer, `s` saves it as a
+file, `/` searches it (a regexp, with the matches highlighted and counted),
+`l` shows tunneld's logs, `q` the address as a code, `r` restarts the
+program (where it can be), `d` detaches this tab, `x` ends the run for
+everyone. Nothing typed while the commands are open reaches the program.
+`Ctrl-C` and `Ctrl-D` are held until pressed twice on a program that could
+not be brought back.
 
-The frame's selection is the pane's rows on screen, by drag. For everything
-your terminal's own selection does — word and line clicks, its copy key,
-copy-on-select, more than a screen — the console has **scrollback mode**
-(`Ctrl+K` then `[`). It releases the mouse, so your terminal selects natively,
-and typing reaches nobody. The arrows (which your terminal's wheel becomes),
+**On the console** the frame asks your terminal for the mouse, which is what
+makes the wheel reach it, and does its own selecting: drag, double-click a
+word, triple-click a row, Shift-click to extend; copied to your clipboard on
+release through OSC 52, with `copied` in the bottom border, which iTerm2
+honours once "Applications in terminal may access clipboard" is on, VS
+Code's terminal honours as is, and Terminal.app does not. Inside tmux the
+copy goes twice, plain and in tmux's passthrough: tmux forwards the first
+with `set-clipboard on` and the second with `allow-passthrough on`, and its
+defaults are neither, so the border says `sent to tmux` rather than claiming
+it landed. Inside screen it goes in screen's own wrapping. A copy longer
+than a terminal will take (74,994 bytes encoded) is not sent, and the border
+says `too large to copy`.
+
+For more than a screen the console has **scrollback mode** (`Ctrl+K` then
+`[`). It releases the mouse, so your terminal selects natively, and typing
+reaches nobody. The arrows (which your terminal's wheel becomes),
 `PgUp`/`PgDn`, `Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the
-history; `c` copies all of it and the live screen (or, past what a terminal
-will take, the end of it, and the border says `copied (end)`); `f` drops the
-border so a selection picks up none of it; `esc` or `q` is the live screen
-again, and a run that ends while you read waits for that. The tab selects
-natively already and has no need of it. On the console the commands' `esc`
-chip gives way to `[` and `m`; any key that is not a command still cancels.
+history. It follows new output until you scroll up; `s` toggles that and the
+border says `follow:on` or `off`, `G` turns it back on. `/` filters the view
+to the rows matching a pattern (a case-insensitive regexp; `!` first
+inverts it), with the matches reversed and the border saying `12 of 4,310
+lines`; `esc` clears it. `C` forgets everything written so far, for this
+viewer only. `c` copies all of it (or, past what a terminal will take, the
+end of it, and the border says `copied (end)`); `f` drops the border so a
+native selection picks up none of it; `esc` or `q` is the live screen
+again, and a run that ends while you read waits for that. The border lists
+as many of the mode's keys as fit, the way out among the first. On the
+console the commands' `esc` chip gives way to `[` and `m`; any key that is
+not a command still cancels.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers
