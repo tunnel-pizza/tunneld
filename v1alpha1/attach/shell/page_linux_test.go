@@ -95,7 +95,11 @@ func TestPageLockIsStolenFromTheDead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = p.Close() }()
-	binary.LittleEndian.PutUint32(p.mem[offLock:], 1)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(p.mem[offLock:], uint32(dead.Process.Pid))
 
 	done := make(chan struct{})
 	go func() { _ = p.settings(); close(done) }()
@@ -103,6 +107,37 @@ func TestPageLockIsStolenFromTheDead(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("settings() hung on a lock nobody will release")
+	}
+}
+
+// TestPageLockWaitsForTheLiving pins that a lock held by a live process is
+// waited for however long it is held, never taken over: a holder
+// descheduled mid-write must not have its settings read half-written.
+func TestPageLockWaitsForTheLiving(t *testing.T) {
+	p, err := newPage(filepath.Join(t.TempDir(), "tty"), 1, 2, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	holder := exec.Command("sleep", "30")
+	if err := holder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(p.mem[offLock:], uint32(holder.Process.Pid))
+
+	done := make(chan struct{})
+	go func() { _ = p.settings(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("settings() went ahead while a live process held the lock")
+	case <-time.After(500 * time.Millisecond):
+	}
+	_ = holder.Process.Kill()
+	_ = holder.Wait()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("settings() hung after the holder died")
 	}
 }
 
@@ -251,6 +286,12 @@ func TestShimThroughPython(t *testing.T) {
 		{"a child's O_NONBLOCK does not reach the next program",
 			`python3 -c "import os; os.set_blocking(0, False)"; python3 -c "import os; print('BLOCKING', os.get_blocking(0))"`,
 			"BLOCKING True"},
+		{"a descriptor closed while non-blocking does not pass that on to its number",
+			`python3 -c "import os; fd = os.open('/dev/tty', os.O_RDONLY | os.O_NONBLOCK); os.close(fd); os.dup2(0, fd); print('REUSED', os.get_blocking(fd))"`,
+			"REUSED True"},
+		{"a dup of a non-blocking descriptor is non-blocking too",
+			`python3 -c "import os; os.set_blocking(0, False); d = os.dup(0); print('DUP', os.get_blocking(d))"`,
+			"DUP False"},
 		{"a non-blocking read with nothing typed is EAGAIN, not a wait",
 			`python3 -c "import os; os.set_blocking(0, False); exec('try:\n os.read(0, 1)\nexcept BlockingIOError:\n print(\"EAGAIN\")')"`,
 			"EAGAIN"},

@@ -119,6 +119,7 @@ func TestCookedFollowsTheSettings(t *testing.T) {
 		signals []signalKey
 	}{
 		{"raw passes keys as they come", raw, "ihi\x1b:wq\r", "ihi\x1b:wq\n", "", nil},
+		{"raw with ECHO echoes Enter as CR LF", func() settings { s := raw; s.lflag |= lECHO; return s }(), "a\r", "a\n", "a\r\n", nil},
 		{"raw keeps arrows whole", raw, "\x1b[A", "\x1b[A", "", nil},
 		{"raw still signals", raw, "a\x03b", "ab", "", []signalKey{sigInterrupt}},
 		{"raw without ISIG sends ^C", rawNoSig, "\x03", "\x03", "", nil},

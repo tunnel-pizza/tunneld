@@ -11,24 +11,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell/ttyshim"
 )
 
 // firstSizeWait is how long a run waits for the page's first size before
 // starting at 80×24, so the program's first TIOCGWINSZ is already right.
 const firstSizeWait = 250 * time.Millisecond
-
-// loadWait is how long a run waits for the shim's proof of load when the
-// program has printed nothing yet.
-const loadWait = time.Second
 
 // shimDir is the directory the shim, its terminfo and the pages live in,
 // made on the first run: 0700, the shim named by its content, both written
@@ -61,12 +55,20 @@ func (a *TargetImpl) shimDir() (dir, so string, err error) {
 	return a.dir, filepath.Join(a.dir, shimName(obj)), nil
 }
 
+// shimTempBases is where shimTemp looks, in order.
+var shimTempBases = func() []string { return []string{os.TempDir(), "/tmp", "/dev/shm", "/var/tmp"} }
+
 // shimTemp makes the shim's directory where LD_PRELOAD can name it: its list
 // is split on colons and whitespace, so a temp directory holding either is
 // passed over for the next one that does not.
 func shimTemp() (string, error) {
 	last := errors.New("no temp directory LD_PRELOAD can name")
-	for _, base := range []string{os.TempDir(), "/tmp", "/dev/shm", "/var/tmp"} {
+	for _, base := range shimTempBases() {
+		// Absolute: a relative LD_PRELOAD is lost once a shell changes
+		// directory.
+		if abs, err := filepath.Abs(base); err == nil {
+			base = abs
+		}
 		if strings.ContainsAny(base, ": \t\n") {
 			continue
 		}
@@ -99,8 +101,8 @@ func writeChecked(path string, data []byte, perm os.FileMode) error {
 // socketpair with the shim preloaded, tunneld on the other, the line
 // discipline following the settings the program writes to the page, and
 // resize and the signal keys reaching the foreground group it names there.
-// A run whose shim cannot be set up is served over pipes; one whose shim
-// never loads carries on with pipes' discipline.
+// Open sets the shim up; should that have gone since, the target turns to
+// pipes. A run whose shim never loads carries on with pipes' discipline.
 func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.Writer, resize <-chan remotecommand.TerminalSize) error {
 	a.mu.Lock()
 	dir, so, err := a.shimDir()
@@ -108,7 +110,14 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 	pagePath := filepath.Join(dir, fmt.Sprintf("tty-%d", a.runs))
 	a.mu.Unlock()
 	if err != nil {
-		a.log.Warn("could not set up the terminal shim; serving this run over pipes", "program", a.ref, "error", err, "cost", pipesNotice)
+		a.mu.Lock()
+		closed := a.closed
+		a.shim, a.pipes = false, true
+		a.mu.Unlock()
+		if closed {
+			return nil
+		}
+		a.log.Warn("could not set up the terminal shim; serving this program over pipes from now on", "program", a.ref, "error", err, "cost", pipesNotice)
 		return a.attachPipes(ctx, in, out, errw, resize)
 	}
 
@@ -177,19 +186,19 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 		_ = a.stop()
 	}()
 
-	// The shim's proof of load, checked once: on the program's first output,
-	// or after loadWait. Without it the program sees a socket, not a
-	// terminal, and pipes' discipline is the one it can use.
-	var unshimmed atomic.Bool
+	// Until the shim has loaded the program sees a socket, not a terminal,
+	// and pipes' discipline is the one it can use; from then on, its own.
+	// However long loading takes (a cold start, a static wrapper that execs
+	// a dynamic program), nothing is given up on a clock: only a program
+	// that prints, or ends, without the shim turns the target to pipes.
 	mode := func() settings {
-		if unshimmed.Load() {
-			return pipesMode
+		if pg.loaded() {
+			return pg.settings()
 		}
-		return pg.settings()
+		return pipesMode
 	}
 	checkLoad := sync.OnceFunc(func() {
 		if !pg.loaded() {
-			unshimmed.Store(true)
 			a.log.Warn("the terminal shim did not load; serving this program over pipes from now on", "program", a.ref, "cost", pipesNotice)
 			// The runs to come start as pipes do: -i for a bare shell, and
 			// pipes' notice on the page.
@@ -198,9 +207,6 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 			a.mu.Unlock()
 		}
 	})
-	loadTimer := time.AfterFunc(loadWait, checkLoad)
-	defer loadTimer.Stop()
-
 	signal := func(sig syscall.Signal) {
 		if err := signalGroup(cmd.Process, pg.foreground(), sig); err != nil {
 			a.log.Debug("could not signal the program", "program", a.ref, "signal", sig, "error", err)
@@ -234,10 +240,12 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 		}
 	}()
 
+	settle := func() {}
 	if in != nil {
-		keys := &cooked{echo: out, stdin: halfCloser{ours}, mode: mode, signal: func(k signalKey) {
-			signal(map[signalKey]syscall.Signal{sigInterrupt: syscall.SIGINT, sigQuit: syscall.SIGQUIT, sigSuspend: syscall.SIGTSTP}[k])
+		keys := &cooked{echo: out, stdin: halfCloser{ours}, mode: mode, flushes: pg.flushes, signal: func(k signalKey) {
+			signal(keySignals[k])
 		}}
+		settle = keys.settle
 		go func() { _, _ = io.Copy(keys, in) }()
 	}
 
@@ -257,12 +265,49 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 	}()
 
 	first := firstWrite{w: oproc{w: out, mode: mode}, before: checkLoad}
-	err = attach.CopyOutput(&first, errw, ours, true)
+	err = copyShim(&first, ours, pg, settle)
 	a.mu.Lock()
 	_ = a.stop()
 	a.mu.Unlock()
 	<-waited
+	checkLoad()
 	return err
+}
+
+// keySignals is what each signal key sends.
+var keySignals = [...]syscall.Signal{sigInterrupt: syscall.SIGINT, sigQuit: syscall.SIGQUIT, sigSuspend: syscall.SIGTSTP}
+
+// ackTick is how often the output side wakes with nothing to read: to
+// acknowledge a drain the shim is waiting on, and to hand over a line typed
+// before the program went raw.
+const ackTick = 10 * time.Millisecond
+
+// copyShim copies the program's output to out until the socket ends, as
+// CopyOutput does, acknowledging each drain the shim asks for once every
+// byte read before it has been through out: the shim changes output
+// processing only then, so no byte is processed under settings written
+// after it.
+func copyShim(out io.Writer, src *os.File, pg *page, settle func()) error {
+	buf := make([]byte, 32<<10)
+	for {
+		g := pg.want()
+		_ = src.SetReadDeadline(time.Now().Add(ackTick))
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+		}
+		pg.ack(g)
+		settle()
+		switch {
+		case err == nil, errors.Is(err, os.ErrDeadlineExceeded):
+		case errors.Is(err, io.EOF), errors.Is(err, os.ErrClosed), errors.Is(err, syscall.EIO):
+			return nil
+		default:
+			return err
+		}
+	}
 }
 
 // firstWrite runs before once, ahead of the first bytes written through it.

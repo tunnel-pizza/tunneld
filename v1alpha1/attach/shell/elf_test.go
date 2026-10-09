@@ -42,6 +42,7 @@ func TestShimReason(t *testing.T) {
 		{"a script run by one", script("dyn", "/bin/sh"), ""},
 		{"a Go program", self, "a Go program"},
 		{"a script run by a Go program", script("go", self), "a Go program"},
+		{"a script run by a Go program through env", envScript(t, dir, self), "a Go program"},
 		{"not a program", text, "not an ELF program"},
 		{"a script whose interpreter is missing", script("gone", "/nonexistent/sh"), "not an ELF program"},
 	} {
@@ -56,4 +57,13 @@ func TestShimReason(t *testing.T) {
 			}
 		}
 	}
+}
+
+// envScript is a script whose #! names env, which runs prog.
+func envScript(t *testing.T, dir, prog string) string {
+	p := filepath.Join(dir, "via-env")
+	if err := os.WriteFile(p, []byte("#!/usr/bin/env "+prog+"\necho\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }

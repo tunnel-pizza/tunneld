@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"debug/elf"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -34,6 +36,19 @@ func elfReason(path string, follow bool) string {
 		fields := strings.Fields(strings.TrimPrefix(line, "#!"))
 		if len(fields) == 0 {
 			return "not an ELF program"
+		}
+		// #!/usr/bin/env prog runs prog, found on $PATH: that is the
+		// program to judge, past env's options and assignments.
+		if filepath.Base(fields[0]) == "env" {
+			for _, f := range fields[1:] {
+				if strings.HasPrefix(f, "-") || strings.Contains(f, "=") {
+					continue
+				}
+				if found, err := exec.LookPath(f); err == nil {
+					return elfReason(found, false)
+				}
+				return "not an ELF program"
+			}
 		}
 		return elfReason(fields[0], false)
 	}

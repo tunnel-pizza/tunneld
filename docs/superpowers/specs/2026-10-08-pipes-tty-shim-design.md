@@ -87,7 +87,7 @@ process carrying the shim. Its path reaches the shim as `TUNNELD_TTY`.
 struct tunneld_tty {            /* little-endian, naturally aligned */
     uint32_t magic;             /* 'T','T','Y','1' */
     uint32_t version;           /* 1 */
-    uint32_t lock;              /* 0 free, 1 held: CAS, sched_yield on contention */
+    uint32_t lock;              /* 0 free, else the holder's pid */
     uint32_t loaded;            /* set by any shim constructor: proof of load */
     uint64_t dev, ino;          /* the socket the shim treats as a terminal */
     /* the terminal's settings, in the shim's own layout, never a libc's: */
@@ -98,13 +98,26 @@ struct tunneld_tty {            /* little-endian, naturally aligned */
     int32_t  fg_pgrp;           /* tcsetpgrp's, seeded by tunneld */
     int32_t  sid;               /* the program's session */
     uint32_t gone;              /* set by tunneld when the run is over */
+    uint32_t want, done;        /* a drain the shim asks for; tunneld's ack */
+    uint32_t iflush;            /* input flushes asked for */
 };
 ```
 
 - **Who writes what:** the shim writes the settings and `fg_pgrp`; tunneld
   writes the size, `dev`/`ino`, `sid`, and the initial settings. Every read
   or write of more than one field holds `lock`, and holds it only to copy the
-  struct. Both sides copy under the lock and work from the copy.
+  struct. Both sides copy under the lock and work from the copy. The lock
+  word is its holder's pid: a live holder is waited for however long it
+  holds it, and only a dead one is taken over from.
+- **Draining:** output processing happens as tunneld reads, so before a
+  change to it the shim waits for tunneld to have read what was queued
+  (`TIOCOUTQ`), bumps `want`, and waits for `done` to reach it. tunneld
+  stores into `done` the `want` it saw before each read, after that read's
+  bytes are out, and wakes every 10 ms to do so with nothing to read.
+  `tcdrain` and `TCSBRK` drain the same way.
+- **Flushing:** `tcflush` (`TCIFLUSH`, `TCIOFLUSH`) and `TCSAFLUSH` discard
+  what is queued on the socket and bump `iflush`, and tunneld drops the
+  line it is still editing.
 - **Initial settings** are a fresh Linux pseudo-terminal's: `ICRNL IXON`,
   `OPOST ONLCR`, `CS8 CREAD`, `ISIG ICANON ECHO ECHOE ECHOK ECHOCTL ECHOKE
   IEXTEN`, and the usual `c_cc` (`^C ^\ ^? ^U ^D ^Z ^W ^R ^V`, `VMIN 1`).
@@ -285,10 +298,11 @@ The shim is compiled into tunneld, not loaded from the node wrapper:
   when a strong undefined symbol is not exported by musl 1.2.3 (alpine:3.17,
   the floor), or when a symbol needs a `GLIBC_` version above 2.17. It reads
   each architecture's `ld-musl` out of the alpine image without running it.
-- `ttyshim/negative.sh` proves the gate fails on deliberately broken builds:
-  a musl-only symbol, general-dynamic TLS (`-mtls-dialect=trad` on arm64),
-  a fortified `__*_chk`, `strerror_r`/`basename` (GNU and POSIX disagree),
-  and an empty symbol list.
+- `ttyshim/negative.sh` proves the gate fails on five deliberately broken
+  builds: a glibc-only symbol musl does not export
+  (`gnu_get_libc_version`), general-dynamic TLS (`-mtls-dialect=trad` on
+  arm64), a fortified `__memcpy_chk`, a symbol needing a newer glibc
+  (`fstat`, `GLIBC_2.33`), and an object with no undefined symbols.
 
 **In the repository:** `ttyshim-amd64.so` and `ttyshim-arm64.so` are
 committed beside the source, so `go build` and `go install` stay pure Go

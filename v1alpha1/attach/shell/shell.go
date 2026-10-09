@@ -140,6 +140,15 @@ func (t *TargetsImpl) Open(_ context.Context, ref string, args []string, log v1.
 			why = t.shimless(path)
 		}
 		if why == "" {
+			// Set up now, before the target says it has a terminal: a run
+			// that found out later would already have been told.
+			target.mu.Lock()
+			if _, _, serr := target.shimDir(); serr != nil {
+				why = "could not set up the shim: " + serr.Error()
+			}
+			target.mu.Unlock()
+		}
+		if why == "" {
 			log.Warn("serving a program without a pseudo-terminal, through tunneld's stand-in for one", "program", ref, "reason", err, "cost", shimNotice)
 			target.shim = true
 		} else {

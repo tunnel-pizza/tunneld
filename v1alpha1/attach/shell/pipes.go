@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -99,7 +100,7 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	// dumb says what the output is going to: no cursor to move, no colors
 	// anybody asked for.
 	cmd.Env = append(os.Environ(), "TERM=dumb")
-	// Through onlcr, the one piece of a terminal's output processing a
+	// Through oproc, the one piece of a terminal's output processing a
 	// program counts on. out and errw are one writer when the caller passes
 	// one, and stay one — exec gives both streams a single pipe when they
 	// compare equal, so what the program interleaves stays interleaved.
@@ -191,6 +192,13 @@ type cooked struct {
 	stdin  io.WriteCloser
 	mode   func() settings
 	signal func(signalKey)
+	// flushes counts the input flushes the program asked for; each takes the
+	// line being edited with it. nil: none are ever asked for.
+	flushes func() uint32
+
+	// mu serialises keys against settle, which the output side calls.
+	mu      sync.Mutex
+	flushed uint32
 
 	line []byte
 	// esc is how far into an escape sequence the input is: 0 outside one, 1
@@ -202,6 +210,9 @@ type cooked struct {
 }
 
 func (c *cooked) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dropFlushed()
 	m := pipesMode
 	if c.mode != nil {
 		m = c.mode()
@@ -215,6 +226,32 @@ func (c *cooked) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// settle hands a line typed without Enter to a program that has since gone
+// raw, as a terminal does the moment ICANON goes, without waiting for a
+// further key to carry it; and drops one an input flush took.
+func (c *cooked) settle() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dropFlushed()
+	if len(c.line) == 0 || c.mode == nil || c.mode().lflag&lICANON != 0 {
+		return
+	}
+	_, _ = c.stdin.Write(c.line)
+	c.line, c.esc, c.cr = c.line[:0], 0, false
+}
+
+// dropFlushed forgets the line being edited if the program has asked for an
+// input flush since. The caller holds mu.
+func (c *cooked) dropFlushed() {
+	if c.flushes == nil {
+		return
+	}
+	if f := c.flushes(); f != c.flushed {
+		c.flushed = f
+		c.line, c.esc, c.cr = c.line[:0], 0, false
+	}
 }
 
 // raw hands p to the program as it is, but for the keys ISIG makes signals
@@ -235,7 +272,13 @@ func (c *cooked) raw(p []byte, m settings) (int, error) {
 			return nil
 		}
 		if m.lflag&lECHO != 0 {
-			c.say(string(out))
+			// Echo goes out as output does: a newline gets its CR under
+			// OPOST and ONLCR.
+			shown := out
+			if m.oflag&oOPOST != 0 && m.oflag&oONLCR != 0 {
+				shown = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
+			}
+			c.say(string(shown))
 		}
 		_, err := c.stdin.Write(out)
 		out = out[:0]

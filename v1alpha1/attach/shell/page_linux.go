@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -37,11 +38,15 @@ const (
 	offFgPgrp  = 100
 	offSid     = 104
 	offGone    = 108
+	offWant    = 112
+	offDone    = 116
+	offIflush  = 120
 )
 
-// lockSteal is how many tries the lock gets before it is taken anyway: a
-// holder that has not let go by then died holding it.
-const lockSteal = 100_000
+// lockPatience is how many tries the lock gets before its holder is asked
+// after: the word holds the holder's pid, and only a holder that has died is
+// taken over from. A live one is waited for, however long.
+const lockPatience = 1000
 
 // page is tunneld's mapping of one attach's shared page. Keys and timers can
 // reach it after its run has ended, so every accessor holds mu for reading
@@ -86,15 +91,55 @@ func newPage(path string, dev, ino uint64, rows, cols uint16) (*page, error) {
 func (p *page) word(off int) *uint32 { return (*uint32)(unsafe.Pointer(&p.mem[off])) }
 
 func (p *page) lock() {
-	for i := 0; !atomic.CompareAndSwapUint32(p.word(offLock), 0, 1); i++ {
-		if i > lockSteal {
+	me := uint32(os.Getpid())
+	word := p.word(offLock)
+	for i := 0; !atomic.CompareAndSwapUint32(word, 0, me); i++ {
+		if i < lockPatience {
+			runtime.Gosched()
+			continue
+		}
+		if holder := atomic.LoadUint32(word); holder != 0 && holder != me &&
+			unix.Kill(int(holder), 0) == unix.ESRCH &&
+			atomic.CompareAndSwapUint32(word, holder, me) {
 			return
 		}
-		runtime.Gosched()
+		time.Sleep(100 * time.Microsecond)
 	}
 }
 
-func (p *page) unlock() { atomic.StoreUint32(p.word(offLock), 0) }
+func (p *page) unlock() { atomic.CompareAndSwapUint32(p.word(offLock), uint32(os.Getpid()), 0) }
+
+// want is the latest drain the shim has asked tunneld to acknowledge.
+func (p *page) want() uint32 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return 0
+	}
+	return atomic.LoadUint32(p.word(offWant))
+}
+
+// ack says every byte read before a read that began once want was g has
+// been through output processing: what the shim's drain waits for before
+// it changes that processing.
+func (p *page) ack(g uint32) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if !p.closed {
+		atomic.StoreUint32(p.word(offDone), g)
+	}
+}
+
+// flushes counts the input flushes (tcflush, TCSAFLUSH) the program has
+// asked for; the line being edited goes with each.
+func (p *page) flushes() uint32 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return 0
+	}
+	return atomic.LoadUint32(p.word(offIflush))
+}
 
 // settings is the terminal's settings as the program last set them.
 func (p *page) settings() settings {

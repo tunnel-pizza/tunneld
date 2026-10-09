@@ -196,9 +196,11 @@ func TestShimFallsBackWhenTheShimDoesNotLoad(t *testing.T) {
 	ti := &TargetImpl{ref: "busybox.static", path: bb, args: []string{"sh"}, shim: true,
 		log: slog.New(slog.NewTextHandler(logged, nil))}
 	r := attachShimRun(t, ti, logged)
-	time.Sleep(1500 * time.Millisecond)
 	r.send("echo still-served\r")
-	r.await("still-served", 0)
+	// Past tunneld's echo of the line, to the program's own output: printing
+	// without the shim is what turns the target to pipes.
+	at := r.await("echo still-served", 0)
+	r.await("still-served", at)
 	if !strings.Contains(logged.String(), "the terminal shim did not load") {
 		t.Errorf("the log %q does not say the shim did not load", logged.String())
 	}
@@ -267,8 +269,8 @@ func TestShimNode(t *testing.T) {
 // their CR, and what it writes after gets none added.
 func TestShimOutputModeInOrder(t *testing.T) {
 	r := onShim(t, "sh", "-c", `seq 1 30000; stty -opost; printf 'END\r\n'; sleep 0.2`)
-	end := r.await("END", 0)
-	shown := r.out.String()[:end+2]
+	end := r.await("END\r\n", 0)
+	shown := r.out.String()[:end]
 	for i := range len(shown) {
 		if shown[i] == '\n' && (i == 0 || shown[i-1] != '\r') {
 			t.Fatalf("a bare newline at %d, before stty -opost took effect: %q", i, shown[max(0, i-20):i+1])
@@ -276,5 +278,106 @@ func TestShimOutputModeInOrder(t *testing.T) {
 	}
 	if !strings.HasSuffix(shown, "END\r\n") {
 		t.Errorf("the page ends %q, want END\\r\\n with no CR added after -opost", shown[len(shown)-8:])
+	}
+}
+
+// TestShimDirIsAbsolute pins that a relative TMPDIR does not become a
+// relative LD_PRELOAD, which a shell that changes directory would lose.
+func TestShimDirIsAbsolute(t *testing.T) {
+	if ttyshim.Object() == nil {
+		t.Skip("no shim for this platform")
+	}
+	t.Chdir(t.TempDir())
+	if err := os.Mkdir("rel", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", "rel")
+	ti := &TargetImpl{ref: "sh", path: "/bin/sh", shim: true, log: slog.New(slog.DiscardHandler)}
+	defer func() { _ = ti.Close() }()
+	ti.mu.Lock()
+	_, so, err := ti.shimDir()
+	ti.mu.Unlock()
+	if err != nil || !filepath.IsAbs(so) {
+		t.Errorf("shimDir() = %q, %v; want an absolute path", so, err)
+	}
+}
+
+// TestShimSetupFailsAtOpen pins that a shim that cannot be set up is found
+// out before the target says it has a terminal: Open serves it over pipes.
+func TestShimSetupFailsAtOpen(t *testing.T) {
+	if ttyshim.Object() == nil {
+		t.Skip("no shim for this platform")
+	}
+	saved := shimTempBases
+	shimTempBases = func() []string { return []string{"/nonexistent/tunneld"} }
+	defer func() { shimTempBases = saved }()
+	targets := &TargetsImpl{open: noPTY, shimless: shimReason}
+	target, err := targets.Open(t.Context(), "sh", nil, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = target.Close() }()
+	if target.TTY() || target.(*TargetImpl).Notice() != pipesNotice {
+		t.Errorf("TTY() %v, Notice() %q; want pipes from the start", target.TTY(), target.(*TargetImpl).Notice())
+	}
+}
+
+// TestShimLateLoad pins a program whose shim loads after a second (a
+// static wrapper that execs a dynamic program, or a slow cold start): it is
+// still served as a terminal, and the target is not given up on.
+func TestShimLateLoad(t *testing.T) {
+	if ttyshim.Object() == nil {
+		t.Skip("no shim for this platform")
+	}
+	bb, err := exec.LookPath("busybox.static")
+	if err != nil {
+		t.Skip("no busybox.static here")
+	}
+	logged := &strings.Builder{}
+	ti := &TargetImpl{ref: "late", path: bb, args: []string{"sh", "-c", "read -t 1.5 x; exec /bin/sh"}, shim: true,
+		log: slog.New(slog.NewTextHandler(logged, nil))}
+	r := attachShimRun(t, ti, logged)
+	time.Sleep(2 * time.Second)
+	r.send("test -t 0 && echo LATE-TTY\r")
+	r.await("LATE-TTY", 0)
+	if ti.Notice() != shimNotice {
+		t.Errorf("Notice() = %q after a late load; want the shim's. The log: %q", ti.Notice(), logged.String())
+	}
+}
+
+// TestShimTypeAheadWithoutAnotherKey pins a line typed without Enter while
+// a program was busy reaching it when it switches to raw mode, with no
+// further key to carry it.
+func TestShimTypeAheadWithoutAnotherKey(t *testing.T) {
+	r := onShim(t, "bash", "-c", "sleep 1; read -n 3 x; echo; echo GOT-$x")
+	r.send("abc")
+	r.await("GOT-abc", 0)
+}
+
+// TestShimFlushDiscardsTypedInput pins tcflush(TCIFLUSH): what was typed
+// before it, sent or still being edited, is not read after it.
+func TestShimFlushDiscardsTypedInput(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3 here")
+	}
+	r := onShim(t, "bash", "-c", `sleep 1; python3 -c "import termios; termios.tcflush(0, termios.TCIFLUSH)"; read -t 3 x; echo "GOT-[$x]"`)
+	r.send("junk\rpartial")
+	time.Sleep(1800 * time.Millisecond)
+	r.send("ok\r")
+	r.await("GOT-[ok]", 0)
+}
+
+// TestShimGetpassHidesThePassword pins libc's getpass: the password typed
+// at its prompt is not echoed to the page every viewer sees.
+func TestShimGetpassHidesThePassword(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3 here")
+	}
+	r := onShim(t, "python3", "-c", "import ctypes; libc = ctypes.CDLL(None); libc.getpass.restype = ctypes.c_char_p; print('GOT', libc.getpass(b'Pass: '))")
+	at := r.await("Pass: ", 0)
+	r.send("hunter2\r")
+	end := r.await("GOT b'hunter2'", at)
+	if shown := r.out.String()[at : end-len("GOT b'hunter2'")]; strings.Contains(shown, "hunter2") {
+		t.Errorf("the password was echoed to the page: %q", shown)
 	}
 }

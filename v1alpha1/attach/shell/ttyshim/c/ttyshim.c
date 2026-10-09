@@ -49,7 +49,10 @@ struct page {
     uint32_t ispeed, ospeed;
     uint16_t rows, cols, xpixel, ypixel;
     int32_t fg_pgrp, sid;
-    uint32_t gone; /* set by tunneld when the run is over */
+    uint32_t gone;   /* set by tunneld when the run is over */
+    uint32_t want;   /* the latest drain asked of tunneld */
+    uint32_t done;   /* the latest drain tunneld has acknowledged */
+    uint32_t iflush; /* input flushes asked for; tunneld drops its line */
 };
 _Static_assert(offsetof(struct page, lock) == 8, "page layout");
 _Static_assert(offsetof(struct page, loaded) == 12, "page layout");
@@ -62,6 +65,9 @@ _Static_assert(offsetof(struct page, rows) == 92, "page layout");
 _Static_assert(offsetof(struct page, fg_pgrp) == 100, "page layout");
 _Static_assert(offsetof(struct page, sid) == 104, "page layout");
 _Static_assert(offsetof(struct page, gone) == 108, "page layout");
+_Static_assert(offsetof(struct page, want) == 112, "page layout");
+_Static_assert(offsetof(struct page, done) == 116, "page layout");
+_Static_assert(offsetof(struct page, iflush) == 120, "page layout");
 _Static_assert(sizeof(struct termios) == 60, "libc termios");
 
 /* The kernel's struct termios, which TCGETS and TCSETS* carry. */
@@ -75,8 +81,8 @@ _Static_assert(sizeof(struct kterm) == 36, "kernel termios");
 #define PAGE_BYTES 4096
 #define FD_FLOOR 256
 #define FD_SPAN 16
-#define NB_MAX 1024
-#define LOCK_STEAL 100000
+#define NB_MAX 65536
+#define LOCK_PATIENCE 1000
 #define DEV_TTY "/dev/tty"
 
 static struct page *pg;
@@ -86,7 +92,7 @@ static int g_ttyfd = -1;
  * description shared with every process on the terminal, and a reopened
  * terminal would be a description of its own, so O_NONBLOCK is kept here
  * per descriptor and the description itself stays blocking. */
-static unsigned char g_nb[NB_MAX];
+static unsigned char g_nb[NB_MAX / 8];
 static char *g_shim;    /* the shim's path, from TUNNELD_TTY_SHIM */
 static char *g_ttyenv;  /* "TUNNELD_TTY=..." */
 static char *g_shimenv; /* "TUNNELD_TTY_SHIM=..." */
@@ -112,14 +118,28 @@ static void *next2(const char *name, const char *fallback) {
 
 /* ---- the page ---------------------------------------------------------- */
 
+/* The lock word holds its holder's pid. A holder is waited for however
+ * long it holds the lock, and taken over from only once it has died. */
 static void lock(void) {
-    for (int i = 0; __atomic_exchange_n(&pg->lock, 1, __ATOMIC_ACQUIRE); i++) {
-        if (i > LOCK_STEAL) return; /* its holder died holding it */
-        sched_yield();
+    uint32_t me = (uint32_t)syscall(SYS_getpid);
+    for (int i = 0;; i++) {
+        uint32_t free_ = 0;
+        if (__atomic_compare_exchange_n(&pg->lock, &free_, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+        if (i < LOCK_PATIENCE) { sched_yield(); continue; }
+        uint32_t holder = __atomic_load_n(&pg->lock, __ATOMIC_RELAXED);
+        int saved = errno;
+        int dead = holder && holder != me && syscall(SYS_kill, (pid_t)holder, 0) != 0 && errno == ESRCH;
+        errno = saved;
+        if (dead && __atomic_compare_exchange_n(&pg->lock, &holder, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+        struct timespec us = {0, 100000};
+        syscall(SYS_nanosleep, &us, NULL);
     }
 }
 
-static void unlock(void) { __atomic_store_n(&pg->lock, 0, __ATOMIC_RELEASE); }
+static void unlock(void) {
+    uint32_t me = (uint32_t)syscall(SYS_getpid);
+    __atomic_compare_exchange_n(&pg->lock, &me, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
 
 static int is_term(int fd) {
     if (!pg || fd < 0) return 0;
@@ -158,33 +178,62 @@ static void set_settings(const struct termios *t) {
     unlock();
 }
 
-/* Waits, briefly, for the terminal's output to have been read by tunneld:
- * output processing is applied as tunneld reads, so a change to it must not
- * overtake what was written under the old one (TCSADRAIN's promise). */
-static void drain(int fd) {
-    for (int i = 0; i < 200; i++) {
+static void sleep_ms(void) {
+    struct timespec ms = {0, 1000000};
+    syscall(SYS_nanosleep, &ms, NULL);
+}
+
+/* Waits for tunneld to have read what was written to the terminal. */
+static void unqueue(int fd) {
+    for (int i = 0; i < 1000; i++) {
         int queued = 0;
         if (syscall(SYS_ioctl, fd, TIOCOUTQ, &queued) != 0 || queued <= 0) return;
-        struct timespec ms = {0, 1000000};
-        syscall(SYS_nanosleep, &ms, NULL);
+        sleep_ms();
     }
 }
 
-/* set_settings, after draining when the output processing changes or the
- * caller asked for a drain. */
-static void apply(int fd, int drained, const struct termios *t) {
+/* Waits for tunneld to have read what was written to the terminal and put
+ * it through output processing (tcdrain's promise): it acknowledges a drain
+ * asked for here only after every read that began before the ask is out. */
+static void drain(int fd) {
     int saved = errno;
-    uint32_t was = __atomic_load_n(&pg->oflag, __ATOMIC_ACQUIRE);
-    if (drained || was != t->c_oflag) drain(fd);
+    unqueue(fd);
+    uint32_t w = __atomic_add_fetch(&pg->want, 1, __ATOMIC_ACQ_REL);
+    for (int i = 0; i < 1000 && (int32_t)(__atomic_load_n(&pg->done, __ATOMIC_ACQUIRE) - w) < 0; i++)
+        sleep_ms();
     errno = saved;
+}
+
+/* Discards input typed but not yet read: what is queued on the socket here,
+ * and the line tunneld is still editing. */
+static void flush_input(int fd) {
+    int saved = errno;
+    char junk[512];
+    while (recv(fd, junk, sizeof junk, MSG_DONTWAIT) > 0) {}
+    __atomic_add_fetch(&pg->iflush, 1, __ATOMIC_ACQ_REL);
+    errno = saved;
+}
+
+/* set_settings, ordered as act says: a change to output processing waits
+ * until what was written under the old one is out; TCSAFLUSH also drops
+ * pending input. */
+static void apply(int fd, int act, const struct termios *t) {
+    uint32_t was = __atomic_load_n(&pg->oflag, __ATOMIC_ACQUIRE);
+    if (was != t->c_oflag) drain(fd);
+    else if (act != TCSANOW) unqueue(fd);
+    if (act == TCSAFLUSH) flush_input(fd);
     set_settings(t);
 }
 
-static int nonblocking(int fd) { return fd >= 0 && fd < NB_MAX && g_nb[fd] && is_term(fd); }
+static int nb_get(int fd) { return fd >= 0 && fd < NB_MAX && (g_nb[fd / 8] >> (fd % 8)) & 1; }
 
 static void set_nb(int fd, int on) {
-    if (fd >= 0 && fd < NB_MAX) g_nb[fd] = (unsigned char)(on != 0);
+    if (fd < 0 || fd >= NB_MAX) return;
+    if (on) g_nb[fd / 8] |= (unsigned char)(1 << (fd % 8));
+    else g_nb[fd / 8] &= (unsigned char)~(1 << (fd % 8));
 }
+
+static int nonblocking(int fd) { return nb_get(fd) && is_term(fd); }
 
 static pid_t fg(void) {
     int32_t g = __atomic_load_n(&pg->fg_pgrp, __ATOMIC_ACQUIRE);
@@ -324,7 +373,7 @@ int tcsetattr(int fd, int act, const struct termios *t) {
     if (is_term(fd)) {
         if (!t) { errno = EFAULT; return -1; }
         if (act != TCSANOW && act != TCSADRAIN && act != TCSAFLUSH) { errno = EINVAL; return -1; }
-        apply(fd, act != TCSANOW, t);
+        apply(fd, act, t);
         return 0;
     }
     REAL(tcsetattr);
@@ -357,14 +406,19 @@ pid_t tcgetsid(int fd) {
 
 int tcdrain(int fd) {
     ENSURE;
-    if (is_term(fd)) return 0;
+    if (is_term(fd)) { drain(fd); return 0; }
     REAL(tcdrain);
     return real_(fd);
 }
 
 int tcflush(int fd, int q) {
     ENSURE;
-    if (is_term(fd)) return 0;
+    if (is_term(fd)) {
+        if (q != TCIFLUSH && q != TCOFLUSH && q != TCIOFLUSH) { errno = EINVAL; return -1; }
+        /* Output already written is tunneld's to show; input is dropped. */
+        if (q != TCOFLUSH) flush_input(fd);
+        return 0;
+    }
     REAL(tcflush);
     return real_(fd, q);
 }
@@ -397,6 +451,11 @@ int ioctl(int fd, unsigned long req, ...) {
     switch (r) {
     case TIOCSCTTY: case TIOCNOTTY:
         return 0;
+    case TCFLSH:
+        return tcflush(fd, (int)(long)arg);
+    case TCSBRK:
+        drain(fd);
+        return 0;
     }
     if (!arg) { errno = EFAULT; return -1; }
     switch (r) {
@@ -416,7 +475,7 @@ int ioctl(int fd, unsigned long req, ...) {
         t.c_iflag = k->iflag; t.c_oflag = k->oflag; t.c_cflag = k->cflag; t.c_lflag = k->lflag;
         t.c_line = k->line;
         memcpy(t.c_cc, k->cc, sizeof k->cc);
-        apply(fd, r != TCSETS, &t);
+        apply(fd, r == TCSETS ? TCSANOW : r == TCSETSW ? TCSADRAIN : TCSAFLUSH, &t);
         return 0;
     }
     case TIOCGWINSZ: {
@@ -602,13 +661,20 @@ static int fcntl_term(int fd, int cmd, long arg, int *handled) {
         int fl = real_(fd, F_GETFL);
         if (fl < 0) return fl;
         *handled = 1;
-        return (fl & ~O_NONBLOCK) | (fd < NB_MAX && g_nb[fd] ? O_NONBLOCK : 0);
+        return fd < NB_MAX ? (fl & ~O_NONBLOCK) | (nb_get(fd) ? O_NONBLOCK : 0) : fl;
     }
-    if (cmd == F_SETFL) {
+    if (cmd == F_SETFL && fd < NB_MAX) {
         REAL_T(fcntl, int (*)(int, int, ...));
         set_nb(fd, arg & O_NONBLOCK);
         *handled = 1;
         return real_(fd, F_SETFL, arg & ~O_NONBLOCK);
+    }
+    if (cmd == F_DUPFD || cmd == F_DUPFD_CLOEXEC) {
+        REAL_T(fcntl, int (*)(int, int, ...));
+        int nfd = real_(fd, cmd, arg);
+        set_nb(nfd, nb_get(fd));
+        *handled = 1;
+        return nfd;
     }
     return 0;
 }
@@ -674,6 +740,64 @@ ssize_t writev(int fd, const struct iovec *iov, int cnt) {
     }
     REAL(writev);
     return real_(fd, iov, cnt);
+}
+
+/* A descriptor's non-blocking state goes with its number's closing, and to
+ * its duplicates, as it would with the file description it stands for. */
+int close(int fd) {
+    set_nb(fd, 0);
+    REAL(close);
+    return real_(fd);
+}
+
+int dup(int fd) {
+    REAL(dup);
+    int nfd = real_(fd);
+    set_nb(nfd, nb_get(fd));
+    return nfd;
+}
+
+int dup2(int fd, int to) {
+    REAL(dup2);
+    int nfd = real_(fd, to);
+    if (nfd >= 0 && fd != to) set_nb(nfd, nb_get(fd));
+    return nfd;
+}
+
+int dup3(int fd, int to, int flags) {
+    REAL(dup3);
+    int nfd = real_(fd, to, flags);
+    if (nfd >= 0) set_nb(nfd, nb_get(fd));
+    return nfd;
+}
+
+/* ---- passwords ----------------------------------------------------------- */
+
+/* libc's getpass turns echo off through its own internal calls, past this
+ * shim, so it never would here and the password would show on the page
+ * every viewer sees. This one does it through the page. */
+char *getpass(const char *prompt) {
+    ENSURE;
+    static char buf[BUFSIZ];
+    int fd = pg ? term_fd() : -1;
+    if (fd < 0) {
+        REAL(getpass);
+        return real_(prompt);
+    }
+    struct termios was, quiet;
+    get_settings(&was);
+    quiet = was;
+    quiet.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ECHONL);
+    quiet.c_lflag |= ICANON;
+    apply(fd, TCSAFLUSH, &quiet);
+    (void)!syscall(SYS_write, fd, prompt, strlen(prompt));
+    size_t n = 0;
+    char c;
+    while (n < sizeof buf - 1 && recv(fd, &c, 1, 0) == 1 && c != '\n') buf[n++] = c;
+    buf[n] = 0;
+    apply(fd, TCSADRAIN, &was);
+    (void)!syscall(SYS_write, fd, "\n", 1);
+    return buf;
 }
 
 /* ---- staying loaded across exec ---------------------------------------- */
