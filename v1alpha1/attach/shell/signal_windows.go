@@ -5,6 +5,7 @@ package shell
 import (
 	"errors"
 	"os"
+	"syscall"
 )
 
 // terminate ends the program. Windows has no SIGTERM and no process groups
@@ -22,3 +23,7 @@ func interrupt(*os.Process) error { return errors.ErrUnsupported }
 // hangup has no session to hang up; closing the program's pipes is all there
 // is.
 func hangup(*os.Process) error { return errors.ErrUnsupported }
+
+// signalGroup has no groups to signal on Windows, and is never reached: the
+// shim is Linux's.
+func signalGroup(*os.Process, int, syscall.Signal) error { return errors.ErrUnsupported }

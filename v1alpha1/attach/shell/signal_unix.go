@@ -54,3 +54,15 @@ func signalSession(p *os.Process, sig syscall.Signal) error {
 	}
 	return p.Signal(sig)
 }
+
+// signalGroup is a terminal's key reaching its foreground: sig to process
+// group pgrp, when it is a group in the program's session. Anything else —
+// no group recorded yet, or one that has gone — reaches the session instead.
+func signalGroup(p *os.Process, pgrp int, sig syscall.Signal) error {
+	if pgrp > 0 && pgrp != syscall.Getpgrp() {
+		if sid, err := unix.Getsid(pgrp); err == nil && sid == p.Pid {
+			return syscall.Kill(-pgrp, sig)
+		}
+	}
+	return signalSession(p, sig)
+}

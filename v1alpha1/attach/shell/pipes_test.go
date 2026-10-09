@@ -250,7 +250,7 @@ func TestOpenWithoutATerminal(t *testing.T) {
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
 	var logged bytes.Buffer
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), path, nil, slog.New(slog.NewTextHandler(&logged, nil)))
 	if err != nil {
 		t.Fatalf("Open() = %v, want the program served over pipes", err)
@@ -284,7 +284,7 @@ func TestShellOverPipes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Ctrl-C over pipes is a process-group signal, which Windows has none of")
 	}
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), "sh", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
@@ -359,7 +359,7 @@ func TestBashOverPipes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("bash over pipes is a Unix sandbox's; the Windows path is TestOpenWithoutATerminal's")
 	}
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), "bash", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Skipf("no bash here: %v", err)
@@ -394,3 +394,6 @@ func TestBashOverPipes(t *testing.T) {
 		}
 	}
 }
+
+// pipesOnly keeps a test on rung 3, whatever this machine could do.
+func pipesOnly(string) string { return "pipes only, in this test" }
