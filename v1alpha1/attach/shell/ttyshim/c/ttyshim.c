@@ -166,14 +166,36 @@ static int term_fd(void) {
     return -1;
 }
 
-static int open_term(int flags) {
-    int fd = term_fd();
-    if (fd < 0) return -1;
-    return fcntl(fd, (flags & O_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD, 0);
+#define NOT_TERM (-1)
+#define ANY_TERM (-2)
+
+/* Which terminal descriptor path names: ANY_TERM for /dev/tty; N for
+ * /dev/std{in,out,err}, /dev/fd/N or /proc/self/fd/N when N is the terminal,
+ * since Linux refuses to reopen a socket through /proc; NOT_TERM otherwise. */
+static int named(const char *path) {
+    if (!pg || !path) return NOT_TERM;
+    if (strcmp(path, DEV_TTY) == 0) return ANY_TERM;
+    int fd = -1;
+    if (strcmp(path, "/dev/stdin") == 0) fd = 0;
+    else if (strcmp(path, "/dev/stdout") == 0) fd = 1;
+    else if (strcmp(path, "/dev/stderr") == 0) fd = 2;
+    else {
+        const char *n = NULL;
+        if (strncmp(path, "/dev/fd/", 8) == 0) n = path + 8;
+        else if (strncmp(path, "/proc/self/fd/", 14) == 0) n = path + 14;
+        if (n && *n) {
+            long v = 0;
+            for (; *n >= '0' && *n <= '9' && v <= 1 << 20; n++) v = v * 10 + (*n - '0');
+            if (!*n && v <= 1 << 20) fd = (int)v;
+        }
+    }
+    return fd >= 0 && is_term(fd) ? fd : NOT_TERM;
 }
 
-static int names_term(const char *path) {
-    return pg && path && strcmp(path, DEV_TTY) == 0;
+static int open_named(int which, int flags) {
+    int fd = which == ANY_TERM ? term_fd() : which;
+    if (fd < 0) return -1;
+    return fcntl(fd, (flags & O_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD, 0);
 }
 
 static char *entry(const char *name) {
@@ -385,7 +407,8 @@ static mode_t mode_of(int flags, va_list ap) {
 
 int open(const char *path, int flags, ...) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     va_list ap; va_start(ap, flags); mode_t mode = mode_of(flags, ap); va_end(ap);
     REAL(open);
     return real_(path, flags, mode);
@@ -393,7 +416,8 @@ int open(const char *path, int flags, ...) {
 
 int open64(const char *path, int flags, ...) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     va_list ap; va_start(ap, flags); mode_t mode = mode_of(flags, ap); va_end(ap);
     REAL2(open64, open, int (*)(const char *, int, ...));
     return real_(path, flags, mode);
@@ -401,7 +425,8 @@ int open64(const char *path, int flags, ...) {
 
 int openat(int dirfd, const char *path, int flags, ...) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     va_list ap; va_start(ap, flags); mode_t mode = mode_of(flags, ap); va_end(ap);
     REAL(openat);
     return real_(dirfd, path, flags, mode);
@@ -409,7 +434,8 @@ int openat(int dirfd, const char *path, int flags, ...) {
 
 int openat64(int dirfd, const char *path, int flags, ...) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     va_list ap; va_start(ap, flags); mode_t mode = mode_of(flags, ap); va_end(ap);
     REAL2(openat64, openat, int (*)(int, const char *, int, ...));
     return real_(dirfd, path, flags, mode);
@@ -417,48 +443,54 @@ int openat64(int dirfd, const char *path, int flags, ...) {
 
 int __open_2(const char *path, int flags) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     REAL2(__open_2, open, int (*)(const char *, int));
     return real_(path, flags);
 }
 
 int __open64_2(const char *path, int flags) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     REAL2(__open64_2, open, int (*)(const char *, int));
     return real_(path, flags);
 }
 
 int __openat_2(int dirfd, const char *path, int flags) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     REAL2(__openat_2, openat, int (*)(int, const char *, int));
     return real_(dirfd, path, flags);
 }
 
 int __openat64_2(int dirfd, const char *path, int flags) {
     ENSURE;
-    if (names_term(path)) return open_term(flags);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, flags);
     REAL2(__openat64_2, openat, int (*)(int, const char *, int));
     return real_(dirfd, path, flags);
 }
 
 int creat(const char *path, mode_t mode) {
     ENSURE;
-    if (names_term(path)) return open_term(O_WRONLY);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, O_WRONLY);
     REAL(creat);
     return real_(path, mode);
 }
 
 int creat64(const char *path, mode_t mode) {
     ENSURE;
-    if (names_term(path)) return open_term(O_WRONLY);
+    int t = named(path);
+    if (t != NOT_TERM) return open_named(t, O_WRONLY);
     REAL2(creat64, creat, int (*)(const char *, mode_t));
     return real_(path, mode);
 }
 
-static FILE *fopen_term(const char *mode) {
-    int fd = open_term(strchr(mode, 'e') ? O_CLOEXEC : 0);
+static FILE *fopen_named(int which, const char *mode) {
+    int fd = open_named(which, strchr(mode, 'e') ? O_CLOEXEC : 0);
     if (fd < 0) return NULL;
     FILE *f = fdopen(fd, mode);
     if (!f) close(fd);
@@ -467,20 +499,22 @@ static FILE *fopen_term(const char *mode) {
 
 FILE *fopen(const char *path, const char *mode) {
     ENSURE;
-    if (names_term(path)) return fopen_term(mode);
+    int t = named(path);
+    if (t != NOT_TERM) return fopen_named(t, mode);
     REAL(fopen);
     return real_(path, mode);
 }
 
 FILE *fopen64(const char *path, const char *mode) {
     ENSURE;
-    if (names_term(path)) return fopen_term(mode);
+    int t = named(path);
+    if (t != NOT_TERM) return fopen_named(t, mode);
     REAL2(fopen64, fopen, FILE *(*)(const char *, const char *));
     return real_(path, mode);
 }
 
-static FILE *freopen_term(FILE *stream) {
-    int fd = open_term(0);
+static FILE *freopen_named(int which, FILE *stream) {
+    int fd = open_named(which, 0);
     if (fd < 0) return NULL;
     fflush(stream);
     int ok = dup2(fd, fileno(stream)) >= 0;
@@ -492,14 +526,16 @@ static FILE *freopen_term(FILE *stream) {
 
 FILE *freopen(const char *path, const char *mode, FILE *stream) {
     ENSURE;
-    if (names_term(path)) return freopen_term(stream);
+    int t = named(path);
+    if (t != NOT_TERM) return freopen_named(t, stream);
     REAL(freopen);
     return real_(path, mode, stream);
 }
 
 FILE *freopen64(const char *path, const char *mode, FILE *stream) {
     ENSURE;
-    if (names_term(path)) return freopen_term(stream);
+    int t = named(path);
+    if (t != NOT_TERM) return freopen_named(t, stream);
     REAL2(freopen64, freopen, FILE *(*)(const char *, const char *, FILE *));
     return real_(path, mode, stream);
 }

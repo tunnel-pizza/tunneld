@@ -251,7 +251,9 @@ func (f *firstWrite) Write(p []byte) (int, error) {
 
 // halfCloser keeps cooked's Ctrl-D on an empty line from closing the socket,
 // which carries the program's output too: it shuts down the write half
-// instead, as a terminal's EOF ends input and nothing else.
+// instead. A terminal's EOF is one read of nothing; a socket has no such
+// thing, so this ends the program's input for the rest of the run, as closing
+// stdin does over pipes.
 type halfCloser struct{ f *os.File }
 
 func (n halfCloser) Write(p []byte) (int, error) { return n.f.Write(p) }

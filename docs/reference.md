@@ -384,7 +384,10 @@ resize, shells and python edit lines, and Ctrl-C and Ctrl-Z reach the job in
 front. A statically linked program, or a Go program, asks the kernel instead
 and cannot be helped: it is served over pipes, and a warning at startup and a
 line on the page say so. If the shim does not load (a `noexec` temp
-directory), the run carries on over pipes and the log says why.
+directory), the run carries on over pipes and the log says why. One thing
+differs from a terminal: `Ctrl-D` on an empty line to a program reading lines
+(`cat > notes`) ends input for the rest of the run, so the shell that started
+it exits too, as it does over pipes.
 
 Over pipes (those programs, and Windows):
 - **Typing:** tunneld does the job of the missing terminal. Your keys are echoed,

@@ -187,6 +187,10 @@ func TestPageThroughTheShim(t *testing.T) {
 		{"/dev/tty after stdio is gone", `( exec 0<&- 1>&- 2>&-; echo late > /dev/tty )`, "", "late"},
 		{"env -i keeps the terminal", `env -i /bin/sh -c 'test -t 0 && echo T'`, "", "T"},
 		{"reads come from the socket", `read line < /dev/tty; echo "got $line"`, "hello\n", "got hello"},
+		{"/dev/stderr is the socket too", `echo to-stderr > /dev/stderr`, "", "to-stderr"},
+		{"/dev/fd/N is the socket too", `echo via-fd > /dev/fd/1`, "", "via-fd"},
+		{"/proc/self/fd/N is the socket too", `echo via-proc > /proc/self/fd/2`, "", "via-proc"},
+		{"/dev/stdin reads the socket", `head -n1 /dev/stdin`, "first\n", "first"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, p := runShimmed(t, tc.script, tc.keys)
@@ -221,4 +225,28 @@ func shellWithJobControl(t *testing.T) string {
 		return path
 	}
 	return "/bin/sh"
+}
+
+// TestPageAfterClose pins that a page closed while keys or a timer are still
+// in flight answers as a fresh terminal instead of touching unmapped memory,
+// which would take tunneld down with every tunnel it serves.
+func TestPageAfterClose(t *testing.T) {
+	p, err := newPage(filepath.Join(t.TempDir(), "tty"), 1, 2, 24, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if s := p.settings(); s != defaultMode {
+		t.Errorf("settings() after Close = %+v, want defaultMode", s)
+	}
+	p.setSize(50, 200)
+	p.seed(1)
+	if p.foreground() != 0 || p.loaded() {
+		t.Errorf("foreground %d, loaded %v after Close; want 0, false", p.foreground(), p.loaded())
+	}
+	if err := p.Close(); err != nil {
+		t.Errorf("a second Close = %v", err)
+	}
 }

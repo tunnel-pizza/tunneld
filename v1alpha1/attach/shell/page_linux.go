@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -41,10 +42,15 @@ const (
 // holder that has not let go by then died holding it.
 const lockSteal = 100_000
 
-// page is tunneld's mapping of one attach's shared page.
+// page is tunneld's mapping of one attach's shared page. Keys and timers can
+// reach it after its run has ended, so every accessor holds mu for reading
+// and answers as a fresh terminal once closed: touching the unmapped memory
+// would fault and take tunneld down.
 type page struct {
-	path string
-	mem  []byte
+	path   string
+	mem    []byte
+	mu     sync.RWMutex
+	closed bool
 }
 
 // newPage creates the page at path for the socket dev/ino, sized rows×cols,
@@ -91,6 +97,11 @@ func (p *page) unlock() { atomic.StoreUint32(p.word(offLock), 0) }
 
 // settings is the terminal's settings as the program last set them.
 func (p *page) settings() settings {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return defaultMode
+	}
 	p.lock()
 	defer p.unlock()
 	le := binary.LittleEndian
@@ -122,6 +133,11 @@ func (p *page) put(s settings) {
 
 // setSize records the page's terminal size.
 func (p *page) setSize(rows, cols uint16) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return
+	}
 	p.lock()
 	defer p.unlock()
 	binary.LittleEndian.PutUint16(p.mem[offRows:], rows)
@@ -130,20 +146,42 @@ func (p *page) setSize(rows, cols uint16) {
 
 // foreground is the process group the program last made the foreground; 0
 // before any did.
-func (p *page) foreground() int { return int(int32(atomic.LoadUint32(p.word(offFgPgrp)))) }
+func (p *page) foreground() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return 0
+	}
+	return int(int32(atomic.LoadUint32(p.word(offFgPgrp))))
+}
 
 // seed names pid, the program tunneld started in a session of its own, as
 // the session and its first foreground group.
 func (p *page) seed(pid int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return
+	}
 	atomic.StoreUint32(p.word(offSid), uint32(pid))
 	atomic.CompareAndSwapUint32(p.word(offFgPgrp), 0, uint32(pid))
 }
 
 // loaded is whether any process has loaded the shim on this page.
-func (p *page) loaded() bool { return atomic.LoadUint32(p.word(offLoaded)) != 0 }
+func (p *page) loaded() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return !p.closed && atomic.LoadUint32(p.word(offLoaded)) != 0
+}
 
-// Close unmaps the page and removes its file.
+// Close unmaps the page and removes its file; a second Close does nothing.
 func (p *page) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	p.closed = true
 	err := unix.Munmap(p.mem)
 	if rmErr := os.Remove(p.path); err == nil && !os.IsNotExist(rmErr) {
 		err = rmErr
