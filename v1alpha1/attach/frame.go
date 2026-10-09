@@ -3,6 +3,8 @@ package attach
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -212,6 +214,17 @@ type frame struct {
 	bare     bool
 	mouseOff bool
 
+	// follow keeps the reading view on the newest output; scrolling up turns
+	// it off, s toggles it, G turns it on. pattern filters the view to
+	// matching rows, "" for none; filtering is a pattern being typed, into
+	// filter. cleared is the transcript row the view starts from after C;
+	// the emulator keeps everything above it.
+	follow    bool
+	pattern   string
+	filtering bool
+	filter    string
+	cleared   int
+
 	// clip is the chip the last copy left — "copied", or why it was not —
 	// shown until a key, a wheel or another click, as a selection is.
 	clip string
@@ -309,6 +322,9 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// screen's past under the alternate screen's present.
 		if f.scrolled && f.sess.altScreen() {
 			f.scrolled = false
+		}
+		if f.reading && f.follow {
+			f = f.scroll(f.sess.history() + f.pane().Dy())
 		}
 		return f, nil
 
@@ -626,9 +642,27 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 	if key == "" && k.Mod == 0 && k.Code < tea.KeyExtended {
 		key = string(k.Code)
 	}
+	if f.filtering {
+		switch {
+		case k.Code == tea.KeyEnter:
+			f.filtering, f.pattern = false, f.filter
+		case k.Code == tea.KeyEscape:
+			f.filtering, f.filter = false, ""
+		case k.Code == tea.KeyBackspace:
+			if n := len(f.filter); n > 0 {
+				f.filter = f.filter[:n-1]
+			}
+		case k.Text != "":
+			f.filter += k.Text
+		}
+		return f, nil
+	}
 	switch {
+	case k.Code == tea.KeyEscape && f.pattern != "":
+		f.pattern = ""
 	case k.Code == tea.KeyEscape || key == "q":
 		f.reading, f.bare, f.scrolled = false, false, false
+		f.follow, f.pattern, f.filter, f.cleared = false, "", "", 0
 	case k.Code == tea.KeyUp || key == "k":
 		f = f.scroll(-1)
 	case k.Code == tea.KeyDown || key == "j":
@@ -643,6 +677,19 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 		f = f.scroll(f.sess.history() + page)
 	case key == "f":
 		f.bare = !f.bare
+	case key == "s":
+		f.follow = !f.follow
+		if f.follow {
+			f = f.scroll(f.sess.history() + page)
+		}
+	case key == "/":
+		f.filtering, f.filter = true, ""
+	case key == "C":
+		// Everything written so far, the rows on screen above the cursor
+		// included: a clear that left them to scroll back into view would
+		// not be one.
+		f.cleared = f.sess.written()
+		f = f.scroll(f.sess.history() + page)
 	case key == "c":
 		text, whole := fitting(f.everything())
 		f, cmd := f.copy(text)
@@ -685,7 +732,93 @@ func (f frame) scroll(step int) frame {
 	}
 	f.top = max(0, min(f.top+step, kept))
 	f.scrolled = true
+	if step != 0 {
+		f.follow = f.top >= kept
+	}
 	return f
+}
+
+// matcher is the filter's regexp, case-insensitive, and whether a leading !
+// inverts it; nil when the pattern does not compile.
+func (f frame) matcher() (*regexp.Regexp, bool) {
+	pat, invert := strings.CutPrefix(f.pattern, "!")
+	re, err := regexp.Compile("(?i)" + pat)
+	if err != nil {
+		return nil, invert
+	}
+	return re, invert
+}
+
+// filtered is which transcript rows from cleared on match the pattern, and
+// how many rows there were. A pattern that does not compile matches nothing.
+func (f frame) filtered(buf uv.ScreenBuffer) (rows []int, total int) {
+	n := buf.Bounds().Dy()
+	total = max(0, n-f.cleared)
+	re, invert := f.matcher()
+	if re == nil {
+		return nil, total
+	}
+	for y := f.cleared; y < n; y++ {
+		if re.MatchString(rowOf(buf, y).text(buf)) != invert {
+			rows = append(rows, y)
+		}
+	}
+	return rows, total
+}
+
+// drawFiltered draws the matching rows from where the reader is, their
+// matches reversed, into pixels.
+func (f frame) drawFiltered(pixels uv.ScreenBuffer) {
+	buf := f.sess.transcript()
+	rows, _ := f.filtered(buf)
+	h := pixels.Bounds().Dy()
+	at, _ := slices.BinarySearch(rows, f.top)
+	start := max(0, min(at, len(rows)-h))
+	re, invert := f.matcher()
+	for i := 0; i < h && start+i < len(rows); i++ {
+		y := rows[start+i]
+		line, offs := cellText(buf, y)
+		var marks [][]int
+		if !invert {
+			marks = re.FindAllStringIndex(line, -1)
+		}
+		for x := range pixels.Bounds().Dx() {
+			c := buf.CellAt(x, y)
+			if c != nil && slices.ContainsFunc(marks, func(m []int) bool { return offs[x] >= m[0] && offs[x] < m[1] }) {
+				marked := *c
+				marked.Style.Attrs ^= uv.AttrReverse
+				c = &marked
+			}
+			pixels.SetCell(x, i, c)
+		}
+	}
+}
+
+// cellText is row y of buf as text, and the byte offset each cell starts at.
+func cellText(buf uv.ScreenBuffer, y int) (string, []int) {
+	w := buf.Bounds().Dx()
+	at := make([]int, w)
+	var b strings.Builder
+	for x := range w {
+		at[x] = b.Len()
+		switch c := buf.CellAt(x, y); {
+		case c == nil:
+			b.WriteByte(' ')
+		case c.Content == "" && c.Width == 0:
+		default:
+			b.WriteString(c.Content)
+		}
+	}
+	return b.String(), at
+}
+
+// thousands is n with commas between its thousands.
+func thousands(n int) string {
+	s := fmt.Sprint(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // everything is the whole history and the live screen as text, for c in
@@ -742,7 +875,7 @@ var commands = []action{
 	// Scrollback mode, on the console: see reading. A drag under way gets no
 	// release once the mouse is let go.
 	{'[', "scroll", frame.console, func(f frame) (frame, tea.Cmd) {
-		f.reading, f.selecting, f.selected = true, false, false
+		f.reading, f.selecting, f.selected, f.follow = true, false, false, true
 		return f.scroll(0), nil
 	}},
 	// The mouse, released or asked for again outside the mode: see mouseOff.
@@ -1058,6 +1191,17 @@ func (f frame) composed() uv.ScreenBuffer {
 		}
 	case f.qr:
 		f.drawQR(pixels)
+	case f.scrolled && f.pattern != "":
+		f.drawFiltered(pixels)
+	case f.scrolled && f.cleared > 0:
+		// What was written since C, from this viewer's top.
+		buf := f.sess.transcript()
+		start := max(f.top, f.cleared)
+		for y := range pane.Dy() {
+			for x := range pane.Dx() {
+				pixels.SetCell(x, y, buf.CellAt(x, start+y))
+			}
+		}
 	case f.scrolled:
 		// History from this viewer's top, and the live screen under it.
 		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
@@ -1488,16 +1632,7 @@ func (f frame) hint() string {
 		return chipStyle.Styled(" esc ") + hintStyle.Styled(" back to the terminal ")
 	}
 	if f.reading {
-		// Short: the copy's chip and how far back the reader is share the row
-		// on an 80-column console. No arrows where there is nothing to scroll.
-		var scroll string
-		if !f.sess.altScreen() {
-			scroll = hintStyle.Styled(" ↑↓ ")
-		}
-		return chipStyle.Styled(" scrollback ") + scroll +
-			chipStyle.Styled(" c ") + hintStyle.Styled(" copy ") +
-			chipStyle.Styled(" f ") + hintStyle.Styled(" bare ") +
-			chipStyle.Styled(" esc ") + hintStyle.Styled(" live ")
+		return f.readingHint()
 	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
@@ -1510,6 +1645,52 @@ func (f frame) hint() string {
 	// any unbound key cancels anyway.
 	if !f.console() {
 		b.WriteString(chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel "))
+	}
+	return b.String()
+}
+
+// readingHint is scrollback mode's keys. More than an 80-column row holds
+// beside the copy's chip and how far back the reader is, so they are taken
+// in order of what matters and drawn in reading order: the mode, follow and
+// the filter's count first, the way out next, the arrows last. No arrows
+// where there is nothing to scroll.
+func (f frame) readingHint() string {
+	if f.filtering {
+		return chipStyle.Styled(" / ") + hintStyle.Styled(" "+f.filter+"▏ enter apply · esc cancel ")
+	}
+	follow := "off"
+	if f.follow {
+		follow = "on"
+	}
+	var count string
+	if f.pattern != "" {
+		rows, total := f.filtered(f.sess.transcript())
+		count = chipStyle.Styled(fmt.Sprintf(" %s of %s lines ", thousands(len(rows)), thousands(total)))
+	}
+	var arrows string
+	if !f.sess.altScreen() {
+		arrows = hintStyle.Styled(" ↑↓ ")
+	}
+	key := func(k, label string) string { return chipStyle.Styled(" "+k+" ") + hintStyle.Styled(" "+label+" ") }
+	shown := []string{
+		chipStyle.Styled(" scrollback "), arrows, key("s", "follow:"+follow), key("/", "filter"), count,
+		key("C", "clear"), key("c", "copy"), key("f", "bare"), key("esc", "live"),
+	}
+	room := f.frameRect().Dx() - 3
+	if right := uv.NewStyledString(f.copied() + f.back()).UnicodeWidth(); right > 0 {
+		room -= right + 1
+	}
+	keep := make([]bool, len(shown))
+	for _, i := range []int{0, 2, 4, 8, 3, 6, 5, 7, 1} {
+		if w := uv.NewStyledString(shown[i]).UnicodeWidth(); w <= room {
+			keep[i], room = true, room-w
+		}
+	}
+	var b strings.Builder
+	for i, s := range shown {
+		if keep[i] {
+			b.WriteString(s)
+		}
 	}
 	return b.String()
 }
