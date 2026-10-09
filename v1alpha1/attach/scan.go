@@ -61,6 +61,9 @@ type scanner struct {
 	report func(Sequence)
 	state  scanState
 	held   []byte // the in-progress sequence, introducer included
+	// tail is a UTF-8 character the last chunk ended part-way through, held
+	// for the next so it reaches the screen in one write.
+	tail []byte
 }
 
 func newScanner(screen io.Writer, report func(Sequence)) *scanner {
@@ -71,6 +74,7 @@ func newScanner(screen io.Writer, report func(Sequence)) *scanner {
 // run can die mid-sequence, and the next run must not inherit half of one.
 func (s *scanner) reset() {
 	s.held = s.held[:0]
+	s.tail = nil
 	s.state = scanGround
 }
 
@@ -78,6 +82,11 @@ func (s *scanner) reset() {
 // in runs, so a chunk that is all text costs one write; only an open sequence
 // is held across the call.
 func (s *scanner) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(s.tail) > 0 {
+		p = append(s.tail, p...)
+		s.tail = nil
+	}
 	gs := -1 // start of a ground run in p, or -1
 	flush := func(end int) {
 		if gs >= 0 && end > gs {
@@ -193,8 +202,13 @@ func (s *scanner) Write(p []byte) (int, error) {
 			}
 		}
 	}
-	flush(len(p))
-	return len(p), nil
+	end := len(p)
+	if s.state == scanGround && gs >= 0 {
+		end -= partialRune(p[gs:])
+		s.tail = append([]byte(nil), p[end:]...)
+	}
+	flush(end)
+	return n, nil
 }
 
 // reportOSC parses held (ESC ] <payload> <terminator>) and reports it.
@@ -242,4 +256,31 @@ func (s *scanner) reportModes() {
 		}
 		s.report(Sequence{Raw: s.held, Kind: Mode, Cmd: n, Set: set})
 	}
+}
+
+// partialRune is how many bytes at the end of b are a UTF-8 character not
+// yet finished: a lead byte and fewer continuation bytes than it announces.
+func partialRune(b []byte) int {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-4; i-- {
+		c := b[i]
+		if c&0xC0 == 0x80 {
+			continue // a continuation byte; the lead is further back
+		}
+		var need int
+		switch {
+		case c&0xE0 == 0xC0:
+			need = 2
+		case c&0xF0 == 0xE0:
+			need = 3
+		case c&0xF8 == 0xF0:
+			need = 4
+		default:
+			return 0
+		}
+		if have := len(b) - i; have < need {
+			return have
+		}
+		return 0
+	}
+	return 0
 }

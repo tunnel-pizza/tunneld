@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,10 +119,18 @@ type session struct {
 	// needs both. Under screen.
 	behind   *uv.ScreenBuffer
 	behindAt uv.Position
+	// evicted is how many lines have dropped off the history's front since
+	// the session began, so a line's number counted from then stays put as
+	// the history moves under it. Under screen.
+	evicted int
 	// teeMu holds the stream still while a tab joins: sink.Write takes it
 	// around a chunk and its hand-off to the tabs, so a snapshot taken under
 	// it sits exactly between two chunks.
 	teeMu sync.Mutex
+	// out is what one sink.Write hands the tabs: the bytes the scanner let
+	// through to the screen and the sequences it reported, in order, less
+	// the chrome's own OSC. Under teeMu.
+	out []byte
 	// notice is the page's line about what the target cannot do; see Serve.
 	notice string
 
@@ -191,6 +200,8 @@ type viewer struct {
 	// is the tab being a multiview tile.
 	tab      *tee
 	embedded bool
+	// token is a tab's chrome token; see newChromeToken.
+	token string
 }
 
 // embeddedKey marks an attach request's context as coming from a page framed
@@ -404,6 +415,7 @@ func (s *session) revive() {
 	}
 
 	s.screen.Lock()
+	s.evicted += s.em.ScrollbackLen()
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
 	s.behind = nil
@@ -523,6 +535,11 @@ func (w lockedScreen) Write(p []byte) (int, error) {
 	if !w.s.em.IsAltScreen() && entersAlt(p) {
 		w.s.keepBehindLocked()
 	}
+	// An OSC the scanner released for running past maxOSC is text to the
+	// emulator; a tab's xterm would still read the introducer.
+	if !bytes.HasPrefix(p, []byte(chromeIntro)) {
+		w.s.out = append(w.s.out, p...)
+	}
 	return w.s.em.Write(p)
 }
 
@@ -567,8 +584,13 @@ func (w *sink) Write(p []byte) (int, error) {
 	// frame woken before the emulator had the bytes would render the screen
 	// as it was, so the wake is after.
 	s.teeMu.Lock()
+	s.out = s.out[:0]
+	mark := s.historyMark()
 	_, _ = s.scan.Write(p)
-	s.tees(p)
+	s.countEvictions(mark)
+	if len(s.out) > 0 {
+		s.tees(s.out)
+	}
 	s.teeMu.Unlock()
 	s.wakeAll()
 	return n, nil
@@ -603,6 +625,9 @@ func (s *session) said(seq Sequence) {
 		// the mouse is — which decides whose the wheel is.
 		s.setMode(seq.Cmd, seq.Set)
 	case OSC:
+		if seq.Cmd != chromeOSC {
+			s.out = append(s.out, seq.Raw...)
+		}
 		switch {
 		case names(seq.Cmd):
 			s.setName(seq.Cmd, string(seq.Data))
@@ -698,7 +723,7 @@ func (s *session) AttachContainer(ctx context.Context, _, _, _ string, in io.Rea
 	s.revive()
 
 	embedded, _ := ctx.Value(embeddedKey{}).(bool)
-	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64), tab: newTee(), embedded: embedded}
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64), tab: newTee(), embedded: embedded, token: newChromeToken()}
 	s.attachTab(ctx, cancel, v, in, out, resize)
 	return nil
 }
@@ -825,27 +850,38 @@ func (s *session) join(v *viewer) {
 // part removes a viewer and renegotiates, since the smallest window may have
 // been the one that left.
 func (s *session) part(v *viewer) {
-	s.mu.Lock()
-	_, present := s.viewers[v]
-	delete(s.viewers, v)
-	negotiated := s.negotiate()
-	s.mu.Unlock()
-
+	var present bool
+	s.resettle(func() {
+		_, present = s.viewers[v]
+		delete(s.viewers, v)
+	})
 	if present {
-		s.apply(context.Background(), negotiated)
 		s.wakeAll() // one fewer viewer, and every status line says so
-		s.chromeChanged()
 	}
+}
+
+// resettle changes what the negotiation reads, under mu, settles the pane
+// again and tells the target. Under teeMu throughout, with the tabs sent
+// their chrome before the target hears: the emulator and every tab's xterm
+// change size at the same point in the stream, ahead of the program's
+// redraw for it.
+func (s *session) resettle(change func()) {
+	s.teeMu.Lock()
+	s.mu.Lock()
+	change()
+	pane := s.negotiate()
+	s.mu.Unlock()
+	s.chromeChanged()
+	s.teeMu.Unlock()
+	s.apply(context.Background(), pane)
 }
 
 // resizeViewer records what one viewer's window is now and settles the session
 // on it. The frame calls this, because the frame is what learns the size.
 func (s *session) resizeViewer(v *viewer, width, height int) {
-	s.mu.Lock()
-	v.size = remotecommand.TerminalSize{Width: uint16(width), Height: uint16(height)}
-	negotiated := s.negotiate()
-	s.mu.Unlock()
-	s.apply(context.Background(), negotiated)
+	s.resettle(func() {
+		v.size = remotecommand.TerminalSize{Width: uint16(width), Height: uint16(height)}
+	})
 }
 
 // negotiate settles the pty on the smallest window watching it, and resizes
@@ -956,12 +992,8 @@ func (s *session) followMotd(ctx context.Context, m motd.Motd) {
 // so the pane is settled again (shrinking or growing it, as a window resize
 // would, and telling the target), and every viewer redraws.
 func (s *session) motdChanged() {
-	s.mu.Lock()
-	pane := s.negotiate()
-	s.mu.Unlock()
-	s.apply(context.Background(), pane)
+	s.resettle(func() {})
 	s.wakeAll()
-	s.chromeChanged()
 }
 
 // apply forwards a settled size to the target, if there was one. Off the lock:
@@ -1263,15 +1295,123 @@ func (s *session) drawPaneLocked(scr uv.Screen, area uv.Rectangle) {
 // kept, which is how far back a frame can look.
 func (s *session) history() int { return s.em.ScrollbackLen() }
 
-// written is the transcript row the cursor is on: every row above it has
-// been written. The live screen alone on the alternate screen, as transcript.
+// written is the line the cursor is on, numbered from the session's start
+// (see evicted): every line before it has been written.
 func (s *session) written() int {
 	s.screen.RLock()
 	defer s.screen.RUnlock()
-	if s.em.IsAltScreen() {
-		return s.em.CursorPosition().Y
+	return s.evicted + s.em.ScrollbackLen() + s.em.CursorPosition().Y
+}
+
+// indexOf is where line n, numbered from the session's start, is in the
+// transcript now: negative once it has dropped off the history's front.
+func (s *session) indexOf(n int) int {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	return n - s.evicted
+}
+
+// historyMark is the newest history line with cells, by where its cells
+// live, and its index: a line keeps its cells as it moves forward, so
+// finding it again says how many dropped off the front.
+type historyMark struct {
+	at   int
+	cell *uv.Cell
+}
+
+func (s *session) historyMark() historyMark {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	lines := s.em.Scrollback().Lines()
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-64; i-- {
+		if len(lines[i]) > 0 {
+			return historyMark{at: i, cell: &lines[i][0]}
+		}
 	}
-	return s.em.ScrollbackLen() + s.em.CursorPosition().Y
+	return historyMark{at: -1}
+}
+
+// countEvictions adds to evicted the lines that dropped off the history's
+// front since m was taken. Only a full history drops any.
+func (s *session) countEvictions(m historyMark) {
+	if m.at < 0 {
+		return
+	}
+	s.screen.Lock()
+	defer s.screen.Unlock()
+	sb := s.em.Scrollback()
+	lines := sb.Lines()
+	if len(lines) < sb.MaxLines() {
+		return
+	}
+	for j := min(m.at, len(lines)-1); j >= 0; j-- {
+		if len(lines[j]) > 0 && &lines[j][0] == m.cell {
+			s.evicted += m.at - j
+			return
+		}
+	}
+	s.evicted += m.at + 1
+}
+
+// scrollTexts is the transcript as text for a filter: the history lines
+// numbered from first (at least from), which is no earlier than the
+// history's front, and the live rows. The history is empty on the
+// alternate screen.
+func (s *session) scrollTexts(from int) (evicted, kept, first int, hist, live []string) {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	evicted = s.evicted
+	w, h := s.em.Width(), s.em.Height()
+	if !s.em.IsAltScreen() {
+		kept = s.em.ScrollbackLen()
+	}
+	first = max(from, evicted)
+	for n := first; n < evicted+kept; n++ {
+		y := n - evicted
+		hist = append(hist, rowText(w, func(x int) *uv.Cell { return s.em.ScrollbackCellAt(x, y) }))
+	}
+	screen := uv.NewScreenBuffer(w, h)
+	s.drawPaneLocked(screen, screen.Bounds())
+	for y := range h {
+		live = append(live, rowText(w, func(x int) *uv.Cell { return screen.CellAt(x, y) }))
+	}
+	return evicted, kept, first, hist, live
+}
+
+// drawRows draws the transcript rows named, in order, one per row of area.
+func (s *session) drawRows(scr uv.Screen, area uv.Rectangle, rows []int) {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	kept := 0
+	if !s.em.IsAltScreen() {
+		kept = s.em.ScrollbackLen()
+	}
+	screen := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
+	s.drawPaneLocked(screen, screen.Bounds())
+	for i := 0; i < area.Dy() && i < len(rows); i++ {
+		for x := range area.Dx() {
+			c := screen.CellAt(x, rows[i]-kept)
+			if rows[i] < kept {
+				c = s.em.ScrollbackCellAt(x, rows[i])
+			}
+			scr.SetCell(area.Min.X+x, area.Min.Y+i, c)
+		}
+	}
+}
+
+// rowText is one row of w cells as text, the way a selection reads it.
+func rowText(w int, at func(x int) *uv.Cell) string {
+	var b strings.Builder
+	for x := range w {
+		switch c := at(x); {
+		case c == nil:
+			b.WriteByte(' ')
+		case c.Content == "" && c.Width == 0:
+		default:
+			b.WriteString(c.Content)
+		}
+	}
+	return strings.TrimRight(b.String(), " ")
 }
 
 // drawHistory draws the pane as a viewer scrolled back sees it: the kept lines
@@ -1286,7 +1426,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	s.screen.RLock()
 	defer s.screen.RUnlock()
 	kept := s.em.ScrollbackLen()
-	top = max(0, min(top, kept))
+	top = max(0, min(top, kept+s.em.Height()))
 
 	y := 0
 	for ; y < area.Dy() && top+y < kept; y++ {
@@ -1299,7 +1439,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	}
 	live := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
 	s.drawPaneLocked(live, live.Bounds())
-	for r := 0; y < area.Dy(); y, r = y+1, r+1 {
+	for r := max(0, top-kept); y < area.Dy(); y, r = y+1, r+1 {
 		for x := range area.Dx() {
 			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))
 		}

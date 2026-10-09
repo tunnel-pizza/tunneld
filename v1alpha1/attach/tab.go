@@ -2,7 +2,9 @@ package attach
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"sync"
@@ -66,6 +68,22 @@ func (t *tee) close() {
 	t.mu.Unlock()
 }
 
+// chromeOSC is the OSC the chrome travels as, and chromeIntro its
+// introducer. A program's own is dropped from what tabs are sent.
+const (
+	chromeOSC   = 7770
+	chromeIntro = "\x1b]7770"
+)
+
+// newChromeToken is a tab's chrome token: the page takes the one its first
+// chrome message carries and ignores any OSC 7770 without it, so a program
+// that gets one past the session (an 8-bit introducer, say) is not believed.
+func newChromeToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // chrome is what the page draws around the terminal, as the session knows
 // it. Sent as OSC 7770 with the JSON in base64, so the payload has no
 // control bytes for the terminal to act on.
@@ -91,8 +109,9 @@ type chromeMotd struct {
 	HTML     string `json:"html"`
 }
 
-// chromeBytes is the chrome message for a viewer, embedded or not.
-func (s *session) chromeBytes(embedded bool) []byte {
+// chromeBytes is the chrome message for tab v, with its token.
+func (s *session) chromeBytes(v *viewer) []byte {
+	embedded := v.embedded
 	title, subtitle := s.titles()
 	w, h := s.paneSize()
 	c := chrome{
@@ -118,11 +137,11 @@ func (s *session) chromeBytes(embedded bool) []byte {
 		}
 	}
 	raw, _ := json.Marshal(c)
-	return []byte("\x1b]7770;" + base64.StdEncoding.EncodeToString(raw) + "\x1b\\")
+	return []byte(chromeIntro + ";" + v.token + ";" + base64.StdEncoding.EncodeToString(raw) + "\x1b\\")
 }
 
-// chromeChanged sends every tab its chrome again. Off teeMu: it is called
-// from said, which runs inside sink.Write's hold of it.
+// chromeChanged sends every tab its chrome again. It takes mu, never teeMu:
+// said and resettle call it holding teeMu.
 func (s *session) chromeChanged() {
 	s.mu.Lock()
 	tabs := make([]*viewer, 0, len(s.viewers))
@@ -133,7 +152,7 @@ func (s *session) chromeChanged() {
 	}
 	s.mu.Unlock()
 	for _, v := range tabs {
-		v.tab.offer(s.chromeBytes(v.embedded))
+		v.tab.offer(s.chromeBytes(v))
 	}
 }
 
@@ -150,17 +169,19 @@ func (s *session) tees(p []byte) {
 }
 
 // rawStdin writes a tab's keystrokes to the program as they came: xterm
-// encoded them for the modes it saw the program set.
+// encoded them for the modes it saw the program set. A key that meets a run
+// on its way out is dropped rather than an error: the copy feeding this
+// would stop at one, and the run after it would get no keys from the tab.
 type rawStdin struct{ s *session }
 
 func (w rawStdin) Write(p []byte) (int, error) {
 	w.s.mu.Lock()
 	stdin := w.s.stdin
 	w.s.mu.Unlock()
-	if stdin == nil {
-		return len(p), nil
+	if stdin != nil {
+		_, _ = stdin.Write(p)
 	}
-	return stdin.Write(p)
+	return len(p), nil
 }
 
 // attachTab serves one tab: the chrome, a snapshot taken on a chunk
@@ -173,7 +194,7 @@ func (s *session) attachTab(ctx context.Context, cancel context.CancelFunc, v *v
 	s.mu.Lock()
 	s.viewers[v] = struct{}{}
 	s.mu.Unlock()
-	first := append(s.chromeBytes(v.embedded), s.snapshot()...)
+	first := append(s.chromeBytes(v), s.snapshot()...)
 	s.teeMu.Unlock()
 	s.wakeAll()
 	s.chromeChanged()
@@ -192,17 +213,21 @@ func (s *session) attachTab(ctx context.Context, cancel context.CancelFunc, v *v
 		select {
 		case <-v.tab.wake:
 		case <-ctx.Done():
+			// The run may be what ended, and what it printed last is queued
+			// already: that goes before the tab does. A socket that went
+			// takes none of it, harmlessly.
+			if chunks, stale := v.tab.take(); !stale {
+				for _, c := range chunks {
+					if _, err := out.Write(c); err != nil {
+						return
+					}
+				}
+			}
 			return
 		}
 		chunks, stale := v.tab.take()
 		if stale {
-			s.teeMu.Lock()
-			chunks, _ = v.tab.take()
-			snap := append(s.chromeBytes(v.embedded), s.snapshot()...)
-			s.teeMu.Unlock()
-			if _, err := out.Write(snap); err != nil {
-				return
-			}
+			chunks = s.catchUp(v)
 		}
 		for _, c := range chunks {
 			if _, err := out.Write(c); err != nil {
@@ -226,7 +251,6 @@ func (s *session) followTab(ctx context.Context, cancel context.CancelFunc, v *v
 			}
 			if size.Width > 0 && size.Height > 0 {
 				s.resizeViewer(v, int(size.Width), int(size.Height))
-				s.chromeChanged()
 			}
 		case <-ctx.Done():
 			return
@@ -240,4 +264,14 @@ func (s *session) followTab(ctx context.Context, cancel context.CancelFunc, v *v
 			return
 		}
 	}
+}
+
+// catchUp is what a stale tab is sent instead of the bytes it missed: its
+// chrome and a snapshot, taken on a chunk boundary. Whatever was queued
+// meanwhile is already in the snapshot, and goes.
+func (s *session) catchUp(v *viewer) [][]byte {
+	s.teeMu.Lock()
+	defer s.teeMu.Unlock()
+	_, _ = v.tab.take()
+	return [][]byte{append(s.chromeBytes(v), s.snapshot()...)}
 }

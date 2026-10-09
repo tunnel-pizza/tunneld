@@ -516,12 +516,14 @@ Two things there will bite if you change them without knowing why:
   model rendering the emulator that [`session.go`](./v1alpha1/attach/session.go)
   feeds, one per console viewer, because command mode is per viewer. A browser
   tab runs no frame: [`tab.go`](./v1alpha1/attach/tab.go) sends it the chrome
-  as OSC 7770 JSON, then [`snapshot.go`](./v1alpha1/attach/snapshot.go)'s
-  rendering of the emulator as bytes, then the program's own stream through a
-  bounded per-tab tee that re-snapshots rather than drop bytes, so xterm does
-  the terminal's work. Anything that changes the emulator other than the
-  stream (a restart's reset) has to reach the tabs too, or they and the
-  snapshot disagree. The split is worth keeping: `session.go` is locks, pipes
+  as OSC 7770 JSON with the tab's own token, then
+  [`snapshot.go`](./v1alpha1/attach/snapshot.go)'s rendering of the emulator
+  as bytes, then what the scanner let through to the emulator — never the
+  program's own OSC 7770, and never half a sequence — through a bounded
+  per-tab tee that re-snapshots rather than drop bytes, so xterm does the
+  terminal's work. Anything that changes the emulator other than the stream
+  (a resize, a restart's reset) has to reach the tabs at the same point in
+  it, or they and the snapshot disagree. The split is worth keeping: `session.go` is locks, pipes
   and goroutines, `frame.go` is a value type with none of them.
 - **A frame has no terminal to measure.** Its output is a websocket, so the
   renderer's first size report is zero, and a renderer that believes it has no

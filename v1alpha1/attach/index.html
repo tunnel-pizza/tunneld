@@ -66,12 +66,10 @@
         integrity="sha384-w58/aoMoWyj3vL47sXkN/bnchsdCAHHUQslw59i9Ei276OIuUCZgAO5y07Db60Bg"
         crossorigin="anonymous"
         referrerpolicy="no-referrer"></script>
-<!-- Search over the buffer (the page's Search, k9s's filter as a browser
-     does it) and serialization of it (Copy all, Save). -->
+<!-- Search over the buffer: the page's Search, k9s's filter as a browser
+     does it. -->
 <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-search@0.16.0/lib/addon-search.js"
         integrity="sha384-dj0JnorfKQCQPwELv9I4mHsG6e1V3oaf+DLu0hmYSx6DJ+meQBPtk42UbmpNKOAg" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-serialize@0.14.0/lib/addon-serialize.js"
-        integrity="sha384-PFm5zgvNYwEsEG+DhZhnfX4lQoDDfNc7lQtAqGxtzwqj8HimdRlqrGGuscOrEJGW" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 
 <style>
   html, body { height: 100%; margin: 0; background: #000; color: #cfcfcf;
@@ -102,6 +100,9 @@
   .copied { background: #203a20; color: #a8d070; }
   #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; position: relative; }
   #term { width: 100%; height: 100%; }
+  /* Over the terminal rather than beside it: opening one must not resize
+     the pane every viewer shares. */
+  #strip, #search { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; }
   #strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 8px; border-top: 1px solid #1e1e1e; background: #0a0a0a; }
   #strip[hidden] { display: none; }
   #strip button { font: inherit; color: #cfcfcf; background: #161616; border: 1px solid #333; border-radius: 3px; padding: 2px 8px; cursor: pointer; }
@@ -140,23 +141,23 @@
     <span id="why">detached</span>
     <button id="again" type="button">reconnect</button>
   </div>
-</div>
-<div id="search" hidden>
-  <input id="q" type="text" placeholder="search the terminal (regexp)" autocomplete="off">
-  <label><input id="qcase" type="checkbox"> case</label>
-  <span id="qcount"></span>
-  <span class="chip">Enter next · Shift-Enter previous · Esc close</span>
-</div>
-<div id="strip" hidden>
-  <button data-cmd="copy"><span class="chip key">c</span> Copy all</button>
-  <button data-cmd="save"><span class="chip key">s</span> Save</button>
-  <button data-cmd="search"><span class="chip key">/</span> Search</button>
-  <button data-cmd="logs"><span class="chip key">l</span> Logs</button>
-  <button data-cmd="qr"><span class="chip key">q</span> QR</button>
-  <button data-cmd="restart" hidden><span class="chip key">r</span> Restart</button>
-  <button data-cmd="detach"><span class="chip key">d</span> Detach</button>
-  <button data-cmd="exit"><span class="chip key">x</span> Exit</button>
-  <button data-cmd="close"><span class="chip key">esc</span> Close</button>
+  <div id="search" hidden>
+    <input id="q" type="text" placeholder="search the terminal (regexp)" autocomplete="off">
+    <label><input id="qcase" type="checkbox"> case</label>
+    <span id="qcount"></span>
+    <span class="chip">Enter next · Shift-Enter previous · Esc close</span>
+  </div>
+  <div id="strip" hidden>
+    <button data-cmd="copy"><span class="chip key">c</span> Copy all</button>
+    <button data-cmd="save"><span class="chip key">s</span> Save</button>
+    <button data-cmd="search"><span class="chip key">/</span> Search</button>
+    <button data-cmd="logs"><span class="chip key">l</span> Logs</button>
+    <button data-cmd="qr"><span class="chip key">q</span> QR</button>
+    <button data-cmd="restart" hidden><span class="chip key">r</span> Restart</button>
+    <button data-cmd="detach"><span class="chip key">d</span> Detach</button>
+    <button data-cmd="exit"><span class="chip key">x</span> Exit</button>
+    <button data-cmd="close"><span class="chip key">esc</span> Close</button>
+  </div>
 </div>
 <div id="bottom" class="bar">
   <div class="left"><span id="hint"><span class="chip key">^K</span> commands</span><span id="armed" hidden></span><span id="copied" class="chip copied" hidden>copied</span></div>
@@ -186,8 +187,6 @@
   term.loadAddon(fit);
   const search = new SearchAddon.SearchAddon();
   term.loadAddon(search);
-  const serialize = new SerializeAddon.SerializeAddon();
-  term.loadAddon(serialize);
   term.onTitleChange((title) => { document.title = title; });
   term.open($('term'));
   try { const webgl = new WebglAddon.WebglAddon(); webgl.onContextLoss(() => webgl.dispose()); term.loadAddon(webgl); }
@@ -219,9 +218,10 @@
     $('origin').textContent = c.origin || '';
     $('title').textContent = c.title || c.subtitle || '';
     const addr = $('address'), pop = $('popout');
-    addr.hidden = !c.address || c.embedded;
-    addr.textContent = c.address || ''; addr.href = c.address || '#';
-    pop.hidden = !(c.address && c.embedded); pop.href = c.address || '#';
+    const link = /^https?:\/\//i.test(c.address || '') ? c.address : '';
+    addr.hidden = !link || c.embedded;
+    addr.textContent = link; addr.href = link || '#';
+    pop.hidden = !(link && c.embedded); pop.href = link || '#';
     $('banner').replaceChildren(linkify(c.banner || ''));
     $('host').textContent = c.host || '';
     $('viewers').textContent = c.viewers ? `(${c.viewers} viewer${c.viewers === 1 ? '' : 's'})` : '';
@@ -240,11 +240,29 @@
     if (c.cols && c.rows && (term.cols !== c.cols || term.rows !== c.rows)) term.resize(c.cols, c.rows);
     publish();
   };
+  // The token is the first chrome message's, which the session sends
+  // before any of the program's bytes; one without it is the program's and
+  // is not believed.
+  let chromeToken = null;
   term.parser.registerOscHandler(7770, (data) => {
-    try { state = JSON.parse(decoder.decode(Uint8Array.from(atob(data), (ch) => ch.charCodeAt(0)))); draw(); }
+    const i = data.indexOf(';');
+    if (i < 0) return true;
+    const token = data.slice(0, i);
+    if (chromeToken === null) chromeToken = token;
+    if (token !== chromeToken) return true;
+    try { state = JSON.parse(decoder.decode(Uint8Array.from(atob(data.slice(i + 1)), (ch) => ch.charCodeAt(0)))); draw(); }
     catch (e) { console.warn('attach: bad chrome', e); }
     return true;
   });
+  // Queries the session's emulator answers already: an answer from every
+  // tab too would reach the program as typing.
+  for (const id of [{ final: 'c' }, { prefix: '>', final: 'c' }, { prefix: '=', final: 'c' }, { final: 'n' }, { prefix: '?', final: 'n' },
+    { intermediates: '$', final: 'p' }, { prefix: '?', intermediates: '$', final: 'p' }, { prefix: '>', final: 'q' }]) {
+    term.parser.registerCsiHandler(id, () => true);
+  }
+  term.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, () => true);
+  term.parser.registerDcsHandler({ intermediates: '+', final: 'q' }, () => true);
+  for (const osc of [4, 10, 11, 12]) term.parser.registerOscHandler(osc, (data) => data.split(';').includes('?'));
 
   // The grid the multiview panel reads: rows, columns and the cell.
   const publish = () => {
@@ -311,8 +329,11 @@
   let armed = '', armTimer = 0;
   const armGrace = 3000;
   const sendBytes = (data) => send(STDIN, encoder.encode(data));
+  const held = () => !$('strip').hidden || !$('search').hidden || !$('overlay').hidden;
+  // Mouse reports in the X10 encoding come as binary, not as data.
+  term.onBinary((data) => { if (!held()) send(STDIN, Uint8Array.from(data, (ch) => ch.charCodeAt(0))); });
   term.onData((data) => {
-    if (!$('strip').hidden || !$('search').hidden || !$('overlay').hidden) return;
+    if (held()) return;
     const ctl = data === '\x03' ? 'C' : data === '\x04' ? 'D' : '';
     if (ctl && !state.restartable && !state.embedded) {
       if (armed !== ctl) {
@@ -333,8 +354,17 @@
   // the program.
   const strip = $('strip');
   const openStrip = (open) => { strip.hidden = !open; if (!open) term.focus(); };
-  // The whole buffer as plain text, one \n per line.
-  const plain = () => serialize.serialize().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r\n/g, '\n');
+  // The whole buffer as plain text, one \n per line, a wrapped line whole.
+  const plain = () => {
+    const b = term.buffer.active, lines = [];
+    for (let i = 0; i < b.length; i++) {
+      const line = b.getLine(i);
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text; else lines.push(text);
+    }
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  };
   const commands = {
     copy: () => { const text = plain(); navigator.clipboard.writeText(text).then(() => flash('copied')).catch(() => flash('copy refused')); },
     save: () => {

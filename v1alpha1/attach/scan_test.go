@@ -235,3 +235,14 @@ func TestScannerReset(t *testing.T) {
 		t.Errorf("said %d, want 0", len(said))
 	}
 }
+
+// TestPartialRune pins which tail of a chunk is held for the next.
+func TestPartialRune(t *testing.T) {
+	for in, want := range map[string]int{
+		"abc": 0, "a\xe6\x97": 2, "a\xe6": 1, "日": 0, "a\xf0\x9f\x98": 3, "😀": 0, "a\xc3": 1, "\x80\x80": 0,
+	} {
+		if got := partialRune([]byte(in)); got != want {
+			t.Errorf("partialRune(%q) = %d, want %d", in, got, want)
+		}
+	}
+}

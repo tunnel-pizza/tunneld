@@ -2419,3 +2419,80 @@ func TestThousands(t *testing.T) {
 		}
 	}
 }
+
+// TestClearHoldsOnceTheHistoryIsFull pins C past the history's cap: lines
+// dropping off the history's front move what C forgot with them, so the
+// view still shows everything written since.
+func TestClearHoldsOnceTheHistoryIsFull(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	h.s.screen.Lock()
+	h.s.em.SetScrollbackSize(30)
+	h.s.screen.Unlock()
+	write := func(format string, n int) {
+		t.Helper()
+		for i := 1; i <= n; i++ {
+			if _, err := (&sink{s: h.s}).Write(fmt.Appendf(nil, format+"\r\n", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h.mouse(t, paneMsg{})
+	}
+	write("old %02d", 40)
+	h.enterScrollback(t)
+	h.press(t, typing('C'))
+	write("new %02d", 40)
+	if v := stripSGR(h.f.View().Content); strings.Contains(v, "old") || !strings.Contains(v, "new 34") || !strings.Contains(v, "new 40") {
+		t.Errorf("after C and a full history the view is %q; want the newest lines", v)
+	}
+	h.press(t, typing('/'))
+	for _, r := range "new" {
+		h.press(t, typing(r))
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	// 30 history rows and a 10-row screen, its last row blank: new 01 has
+	// dropped off the front as well, and 39 are left.
+	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "39 of 40 lines") {
+		t.Errorf("the filter's count %q; want the 39 new lines still kept, of 40 rows since C", row)
+	}
+}
+
+// TestAFilteredViewScrollsByMatches pins scrolling with a filter applied:
+// a step is a match, not a row of the history the matches are spread over.
+func TestAFilteredViewScrollsByMatches(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	var b strings.Builder
+	for i := 1; i <= 200; i++ {
+		if i%10 == 0 {
+			fmt.Fprintf(&b, "line %03d hit\r\n", i)
+		} else {
+			fmt.Fprintf(&b, "line %03d\r\n", i)
+		}
+	}
+	if _, err := (&sink{s: h.s}).Write([]byte(b.String())); err != nil {
+		t.Fatal(err)
+	}
+	h.mouse(t, paneMsg{})
+	h.enterScrollback(t)
+	h.press(t, typing('/'))
+	for _, r := range "hit" {
+		h.press(t, typing(r))
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	view := func() string { return stripSGR(h.f.View().Content) }
+	if v := view(); !strings.Contains(v, "line 200") {
+		t.Fatalf("following, the filtered view %q lacks the newest match", v)
+	}
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	if v := view(); strings.Contains(v, "line 200") {
+		t.Errorf("one step up, the filtered view %q still ends on the newest match", v)
+	}
+	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "follow:off") {
+		t.Errorf("one step up shows %q, want follow:off", row)
+	}
+	h.press(t, typing('g'))
+	if v := view(); !strings.Contains(v, "line 010") {
+		t.Errorf("g in the filtered view %q; want the first match", v)
+	}
+}

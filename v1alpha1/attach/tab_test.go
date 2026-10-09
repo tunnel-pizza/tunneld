@@ -24,8 +24,11 @@ type tabOut struct {
 }
 
 func (o *tabOut) Write(p []byte) (int, error) {
-	if o.hold != nil {
-		<-o.hold
+	o.mu.Lock()
+	hold := o.hold
+	o.mu.Unlock()
+	if hold != nil {
+		<-hold
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -83,6 +86,7 @@ func chromeOf(t *testing.T, s string) chrome {
 		t.Fatalf("no chrome message in %q", s)
 	}
 	rest := s[i+len("\x1b]7770;"):]
+	rest = rest[strings.IndexByte(rest, ';')+1:] // past the token
 	end := strings.Index(rest, "\x1b\\")
 	raw, err := base64.StdEncoding.DecodeString(rest[:end])
 	if err != nil {
@@ -266,5 +270,176 @@ func TestARestartResetsTheTab(t *testing.T) {
 	got := seen.String()
 	if r := strings.Index(got, "\x1bc"); r < 0 || r > strings.Index(got, "run 2") {
 		t.Errorf("the tab got %q after the restart; want a reset before run 2", got)
+	}
+}
+
+// TestAProgramCannotForgeTheChrome pins that OSC 7770 is the session's
+// alone: a program printing one has it dropped from what tabs are sent.
+func TestAProgramCannotForgeTheChrome(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{}
+	openTab(t, h, out)
+	awaitTab(t, out, "\x1bc")
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"address":"javascript:alert(1)"}`))
+	forged := "\x1b]7770;" + payload
+	for _, p := range []string{forged[:4], forged[4:9], forged[9:] + "\x1b\\before", forged + "\x07after"} {
+		if _, err := (&sink{s: h.s}).Write([]byte(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	awaitTab(t, out, "after")
+	if got := out.String(); strings.Contains(got, payload) || !strings.Contains(got, "beforeafter") {
+		t.Errorf("the tab got %q; want the forged chrome dropped and the text around it kept", got)
+	}
+}
+
+// TestATabJoiningMidSequenceGetsItWhole pins the join at sequence
+// granularity: a CSI or a UTF-8 character cut across two chunks reaches a
+// tab that joined between them whole, after its snapshot.
+func TestATabJoiningMidSequenceGetsItWhole(t *testing.T) {
+	for _, tc := range []struct{ name, first, second, want string }{
+		{"a CSI", "x\x1b[38;5;2", "08mred", "\x1b[38;5;208mred"},
+		{"a UTF-8 character", "x\xe6\x97", "\xa5y", "日y"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newFrameHarness(t)
+			if _, err := (&sink{s: h.s}).Write([]byte(tc.first)); err != nil {
+				t.Fatal(err)
+			}
+			out := &tabOut{}
+			openTab(t, h, out)
+			awaitTab(t, out, "\x1bc")
+			if _, err := (&sink{s: h.s}).Write([]byte(tc.second)); err != nil {
+				t.Fatal(err)
+			}
+			awaitTab(t, out, tc.want)
+		})
+	}
+}
+
+// TestEachTabHasItsOwnChromeToken pins the token the page checks: every
+// chrome message to one tab carries the same one, and no two tabs share it.
+func TestEachTabHasItsOwnChromeToken(t *testing.T) {
+	h := newFrameHarness(t)
+	tokens := func(s string) []string {
+		var out []string
+		for _, m := range strings.Split(s, "\x1b]7770;")[1:] {
+			out = append(out, m[:strings.IndexByte(m, ';')])
+		}
+		return out
+	}
+	a, b := &tabOut{}, &tabOut{}
+	openTab(t, h, a)
+	awaitTab(t, a, "\x1bc")
+	openTab(t, h, b)
+	awaitTab(t, b, "\x1bc")
+	deadline := time.Now().Add(5 * time.Second)
+	for len(tokens(a.String())) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	ta, tb := tokens(a.String()), tokens(b.String())
+	if len(ta) < 2 || len(tb) < 1 {
+		t.Fatalf("chrome messages: %d to the first tab, %d to the second; want the second's join to reach the first", len(ta), len(tb))
+	}
+	for _, tok := range ta {
+		if tok != ta[0] || len(tok) < 32 {
+			t.Errorf("the first tab's tokens %q; want one, 32 hex digits", ta)
+		}
+	}
+	if ta[0] == tb[0] {
+		t.Errorf("both tabs have token %q", ta[0])
+	}
+}
+
+// TestAConsoleResizeReachesTheTabs pins the pane's size reaching every tab
+// whoever changed it: a console window resized renegotiates the pane, and
+// the tabs are sent the new size before the program can redraw for it.
+func TestAConsoleResizeReachesTheTabs(t *testing.T) {
+	h := newFrameHarness(t)
+	out := &tabOut{}
+	openTab(t, h, out)
+	awaitTab(t, out, "\x1bc")
+	h.s.resizeViewer(h.f.v, 61, 21)
+	want := 61 - chromeWidth
+	deadline := time.Now().Add(5 * time.Second)
+	for chromeOf(t, out.String()).Cols != want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := chromeOf(t, out.String()); got.Cols != want || got.Rows != 21-chromeHeight-h.s.bannerRows() {
+		t.Errorf("the tab's chrome says %d×%d after the console went to 61×21; want the pane", got.Cols, got.Rows)
+	}
+}
+
+// TestACatchUpIsTheSnapshotAlone pins a stale tab's catch-up: chunks queued
+// before it are already in the snapshot, and sending them too would draw
+// them twice.
+func TestACatchUpIsTheSnapshotAlone(t *testing.T) {
+	h := newFrameHarness(t)
+	v := &viewer{wake: make(chan struct{}, 1), said: make(chan []byte, 64), tab: newTee(), token: "t"}
+	h.s.mu.Lock()
+	h.s.viewers[v] = struct{}{}
+	h.s.mu.Unlock()
+	if _, err := (&sink{s: h.s}).Write([]byte("once\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	got := h.s.catchUp(v)
+	if len(got) != 1 || strings.Count(string(got[0]), "once") != 1 {
+		t.Errorf("catch-up = %q; want the snapshot alone, with the line once", got)
+	}
+}
+
+// TestATabGetsTheRunsLastWords pins the end of a run reaching a tab: what
+// the program printed before it exited is sent before the tab ends, not
+// raced by the ending.
+func TestATabGetsTheRunsLastWords(t *testing.T) {
+	for range 20 {
+		h := newFrameHarness(t)
+		out := &tabOut{}
+		in, _ := io.Pipe()
+		resize := make(chan remotecommand.TerminalSize)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = h.s.AttachContainer(t.Context(), "", "", "", in, out, nil, true, resize)
+		}()
+		awaitTab(t, out, "\x1bc")
+		// The writer held on one chunk while the last is queued and the run
+		// ends.
+		hold := make(chan struct{})
+		out.mu.Lock()
+		out.hold = hold
+		out.mu.Unlock()
+		for _, line := range []string{"building\r\n", "Error: port in use\r\n"} {
+			if _, err := (&sink{s: h.s}).Write([]byte(line)); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(10 * time.Millisecond) // the writer takes the first alone
+		}
+		close(h.s.done)
+		time.Sleep(20 * time.Millisecond)
+		close(hold)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the tab outlived the run")
+		}
+		if !strings.Contains(out.String(), "port in use") {
+			t.Fatal("the tab ended without the run's last line")
+		}
+	}
+}
+
+// TestTypingSurvivesARunsStdinClosing pins a tab's keys across a restart: a
+// key that meets the old run's closed stdin is dropped, not an error that
+// ends the tab's input for good.
+func TestTypingSurvivesARunsStdinClosing(t *testing.T) {
+	h := newFrameHarness(t)
+	_, pw := io.Pipe()
+	_ = pw.Close()
+	h.s.mu.Lock()
+	h.s.stdin = pw
+	h.s.mu.Unlock()
+	if n, err := (rawStdin{h.s}).Write([]byte("x")); n != 1 || err != nil {
+		t.Errorf("a key on a closed stdin = %d, %v; want it dropped quietly", n, err)
 	}
 }
