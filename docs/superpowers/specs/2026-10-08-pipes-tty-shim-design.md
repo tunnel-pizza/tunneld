@@ -97,6 +97,7 @@ struct tunneld_tty {            /* little-endian, naturally aligned */
     uint16_t rows, cols, xpixel, ypixel;
     int32_t  fg_pgrp;           /* tcsetpgrp's, seeded by tunneld */
     int32_t  sid;               /* the program's session */
+    uint32_t gone;              /* set by tunneld when the run is over */
 };
 ```
 

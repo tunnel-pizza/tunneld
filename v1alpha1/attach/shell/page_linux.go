@@ -36,6 +36,7 @@ const (
 	offCols    = 94
 	offFgPgrp  = 100
 	offSid     = 104
+	offGone    = 108
 )
 
 // lockSteal is how many tries the lock gets before it is taken anyway: a
@@ -182,6 +183,9 @@ func (p *page) Close() error {
 		return nil
 	}
 	p.closed = true
+	// What outlives the run (a nohup'd job) takes the shim out of what it
+	// starts from now on; see ttyshim.c's needs.
+	atomic.StoreUint32(p.word(offGone), 1)
 	err := unix.Munmap(p.mem)
 	if rmErr := os.Remove(p.path); err == nil && !os.IsNotExist(rmErr) {
 		err = rmErr

@@ -210,11 +210,17 @@ func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 // origin is the terminal: a full-screen program needs one to draw at all, and
 // a line-oriented one is no worse for having it. Over pipes it is false, and
 // the page says so — see Notice.
-func (a *TargetImpl) TTY() bool { return !a.pipes }
+func (a *TargetImpl) TTY() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.pipes
+}
 
 // Notice implements attach.Noticer: over pipes, what the page should explain
 // is the machine, not a docker flag.
 func (a *TargetImpl) Notice() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	switch {
 	case a.shim:
 		return shimNotice
@@ -340,10 +346,13 @@ func (a *TargetImpl) stop() error {
 // stdout and stderr are the same file — so there is nothing to demultiplex and
 // nothing to put on a channel of its own.
 func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	if a.shim {
+	a.mu.Lock()
+	shim, pipes := a.shim, a.pipes
+	a.mu.Unlock()
+	if shim {
 		return a.attachShim(ctx, in, out, errw, resize)
 	}
-	if a.pipes {
+	if pipes {
 		return a.attachPipes(ctx, in, out, errw, resize)
 	}
 	cmd := exec.CommandContext(ctx, a.path, a.args...)

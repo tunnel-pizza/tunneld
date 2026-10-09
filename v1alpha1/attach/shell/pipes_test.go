@@ -397,3 +397,20 @@ func TestBashOverPipes(t *testing.T) {
 
 // pipesOnly keeps a test on rung 3, whatever this machine could do.
 func pipesOnly(string) string { return "pipes only, in this test" }
+
+// TestCookedKeepsTypeAheadAcrossRaw pins a line typed without Enter while
+// the program was busy: when the program switches to raw mode (readline at
+// its next prompt), the characters reach it rather than vanishing.
+func TestCookedKeepsTypeAheadAcrossRaw(t *testing.T) {
+	raw := defaultMode
+	raw.lflag &^= lICANON | lECHO
+	mode := defaultMode
+	stdin := &stdinFake{}
+	c := &cooked{echo: io.Discard, stdin: stdin, mode: func() settings { return mode }, signal: func(signalKey) {}}
+	_, _ = c.Write([]byte("ls"))
+	mode = raw
+	_, _ = c.Write([]byte("x"))
+	if got := stdin.String(); got != "lsx" {
+		t.Errorf("sent %q, want the typed-ahead ls before x", got)
+	}
+}

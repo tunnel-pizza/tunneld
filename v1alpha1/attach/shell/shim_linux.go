@@ -3,11 +3,13 @@ package shell
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -33,8 +35,11 @@ const loadWait = time.Second
 // and read back. The caller holds mu.
 func (a *TargetImpl) shimDir() (dir, so string, err error) {
 	obj := ttyshim.Object()
+	if a.closed {
+		return "", "", errors.New("the target is closed")
+	}
 	if a.dir == "" {
-		d, err := os.MkdirTemp("", "tunneld-tty-")
+		d, err := shimTemp()
 		if err != nil {
 			return "", "", err
 		}
@@ -54,6 +59,24 @@ func (a *TargetImpl) shimDir() (dir, so string, err error) {
 		a.dir = d
 	}
 	return a.dir, filepath.Join(a.dir, shimName(obj)), nil
+}
+
+// shimTemp makes the shim's directory where LD_PRELOAD can name it: its list
+// is split on colons and whitespace, so a temp directory holding either is
+// passed over for the next one that does not.
+func shimTemp() (string, error) {
+	last := errors.New("no temp directory LD_PRELOAD can name")
+	for _, base := range []string{os.TempDir(), "/tmp", "/dev/shm", "/var/tmp"} {
+		if strings.ContainsAny(base, ": \t\n") {
+			continue
+		}
+		d, err := os.MkdirTemp(base, "tunneld-tty-")
+		if err == nil {
+			return d, nil
+		}
+		last = err
+	}
+	return "", last
 }
 
 // writeChecked writes data to path and reads it back: a shim cut short by a
@@ -167,7 +190,12 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 	checkLoad := sync.OnceFunc(func() {
 		if !pg.loaded() {
 			unshimmed.Store(true)
-			a.log.Warn("the terminal shim did not load; serving this run over pipes", "program", a.ref, "cost", pipesNotice)
+			a.log.Warn("the terminal shim did not load; serving this program over pipes from now on", "program", a.ref, "cost", pipesNotice)
+			// The runs to come start as pipes do: -i for a bare shell, and
+			// pipes' notice on the page.
+			a.mu.Lock()
+			a.shim, a.pipes = false, true
+			a.mu.Unlock()
 		}
 	})
 	loadTimer := time.AfterFunc(loadWait, checkLoad)

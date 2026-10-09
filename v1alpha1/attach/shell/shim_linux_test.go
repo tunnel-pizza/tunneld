@@ -200,6 +200,50 @@ func TestShimFallsBackWhenTheShimDoesNotLoad(t *testing.T) {
 	if !strings.Contains(logged.String(), "the terminal shim did not load") {
 		t.Errorf("the log %q does not say the shim did not load", logged.String())
 	}
+	if ti.Notice() != pipesNotice || ti.TTY() {
+		t.Errorf("after the shim failed, Notice() %q and TTY() %v; want pipes' for the runs to come", ti.Notice(), ti.TTY())
+	}
+}
+
+// TestShimDirAfterClose pins that a run racing Close makes nothing Close
+// would have removed.
+func TestShimDirAfterClose(t *testing.T) {
+	if ttyshim.Object() == nil {
+		t.Skip("no shim for this platform")
+	}
+	ti := &TargetImpl{ref: "sh", path: "/bin/sh", shim: true, log: slog.New(slog.DiscardHandler)}
+	_ = ti.Close()
+	ti.mu.Lock()
+	dir, _, err := ti.shimDir()
+	ti.mu.Unlock()
+	if err == nil || dir != "" || ti.dir != "" {
+		t.Errorf("shimDir() after Close = %q, %v; want an error and no directory", dir, err)
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// TestShimDirAvoidsPreloadSeparators pins that a temp directory whose path
+// LD_PRELOAD would split (a colon or a space) is not where the shim goes.
+func TestShimDirAvoidsPreloadSeparators(t *testing.T) {
+	if ttyshim.Object() == nil {
+		t.Skip("no shim for this platform")
+	}
+	odd := filepath.Join(t.TempDir(), "a b:c")
+	if err := os.MkdirAll(odd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", odd)
+	ti := &TargetImpl{ref: "sh", path: "/bin/sh", shim: true, log: slog.New(slog.DiscardHandler)}
+	defer func() { _ = ti.Close() }()
+	ti.mu.Lock()
+	_, so, err := ti.shimDir()
+	ti.mu.Unlock()
+	if err != nil {
+		t.Fatalf("shimDir() = %v", err)
+	}
+	if strings.ContainsAny(so, ": \t\n") {
+		t.Errorf("the shim is at %q, which LD_PRELOAD would split", so)
+	}
 }
 
 // TestShimNode pins libuv: node's REPL sees a terminal of the page's width,
@@ -214,4 +258,21 @@ func TestShimNode(t *testing.T) {
 	r.send("process.stdout.columns\r")
 	r.await("100", at)
 	r.send(".exit\r")
+}
+
+// TestShimOutputModeInOrder pins output processing against the order the
+// program wrote in: lines written before it turned OPOST off still get
+// their CR, and what it writes after gets none added.
+func TestShimOutputModeInOrder(t *testing.T) {
+	r := onShim(t, "sh", "-c", `seq 1 30000; stty -opost; printf 'END\r\n'; sleep 0.2`)
+	end := r.await("END", 0)
+	shown := r.out.String()[:end+2]
+	for i := range len(shown) {
+		if shown[i] == '\n' && (i == 0 || shown[i-1] != '\r') {
+			t.Fatalf("a bare newline at %d, before stty -opost took effect: %q", i, shown[max(0, i-20):i+1])
+		}
+	}
+	if !strings.HasSuffix(shown, "END\r\n") {
+		t.Errorf("the page ends %q, want END\\r\\n with no CR added after -opost", shown[len(shown)-8:])
+	}
 }

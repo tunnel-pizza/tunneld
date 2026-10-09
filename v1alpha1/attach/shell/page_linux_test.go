@@ -125,6 +125,13 @@ func TestPageCloseRemovesIt(t *testing.T) {
 // socketpair, the way rung 2 does, and returns everything it printed.
 func runShimmed(t *testing.T, script string, keys string) (string, *page) {
 	t.Helper()
+	return runShimmedThen(t, script, keys, nil)
+}
+
+// runShimmedThen is runShimmed, calling after (if any) once the program has
+// started, with the page and the shim's path.
+func runShimmedThen(t *testing.T, script string, keys string, after func(p *page, so string)) (string, *page) {
+	t.Helper()
 	obj := ttyshim.Object()
 	if obj == nil {
 		t.Skip("no shim for this platform")
@@ -160,6 +167,9 @@ func runShimmed(t *testing.T, script string, keys string) (string, *page) {
 	if keys != "" {
 		_, _ = ours.WriteString(keys)
 	}
+	if after != nil {
+		go after(p, so)
+	}
 	var out bytes.Buffer
 	done := make(chan struct{})
 	go func() { _, _ = out.ReadFrom(ours); close(done) }()
@@ -191,6 +201,7 @@ func TestPageThroughTheShim(t *testing.T) {
 		{"/dev/fd/N is the socket too", `echo via-fd > /dev/fd/1`, "", "via-fd"},
 		{"/proc/self/fd/N is the socket too", `echo via-proc > /proc/self/fd/2`, "", "via-proc"},
 		{"/dev/stdin reads the socket", `head -n1 /dev/stdin`, "first\n", "first"},
+		{"/dev/tty in a new program after stdio is gone", `( exec 0<&- 1>&- 2>&-; /bin/sh -c 'echo late-exec > /dev/tty' )`, "", "late-exec"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, p := runShimmed(t, tc.script, tc.keys)
@@ -216,6 +227,59 @@ func TestPageThroughTheShim(t *testing.T) {
 			t.Errorf("no foreground group recorded; printed %q", out)
 		}
 	})
+}
+
+// TestShimThroughPython pins what a shell cannot reach: execle with an
+// environment of its own, subprocess's vfork with env={}, a FILE opened on
+// /dev/tty, and a child's O_NONBLOCK that must not outlive it.
+func TestShimThroughPython(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3 here")
+	}
+	for _, tc := range []struct {
+		name, script, want string
+	}{
+		{"execle with an empty environment keeps the terminal",
+			`python3 -c "import ctypes; libc = ctypes.CDLL(None); env = (ctypes.c_char_p * 1)(); libc.execle(b'/bin/sh', b'sh', b'-c', b'test -t 0 && echo EXECLE', None, env)"`,
+			"EXECLE"},
+		{"subprocess with env={} keeps the terminal",
+			`python3 -c "import subprocess; subprocess.run(['/bin/sh', '-c', 'test -t 0 && echo VFORK'], env={})"`,
+			"VFORK"},
+		{"a FILE on /dev/tty is line-buffered",
+			`python3 -c "import ctypes, os; libc = ctypes.CDLL(None); libc.fopen.restype = ctypes.c_void_p; f = libc.fopen(b'/dev/tty', b'w'); libc.fputs(b'FOPEN-LINE\n', ctypes.c_void_p(f)); os._exit(0)"`,
+			"FOPEN-LINE"},
+		{"a child's O_NONBLOCK does not reach the next program",
+			`python3 -c "import os; os.set_blocking(0, False)"; python3 -c "import os; print('BLOCKING', os.get_blocking(0))"`,
+			"BLOCKING True"},
+		{"a non-blocking read with nothing typed is EAGAIN, not a wait",
+			`python3 -c "import os; os.set_blocking(0, False); exec('try:\n os.read(0, 1)\nexcept BlockingIOError:\n print(\"EAGAIN\")')"`,
+			"EAGAIN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _ := runShimmed(t, tc.script, "")
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("printed %q, want %q in it", out, tc.want)
+			}
+		})
+	}
+}
+
+// TestShimAfterTheTargetCloses pins a program that outlives its target (a
+// nohup'd job): once the page says the run is over and the shim's file is
+// gone, what it starts runs without the shim rather than with a loader
+// error on every exec.
+func TestShimAfterTheTargetCloses(t *testing.T) {
+	out, _ := runShimmedThen(t, `sleep 0.6; /usr/bin/env; echo ORPHAN-DONE`, "", func(p *page, so string) {
+		time.Sleep(200 * time.Millisecond)
+		_ = p.Close()
+		_ = os.Remove(so)
+	})
+	if !strings.Contains(out, "ORPHAN-DONE") {
+		t.Fatalf("printed %q", out)
+	}
+	if strings.Contains(out, "LD_PRELOAD=") || strings.Contains(out, "TUNNELD_TTY") || strings.Contains(out, "preload") {
+		t.Errorf("after the target closed, a new program still carries the shim: %q", out)
+	}
 }
 
 // shellWithJobControl is a shell whose set -m moves the foreground group:

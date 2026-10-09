@@ -30,11 +30,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 
 extern char **environ;
 
@@ -46,6 +49,7 @@ struct page {
     uint32_t ispeed, ospeed;
     uint16_t rows, cols, xpixel, ypixel;
     int32_t fg_pgrp, sid;
+    uint32_t gone; /* set by tunneld when the run is over */
 };
 _Static_assert(offsetof(struct page, lock) == 8, "page layout");
 _Static_assert(offsetof(struct page, loaded) == 12, "page layout");
@@ -57,6 +61,7 @@ _Static_assert(offsetof(struct page, ispeed) == 84, "page layout");
 _Static_assert(offsetof(struct page, rows) == 92, "page layout");
 _Static_assert(offsetof(struct page, fg_pgrp) == 100, "page layout");
 _Static_assert(offsetof(struct page, sid) == 104, "page layout");
+_Static_assert(offsetof(struct page, gone) == 108, "page layout");
 _Static_assert(sizeof(struct termios) == 60, "libc termios");
 
 /* The kernel's struct termios, which TCGETS and TCSETS* carry. */
@@ -69,12 +74,19 @@ _Static_assert(sizeof(struct kterm) == 36, "kernel termios");
 #define PAGE_MAGIC 0x31595454u
 #define PAGE_BYTES 4096
 #define FD_FLOOR 256
+#define FD_SPAN 16
+#define NB_MAX 1024
 #define LOCK_STEAL 100000
 #define DEV_TTY "/dev/tty"
 
 static struct page *pg;
 static int g_init;
 static int g_ttyfd = -1;
+/* Descriptors this process asked to be non-blocking. The socket is one file
+ * description shared with every process on the terminal, and a reopened
+ * terminal would be a description of its own, so O_NONBLOCK is kept here
+ * per descriptor and the description itself stays blocking. */
+static unsigned char g_nb[NB_MAX];
 static char *g_shim;    /* the shim's path, from TUNNELD_TTY_SHIM */
 static char *g_ttyenv;  /* "TUNNELD_TTY=..." */
 static char *g_shimenv; /* "TUNNELD_TTY_SHIM=..." */
@@ -146,6 +158,34 @@ static void set_settings(const struct termios *t) {
     unlock();
 }
 
+/* Waits, briefly, for the terminal's output to have been read by tunneld:
+ * output processing is applied as tunneld reads, so a change to it must not
+ * overtake what was written under the old one (TCSADRAIN's promise). */
+static void drain(int fd) {
+    for (int i = 0; i < 200; i++) {
+        int queued = 0;
+        if (syscall(SYS_ioctl, fd, TIOCOUTQ, &queued) != 0 || queued <= 0) return;
+        struct timespec ms = {0, 1000000};
+        syscall(SYS_nanosleep, &ms, NULL);
+    }
+}
+
+/* set_settings, after draining when the output processing changes or the
+ * caller asked for a drain. */
+static void apply(int fd, int drained, const struct termios *t) {
+    int saved = errno;
+    uint32_t was = __atomic_load_n(&pg->oflag, __ATOMIC_ACQUIRE);
+    if (drained || was != t->c_oflag) drain(fd);
+    errno = saved;
+    set_settings(t);
+}
+
+static int nonblocking(int fd) { return fd >= 0 && fd < NB_MAX && g_nb[fd] && is_term(fd); }
+
+static void set_nb(int fd, int on) {
+    if (fd >= 0 && fd < NB_MAX) g_nb[fd] = (unsigned char)(on != 0);
+}
+
 static pid_t fg(void) {
     int32_t g = __atomic_load_n(&pg->fg_pgrp, __ATOMIC_ACQUIRE);
     return g > 0 ? g : getpgrp();
@@ -195,7 +235,9 @@ static int named(const char *path) {
 static int open_named(int which, int flags) {
     int fd = which == ANY_TERM ? term_fd() : which;
     if (fd < 0) return -1;
-    return fcntl(fd, (flags & O_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD, 0);
+    int nfd = fcntl(fd, (flags & O_CLOEXEC) ? F_DUPFD_CLOEXEC : F_DUPFD, 0);
+    set_nb(nfd, flags & O_NONBLOCK);
+    return nfd;
 }
 
 static char *entry(const char *name) {
@@ -222,8 +264,13 @@ static void init(void) {
     }
     pg = p;
     __atomic_store_n(&pg->loaded, 1, __ATOMIC_RELEASE);
-    for (int i = 0; i <= 2; i++)
-        if (is_term(i)) { g_ttyfd = fcntl(i, F_DUPFD_CLOEXEC, FD_FLOOR); break; }
+    /* A descriptor to the terminal past the ones programs use, kept across
+     * exec, so /dev/tty still opens in a program started after its parent
+     * closed stdin, stdout and stderr. */
+    for (int i = FD_FLOOR; i < FD_FLOOR + FD_SPAN && g_ttyfd < 0; i++)
+        if (is_term(i)) g_ttyfd = i;
+    for (int i = 0; i <= 2 && g_ttyfd < 0; i++)
+        if (is_term(i)) g_ttyfd = fcntl(i, F_DUPFD, FD_FLOOR);
     const char *shim = getenv("TUNNELD_TTY_SHIM");
     if (shim) g_shim = strdup(shim);
     g_ttyenv = entry("TUNNELD_TTY");
@@ -277,7 +324,7 @@ int tcsetattr(int fd, int act, const struct termios *t) {
     if (is_term(fd)) {
         if (!t) { errno = EFAULT; return -1; }
         if (act != TCSANOW && act != TCSADRAIN && act != TCSAFLUSH) { errno = EINVAL; return -1; }
-        set_settings(t);
+        apply(fd, act != TCSANOW, t);
         return 0;
     }
     REAL(tcsetattr);
@@ -369,7 +416,7 @@ int ioctl(int fd, unsigned long req, ...) {
         t.c_iflag = k->iflag; t.c_oflag = k->oflag; t.c_cflag = k->cflag; t.c_lflag = k->lflag;
         t.c_line = k->line;
         memcpy(t.c_cc, k->cc, sizeof k->cc);
-        set_settings(&t);
+        apply(fd, r != TCSETS, &t);
         return 0;
     }
     case TIOCGWINSZ: {
@@ -395,6 +442,9 @@ int ioctl(int fd, unsigned long req, ...) {
     case TIOCGSID:
         *(pid_t *)arg = sid();
         return 0;
+    case FIONBIO:
+        set_nb(fd, *(const int *)arg);
+        return 0;
     }
     return real_(fd, req, arg);
 }
@@ -402,7 +452,7 @@ int ioctl(int fd, unsigned long req, ...) {
 /* ---- opening the terminal by name -------------------------------------- */
 
 static mode_t mode_of(int flags, va_list ap) {
-    return (flags & (O_CREAT | O_TMPFILE)) ? va_arg(ap, mode_t) : 0;
+    return ((flags & O_CREAT) || (flags & O_TMPFILE) == O_TMPFILE) ? va_arg(ap, mode_t) : 0;
 }
 
 int open(const char *path, int flags, ...) {
@@ -493,7 +543,9 @@ static FILE *fopen_named(int which, const char *mode) {
     int fd = open_named(which, strchr(mode, 'e') ? O_CLOEXEC : 0);
     if (fd < 0) return NULL;
     FILE *f = fdopen(fd, mode);
-    if (!f) close(fd);
+    if (!f) { close(fd); return NULL; }
+    /* A terminal's FILE is line-buffered; libc decides that from S_ISCHR. */
+    setvbuf(f, NULL, _IOLBF, 0);
     return f;
 }
 
@@ -540,102 +592,266 @@ FILE *freopen64(const char *path, const char *mode, FILE *stream) {
     return real_(path, mode, stream);
 }
 
+/* ---- non-blocking, per descriptor ---------------------------------------- */
+
+static int fcntl_term(int fd, int cmd, long arg, int *handled) {
+    *handled = 0;
+    if (!is_term(fd)) return 0;
+    if (cmd == F_GETFL) {
+        REAL_T(fcntl, int (*)(int, int, ...));
+        int fl = real_(fd, F_GETFL);
+        if (fl < 0) return fl;
+        *handled = 1;
+        return (fl & ~O_NONBLOCK) | (fd < NB_MAX && g_nb[fd] ? O_NONBLOCK : 0);
+    }
+    if (cmd == F_SETFL) {
+        REAL_T(fcntl, int (*)(int, int, ...));
+        set_nb(fd, arg & O_NONBLOCK);
+        *handled = 1;
+        return real_(fd, F_SETFL, arg & ~O_NONBLOCK);
+    }
+    return 0;
+}
+
+int fcntl(int fd, int cmd, ...) {
+    ENSURE;
+    va_list ap; va_start(ap, cmd); long arg = va_arg(ap, long); va_end(ap);
+    int handled, r = fcntl_term(fd, cmd, arg, &handled);
+    if (handled) return r;
+    REAL_T(fcntl, int (*)(int, int, ...));
+    return real_(fd, cmd, arg);
+}
+
+int fcntl64(int fd, int cmd, ...) {
+    ENSURE;
+    va_list ap; va_start(ap, cmd); long arg = va_arg(ap, long); va_end(ap);
+    int handled, r = fcntl_term(fd, cmd, arg, &handled);
+    if (handled) return r;
+    REAL2(fcntl64, fcntl, int (*)(int, int, ...));
+    return real_(fd, cmd, arg);
+}
+
+ssize_t read(int fd, void *buf, size_t n) {
+    if (nonblocking(fd)) return recv(fd, buf, n, MSG_DONTWAIT);
+    REAL(read);
+    return real_(fd, buf, n);
+}
+
+/* glibc's fortified read, where the buffer's size is known at compile time. */
+ssize_t __read_chk(int fd, void *buf, size_t n, size_t buflen) {
+    if (nonblocking(fd)) return recv(fd, buf, n < buflen ? n : buflen, MSG_DONTWAIT);
+    {
+        REAL_T(__read_chk, ssize_t (*)(int, void *, size_t, size_t));
+        if (real_) return real_(fd, buf, n, buflen);
+    }
+    REAL_T(read, ssize_t (*)(int, void *, size_t));
+    return real_(fd, buf, n);
+}
+
+ssize_t write(int fd, const void *buf, size_t n) {
+    if (nonblocking(fd)) return send(fd, buf, n, MSG_DONTWAIT);
+    REAL(write);
+    return real_(fd, buf, n);
+}
+
+ssize_t readv(int fd, const struct iovec *iov, int cnt) {
+    if (nonblocking(fd)) {
+        struct msghdr m = {0};
+        m.msg_iov = (struct iovec *)iov;
+        m.msg_iovlen = (size_t)cnt;
+        return recvmsg(fd, &m, MSG_DONTWAIT);
+    }
+    REAL(readv);
+    return real_(fd, iov, cnt);
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int cnt) {
+    if (nonblocking(fd)) {
+        struct msghdr m = {0};
+        m.msg_iov = (struct iovec *)iov;
+        m.msg_iovlen = (size_t)cnt;
+        return sendmsg(fd, &m, MSG_DONTWAIT);
+    }
+    REAL(writev);
+    return real_(fd, iov, cnt);
+}
+
 /* ---- staying loaded across exec ---------------------------------------- */
 
-/* envp with the shim put back if it was dropped (env -i, a program building
- * its own environment), or NULL when envp already carries it. A terminal
- * survives env -i, and this stands in for one. The array, and a rebuilt
- * LD_PRELOAD in *built, are the caller's to free if exec returns. */
-static char **sticky(char *const envp[], char **built) {
-    static char *const none[] = { NULL };
-    *built = NULL;
-    if (!pg || !g_shim || !g_ttyenv || !g_shimenv) return NULL;
-    if (!envp) envp = none; /* musl's clearenv leaves environ NULL */
-    int n = 0, pre = -1, tty = -1, shim = -1;
-    for (; envp[n]; n++) {
-        if (strncmp(envp[n], "LD_PRELOAD=", 11) == 0) pre = n;
-        else if (strncmp(envp[n], "TUNNELD_TTY=", 12) == 0) tty = n;
-        else if (strncmp(envp[n], "TUNNELD_TTY_SHIM=", 17) == 0) shim = n;
+/* What an exec's environment needs: the shim put back if it was dropped (env
+ * -i, a program building its own environment), since a terminal survives
+ * that; or, once the run is over (gone), the shim taken out, so a program
+ * that outlived its target starts what it runs without a loader error. Built
+ * on the caller's stack: a vfork child must not allocate. */
+struct need {
+    int n, pre, tty, shim;
+    int any;    /* the environment changes */
+    int strip;  /* the run is over */
+    size_t len; /* bytes for a rebuilt LD_PRELOAD entry */
+};
+
+static char *const no_env[] = {NULL};
+
+static struct need needs(char *const envp[]) {
+    struct need d = {0, -1, -1, -1, 0, 0, 1};
+    if (!pg || !g_shim || !g_ttyenv || !g_shimenv) return d;
+    if (!envp) envp = no_env; /* musl's clearenv leaves environ NULL */
+    for (; envp[d.n]; d.n++) {
+        if (strncmp(envp[d.n], "LD_PRELOAD=", 11) == 0) d.pre = d.n;
+        else if (strncmp(envp[d.n], "TUNNELD_TTY=", 12) == 0) d.tty = d.n;
+        else if (strncmp(envp[d.n], "TUNNELD_TTY_SHIM=", 17) == 0) d.shim = d.n;
     }
-    int need_pre = pre < 0 || !strstr(envp[pre] + 11, g_shim);
-    if (!need_pre && tty >= 0 && shim >= 0) return NULL;
-    char **out = malloc((size_t)(n + 4) * sizeof *out);
-    if (!out) return NULL;
+    d.strip = __atomic_load_n(&pg->gone, __ATOMIC_ACQUIRE) != 0;
+    int has = d.pre >= 0 && strstr(envp[d.pre] + 11, g_shim);
+    if (d.strip) d.any = has || d.tty >= 0 || d.shim >= 0;
+    else d.any = !has || d.tty < 0 || d.shim < 0;
+    d.len = 11 + (d.pre >= 0 ? strlen(envp[d.pre] + 11) : 0) + 1 + strlen(g_shim) + 1;
+    return d;
+}
+
+/* LD_PRELOAD's value without the shim, written to out. */
+static void without(const char *value, char *out) {
+    size_t sl = strlen(g_shim);
+    char *w = out;
+    const char *p = value;
+    while (*p) {
+        const char *e = p;
+        while (*e && *e != ':' && *e != ' ') e++;
+        size_t l = (size_t)(e - p);
+        if (l && !(l == sl && strncmp(p, g_shim, sl) == 0)) {
+            if (w != out) *w++ = ':';
+            memcpy(w, p, l);
+            w += l;
+        }
+        p = *e ? e + 1 : e;
+    }
+    *w = 0;
+}
+
+static char *const *fill(char *const envp[], const struct need *d, char **out, char *pre) {
+    if (!envp) envp = no_env;
     int m = 0;
-    for (int i = 0; i < n; i++)
-        if (i != pre || !need_pre) out[m++] = envp[i];
-    if (need_pre) {
-        const char *old = pre >= 0 ? envp[pre] + 11 : "";
-        size_t len = 11 + strlen(old) + 1 + strlen(g_shim) + 1;
-        *built = malloc(len);
-        if (!*built) { free(out); return NULL; }
-        snprintf(*built, len, "LD_PRELOAD=%s%s%s", old, *old ? ":" : "", g_shim);
-        out[m++] = *built;
+    for (int i = 0; i < d->n; i++) {
+        if (i == d->pre || i == d->tty || i == d->shim) continue;
+        out[m++] = envp[i];
     }
-    if (tty < 0) out[m++] = g_ttyenv;
-    if (shim < 0) out[m++] = g_shimenv;
+    if (d->strip) {
+        if (d->pre >= 0) {
+            memcpy(pre, "LD_PRELOAD=", 11);
+            without(envp[d->pre] + 11, pre + 11);
+            if (pre[11]) out[m++] = pre;
+        }
+    } else {
+        const char *old = d->pre >= 0 ? envp[d->pre] + 11 : "";
+        if (d->pre >= 0 && strstr(old, g_shim)) {
+            out[m++] = envp[d->pre];
+        } else {
+            snprintf(pre, d->len, "LD_PRELOAD=%s%s%s", old, *old ? ":" : "", g_shim);
+            out[m++] = pre;
+        }
+        out[m++] = d->tty >= 0 ? envp[d->tty] : g_ttyenv;
+        out[m++] = d->shim >= 0 ? envp[d->shim] : g_shimenv;
+    }
     out[m] = NULL;
     return out;
 }
 
+/* e: envp as the exec should get it, on this frame's stack. */
+#define STICKY(envp, e) \
+    struct need d_ = needs(envp); \
+    char *out_[d_.any ? d_.n + 4 : 1]; \
+    char pre_[d_.any ? d_.len : 1]; \
+    char *const *e = d_.any ? fill(envp, &d_, out_, pre_) : (envp)
+
 int execve(const char *path, char *const argv[], char *const envp[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(envp, &built);
+    STICKY(envp, e);
     REAL(execve);
-    int r = real_(path, argv, e ? e : envp);
-    free(e); free(built);
-    return r;
+    return real_(path, argv, e);
 }
 
 int execv(const char *path, char *const argv[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(environ, &built);
+    STICKY(environ, e);
     REAL_T(execve, int (*)(const char *, char *const[], char *const[]));
-    int r = real_(path, argv, e ? e : environ);
-    free(e); free(built);
-    return r;
+    return real_(path, argv, e);
 }
 
 int execvpe(const char *file, char *const argv[], char *const envp[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(envp, &built);
+    STICKY(envp, e);
     REAL(execvpe);
-    int r = real_(file, argv, e ? e : envp);
-    free(e); free(built);
-    return r;
+    return real_(file, argv, e);
 }
 
 int execvp(const char *file, char *const argv[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(environ, &built);
+    STICKY(environ, e);
     REAL_T(execvpe, int (*)(const char *, char *const[], char *const[]));
-    int r = real_(file, argv, e ? e : environ);
-    free(e); free(built);
-    return r;
+    return real_(file, argv, e);
 }
+
+int fexecve(int fd, char *const argv[], char *const envp[]) {
+    ENSURE;
+    STICKY(envp, e);
+    REAL(fexecve);
+    return real_(fd, argv, e);
+}
+
+/* The execl family, gathered into an argv; both libcs implement them by
+ * calling execve inside themselves, out of a preload's reach. */
+#define GATHER(arg, argv, after) \
+    int n_ = 0; \
+    va_list ap_; \
+    if (arg) { \
+        n_ = 1; \
+        va_start(ap_, arg); \
+        while (va_arg(ap_, char *)) n_++; \
+        va_end(ap_); \
+    } \
+    char *argv[n_ + 1]; \
+    argv[0] = (char *)(arg); \
+    va_start(ap_, arg); \
+    for (int i_ = 1; i_ < n_; i_++) argv[i_] = va_arg(ap_, char *); \
+    if (n_) (void)va_arg(ap_, char *); \
+    after; \
+    va_end(ap_); \
+    argv[n_] = NULL
+
+/* glibc declares arg nonnull; POSIX allows an empty argv. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnonnull-compare"
+
+int execl(const char *path, const char *arg, ...) {
+    GATHER(arg, argv, (void)0);
+    return execv(path, argv);
+}
+
+int execlp(const char *file, const char *arg, ...) {
+    GATHER(arg, argv, (void)0);
+    return execvp(file, argv);
+}
+
+int execle(const char *path, const char *arg, ...) {
+    char *const *envp;
+    GATHER(arg, argv, envp = va_arg(ap_, char *const *));
+    return execve(path, argv, envp);
+}
+
+#pragma GCC diagnostic pop
 
 int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
                 const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(envp, &built);
+    STICKY(envp, e);
     REAL(posix_spawn);
-    int r = real_(pid, path, fa, attr, argv, e ? e : envp);
-    free(e); free(built);
-    return r;
+    return real_(pid, path, fa, attr, argv, e);
 }
 
 int posix_spawnp(pid_t *pid, const char *file, const posix_spawn_file_actions_t *fa,
                  const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
     ENSURE;
-    char *built;
-    char **e = sticky(envp, &built);
+    STICKY(envp, e);
     REAL(posix_spawnp);
-    int r = real_(pid, file, fa, attr, argv, e ? e : envp);
-    free(e); free(built);
-    return r;
+    return real_(pid, file, fa, attr, argv, e);
 }

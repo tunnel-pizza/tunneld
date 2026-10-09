@@ -27,6 +27,11 @@ cflags="${TTYSHIM_CFLAGS:--O2 -s -shared -fPIC -Wall -Wextra -Werror -ftls-model
 docker run --rm --platform "$platform" -v "$root:/w" -w /w \
   -e src="$src" -e out="$out" -e cflags="$cflags" -e extra="$extra" -e arch="$arch" -e rel="$rel" \
   debian:12@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 sh -euc '
+  # Packages from a fixed snapshot of the archive, not the live mirror: a
+  # point release must not change the bytes CI compares with the committed
+  # objects.
+  rm -f /etc/apt/sources.list.d/debian.sources
+  echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261001T000000Z bookworm main" > /etc/apt/sources.list
   apt-get -qq update >/dev/null
   apt-get -qq install -y --no-install-recommends gcc libc6-dev ncurses-base >/dev/null
   case $(uname -m) in x86_64) dlver=GLIBC_2.2.5 ;; *) dlver=GLIBC_2.17 ;; esac

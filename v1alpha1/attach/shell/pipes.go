@@ -220,6 +220,14 @@ func (c *cooked) Write(p []byte) (int, error) {
 // raw hands p to the program as it is, but for the keys ISIG makes signals
 // and the CR that ICRNL makes a newline.
 func (c *cooked) raw(p []byte, m settings) (int, error) {
+	// A line typed without Enter before the switch is the program's to read
+	// now, as a terminal hands its line buffer over when ICANON goes. It was
+	// echoed as it was typed.
+	if len(c.line) > 0 {
+		if _, err := c.stdin.Write(c.line); err != nil {
+			return 0, err
+		}
+	}
 	c.line, c.esc, c.cr = c.line[:0], 0, false
 	out := make([]byte, 0, len(p))
 	flush := func() error {
