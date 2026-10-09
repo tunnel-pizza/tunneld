@@ -512,7 +512,6 @@ Every key reaches the program or the container except one:
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
 | then `[` | Scrollback mode: see below. `esc` or `q` goes back to the live screen. |
-| then `m` | Release the mouse (or ask for it again): your terminal, or xterm in the tab, selects natively, and its wheel becomes arrow keys for the program. A program that asked for the mouse still gets it. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 | — | Messages from the provider sit above the frame in every view. No key moves them. |
 

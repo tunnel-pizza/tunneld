@@ -2080,8 +2080,7 @@ func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 }
 
 // consoleHarness is a frame on the console rather than in a tab: the one
-// whose viewer's terminal is the process's own, which is where scrollback
-// mode and the mouse toggle are offered.
+// that lingers, whose viewer's terminal is the process's own.
 func consoleHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newFrameHarness(t)
@@ -2216,29 +2215,15 @@ func TestTheBareViewDropsTheBorder(t *testing.T) {
 	}
 }
 
-// TestTheMouseToggle pins ^K m on the console: the mouse released outside
-// the mode for a viewer who would rather select natively than scroll with
-// the wheel, except to a program that asked for it.
-func TestTheMouseToggle(t *testing.T) {
+// TestTheMouseStaysWithTheFrame pins that ^K m is no command: the frame
+// keeps the mouse outside scrollback mode, since its own selection is the
+// one there is.
+func TestTheMouseStaysWithTheFrame(t *testing.T) {
 	h := consoleHarness(t)
 	h.press(t, commandKey)
 	h.press(t, typing('m'))
-	if got := h.f.View().MouseMode; got != tea.MouseModeNone {
-		t.Errorf("MouseMode after ^K m = %v, want none", got)
-	}
-	if _, err := h.s.scan.Write([]byte("\x1b[?1000h")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
 	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("MouseMode with a program that asked = %v, want it reported", got)
-	}
-	if _, err := h.s.scan.Write([]byte("\x1b[?1000l")); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if got := h.f.View().MouseMode; got != tea.MouseModeCellMotion {
-		t.Errorf("MouseMode after ^K m twice = %v, want cell motion again", got)
+		t.Errorf("MouseMode after ^K m = %v, want the frame still asking for it", got)
 	}
 }
 
@@ -2351,8 +2336,8 @@ func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
 			t.Errorf("%q says nothing about when it is offered", string(a.key))
 		}
 	}
-	if len(offered) < 6 {
-		t.Errorf("offered %d commands on a console; want at least d x l q [ m", len(offered))
+	if len(offered) < 5 {
+		t.Errorf("offered %d commands on a console; want at least d x l q [", len(offered))
 	}
 }
 
@@ -2585,7 +2570,7 @@ func TestAFilteredViewScrollsByMatches(t *testing.T) {
 
 // TestATabAndTheConsoleOfferTheSameCommands pins one design for both: the
 // frame in a browser tab offers every command the console's does, scrollback
-// mode and the mouse toggle among them, and draws the same row for them.
+// mode among them, and draws the same row for them.
 func TestATabAndTheConsoleOfferTheSameCommands(t *testing.T) {
 	tab, con := newFrameHarness(t), consoleHarness(t)
 	tab.f.command, con.f.command = true, true
@@ -2598,8 +2583,8 @@ func TestATabAndTheConsoleOfferTheSameCommands(t *testing.T) {
 	if got, want := keys(tab), keys(con); got != want {
 		t.Errorf("a tab offers %q, the console %q", got, want)
 	}
-	if !strings.Contains(keys(tab), "[") || !strings.Contains(keys(tab), "m") {
-		t.Errorf("a tab offers %q, want scrollback mode and the mouse toggle", keys(tab))
+	if !strings.Contains(keys(tab), "[") || strings.Contains(keys(tab), "m") {
+		t.Errorf("a tab offers %q, want scrollback mode and no mouse toggle", keys(tab))
 	}
 	if got, want := stripSGR(tab.f.hint()), stripSGR(con.f.hint()); got != want {
 		t.Errorf("a tab's row is %q, the console's %q", got, want)

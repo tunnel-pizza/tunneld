@@ -209,14 +209,8 @@ type frame struct {
 	// its wheel then arrives as the arrow keys that scroll here. bare is the
 	// mode drawn without the border, bar or labels, so a native selection
 	// picks up none of them.
-	//
-	// mouseOff is the viewer having released the mouse outside the
-	// mode too (^K m): native selection all the time, at the price of the
-	// wheel scrolling the history. A program that asked for the mouse still
-	// gets it.
-	reading  bool
-	bare     bool
-	mouseOff bool
+	reading bool
+	bare    bool
 
 	// follow keeps the reading view on the newest output; scrolling up turns
 	// it off, s toggles it, G turns it on. pattern filters the view to
@@ -982,12 +976,6 @@ var commands = []action{
 		f.reading, f.selecting, f.selected, f.follow = true, false, false, true
 		return f.scroll(0), nil
 	}},
-	// The mouse, released or asked for again outside the mode: see mouseOff.
-	{'m', "mouse", always, func(f frame) (frame, tea.Cmd) {
-		f.mouseOff = !f.mouseOff
-		f.selecting, f.selected = false, false
-		return f, nil
-	}},
 }
 
 // offered is the commands this frame offers now.
@@ -1110,10 +1098,9 @@ func (f frame) View() tea.View {
 	// draws its own selection from, which is what gives selecting back —
 	// the same way on both, in stream order, copied on release.
 	view.MouseMode = tea.MouseModeCellMotion
-	// Released in scrollback mode, and outside it for a console viewer who
-	// asked (^K m) unless the program wants the mouse: the viewer's terminal
-	// selects natively then. See reading and mouseOff.
-	if f.reading || (f.mouseOff && !f.sess.mouseWanted()) {
+	// Released in scrollback mode, where the viewer's terminal selects
+	// natively. See reading.
+	if f.reading {
 		view.MouseMode = tea.MouseModeNone
 	}
 

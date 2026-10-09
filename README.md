@@ -106,7 +106,6 @@ except one.
 | then <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
 | then <kbd>l</kbd> | Shows tunneld's own recent log lines. |
 | then <kbd>[</kbd> | Scrollback mode: native selection, the arrows scroll, <kbd>s</kbd> follows new output, <kbd>/</kbd> filters, <kbd>C</kbd> clears, <kbd>c</kbd> copies everything, <kbd>f</kbd> drops the border, <kbd>esc</kbd> goes back. |
-| then <kbd>m</kbd> | Releases the mouse for native selection (or asks for it again). |
 | then <kbd>esc</kbd> | Never mind. |
 | wheel | Scrolls back through what went past. Any key returns to the live screen. |
 | drag | Selects, and copies to your clipboard. Double-click a word, triple-click a row, Shift-click to extend. |
