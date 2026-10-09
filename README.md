@@ -105,11 +105,11 @@ except one.
 | then <kbd>x</kbd> | Exit. Ends the run: the tunnel, every origin, and every program it started. |
 | then <kbd>r</kbd> | Restart the program for everyone watching. The address stays. |
 | then <kbd>l</kbd> | Shows tunneld's own recent log lines. |
-| then <kbd>[</kbd> | On the console, scrollback mode: your terminal selects natively, the arrows scroll, <kbd>c</kbd> copies everything, <kbd>f</kbd> drops the border, <kbd>esc</kbd> goes back. |
-| then <kbd>m</kbd> | On the console, releases the mouse for native selection (or asks for it again). |
+| then <kbd>[</kbd> | Scrollback mode: native selection, the arrows scroll, <kbd>s</kbd> follows new output, <kbd>/</kbd> filters, <kbd>C</kbd> clears, <kbd>c</kbd> copies everything, <kbd>f</kbd> drops the border, <kbd>esc</kbd> goes back. |
+| then <kbd>m</kbd> | Releases the mouse for native selection (or asks for it again). |
 | then <kbd>esc</kbd> | Never mind. |
 | wheel | Scrolls back through what went past. Any key returns to the live screen. |
-| drag | Selects, and copies to your clipboard. |
+| drag | Selects, and copies to your clipboard. Double-click a word, triple-click a row, Shift-click to extend. |
 
 On a container, Ctrl+C and Ctrl+D ask to be pressed twice, because once its
 main process exits there's nothing to come back to. On a program they go

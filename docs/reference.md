@@ -511,8 +511,8 @@ Every key reaches the program or the container except one:
 | then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
-| then `[` | Scrollback mode, on the console: see below. `esc` or `q` goes back to the live screen. |
-| then `m` | On the console, release the mouse (or ask for it again): your terminal selects natively, and its wheel becomes arrow keys for the program. A program that asked for the mouse still gets it. |
+| then `[` | Scrollback mode: see below. `esc` or `q` goes back to the live screen. |
+| then `m` | Release the mouse (or ask for it again): your terminal, or xterm in the tab, selects natively, and its wheel becomes arrow keys for the program. A program that asked for the mouse still gets it. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 | — | Messages from the provider sit above the frame in every view. No key moves them. |
 
@@ -532,9 +532,11 @@ you back on the live screen and still reaches the program.
 The frame asks whatever it is drawn on for the mouse — your terminal on the
 console, xterm in the tab — which is what makes the wheel reach it, and what
 stops either from doing its own drag-select. So the frame does that too, the
-same way in both places: drag across the pane and the stretch is highlighted
-and copied to your clipboard on release, with `copied` in the bottom border to
-say so. In the tab the copy goes through the browser's clipboard API; on the
+same way in both places: drag across the pane, double-click a word,
+triple-click a row, or Shift-click to extend what is selected; a drag after a
+double or triple click grows a word or a row at a time. The selection is
+highlighted and copied to your clipboard on release, with `copied` in the
+bottom border to say so. In the tab the copy goes through the browser's clipboard API; on the
 console it goes through OSC 52, which iTerm2 honours once "Applications in
 terminal may access clipboard" is on, VS Code's terminal honours as is, and
 Terminal.app does not — there the highlight shows and nothing is copied.
@@ -545,18 +547,24 @@ to tmux` rather than claiming it landed. Inside screen it goes in screen's own
 wrapping, in pieces screen keeps whole. A copy longer than a terminal will take
 (74,994 bytes encoded) is not sent, and the border says `too large to copy`.
 
-The frame's selection is the pane's rows on screen, by drag. For everything
-your terminal's own selection does — word and line clicks, its copy key,
-copy-on-select, more than a screen — the console has **scrollback mode**
-(`Ctrl+K` then `[`). It releases the mouse, so your terminal selects natively,
-and typing reaches nobody. The arrows (which your terminal's wheel becomes),
-`PgUp`/`PgDn`, `Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the
-history; `c` copies all of it and the live screen (or, past what a terminal
-will take, the end of it, and the border says `copied (end)`); `f` drops the
-border so a selection picks up none of it; `esc` or `q` is the live screen
-again, and a run that ends while you read waits for that. The tab selects
-natively already and has no need of it. On the console the commands' `esc`
-chip gives way to `[` and `m`; any key that is not a command still cancels.
+The frame's selection is the pane's rows on screen. For more than a screen,
+and for everything your terminal's own selection does, there is **scrollback
+mode** (`Ctrl+K` then `[`), the same on the console and in a tab. It releases
+the mouse, so your terminal or the tab's xterm selects natively, and typing
+reaches nobody. The arrows (which the wheel becomes), `PgUp`/`PgDn`,
+`Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the history. It
+follows new output until you scroll up; `s` toggles that and the border says
+`follow:on` or `off`, `G` turns it back on. `/` filters the view to the rows
+matching a pattern (a case-insensitive regexp; `!` first inverts it), with
+the matches reversed and the border saying `12 of 4,310 lines`, or `bad
+pattern`; `esc` clears it. `C` forgets everything written so far, for this
+viewer only. `c` copies all of it and the live screen (or, past what a
+terminal will take, the end of it, and the border says `copied (end)`); `f`
+drops the border so a native selection picks up none of it; `esc` or `q` is
+the live screen again, and a run that ends while you read waits for that.
+The border lists as many of the mode's keys as fit, the way out among the
+first. The commands' row has no `esc` chip, so it fits 80 columns; any key
+that is not a command cancels.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers
