@@ -2317,3 +2317,105 @@ func TestClicksSelectWordsAndRows(t *testing.T) {
 		t.Errorf("a double click on a one-letter word selected %q, want x copied", h.f.sel.text(h.f.composed()))
 	}
 }
+
+// TestScrollbackFollowsFiltersAndClears pins the k9s-style keys: the view
+// follows new output until the reader scrolls up, s and G toggle it and the
+// row says so; / filters the history by a pattern, ! inverting it, with the
+// matches reversed and the count in the row; C forgets the history up to now.
+func TestScrollbackFollowsFiltersAndClears(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&b, "line %02d %s\r\n", i, map[bool]string{true: "even", false: "odd"}[i%2 == 0])
+	}
+	write := func(s string) {
+		t.Helper()
+		if _, err := (&sink{s: h.s}).Write([]byte(s)); err != nil {
+			t.Fatal(err)
+		}
+		h.mouse(t, paneMsg{})
+	}
+	view := func() string { return stripSGR(h.f.View().Content) }
+	row := func() string { return stripSGR(bottomOf(h)) }
+	write(b.String())
+	h.enterScrollback(t)
+	if !strings.Contains(row(), "follow:on") || !strings.Contains(row(), "live") {
+		t.Errorf("entering the mode shows %q, want follow:on and the way out", row())
+	}
+	write("line 21 odd\r\n")
+	if !strings.Contains(view(), "line 21") {
+		t.Error("following, new output is not in view")
+	}
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	if !strings.Contains(row(), "follow:off") {
+		t.Errorf("scrolling up shows %q, want follow:off", row())
+	}
+	write("line 22 even\r\n")
+	if strings.Contains(view(), "line 22") {
+		t.Error("not following, new output moved the view")
+	}
+	h.press(t, typing('G'))
+	if !strings.Contains(row(), "follow:on") || !strings.Contains(view(), "line 22") {
+		t.Error("G did not follow again")
+	}
+	h.press(t, typing('s'))
+	if !strings.Contains(row(), "follow:off") {
+		t.Errorf("s shows %q, want follow:off", row())
+	}
+	h.press(t, typing('s'))
+
+	h.press(t, typing('/'))
+	for _, r := range "EVEN" {
+		h.press(t, typing(r))
+	}
+	if !strings.Contains(row(), "EVEN") {
+		t.Errorf("typing a filter shows %q, want the pattern", row())
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	if v := view(); strings.Contains(v, "odd") || !strings.Contains(v, "line 22 even") {
+		t.Errorf("filtered view %q shows odd lines, or not the newest even one", v)
+	}
+	if !reversed(h.f.View().Content) {
+		t.Error("the matches are not reversed")
+	}
+	if !strings.Contains(row(), " of ") || !strings.Contains(row(), "lines") {
+		t.Errorf("the row %q does not count matches", row())
+	}
+	h.press(t, typing('/'))
+	for _, r := range "!even" {
+		h.press(t, typing(r))
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	if v := view(); strings.Contains(v, "even") || !strings.Contains(v, "odd") {
+		t.Errorf("inverted filter view %q shows even lines", v)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.pattern != "" || !h.f.reading {
+		t.Errorf("escape with a filter: pattern %q reading %v; want the filter cleared and the mode kept", h.f.pattern, h.f.reading)
+	}
+
+	h.press(t, typing('C'))
+	write("line 23 odd\r\n")
+	if v := view(); strings.Contains(v, "even") || !strings.Contains(v, "line 23") {
+		t.Errorf("after C the view %q still has old lines or lacks the new one", v)
+	}
+	h.press(t, typing('g'))
+	if v := view(); strings.Contains(v, "even") || strings.Contains(v, "line 01") {
+		t.Errorf("after C the top of the history %q still has old lines", v)
+	}
+	h.press(t, tea.Key{Code: tea.KeyEscape})
+	if h.f.reading || h.f.cleared != 0 {
+		t.Errorf("leaving the mode: reading %v cleared %d; want both reset", h.f.reading, h.f.cleared)
+	}
+}
+
+// TestThousands pins the count's separators.
+func TestThousands(t *testing.T) {
+	for n, want := range map[int]string{0: "0", 12: "12", 999: "999", 1000: "1,000", 4310: "4,310", 1234567: "1,234,567"} {
+		if got := thousands(n); got != want {
+			t.Errorf("thousands(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

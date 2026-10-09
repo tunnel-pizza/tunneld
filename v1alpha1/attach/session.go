@@ -1263,6 +1263,17 @@ func (s *session) drawPaneLocked(scr uv.Screen, area uv.Rectangle) {
 // kept, which is how far back a frame can look.
 func (s *session) history() int { return s.em.ScrollbackLen() }
 
+// written is the transcript row the cursor is on: every row above it has
+// been written. The live screen alone on the alternate screen, as transcript.
+func (s *session) written() int {
+	s.screen.RLock()
+	defer s.screen.RUnlock()
+	if s.em.IsAltScreen() {
+		return s.em.CursorPosition().Y
+	}
+	return s.em.ScrollbackLen() + s.em.CursorPosition().Y
+}
+
 // drawHistory draws the pane as a viewer scrolled back sees it: the kept lines
 // from top downward, and below the last of them the live screen from its own
 // first row. A top at or past the end of the history is the live screen.
