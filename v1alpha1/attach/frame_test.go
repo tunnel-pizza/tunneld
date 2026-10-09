@@ -2355,3 +2355,29 @@ func TestTheAltScreenModeOffersNoScrolling(t *testing.T) {
 		t.Errorf("bottom border = %q, offers scrolling where there is nothing to scroll", bottom)
 	}
 }
+
+// TestEveryCommandIsOfferedAndHandled pins the one table: every key the
+// bottom row offers has a handler, and every handler is offered somewhere.
+func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.linger = true
+	h.press(t, commandKey)
+	hint := ansi.Strip(bottomOf(h))
+	offered := h.f.offered()
+	for _, a := range offered {
+		if !strings.Contains(hint, " "+string(a.key)+" ") || !strings.Contains(hint, a.label) {
+			t.Errorf("%q %q is in the table but not the hint %q", string(a.key), a.label, hint)
+		}
+		if a.run == nil {
+			t.Errorf("%q has no handler", string(a.key))
+		}
+	}
+	for _, a := range commands {
+		if a.when == nil {
+			t.Errorf("%q says nothing about when it is offered", string(a.key))
+		}
+	}
+	if len(offered) < 6 {
+		t.Errorf("offered %d commands on a console; want at least d x l q [ m", len(offered))
+	}
+}
