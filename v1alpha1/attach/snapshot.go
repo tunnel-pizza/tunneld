@@ -86,8 +86,7 @@ type styled struct {
 func (st *styled) row(b *bytes.Buffer, w int, at func(x int) *uv.Cell) {
 	last := -1
 	for x := 0; x < w; x++ {
-		if c := at(x); c != nil && !(c.Width == 0 && c.Content == "") &&
-			!((c.Content == "" || c.Content == " ") && c.Style.IsZero() && c.Link.URL == "") {
+		if c := at(x); !wideTail(c) && !blankCell(c) {
 			last = x
 		}
 	}
@@ -99,8 +98,8 @@ func (st *styled) row(b *bytes.Buffer, w int, at func(x int) *uv.Cell) {
 			x++
 			continue
 		}
-		if c.Width == 0 && c.Content == "" {
-			x++ // a wide character's tail
+		if wideTail(c) {
+			x++
 			continue
 		}
 		st.set(b, c.Style, c.Link)
@@ -129,3 +128,11 @@ func (st *styled) set(b *bytes.Buffer, style uv.Style, link uv.Link) {
 }
 
 func (st *styled) reset(b *bytes.Buffer) { st.set(b, uv.Style{}, uv.Link{}) }
+
+// wideTail is the second cell of a wide character, which its head carried.
+func wideTail(c *uv.Cell) bool { return c != nil && c.Width == 0 && c.Content == "" }
+
+// blankCell is a cell that draws nothing: no content, no style, no link.
+func blankCell(c *uv.Cell) bool {
+	return c == nil || ((c.Content == "" || c.Content == " ") && c.Style.IsZero() && c.Link.URL == "")
+}
