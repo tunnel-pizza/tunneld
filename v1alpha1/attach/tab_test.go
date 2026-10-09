@@ -443,3 +443,31 @@ func TestTypingSurvivesARunsStdinClosing(t *testing.T) {
 		t.Errorf("a key on a closed stdin = %d, %v; want it dropped quietly", n, err)
 	}
 }
+
+// TestARestartWaitsForTheChunkInHand pins revive's place in the lock order:
+// a chunk still being handed to the tabs finishes before the reset that
+// clears them, rather than landing after it.
+func TestARestartWaitsForTheChunkInHand(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 2
+	t.Cleanup(target.release)
+	s := serveFake(t, target).session
+	target.awaitRun(t, 1)
+	s.mu.Lock()
+	done := s.done
+	s.mu.Unlock()
+	<-done
+
+	s.teeMu.Lock()
+	revived := make(chan struct{})
+	go func() { s.revive(); close(revived) }()
+	select {
+	case <-revived:
+		s.teeMu.Unlock()
+		t.Fatal("revive reset the tabs while a chunk was still being handed to them")
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.teeMu.Unlock()
+	<-revived
+	target.awaitRun(t, 2)
+}

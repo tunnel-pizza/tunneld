@@ -398,6 +398,8 @@ func (s *session) ended() <-chan struct{} {
 // is a new program, and a screen carrying the last one's output would be
 // claiming a state the target was never in.
 func (s *session) revive() {
+	s.teeMu.Lock()
+	defer s.teeMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -420,8 +422,9 @@ func (s *session) revive() {
 	s.em.ClearScrollback()
 	s.behind = nil
 	s.screen.Unlock()
-	// Every tab is reset with it, under mu as tees would: the run is over,
-	// so nothing is streaming, and a tab joining registers under mu too.
+	// Every tab is reset with it, under teeMu and mu as tees would, so the
+	// reset lands after the last chunk handed over and before a joining
+	// tab's snapshot.
 	for v := range s.viewers {
 		if v.tab != nil {
 			v.tab.offer([]byte("\x1bc"))
