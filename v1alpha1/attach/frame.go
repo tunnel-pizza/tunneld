@@ -919,7 +919,10 @@ func (f frame) View() tea.View {
 	// window that has just shrunk draws once before the resize it asked for
 	// has come back.
 	pixels := f.composed()
-	if f.selecting || f.selected {
+	// Not a single click that has not moved: xterm forgets the link under
+	// the pointer when its row is redrawn, so a highlight drawn on the press
+	// would swallow the click that opens it.
+	if (f.selecting || f.selected) && (!f.sel.empty() || f.clicks > 1) {
 		f.sel.highlight(pixels)
 	}
 	blit(buf, pixels, pane.Min.X, pane.Min.Y)

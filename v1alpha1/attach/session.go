@@ -965,6 +965,10 @@ func (s *session) apply(ctx context.Context, size remotecommand.TerminalSize) {
 // could disagree about. The frame hands it back through resizeViewer.
 func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *viewer, resize <-chan remotecommand.TerminalSize) {
 	defer cancel()
+	// Only a size that changed: the page sends its own every 30 seconds as a
+	// heartbeat, and Bubble Tea erases and redraws the whole screen for every
+	// size it is given, which drops the link under the viewer's pointer.
+	var last remotecommand.TerminalSize
 	for {
 		done := s.ended()
 		select {
@@ -972,6 +976,10 @@ func (s *session) follow(ctx context.Context, cancel context.CancelFunc, v *view
 			if !ok {
 				return
 			}
+			if size == last {
+				continue
+			}
+			last = size
 			v.prog.Send(tea.WindowSizeMsg{Width: int(size.Width), Height: int(size.Height)})
 		case <-ctx.Done():
 			return

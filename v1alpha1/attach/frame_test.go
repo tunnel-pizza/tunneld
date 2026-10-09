@@ -2580,3 +2580,26 @@ func TestTheCopyChipCountsTheLinesCopied(t *testing.T) {
 		})
 	}
 }
+
+// TestAPressAloneRedrawsNothing pins a click on a link reaching the terminal
+// drawing the frame: xterm forgets the link under the pointer when its row
+// is redrawn, so a press that has not dragged must leave the row as it was,
+// or the click that follows opens nothing. A drag highlights as before.
+func TestAPressAloneRedrawsNothing(t *testing.T) {
+	h := consoleHarness(t)
+	if _, err := h.s.scan.Write([]byte("an OSC 8 link: \x1b]8;;https://example.com\x1b\\example link\x1b]8;;\x1b\\\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	row := func() string { return strings.Split(h.f.View().Content, "\n")[pane.Min.Y] }
+	before := row()
+	h.mouse(t, tea.MouseClickMsg{X: pane.Min.X + 18, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if got := row(); got != before {
+		t.Errorf("a press redrew its row:\n  before %q\n  after  %q", before, got)
+	}
+	h.mouse(t, tea.MouseMotionMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
+	if !reversed(row()) {
+		t.Error("a drag did not highlight")
+	}
+	h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
+}
