@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ func TestShimEnv(t *testing.T) {
 		"TUNNELD_TTY=/tmp/d/tty-1",
 		"TUNNELD_TTY_SHIM=/tmp/d/ttyshim-x.so",
 		"TERM=xterm-256color",
-		"TERMINFO_DIRS=/tmp/d/terminfo:",
+		"TERMINFO_DIRS=" + filepath.Join("/tmp/d", "terminfo") + ":",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("shimEnv() =\n%q\nwant\n%q", got, want)

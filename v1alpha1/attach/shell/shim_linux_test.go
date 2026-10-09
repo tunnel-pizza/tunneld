@@ -115,7 +115,9 @@ func TestShimShell(t *testing.T) {
 func TestShimVi(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "note")
 	r := onShim(t, "vi", file)
-	time.Sleep(500 * time.Millisecond)
+	// Keys typed before vi has its terminal in raw mode go through line
+	// editing, where Esc is dropped; its first screen of ~ means it is ready.
+	r.await("~", 0)
 	r.send("ihello from vi\x1b")
 	time.Sleep(200 * time.Millisecond)
 	r.send(":wq\r")
