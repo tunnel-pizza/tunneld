@@ -216,6 +216,10 @@ type frame struct {
 	// drag from it grows by.
 	unit selection
 
+	// onAddress is a press on the address in the top border, which its
+	// release copies.
+	onAddress bool
+
 	// asked is where the cursor was drawn when the frame last asked the
 	// terminal where it is, and asking that an answer is outstanding.
 	asked  tea.Position
@@ -542,6 +546,7 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	if m.Button != tea.MouseLeft {
 		return f
 	}
+	f.onAddress = uv.Pos(m.X, m.Y).In(f.address())
 	if !uv.Pos(m.X, m.Y).In(f.pane()) {
 		f.selected, f.selecting, f.clip, f.clicks = false, false, "", 0
 		return f
@@ -604,6 +609,13 @@ func (f frame) dragTo(pos uv.Position) selection {
 // drag under it selects nothing and copies nothing, so a click is still just
 // a click.
 func (f frame) released(m tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	if f.onAddress {
+		f.onAddress = false
+		if uv.Pos(m.X, m.Y).In(f.address()) {
+			return f.copy(f.sess.announced())
+		}
+		return f, nil
+	}
 	if !f.selecting {
 		return f, nil
 	}
@@ -1390,6 +1402,22 @@ func printable(r rune) rune {
 		return r
 	}
 	return -1
+}
+
+// address is where the address's characters are drawn in the top border,
+// empty when they are not: no address yet, the panel's chip in its place, or
+// a row too narrow for it. topRow's placement.
+func (f frame) address() uv.Rectangle {
+	addr := f.sess.announced()
+	if addr == "" || f.embedded {
+		return uv.Rectangle{}
+	}
+	box := f.frameRect()
+	x := box.Max.X - 1 - uv.NewStyledString(f.where()).UnicodeWidth()
+	if x <= box.Min.X+2 {
+		return uv.Rectangle{}
+	}
+	return uv.Rect(x+1, box.Min.Y, uv.NewStyledString(addr).UnicodeWidth(), 1)
 }
 
 // where is the public address this origin answers on, in the top right, once

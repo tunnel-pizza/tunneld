@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -2602,4 +2603,37 @@ func TestAPressAloneRedrawsNothing(t *testing.T) {
 		t.Error("a drag did not highlight")
 	}
 	h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
+}
+
+// TestClickingTheAddressCopiesIt pins a click on the top border's address
+// copying it. A click on the border elsewhere copies nothing.
+func TestClickingTheAddressCopiesIt(t *testing.T) {
+	h := consoleHarness(t)
+	const addr = "https://striped-worm.tunneled.pizza/?0"
+	h.s.announce(addr)
+	click := func(x, y int) tea.Cmd {
+		h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		return h.mouse(t, tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	}
+	y, x := -1, -1
+	for i, l := range strings.Split(h.f.View().Content, "\n") {
+		if j := strings.Index(stripSGR(l), addr); j >= 0 {
+			y, x = i, utf8.RuneCountInString(stripSGR(l)[:j])
+			break
+		}
+	}
+	if y < 0 {
+		t.Fatal("the address is not drawn in the border")
+	}
+	if cmd := click(1, y); cmd != nil {
+		t.Errorf("a click on the border away from the address produced %T", cmd())
+	}
+	cmd := click(x+5, y)
+	if cmd == nil {
+		t.Fatal("a click on the address copied nothing")
+	}
+	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(addr)) + "\a"
+	if raw, ok := cmd().(tea.RawMsg); !ok || fmt.Sprint(raw.Msg) != want {
+		t.Errorf("a click on the address sent %#v, want the address in OSC 52", cmd())
+	}
 }
