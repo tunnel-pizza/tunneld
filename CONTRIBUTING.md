@@ -23,7 +23,7 @@ Deep-link by filename; line numbers will drift.
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
 | `Target`, `Targets`, `Server`, the terminal frame, and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `Resolve`, pty settings, and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Local-program provider, `Resolve`, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
 | The MCP server served to agents on the control path, toolless while it is redesigned | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
