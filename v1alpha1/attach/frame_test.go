@@ -2242,32 +2242,6 @@ func TestTheMouseToggle(t *testing.T) {
 	}
 }
 
-// TestATabHasNoScrollbackMode pins the tab as it was: the page keeps the
-// mouse and xterm selects natively, so neither key does anything there, and
-// neither is offered.
-func TestATabHasNoScrollbackMode(t *testing.T) {
-	h := newFrameHarness(t)
-	h.press(t, commandKey)
-	if hint := stripSGR(bottomOf(h)); strings.Contains(hint, "scrollback") || strings.Contains(hint, "mouse") {
-		t.Errorf("a tab's commands = %q, want neither key offered", hint)
-	}
-	h.press(t, typing('['))
-	h.press(t, commandKey)
-	h.press(t, typing('m'))
-	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("a tab after ^K [ and ^K m: reading %v, MouseMode %v; want neither", h.f.reading, h.f.View().MouseMode)
-	}
-	c := consoleHarness(t)
-	c.s.Target = newRerunTarget(true) // a program: restart offered too
-	c.press(t, commandKey)
-	if hint := stripSGR(bottomOf(c)); !strings.Contains(hint, " [  scroll") || !strings.Contains(hint, " m  mouse") || !strings.Contains(hint, "restart") {
-		t.Errorf("the console's commands at 80 columns = %q, want restart, [ and m all offered whole", hint)
-	}
-}
-
-// TestTheChipsSurviveScrollbackAt80Columns pins the bottom row in the mode
-// on an ordinary console: the copy's chip and how far back the reader is
-// both show beside the mode's keys.
 func TestTheChipsSurviveScrollbackAt80Columns(t *testing.T) {
 	h := consoleHarness(t)
 	h.f.getenv = func(k string) string { return map[string]string{"TMUX": "/tmp/t,1,0"}[k] }
@@ -2529,5 +2503,105 @@ func TestThousands(t *testing.T) {
 		if got := thousands(n); got != want {
 			t.Errorf("thousands(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// TestClearHoldsOnceTheHistoryIsFull pins C past the history's cap: lines
+// dropping off the history's front move what C forgot with them, so the
+// view still shows everything written since.
+func TestClearHoldsOnceTheHistoryIsFull(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	h.s.screen.Lock()
+	h.s.em.SetScrollbackSize(30)
+	h.s.screen.Unlock()
+	write := func(format string, n int) {
+		t.Helper()
+		for i := 1; i <= n; i++ {
+			if _, err := (&sink{s: h.s}).Write(fmt.Appendf(nil, format+"\r\n", i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h.mouse(t, paneMsg{})
+	}
+	write("old %02d", 40)
+	h.enterScrollback(t)
+	h.press(t, typing('C'))
+	write("new %02d", 40)
+	if v := stripSGR(h.f.View().Content); strings.Contains(v, "old") || !strings.Contains(v, "new 34") || !strings.Contains(v, "new 40") {
+		t.Errorf("after C and a full history the view is %q; want the newest lines", v)
+	}
+	h.press(t, typing('/'))
+	for _, r := range "new" {
+		h.press(t, typing(r))
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	// 30 history rows and a 10-row screen, its last row blank: new 01 has
+	// dropped off the front as well, and 39 are left.
+	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "39 of 40 lines") {
+		t.Errorf("the filter's count %q; want the 39 new lines still kept, of 40 rows since C", row)
+	}
+}
+
+// TestAFilteredViewScrollsByMatches pins scrolling with a filter applied:
+// a step is a match, not a row of the history the matches are spread over.
+func TestAFilteredViewScrollsByMatches(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	var b strings.Builder
+	for i := 1; i <= 200; i++ {
+		if i%10 == 0 {
+			fmt.Fprintf(&b, "line %03d hit\r\n", i)
+		} else {
+			fmt.Fprintf(&b, "line %03d\r\n", i)
+		}
+	}
+	if _, err := (&sink{s: h.s}).Write([]byte(b.String())); err != nil {
+		t.Fatal(err)
+	}
+	h.mouse(t, paneMsg{})
+	h.enterScrollback(t)
+	h.press(t, typing('/'))
+	for _, r := range "hit" {
+		h.press(t, typing(r))
+	}
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	view := func() string { return stripSGR(h.f.View().Content) }
+	if v := view(); !strings.Contains(v, "line 200") {
+		t.Fatalf("following, the filtered view %q lacks the newest match", v)
+	}
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	if v := view(); strings.Contains(v, "line 200") {
+		t.Errorf("one step up, the filtered view %q still ends on the newest match", v)
+	}
+	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "follow:off") {
+		t.Errorf("one step up shows %q, want follow:off", row)
+	}
+	h.press(t, typing('g'))
+	if v := view(); !strings.Contains(v, "line 010") {
+		t.Errorf("g in the filtered view %q; want the first match", v)
+	}
+}
+
+// TestATabAndTheConsoleOfferTheSameCommands pins one design for both: the
+// frame in a browser tab offers every command the console's does, scrollback
+// mode and the mouse toggle among them, and draws the same row for them.
+func TestATabAndTheConsoleOfferTheSameCommands(t *testing.T) {
+	tab, con := newFrameHarness(t), consoleHarness(t)
+	tab.f.command, con.f.command = true, true
+	keys := func(h *harness) (out string) {
+		for _, a := range h.f.offered() {
+			out += string(a.key)
+		}
+		return out
+	}
+	if got, want := keys(tab), keys(con); got != want {
+		t.Errorf("a tab offers %q, the console %q", got, want)
+	}
+	if !strings.Contains(keys(tab), "[") || !strings.Contains(keys(tab), "m") {
+		t.Errorf("a tab offers %q, want scrollback mode and the mouse toggle", keys(tab))
+	}
+	if got, want := stripSGR(tab.f.hint()), stripSGR(con.f.hint()); got != want {
+		t.Errorf("a tab's row is %q, the console's %q", got, want)
 	}
 }
