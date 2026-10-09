@@ -437,6 +437,17 @@
   // of the frame having a key at all, and it is cheaper than the price of
   // taking Ctrl-D, which ends a shared session for everybody.
   term.attachCustomKeyEventHandler((e) => {
+    // xterm sends Shift+Enter as a bare CR, the same as Enter. ESC CR is
+    // what a program reads as a newline rather than a submit, the Alt+Enter
+    // a terminal without a keyboard protocol sends. The keypress xterm would
+    // see after is spent too, or the CR goes as well.
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.type === 'keydown') {
+        e.preventDefault();
+        send(STDIN, encoder.encode('\x1b\r'));
+      }
+      return false;
+    }
     if (e.type !== 'keydown' || e.key !== 'k') return true;
     if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return true;
     e.preventDefault();

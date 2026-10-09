@@ -311,7 +311,7 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return f, nil
 		}
 		f.asking = false
-		at := tea.Position{X: msg.X, Y: msg.Y}
+		at := tea.Position(msg)
 		if c := f.cursor(); at == f.asked || (c != nil && at == c.Position) {
 			return f, nil
 		}
