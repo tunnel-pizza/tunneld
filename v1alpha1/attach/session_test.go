@@ -646,3 +646,57 @@ func TestModesAreRecorded(t *testing.T) {
 		t.Errorf("after resetModes: modes %v, hidden %v; want none", got, s.cursorHidden())
 	}
 }
+
+// TestANoTTYTargetGetsItsCarriageReturns pins the output processing a target
+// with no terminal is missing: each bare newline returns the carriage too, on
+// the session's screen and in what a tab is sent alike, so neither stairs.
+func TestANoTTYTargetGetsItsCarriageReturns(t *testing.T) {
+	for _, tty := range []bool{false, true} {
+		t.Run(strconv.FormatBool(tty), func(t *testing.T) {
+			h := newFrameHarness(t)
+			h.s.Target = newFakeTarget("api", tty, true)
+			out := &tabOut{}
+			openTab(t, h, out)
+			awaitTab(t, out, "\x1bc")
+			if _, err := (&sink{s: h.s}).Write([]byte("abc\ndef")); err != nil {
+				t.Fatal(err)
+			}
+			awaitTab(t, out, "def")
+			wantX, wantStream := 3, "abc\r\ndef"
+			if tty {
+				wantX, wantStream = 6, "abc\ndef"
+			}
+			h.s.screen.Lock()
+			x := h.s.em.CursorPosition().X
+			h.s.screen.Unlock()
+			if x != wantX {
+				t.Errorf("cursor at column %d after abc\\ndef; want %d", x, wantX)
+			}
+			if !strings.Contains(out.String(), wantStream) {
+				t.Errorf("the tab got %q; want it to carry %q", out.String(), wantStream)
+			}
+		})
+	}
+}
+
+// TestEntersAlt pins which private-mode CSIs switch to the alternate screen.
+func TestEntersAlt(t *testing.T) {
+	for _, tc := range []struct {
+		csi  string
+		want bool
+	}{
+		{"\x1b[?1049h", true},
+		{"\x1b[?1047h", true},
+		{"\x1b[?47h", true},
+		{"\x1b[?1000;1049h", true},
+		{"\x1b[?1049l", false},
+		{"\x1b[?1000h", false},
+		{"\x1b[?10490h", false},
+		{"\x1b[1049h", false},
+		{"text", false},
+	} {
+		if got := entersAlt([]byte(tc.csi)); got != tc.want {
+			t.Errorf("entersAlt(%q) = %v, want %v", tc.csi, got, tc.want)
+		}
+	}
+}

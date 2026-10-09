@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
@@ -229,5 +230,41 @@ func TestTabChromeFollowsTheSession(t *testing.T) {
 	}
 	if c := chromeOf(t, out.String()); c.Address != "https://x.tunneled.test/" || c.Title != "named" {
 		t.Errorf("chrome = %+v; want the address and the title", c)
+	}
+}
+
+// TestARestartResetsTheTab pins that a tab is told the screen was reset when
+// the program starts over: the session's emulator is cleared, and a tab
+// still showing the last run under the new one would disagree with it.
+func TestARestartResetsTheTab(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 1
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+
+	c := dial(t, s)
+	stdoutUntil(t, c, "run 1")
+
+	s.session.restart()
+	target.awaitRun(t, 2)
+
+	deadline := time.Now().Add(10 * time.Second)
+	var seen strings.Builder
+	for !strings.Contains(seen.String(), "run 2") {
+		if err := c.SetReadDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
+		kind, data, err := c.ReadMessage()
+		if err != nil {
+			t.Fatalf("never saw run 2; got %q (%v)", seen.String(), err)
+		}
+		if kind == websocket.BinaryMessage && len(data) > 0 && data[0] == 1 {
+			seen.Write(data[1:])
+		}
+	}
+	got := seen.String()
+	if r := strings.Index(got, "\x1bc"); r < 0 || r > strings.Index(got, "run 2") {
+		t.Errorf("the tab got %q after the restart; want a reset before run 2", got)
 	}
 }

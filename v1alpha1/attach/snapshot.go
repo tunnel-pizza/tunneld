@@ -34,13 +34,16 @@ func (s *session) snapshot() []byte {
 		b.WriteString("\r\n")
 	}
 	// The main screen's rows follow the history as more lines, so what is on
-	// screen is the last h lines written and the history is above them.
-	// drawPaneLocked reads the current screen. On the alternate one the main
-	// screen is behind it, and vt keeps no accessor for the inactive screen,
-	// so its rows go blank under the alternate one.
+	// screen is the last h lines written and the history is above them. On
+	// the alternate screen the main one is what was kept as it went behind,
+	// with its cursor placed before ?1049h saves it.
+	alt := s.em.IsAltScreen()
 	main := uv.NewScreenBuffer(w, h)
-	if !s.em.IsAltScreen() {
+	switch {
+	case !alt:
 		s.drawPaneLocked(main, main.Bounds())
+	case s.behind != nil:
+		main = *s.behind
 	}
 	for y := range h {
 		st.row(&b, w, func(x int) *uv.Cell { return main.CellAt(x, y) })
@@ -48,8 +51,9 @@ func (s *session) snapshot() []byte {
 			b.WriteString("\r\n")
 		}
 	}
-	if s.em.IsAltScreen() {
+	if alt {
 		st.reset(&b)
+		b.WriteString(ansi.CursorPosition(s.behindAt.X+1, s.behindAt.Y+1))
 		b.WriteString(ansi.SetModeAltScreenSaveCursor)
 		alt := uv.NewScreenBuffer(w, h)
 		s.drawPaneLocked(alt, alt.Bounds())

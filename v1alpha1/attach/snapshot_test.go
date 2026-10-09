@@ -20,15 +20,17 @@ func TestSnapshotRoundTrips(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name, script string
+		after        string // written to both once the snapshot is in
 	}{
-		{"plain text", "hello\r\nworld"},
-		{"sixteen colours and attributes", "\x1b[31;1mred bold\x1b[m \x1b[4;3munder italic\x1b[m \x1b[7mrev\x1b[m \x1b[9mstrike\x1b[m \x1b[2mfaint\x1b[m"},
-		{"256 and true colours", "\x1b[38;5;208morange\x1b[48;2;1;2;3m on blue\x1b[m"},
-		{"wide characters", "日本語 x"},
-		{"a hyperlink", "\x1b]8;;https://example.com\x1b\\here\x1b]8;;\x1b\\ there"},
-		{"history past the screen", long.String()},
-		{"the alternate screen", "main text\r\n\x1b[?1049h\x1b[2;3Halt text"},
-		{"a moved cursor", "abc\x1b[3;5H"},
+		{"plain text", "hello\r\nworld", ""},
+		{"sixteen colours and attributes", "\x1b[31;1mred bold\x1b[m \x1b[4;3munder italic\x1b[m \x1b[7mrev\x1b[m \x1b[9mstrike\x1b[m \x1b[2mfaint\x1b[m", ""},
+		{"256 and true colours", "\x1b[38;5;208morange\x1b[48;2;1;2;3m on blue\x1b[m", ""},
+		{"wide characters", "日本語 x", ""},
+		{"a hyperlink", "\x1b]8;;https://example.com\x1b\\here\x1b]8;;\x1b\\ there", ""},
+		{"history past the screen", long.String(), ""},
+		{"the alternate screen", "main text\r\n\x1b[?1049h\x1b[2;3Halt text", ""},
+		{"the main screen behind the alternate one", "main text\r\nmore\x1b[?1049h\x1b[2;3Halt text", "\x1b[?1049l"},
+		{"a moved cursor", "abc\x1b[3;5H", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newFrameHarness(t)
@@ -45,6 +47,12 @@ func TestSnapshotRoundTrips(t *testing.T) {
 			}
 			fresh := vt.NewSafeEmulator(20, 5)
 			if _, err := fresh.Write(snap); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.scan.Write([]byte(tc.after)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fresh.Write([]byte(tc.after)); err != nil {
 				t.Fatal(err)
 			}
 			if fresh.IsAltScreen() != s.em.IsAltScreen() {

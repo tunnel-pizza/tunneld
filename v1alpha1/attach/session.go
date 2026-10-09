@@ -112,6 +112,12 @@ type session struct {
 	// race the emulator cannot prevent on its own. Never taken with mu held
 	// for longer than the call; a write can block on the pty's replies.
 	screen sync.RWMutex
+	// behind is the main screen as it stood when the program switched to
+	// the alternate one, and behindAt its cursor: vt keeps no accessor for
+	// the inactive screen, and a snapshot taken on the alternate screen
+	// needs both. Under screen.
+	behind   *uv.ScreenBuffer
+	behindAt uv.Position
 	// teeMu holds the stream still while a tab joins: sink.Write takes it
 	// around a chunk and its hand-off to the tabs, so a snapshot taken under
 	// it sits exactly between two chunks.
@@ -400,7 +406,15 @@ func (s *session) revive() {
 	s.screen.Lock()
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
+	s.behind = nil
 	s.screen.Unlock()
+	// Every tab is reset with it, under mu as tees would: the run is over,
+	// so nothing is streaming, and a tab joining registers under mu too.
+	for v := range s.viewers {
+		if v.tab != nil {
+			v.tab.offer([]byte("\x1bc"))
+		}
+	}
 	s.resetModes()
 	s.scan.reset()
 	s.log.Info("running it again", "target", s.Name())
@@ -506,13 +520,47 @@ type lockedScreen struct{ s *session }
 func (w lockedScreen) Write(p []byte) (int, error) {
 	w.s.screen.Lock()
 	defer w.s.screen.Unlock()
+	if !w.s.em.IsAltScreen() && entersAlt(p) {
+		w.s.keepBehindLocked()
+	}
 	return w.s.em.Write(p)
+}
+
+// entersAlt reports whether p is a private-mode set that switches to the
+// alternate screen. The scanner writes such a CSI in one piece.
+func entersAlt(p []byte) bool {
+	params, ok := bytes.CutPrefix(p, []byte("\x1b[?"))
+	if !ok || len(params) == 0 || params[len(params)-1] != 'h' {
+		return false
+	}
+	for m := range bytes.SplitSeq(params[:len(params)-1], []byte(";")) {
+		switch string(m) {
+		case "1049", "1047", "47":
+			return true
+		}
+	}
+	return false
+}
+
+// keepBehindLocked copies the main screen and its cursor into behind. The
+// caller holds screen.
+func (s *session) keepBehindLocked() {
+	main := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
+	s.drawPaneLocked(main, main.Bounds())
+	s.behind = &main
+	s.behindAt = s.em.CursorPosition()
 }
 
 func (w *sink) Close() error { return nil }
 
 func (w *sink) Write(p []byte) (int, error) {
 	s := w.s
+	n := len(p)
+	// A target with no terminal has no output processing behind it: ONLCR
+	// is done here, for the screen and every tab at once.
+	if !s.TTY() {
+		p = bytes.ReplaceAll(p, []byte("\n"), []byte("\r\n"))
+	}
 	// Through the scanner, which writes the screen bytes to the emulator and
 	// hands every OSC and private mode to said, and to every tab as it is;
 	// under teeMu so a tab joining gets a snapshot on a chunk boundary. A
@@ -523,7 +571,7 @@ func (w *sink) Write(p []byte) (int, error) {
 	s.tees(p)
 	s.teeMu.Unlock()
 	s.wakeAll()
-	return len(p), nil
+	return n, nil
 }
 
 // names is the OSC codes that name the terminal: 0 sets both, 1 the subtitle,
