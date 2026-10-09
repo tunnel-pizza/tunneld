@@ -1734,7 +1734,7 @@ func TestBindHandsAProgramItsArguments(t *testing.T) {
 	}
 }
 
-// TestRestartRunsTheProgramAgainAndKeepsTheViewers pins ^K r's contract: the
+// TestRestartRunsTheProgramAgainAndKeepsTheViewers pins ^K q r's contract: the
 // running program is ended and started over, and a viewer watching through
 // the socket is still there for the second run — where a run ending on its
 // own drops every viewer, this end is not theirs. The first run's exit is

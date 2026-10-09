@@ -831,7 +831,7 @@ Two things there will bite if you change them without knowing why:
   arrival starts anything. Reconnecting to a stopped container gets the last
   screen and nothing else, and a button promising otherwise is a lie the page
   tells once per visit.
-- **`^K r` is `End` then `revive`, and a viewer must not mistake it for the
+- **`^K q r` is `End` then `revive`, and a viewer must not mistake it for the
   run ending.** A run ending on its own drops every viewer (`goneMsg`, and
   `follow` returns); a restart ends the run on purpose and wants them kept.
   So `session.restart` publishes a `restarting` channel for as long as it is

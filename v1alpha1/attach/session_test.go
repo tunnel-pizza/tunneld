@@ -420,10 +420,10 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 	left := make(chan error, 1)
 	go func() { left <- h.s.viewLocally(ctx, in, &out) }()
 
-	// ^K x: the command key, then the one that ends the run. Bubble Tea reads
+	// ^K q q: the command key, the quit menu, then the one that ends the run. Bubble Tea reads
 	// keys as soon as the program is up, whatever the size negotiation is
 	// still waiting on, so nothing has to settle first.
-	if _, err := keys.Write([]byte{0x0b, 'x'}); err != nil {
+	if _, err := keys.Write([]byte{0x0b, 'q', 'q'}); err != nil {
 		t.Fatalf("typing: %v", err)
 	}
 
@@ -433,7 +433,7 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 			t.Fatalf("viewLocally: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the console viewer did not leave on ^K x")
+		t.Fatal("the console viewer did not leave on ^K q q")
 	}
 	select {
 	case seen := <-asked:
@@ -444,7 +444,7 @@ func TestLeavingRestoresTheConsoleBeforeTheRunEnds(t *testing.T) {
 			t.Errorf("the run was asked to end with the mouse still reporting; output so far:\n%q", seen)
 		}
 	default:
-		t.Fatal("^K x on the console did not ask the run to end")
+		t.Fatal("^K q q on the console did not ask the run to end")
 	}
 }
 

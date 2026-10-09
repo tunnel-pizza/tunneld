@@ -360,7 +360,7 @@ resumed one: nothing it had open before is still open. A container cannot be
 offered this, since once its PID 1 has exited there is nothing left to attach
 to.
 
-You do not have to wait for it to end. `Ctrl+K` then `r` ends the program and
+You do not have to wait for it to end. `Ctrl+K` then `q` `r` ends the program and
 starts it again, for everyone watching, with the address unchanged — the same
 argv, working directory and environment it had the first time. The program is
 asked first (`SIGTERM` to it and everything it started) and killed if it has
@@ -506,12 +506,14 @@ Every key reaches the program or the container except one:
 | --- | --- |
 | `Ctrl+K` | Opens the frame's commands. The program never sees it. |
 | wheel | Scrolls back through what has gone past, when the program has nothing of its own to scroll. Any key returns you to the live screen. |
-| then `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
-| then `x` | Exit. Ends the run — the tunnel, every origin, and every program it started. |
-| then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
+| then `q` | The ways out, on a row of their own. Any other key closes it. |
+| then `q` `q` | Quit. Ends the run — the tunnel, every origin, and every program it started. |
+| then `q` `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
+| then `q` `d` | Detach. Closes your tab's socket; everyone else keeps watching. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
-| then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
-| then `[` | Scrollback mode: see below. `s` goes back to the live screen. |
+| then `r` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
+| then `c` | Copy the whole history and the live screen. |
+| then `f` | Follow on or off: see below. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 | — | Messages from the provider sit above the frame in every view. No key moves them. |
 
@@ -547,17 +549,14 @@ wrapping, in pieces screen keeps whole. A copy longer than a terminal will take
 (74,994 bytes encoded) is not sent, and the border says `too large to copy`.
 
 The frame's selection is the pane's rows on screen. For more than a screen,
-and for everything your terminal's own selection does, there is **scrollback
-mode** (`Ctrl+K` then `[`), the same on the console and in a tab. It releases
-the mouse, so your terminal or the tab's xterm selects natively, and typing
-reaches nobody. The arrows (which the wheel becomes), `PgUp`/`PgDn`,
-`Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the history. It
-follows new output until you scroll up, and `G` follows again; the border
-says `follow:on` or `off`. `c` copies all of it and the live screen (or,
-past what a terminal will take, the end of it, and the border says `copied
-(end)`). `s` is the live screen again, and a run that ends while you read
-waits for that. The commands' row has no `esc` chip, so it fits 80 columns;
-any key that is not a command cancels.
+`Ctrl+K` then `c` copies the whole history and the live screen (or, past
+what a terminal will take, the end of it, and the border says `copied
+(end)`). `Ctrl+K` then `f` turns following off: the view stays where it is
+and output arrives below it, with the border saying how far behind it is,
+the way the wheel leaves it; the commands' row draws `follow` on red while it
+is off. `Ctrl+K` then `f` again,
+or any key for the program, is the live screen. The commands' row has no
+`esc` chip, so it fits 80 columns; any key that is not a command cancels.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers
@@ -642,8 +641,8 @@ you are looking at, and a tab on top of it is a second copy of the one thing
 you can see — counted as another viewer, competing for the same keystrokes.
 Paste the URL somewhere if you want it there too.
 
-`^K d` gives the console back and leaves the tunnel up — the run says how to
-stop it once you are looking at a prompt again. `^K x` ends the run. So does
+`^K q d` gives the console back and leaves the tunnel up — the run says how to
+stop it once you are looking at a prompt again. `^K q q` ends the run. So does
 the program ending on its own: the frame stays up with its last screen and an
 `ended` chip in the border, and the next key gives the console back with the
 run already over, nothing left waiting for Ctrl+C.
@@ -877,7 +876,7 @@ default.**
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. The run's log file and the terminal's log view keep info and above regardless, and debug too when this asks for it; see [Logs](#logs). |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
-| `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `q` is the code. **Default off.** |
+| `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `r` is the code. **Default off.** |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:

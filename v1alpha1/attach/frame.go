@@ -63,6 +63,7 @@ var (
 	backStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(75), Attrs: uv.AttrBold}
 	copyStyle   = uv.Style{Fg: ansi.IndexedColor(232), Bg: ansi.IndexedColor(114), Attrs: uv.AttrBold}
 	hintStyle   = uv.Style{Fg: ansi.IndexedColor(245)}
+	offStyle    = uv.Style{Fg: ansi.IndexedColor(255), Bg: ansi.IndexedColor(160)}
 	// logStyle is dimmer than the terminal it covers, because what it shows is
 	// tunneld talking about itself rather than the thing anybody came to see.
 	logStyle = uv.Style{Fg: ansi.IndexedColor(245)}
@@ -143,8 +144,10 @@ type frame struct {
 	width, height int
 
 	// command is the frame's key having been pressed: the next keystroke
-	// belongs to the frame and the container will not see it.
+	// belongs to the frame and the container will not see it. menu is the
+	// submenu open in its place, nil for the top row.
 	command bool
+	menu    []action
 
 	// exiting is the viewer having asked the whole run to end. Recorded, not
 	// acted on: the program runs under the run's context, and ending the run
@@ -217,16 +220,6 @@ type frame struct {
 	// terminal where it is, and asking that an answer is outstanding.
 	asked  tea.Position
 	asking bool
-
-	// reading is scrollback mode (^K [): the history is this viewer's to
-	// move through with the keys, typing reaches nobody, and the mouse is
-	// released so the viewer's terminal selects natively — its wheel then
-	// arrives as the arrow keys that scroll here.
-	reading bool
-
-	// follow keeps the reading view on the newest output; scrolling up turns
-	// it off, G turns it on, and s leaves the mode for the live screen.
-	follow bool
 
 	// clip is the chip the last copy left — "copied", or why it was not —
 	// shown until a key, a wheel or another click, as a selection is.
@@ -350,23 +343,9 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if f.scrolled && f.sess.altScreen() {
 			f.scrolled = false
 		}
-		if f.reading && f.follow {
-			f = f.scroll(f.sess.history() + f.pane().Dy())
-		}
 		return f, nil
 
 	case tea.MouseWheelMsg:
-		if f.reading {
-			// The mouse is released in the mode, so a terminal sends arrows
-			// rather than this; one that sends it anyway still scrolls.
-			if msg.Button == tea.MouseWheelUp {
-				return f.scroll(-1), nil
-			}
-			if msg.Button == tea.MouseWheelDown {
-				return f.scroll(1), nil
-			}
-			return f, nil
-		}
 		// A selection is in view coordinates and the wheel moves the view.
 		f.selected, f.selecting, f.clip = false, false, ""
 		return f.wheeled(msg), nil
@@ -384,9 +363,6 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f.released(msg)
 
 	case tea.PasteMsg:
-		if f.reading {
-			return f, nil // nothing is typed into the mode, pasted or not
-		}
 		// Pasting is being present, the same as typing below.
 		f.scrolled, f.selected, f.clip = false, false, ""
 		// A paste is one message, not a burst of keystrokes: the frame's own
@@ -413,23 +389,13 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to the prompt with nothing left waiting, the way a shell session
 		// ends when its shell does. The browser's story is different: there
 		// the page offers a restart, and the frame quit on the end already.
-		// Scrollback mode owns every key until it is left: the arrows are
-		// the terminal's wheel as much as they are keys, and typing reaches
-		// nobody. Before the end's "any key", so a run ending under a reader
-		// does not take the history with the next wheel notch; leaving the
-		// mode hands over to it.
-		if f.reading {
-			return f.read(tea.Key(msg))
-		}
 		if f.ended {
 			f.exiting = true
 			return f, tea.Quit
 		}
-		// Typing is being present. The first keystroke returns a viewer who
-		// scrolled back to the live screen, and still goes where it was
-		// going, so what the key did is what they see next. A selection is
-		// spent the same way: it was copied when the button came up.
-		f.scrolled, f.selected, f.clip = false, false, ""
+		// A selection is spent on a key: it was copied when the button came
+		// up.
+		f.selected, f.clip = false, ""
 		// The log view is the frame's, so every key belongs to it: escape
 		// leaves, and anything else is somebody reading rather than typing at
 		// a terminal they cannot see.
@@ -450,6 +416,13 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if f.command {
 			return f.commanded(tea.Key(msg))
+		}
+		// Typing is being present. The first keystroke for the program
+		// returns a viewer who scrolled back, or paused, to the live screen,
+		// and still goes where it was going, so what the key did is what
+		// they see next. ^K is not one: ^K f is how a pause ends on purpose.
+		if k := tea.Key(msg); k.Code != 'k' || k.Mod != tea.ModCtrl {
+			f.scrolled = false
 		}
 		// The two keystrokes most likely to end a terminal nobody can reopen,
 		// held until they are asked for twice.
@@ -495,9 +468,9 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// It costs the program kill-to-end-of-line, which is a real key and a
 		// cheaper one than Ctrl-D. That reaches the program now: it is a
 		// shared session's most dangerous keystroke and no longer this frame's
-		// to hold, and `q` below is how somebody ends one on purpose.
+		// to hold, and `q q` below is how somebody ends one on purpose.
 		if k := tea.Key(msg); k.Code == 'k' && k.Mod == tea.ModCtrl {
-			f.command = true
+			f.command, f.menu = true, nil
 			return f, nil
 		}
 		// Anything else is the container's.
@@ -680,44 +653,6 @@ func (f frame) behind() int {
 	return max(0, f.sess.history()-f.top)
 }
 
-// read handles a key in scrollback mode. The arrows, the page keys, home and
-// end (and their vi letters) move through the history; s is the live screen
-// again, on or off; c copies all of it. Anything else
-// is spent: the mode is for reading, and a key that reached the program would
-// change what is being read.
-func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
-	f.clip = ""
-	page := max(1, f.pane().Dy())
-	key := k.Text
-	if key == "" && k.Mod == 0 && k.Code < tea.KeyExtended {
-		key = string(k.Code)
-	}
-	switch {
-	case k.Code == tea.KeyUp || key == "k":
-		f = f.scroll(-1)
-	case k.Code == tea.KeyDown || key == "j":
-		f = f.scroll(1)
-	case k.Code == tea.KeyPgUp || key == "b":
-		f = f.scroll(-page)
-	case k.Code == tea.KeyPgDown || k.Code == tea.KeySpace || key == " ":
-		f = f.scroll(page)
-	case k.Code == tea.KeyHome || key == "g":
-		f = f.scroll(-f.sess.history() - page)
-	case k.Code == tea.KeyEnd || key == "G":
-		f = f.scroll(f.sess.history() + page)
-	case key == "s":
-		f.reading, f.scrolled, f.follow = false, false, false
-	case key == "c":
-		text, whole := fitting(f.everything())
-		f, cmd := f.copy(text)
-		if !whole && cmd != nil {
-			f.clip = "copied (end)"
-		}
-		return f, cmd
-	}
-	return f, nil
-}
-
 // fitting is text cut to the end that a terminal will take as one copy (see
 // osc52Max), from the start of a line, and whether that is all of it. The
 // end, because what somebody copying a long history most often wants is what
@@ -734,29 +669,8 @@ func fitting(text string) (string, bool) {
 	return tail, false
 }
 
-// scroll moves a reader step lines through the history, clamped to it, and
-// keeps them reading even at its foot: in the mode, the live screen is the
-// history's last page rather than somewhere the mode is left for. The
-// alternate screen has no history, so there it stays on the live screen.
-func (f frame) scroll(step int) frame {
-	if f.sess.altScreen() {
-		f.scrolled = false
-		return f
-	}
-	kept := f.sess.history()
-	if !f.scrolled {
-		f.top = kept
-	}
-	f.top = max(0, min(f.top+step, kept))
-	f.scrolled = true
-	if step != 0 {
-		f.follow = f.top >= kept
-	}
-	return f
-}
-
-// everything is the whole history and the live screen as text, for c in
-// scrollback mode: what a native selection cannot reach past the pane. Only
+// everything is the whole history and the live screen as text, for ^K c:
+// what a selection cannot reach past the pane. Only
 // the live screen on the alternate screen, which has no history of its own.
 func (f frame) everything() string {
 	buf := f.sess.transcript()
@@ -769,55 +683,84 @@ func (f frame) everything() string {
 }
 
 // action is one entry of the commands menu: its key, its label in the bottom
-// row, when it is offered, and what it does. One table, read by hint and
-// commanded both, so a key is never offered without a handler or handled
-// without being offered.
+// row, when it is offered, and what it does, or the menu it opens in place of
+// the row. One table, read by hint and commanded both, so a key is never
+// offered without a handler or handled without being offered.
 type action struct {
 	key   rune
 	label string
 	when  func(frame) bool
 	run   func(frame) (frame, tea.Cmd)
+	sub   []action
+	// off, when there is one, says the label's setting is off, which draws
+	// it on red.
+	off func(frame) bool
 }
 
 var always = func(frame) bool { return true }
 
 var commands = []action{
-	// This viewer only: the stream is shared and stays up.
-	{'d', "detach", always, func(f frame) (frame, tea.Cmd) { return f, tea.Quit }},
+	// The ways out, a key further away than the rest.
+	{key: 'q', label: "quit", when: always, sub: quitting},
+	// tunneld's own lines, which go to a console somewhere else.
+	{key: 'l', label: "logs", when: always, run: func(f frame) (frame, tea.Cmd) {
+		f.logs = true
+		return f, nil
+	}},
+	// The address as a QR code, for a phone pointed at the screen.
+	{key: 'r', label: "qr", when: always, run: func(f frame) (frame, tea.Cmd) {
+		f.qr = true
+		return f, nil
+	}},
+	// The whole history and the live screen: what a selection cannot reach
+	// past the pane.
+	{key: 'c', label: "copy", when: always, run: func(f frame) (frame, tea.Cmd) {
+		text, whole := fitting(f.everything())
+		f, cmd := f.copy(text)
+		if !whole && cmd != nil {
+			f.clip = "copied (end)"
+		}
+		return f, cmd
+	}},
+	// Following is the live screen; off, the view stays where it is as
+	// output arrives below it, the way the wheel leaves it. See scrolled.
+	{key: 'f', label: "follow", off: func(f frame) bool { return f.scrolled }, when: always, run: func(f frame) (frame, tea.Cmd) {
+		if f.scrolled || f.sess.altScreen() {
+			f.scrolled = false
+			return f, nil
+		}
+		f.scrolled, f.top = true, f.sess.history()
+		return f, nil
+	}},
+}
+
+// quitting is ^K q's menu.
+var quitting = []action{
 	// The whole run: the command ends and everything it started comes down
 	// with it, once the program has returned the terminal; see exiting.
-	{'x', "exit", always, func(f frame) (frame, tea.Cmd) {
+	{key: 'q', label: "quit", when: always, run: func(f frame) (frame, tea.Cmd) {
 		f.exiting = true
 		return f, tea.Quit
 	}},
 	// Only where the program can be started over; a container cannot. Off
 	// this goroutine: ending a program takes as long as it takes to leave.
-	{'r', "restart", func(f frame) bool { return f.sess.restartable() }, func(f frame) (frame, tea.Cmd) {
+	{key: 'r', label: "restart", when: func(f frame) bool { return f.sess.restartable() }, run: func(f frame) (frame, tea.Cmd) {
 		go f.sess.restart()
 		return f, nil
 	}},
-	// tunneld's own lines, which go to a console somewhere else.
-	{'l', "logs", always, func(f frame) (frame, tea.Cmd) {
-		f.logs = true
-		return f, nil
-	}},
-	// The address as a QR code, for a phone pointed at the screen.
-	{'q', "qr", always, func(f frame) (frame, tea.Cmd) {
-		f.qr = true
-		return f, nil
-	}},
-	// Scrollback mode: see reading. A drag under way gets no
-	// release once the mouse is let go.
-	{'[', "scroll", always, func(f frame) (frame, tea.Cmd) {
-		f.reading, f.selecting, f.selected, f.follow = true, false, false, true
-		return f.scroll(0), nil
-	}},
+	// This viewer only: the stream is shared and stays up.
+	{key: 'd', label: "detach", when: always, run: func(f frame) (frame, tea.Cmd) { return f, tea.Quit }},
 }
 
-// offered is the commands this frame offers now.
+// offered is the commands this frame offers now: the open menu's, or the
+// top row's.
 func (f frame) offered() []action {
+	menu := commands
+	if f.menu != nil {
+		menu = f.menu
+	}
 	var out []action
-	for _, a := range commands {
+	for _, a := range menu {
 		if a.when(f) {
 			out = append(out, a)
 		}
@@ -829,11 +772,17 @@ func (f frame) offered() []action {
 // every path does: a mode a viewer can be left in without noticing is worse
 // than one that needs the prefix again.
 func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
-	f.command = false
-	for _, a := range f.offered() {
-		if k.Code == a.key {
-			return a.run(f)
+	offered := f.offered()
+	f.command, f.menu = false, nil
+	for _, a := range offered {
+		if k.Code != a.key {
+			continue
 		}
+		if a.sub != nil {
+			f.command, f.menu = true, a.sub
+			return f, nil
+		}
+		return a.run(f)
 	}
 	// Escape, or anything unbound: the mode closes and the keystroke is spent
 	// on closing it, not forwarded to the program.
@@ -934,11 +883,6 @@ func (f frame) View() tea.View {
 	// draws its own selection from, which is what gives selecting back —
 	// the same way on both, in stream order, copied on release.
 	view.MouseMode = tea.MouseModeCellMotion
-	// Released in scrollback mode, where the viewer's terminal selects
-	// natively. See reading.
-	if f.reading {
-		view.MouseMode = tea.MouseModeNone
-	}
 
 	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
 	// width method, which is what makes a wide character occupy two columns
@@ -1001,7 +945,7 @@ func (f frame) View() tea.View {
 // drawing one there follows the program's writes around the screen rather
 // than showing anybody where they are typing.
 func (f frame) cursor() *tea.Cursor {
-	if f.command || f.logs || f.qr || f.reading || f.scrolled || f.ended || f.sess.cursorHidden() {
+	if f.command || f.logs || f.qr || f.scrolled || f.ended || f.sess.cursorHidden() {
 		return nil
 	}
 	pane := f.pane()
@@ -1546,28 +1490,19 @@ func (f frame) hint() string {
 	if f.logs || f.qr {
 		return chipStyle.Styled(" esc ") + hintStyle.Styled(" back to the terminal ")
 	}
-	if f.reading {
-		return f.readingHint()
-	}
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
 	var b strings.Builder
 	for _, a := range f.offered() {
-		b.WriteString(chipStyle.Styled(" "+string(a.key)+" ") + hintStyle.Styled(" "+a.label+" "))
+		style := hintStyle
+		if a.off != nil && a.off(f) {
+			style = offStyle
+		}
+		b.WriteString(chipStyle.Styled(" "+string(a.key)+" ") + style.Styled(" "+a.label+" "))
 	}
 	// No esc chip, so everything fits 80 columns; any unbound key cancels.
 	return b.String()
-}
-
-// readingHint is scrollback mode's keys: the mode, follow and copy.
-func (f frame) readingHint() string {
-	follow := "off"
-	if f.follow {
-		follow = "on"
-	}
-	key := func(k, label string) string { return chipStyle.Styled(" "+k+" ") + hintStyle.Styled(" "+label+" ") }
-	return chipStyle.Styled(" scrollback ") + key("s", "follow:"+follow) + key("c", "copy")
 }
 
 // viewers names how many are watching, in the one place it is said.
