@@ -196,7 +196,7 @@ type frame struct {
 	// drag from it grows by.
 	unit selection
 
-	// reading is scrollback mode, on the console only (^K [): the history
+	// reading is scrollback mode (^K [): the history
 	// is this viewer's to move through with the keys, typing reaches nobody,
 	// and the mouse is released so the viewer's terminal selects natively —
 	// its wheel then arrives as the arrow keys that scroll here. bare is the
@@ -231,21 +231,17 @@ type frame struct {
 	clip string
 
 	// getenv is the environment of the terminal this frame is drawn on, for
-	// how a copy reaches its clipboard (see osc52): the process's own on the
-	// console, which is the viewer's terminal there, and nil in a tab, where
-	// the terminal is the browser's.
+	// how a copy reaches its clipboard (see osc52): the process's own, which
+	// is the viewer's terminal. nil wraps the copy for no multiplexer.
 	getenv func(string) string
 
-	// linger is this frame staying on the screen after the run ends, until a
-	// key, rather than quitting with it. Set for the console: a tab has the
-	// page to say "ended" and offer a way back, and a console has nothing
-	// under the frame but a prompt. Quitting at once would also lose the
-	// last screen — the line that says why a program exited — and hand the
-	// terminal back before it has answered the queries Bubble Tea sent at
-	// startup, which then land on the prompt as text. ended is the run
-	// having ended while lingering.
-	linger bool
-	ended  bool
+	// ended is the run having ended. The frame stays on the screen until a
+	// key rather than quitting with it: a console has nothing under the
+	// frame but a prompt, quitting at once would lose the last screen — the
+	// line that says why a program exited — and would hand the terminal
+	// back before it has answered the queries Bubble Tea sent at startup,
+	// which then land on the prompt as text.
+	ended bool
 }
 
 // Init asks for nothing. The first render happens as soon as the program
@@ -304,9 +300,6 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return f, func() tea.Msg { return tea.WindowSizeMsg{Width: w, Height: h} }
 
 	case goneMsg:
-		if !f.linger {
-			return f, tea.Quit
-		}
 		f.ended = true
 		return f, nil
 
@@ -374,12 +367,10 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		// A frame that outlived its run is waiting for exactly this: any key
-		// is the reader saying they have seen the last screen. Only the
-		// console's frame lingers, and the reader at the console started the
-		// program and watched it end, so the key ends the run with it — back
-		// to the prompt with nothing left waiting, the way a shell session
-		// ends when its shell does. The browser's story is different: there
-		// the page offers a restart, and the frame quit on the end already.
+		// is the reader saying they have seen the last screen. The reader at
+		// the console started the program and watched it end, so the key
+		// ends the run with it — back to the prompt with nothing left
+		// waiting, the way a shell session ends when its shell does.
 		// Scrollback mode owns every key until it is left: the arrows are
 		// the terminal's wheel as much as they are keys, and typing reaches
 		// nobody. Before the end's "any key", so a run ending under a reader
@@ -646,10 +637,6 @@ func (f frame) behind() int {
 	}
 	return max(0, f.sess.history()-f.top)
 }
-
-// console reports whether this frame is drawn on the console rather than in
-// a tab: the frame that lingers, whose viewer's terminal is this process's.
-func (f frame) console() bool { return f.linger }
 
 // read handles a key in scrollback mode. The arrows, the page keys, home and
 // end (and their vi letters) move through the history; c copies all of it, f
@@ -966,14 +953,14 @@ var commands = []action{
 		f.qr = true
 		return f, nil
 	}},
-	// Scrollback mode, on the console: see reading. A drag under way gets no
+	// Scrollback mode: see reading. A drag under way gets no
 	// release once the mouse is let go.
-	{'[', "scroll", frame.console, func(f frame) (frame, tea.Cmd) {
+	{'[', "scroll", always, func(f frame) (frame, tea.Cmd) {
 		f.reading, f.selecting, f.selected, f.follow = true, false, false, true
 		return f.scroll(0), nil
 	}},
 	// The mouse, released or asked for again outside the mode: see mouseOff.
-	{'m', "mouse", frame.console, func(f frame) (frame, tea.Cmd) {
+	{'m', "mouse", always, func(f frame) (frame, tea.Cmd) {
 		f.mouseOff = !f.mouseOff
 		f.selecting, f.selected = false, false
 		return f, nil
@@ -1697,11 +1684,7 @@ func (f frame) hint() string {
 	for _, a := range f.offered() {
 		b.WriteString(chipStyle.Styled(" "+string(a.key)+" ") + hintStyle.Styled(" "+a.label+" "))
 	}
-	// esc gives up its chip on the console so everything fits 80 columns;
-	// any unbound key cancels anyway.
-	if !f.console() {
-		b.WriteString(chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel "))
-	}
+	// No esc chip, so everything fits 80 columns; any unbound key cancels.
 	return b.String()
 }
 

@@ -1723,32 +1723,20 @@ func TestAClickIsStillAClick(t *testing.T) {
 	}
 }
 
-// TestAConsoleFrameLingersAfterTheRunEnds pins #146's fix. A frame told to
-// linger keeps the last screen up when the run ends, says so in the border,
+// TestAConsoleFrameLingersAfterTheRunEnds pins #146's fix. The frame keeps the last screen up when the run ends, says so in the border,
 // withholds the cursor, and on the next key ends the run and leaves — which is
 // what keeps the terminal's answers to the renderer's startup queries from
 // landing on the prompt, what lets the line saying why a program exited be
 // read, and what puts the reader back at a prompt with nothing still waiting
-// for Ctrl+C. A frame not told to linger, the browser's, quits at once as
-// before and ends nothing: the page offers a restart there.
+// for Ctrl+C.
 func TestAConsoleFrameLingersAfterTheRunEnds(t *testing.T) {
 	h := newFrameHarness(t)
 	if _, err := h.s.em.WriteString("bash: bash: No such file or directory"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	// The browser's frame: gone means quit.
+	// Gone means stay, say so, wait for a key.
 	model, cmd := h.f.Update(goneMsg{})
-	if cmd == nil {
-		t.Fatal("a tab's frame produced no command on goneMsg, want Quit")
-	} else if _, quit := cmd().(tea.QuitMsg); !quit {
-		t.Errorf("a tab's frame produced %T on goneMsg, want QuitMsg", cmd())
-	}
-	h.f = model.(frame)
-
-	// The console's: gone means stay, say so, wait for a key.
-	h.f.linger = true
-	model, cmd = h.f.Update(goneMsg{})
 	h.f = model.(frame)
 	if cmd != nil {
 		t.Errorf("a lingering frame produced %T on goneMsg, want nothing — it stays up", cmd())
@@ -1996,7 +1984,6 @@ func TestBannerNeverEatsTheWholeWindow(t *testing.T) {
 func consoleHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newFrameHarness(t)
-	h.f.linger = true
 	h.f.getenv = func(string) string { return "" }
 	return h
 }
@@ -2248,7 +2235,6 @@ func TestTheAltScreenModeOffersNoScrolling(t *testing.T) {
 // bottom row offers has a handler, and every handler is offered somewhere.
 func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.linger = true
 	h.press(t, commandKey)
 	hint := ansi.Strip(bottomOf(h))
 	offered := h.f.offered()
@@ -2275,7 +2261,6 @@ func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
 // Shift-press extends what is selected to the click.
 func TestClicksSelectWordsAndRows(t *testing.T) {
 	h := newFrameHarness(t)
-	h.f.linger = true
 	if _, err := h.s.em.WriteString("hello wide world x\r\nsecond"); err != nil {
 		t.Fatal(err)
 	}
