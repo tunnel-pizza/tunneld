@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run ttyshim ttyshim-check shim-test
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -116,8 +116,31 @@ licenses:
 	      cat "$$f"; \
 	    done; \
 	  done; \
+	  printf '\n%s\nncurses: the xterm-256color terminfo entry in the Linux binaries\n\n' '$(RULE)'; \
+	  cat v1alpha1/attach/shell/ttyshim/NOTICE.ncurses; \
 	} > dist/THIRD_PARTY_LICENSES.tmp; \
 	mv dist/THIRD_PARTY_LICENSES.tmp dist/THIRD_PARTY_LICENSES
+
+# The terminal shim (v1alpha1/attach/shell/ttyshim), rebuilt in Docker into
+# the objects committed beside its source; each build is gated by symbols.sh.
+ttyshim:
+	sh v1alpha1/attach/shell/ttyshim/build.sh amd64
+	sh v1alpha1/attach/shell/ttyshim/build.sh arm64
+
+# What CI runs: a rebuild that must match what is committed, and the gate's
+# own test.
+ttyshim-check: ttyshim
+	git diff --exit-code -- v1alpha1/attach/shell/ttyshim/
+	sh v1alpha1/attach/shell/ttyshim/negative.sh amd64
+
+# The shim's real-program tests on both C libraries, in containers that have
+# the programs: Alpine's busybox and musl, Debian's vim, less and glibc.
+GO_VERSION := $(shell awk '/^go /{print $$2}' go.mod)
+shim-test:
+	docker run --rm -v "$(CURDIR)":/w -w /w -e CGO_ENABLED=0 golang:$(GO_VERSION)-alpine sh -euc \
+	  'apk add --no-cache bash less python3 busybox-static nodejs >/dev/null; go test -count=1 -run "Shim|Page|Object" ./v1alpha1/attach/shell/...'
+	docker run --rm -v "$(CURDIR)":/w -w /w -e CGO_ENABLED=0 golang:$(GO_VERSION)-bookworm sh -euc \
+	  'apt-get -qq update && apt-get -qq install -y --no-install-recommends vim-tiny less python3 busybox-static nodejs >/dev/null; go test -count=1 -run "Shim|Page|Object" ./v1alpha1/attach/shell/...'
 
 # Cross-compile + vet for Windows. A build-only smoke so the binary doesn't
 # quietly stop building on the other major target.

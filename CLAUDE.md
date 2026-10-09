@@ -94,7 +94,7 @@ REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
        "build-test (ubuntu-24.04, stable)","build-test (windows-2025, stable)",
        "build-test (ubuntu-24.04-arm, stable)","build-test (windows-11-arm, stable)",
        "build-test (macos-26-intel, stable)","build-test (macos-26, stable)",
-       "race"]},
+       "race","ttyshim (amd64)","ttyshim (arm64)"]},
      "enforce_admins":true,"required_pull_request_reviews":null,"restrictions":null,
      "allow_force_pushes":false,"allow_deletions":false}
     JSON

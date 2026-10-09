@@ -375,9 +375,21 @@ tunneld :3000 attach://dockerd/my-container htop
 
 **A machine with no pseudo-terminals** still runs the program. Where
 `/dev/ptmx` is missing but devpts is mounted, as in some sandboxes, tunneld opens
-`/dev/pts/ptmx` instead and nothing changes. Where there are none at all
-(Windows, or a sandbox with no devpts), the program is served over pipes, and a
-warning at startup and a line on the page say what that costs:
+`/dev/pts/ptmx` instead and nothing changes. Where there are none at all, on
+Linux (amd64 or arm64), tunneld stands in for one: the program runs on one end
+of a socket with tunneld's terminal shim preloaded (`LD_PRELOAD`), and asking
+about its terminal (`isatty`, `tcgetattr`, the window size, `/dev/tty`) is
+answered as a terminal would. vi and less draw at the page's size and redraw on
+resize, shells and python edit lines, and Ctrl-C and Ctrl-Z reach the job in
+front. A statically linked program, or a Go program, asks the kernel instead
+and cannot be helped: it is served over pipes, and a warning at startup and a
+line on the page say so. If the shim does not load (a `noexec` temp
+directory), the run carries on over pipes and the log says why. One thing
+differs from a terminal: `Ctrl-D` on an empty line to a program reading lines
+(`cat > notes`) ends input for the rest of the run, so the shell that started
+it exits too, as it does over pipes.
+
+Over pipes (those programs, and Windows):
 - **Typing:** tunneld does the job of the missing terminal. Your keys are echoed,
   Enter sends the line, and Backspace and `Ctrl-U` edit it.
 - **Ctrl-C** interrupts what is running (not on Windows). `Ctrl-D` on an empty

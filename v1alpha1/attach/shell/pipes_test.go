@@ -56,14 +56,22 @@ func TestCooked(t *testing.T) {
 			var echo bytes.Buffer
 			stdin := &stdinFake{}
 			interrupted := 0
-			c := &cooked{echo: &echo, stdin: stdin, interrupt: func() { interrupted++ }}
+			c := &cooked{echo: &echo, stdin: stdin, signal: func(k signalKey) {
+				if k == sigInterrupt {
+					interrupted++
+				}
+			}}
 			// A byte at a time, as keys arrive, and all at once, as a paste
 			// does: the discipline has to read the same either way.
 			for _, whole := range []bool{false, true} {
 				echo.Reset()
 				stdin.Reset()
 				stdin.closed, interrupted = false, 0
-				*c = cooked{echo: &echo, stdin: stdin, interrupt: func() { interrupted++ }}
+				*c = cooked{echo: &echo, stdin: stdin, signal: func(k signalKey) {
+					if k == sigInterrupt {
+						interrupted++
+					}
+				}}
 				if whole {
 					_, _ = c.Write([]byte(tc.keys))
 				} else {
@@ -85,6 +93,82 @@ func TestCooked(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCookedFollowsTheSettings pins the discipline when a program has set its
+// terminal: raw mode passes bytes through as they come, escape sequences
+// included; echo follows ECHO; the keys come from c_cc; ISIG off makes ^C a
+// byte.
+func TestCookedFollowsTheSettings(t *testing.T) {
+	raw := defaultMode
+	raw.lflag &^= lICANON | lECHO
+	rawNoSig := raw
+	rawNoSig.lflag &^= lISIG
+	quiet := defaultMode
+	quiet.lflag &^= lECHO
+	hashErase := defaultMode
+	hashErase.cc[vERASE] = '#'
+
+	for _, tc := range []struct {
+		name    string
+		mode    settings
+		keys    string
+		sent    string
+		echo    string
+		signals []signalKey
+	}{
+		{"raw passes keys as they come", raw, "ihi\x1b:wq\r", "ihi\x1b:wq\n", "", nil},
+		{"raw with ECHO echoes Enter as CR LF", func() settings { s := raw; s.lflag |= lECHO; return s }(), "a\r", "a\n", "a\r\n", nil},
+		{"raw keeps arrows whole", raw, "\x1b[A", "\x1b[A", "", nil},
+		{"raw still signals", raw, "a\x03b", "ab", "", []signalKey{sigInterrupt}},
+		{"raw without ISIG sends ^C", rawNoSig, "\x03", "\x03", "", nil},
+		{"raw without ICRNL keeps CR", func() settings { s := raw; s.iflag &^= iICRNL; return s }(), "\r", "\r", "", nil},
+		{"ECHO off echoes nothing", quiet, "pw\r", "pw\n", "", nil},
+		{"the erase key comes from c_cc", hashErase, "lx#s\r", "ls\n", "lx\b \bs\r\n", nil},
+		{"^W erases a word", defaultMode, "git log\x17st\r", "git st\n", "git log\b \b\b \b\b \bst\r\n", nil},
+		{"^Z suspends", defaultMode, "\x1a", "", "^Z\r\n", []signalKey{sigSuspend}},
+		{"^\\ quits", defaultMode, "\x1c", "", "^\\\r\n", []signalKey{sigQuit}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var echo bytes.Buffer
+			stdin := &stdinFake{}
+			var got []signalKey
+			c := &cooked{echo: &echo, stdin: stdin, mode: func() settings { return tc.mode },
+				signal: func(k signalKey) { got = append(got, k) }}
+			_, _ = c.Write([]byte(tc.keys))
+			if stdin.String() != tc.sent {
+				t.Errorf("sent %q, want %q", stdin.String(), tc.sent)
+			}
+			if echo.String() != tc.echo {
+				t.Errorf("echoed %q, want %q", echo.String(), tc.echo)
+			}
+			if !slices.Equal(got, tc.signals) {
+				t.Errorf("signals %v, want %v", got, tc.signals)
+			}
+		})
+	}
+}
+
+// TestOproc pins output processing: CR before LF while OPOST and ONLCR are
+// both set, and nothing at all once a program clears OPOST, as vi does.
+func TestOproc(t *testing.T) {
+	plain := defaultMode
+	plain.oflag &^= oOPOST
+	for _, tc := range []struct {
+		name string
+		mode func() settings
+		in   string
+		want string
+	}{
+		{"pipes add the CR", nil, "a\nb\n", "a\r\nb\r\n"},
+		{"OPOST off adds nothing", func() settings { return plain }, "a\nb\n", "a\nb\n"},
+	} {
+		var got bytes.Buffer
+		n, err := oproc{w: &got, mode: tc.mode}.Write([]byte(tc.in))
+		if err != nil || n != len(tc.in) || got.String() != tc.want {
+			t.Errorf("%s: wrote %q (%d, %v), want %q (%d)", tc.name, got.String(), n, err, tc.want, len(tc.in))
+		}
 	}
 }
 
@@ -145,7 +229,7 @@ func TestOnlcr(t *testing.T) {
 		{"", ""},
 	} {
 		var got bytes.Buffer
-		n, err := onlcr{&got}.Write([]byte(tc.in))
+		n, err := oproc{w: &got}.Write([]byte(tc.in))
 		if err != nil || n != len(tc.in) {
 			t.Errorf("Write(%q) = %d, %v; want %d, nil", tc.in, n, err, len(tc.in))
 		}
@@ -167,7 +251,7 @@ func TestOpenWithoutATerminal(t *testing.T) {
 	path := write(t, dir, runnable("tunneld-fixture"), 0o755)
 
 	var logged bytes.Buffer
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), path, nil, slog.New(slog.NewTextHandler(&logged, nil)))
 	if err != nil {
 		t.Fatalf("Open() = %v, want the program served over pipes", err)
@@ -201,7 +285,7 @@ func TestShellOverPipes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Ctrl-C over pipes is a process-group signal, which Windows has none of")
 	}
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), "sh", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Open() = %v", err)
@@ -276,7 +360,7 @@ func TestBashOverPipes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("bash over pipes is a Unix sandbox's; the Windows path is TestOpenWithoutATerminal's")
 	}
-	targets := &TargetsImpl{open: noPTY}
+	targets := &TargetsImpl{open: noPTY, shimless: pipesOnly}
 	target, err := targets.Open(t.Context(), "bash", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Skipf("no bash here: %v", err)
@@ -309,5 +393,25 @@ func TestBashOverPipes(t *testing.T) {
 		if !strings.Contains(shown, want) {
 			t.Errorf("the page shows %q, want %q in it", shown, want)
 		}
+	}
+}
+
+// pipesOnly keeps a test on rung 3, whatever this machine could do.
+func pipesOnly(string) string { return "pipes only, in this test" }
+
+// TestCookedKeepsTypeAheadAcrossRaw pins a line typed without Enter while
+// the program was busy: when the program switches to raw mode (readline at
+// its next prompt), the characters reach it rather than vanishing.
+func TestCookedKeepsTypeAheadAcrossRaw(t *testing.T) {
+	raw := defaultMode
+	raw.lflag &^= lICANON | lECHO
+	mode := defaultMode
+	stdin := &stdinFake{}
+	c := &cooked{echo: io.Discard, stdin: stdin, mode: func() settings { return mode }, signal: func(signalKey) {}}
+	_, _ = c.Write([]byte("ls"))
+	mode = raw
+	_, _ = c.Write([]byte("x"))
+	if got := stdin.String(); got != "lsx" {
+		t.Errorf("sent %q, want the typed-ahead ls before x", got)
 	}
 }

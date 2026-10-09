@@ -54,3 +54,31 @@ func signalSession(p *os.Process, sig syscall.Signal) error {
 	}
 	return p.Signal(sig)
 }
+
+// signalGroup is a terminal's key reaching its foreground: sig to process
+// group pgrp, when some process in the program's session is in it — its
+// leader may have exited while the rest of a pipeline runs on. Anything else
+// (no group recorded yet, one that has gone, tunneld's own) reaches the
+// session instead.
+func signalGroup(p *os.Process, pgrp int, sig syscall.Signal) error {
+	if pgrp > 0 && pgrp != syscall.Getpgrp() && inSession(p.Pid, pgrp) {
+		return syscall.Kill(-pgrp, sig)
+	}
+	return signalSession(p, sig)
+}
+
+// inSession is whether any process in session sid is in group pgrp. Where the
+// session cannot be listed, only a group whose leader is still there counts.
+func inSession(sid, pgrp int) bool {
+	pids, err := session(sid)
+	if err != nil {
+		s, err := unix.Getsid(pgrp)
+		return err == nil && s == sid
+	}
+	for _, pid := range pids {
+		if g, err := syscall.Getpgid(pid); err == nil && g == pgrp {
+			return true
+		}
+	}
+	return false
+}

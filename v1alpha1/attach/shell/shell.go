@@ -97,11 +97,14 @@ type Option = v1.Option[*TargetsImpl]
 type TargetsImpl struct {
 	// open opens a pseudo-terminal pair; see openPTY.
 	open opener
+	// shimless is why a program cannot have the terminal shim, "" when it can;
+	// see shimReason.
+	shimless func(path string) string
 }
 
 // New returns the default source of targets, configured by opts.
 func New(opts ...Option) *TargetsImpl {
-	return v1.Apply(&TargetsImpl{open: openPTY}, opts...)
+	return v1.Apply(&TargetsImpl{open: openPTY, shimless: shimReason}, opts...)
 }
 
 // Verb is v1.ExecScheme and Provider is empty: this provider answers exec://
@@ -132,14 +135,32 @@ func (t *TargetsImpl) Open(_ context.Context, ref string, args []string, log v1.
 
 	target := &TargetImpl{ref: ref, path: path, args: args, log: log, open: t.open}
 	if master, slave, err := t.open(); err != nil {
-		log.Warn("serving a program without a terminal", "program", ref, "reason", err, "cost", pipesNotice)
-		target.pipes = true
+		why := "no shim was asked about"
+		if t.shimless != nil {
+			why = t.shimless(path)
+		}
+		if why == "" {
+			// Set up now, before the target says it has a terminal: a run
+			// that found out later would already have been told.
+			target.mu.Lock()
+			if _, _, serr := target.shimDir(); serr != nil {
+				why = "could not set up the shim: " + serr.Error()
+			}
+			target.mu.Unlock()
+		}
+		if why == "" {
+			log.Warn("serving a program without a pseudo-terminal, through tunneld's stand-in for one", "program", ref, "reason", err, "cost", shimNotice)
+			target.shim = true
+		} else {
+			log.Warn("serving a program without a terminal", "program", ref, "reason", err, "shim", why, "cost", pipesNotice)
+			target.pipes = true
+		}
 	} else {
 		_ = slave.Close()
 		_ = master.Close()
 	}
 
-	log.Debug("resolved a program as an origin", "program", ref, "path", path, "args", args, "terminal", !target.pipes)
+	log.Debug("resolved a program as an origin", "program", ref, "path", path, "args", args, "terminal", !target.pipes, "shim", target.shim)
 	return target, nil
 }
 
@@ -157,6 +178,12 @@ type TargetImpl struct {
 	// program is then run over pipes, with tunneld as its line discipline.
 	open  opener
 	pipes bool
+	// shim is rung 2: no pseudo-terminal, but a program the terminal shim can
+	// reach. dir is where the shim, its terminfo and each run's page live,
+	// made on the first run and removed by Close; runs numbers the pages.
+	shim bool
+	dir  string
+	runs int
 
 	// mu guards the running process and its terminal, which exist only
 	// between an attach starting and either end of it finishing. Close can
@@ -192,12 +219,21 @@ func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
 // origin is the terminal: a full-screen program needs one to draw at all, and
 // a line-oriented one is no worse for having it. Over pipes it is false, and
 // the page says so — see Notice.
-func (a *TargetImpl) TTY() bool { return !a.pipes }
+func (a *TargetImpl) TTY() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.pipes
+}
 
 // Notice implements attach.Noticer: over pipes, what the page should explain
 // is the machine, not a docker flag.
 func (a *TargetImpl) Notice() string {
-	if a.pipes {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case a.shim:
+		return shimNotice
+	case a.pipes:
 		return pipesNotice
 	}
 	return ""
@@ -231,7 +267,12 @@ func (a *TargetImpl) Close() error {
 	defer a.mu.Unlock()
 
 	a.closed = true
-	return a.stop()
+	err := a.stop()
+	if a.dir != "" {
+		_ = os.RemoveAll(a.dir)
+		a.dir = ""
+	}
+	return err
 }
 
 // endGrace is how long End gives a program to leave on SIGTERM before it is
@@ -288,10 +329,10 @@ func (a *TargetImpl) stop() error {
 		a.term = nil
 	}
 	if a.cmd != nil && a.cmd.Process != nil {
-		// Over pipes there is no terminal whose closing hangs up what the
-		// program started, so the hangup is sent: a shell's jobs go with it
-		// rather than outliving the viewer who started them.
-		if a.pipes {
+		// Without a pseudo-terminal there is no terminal whose closing hangs
+		// up what the program started, so the hangup is sent: a shell's jobs
+		// go with it rather than outliving the viewer who started them.
+		if a.pipes || a.shim {
 			_ = hangup(a.cmd.Process)
 		}
 		_ = a.cmd.Process.Kill()
@@ -314,7 +355,13 @@ func (a *TargetImpl) stop() error {
 // stdout and stderr are the same file — so there is nothing to demultiplex and
 // nothing to put on a channel of its own.
 func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	if a.pipes {
+	a.mu.Lock()
+	shim, pipes := a.shim, a.pipes
+	a.mu.Unlock()
+	if shim {
+		return a.attachShim(ctx, in, out, errw, resize)
+	}
+	if pipes {
 		return a.attachPipes(ctx, in, out, errw, resize)
 	}
 	cmd := exec.CommandContext(ctx, a.path, a.args...)

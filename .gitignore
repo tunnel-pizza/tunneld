@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+# The terminal shim's objects are committed, so go build stays pure Go.
+!v1alpha1/attach/shell/ttyshim/ttyshim-*.so
+
 # Test binaries and coverage output
 *.test
 *.out

@@ -233,6 +233,32 @@ jobs:
         # the same command.
         run: make race
 
+  # The terminal shim: a rebuild must match the committed objects, the gate
+  # must catch broken builds, and real programs must see a terminal through
+  # it on musl and glibc. Native runners per architecture, no emulation.
+  ttyshim:
+    needs: [prepare]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    name: ttyshim (${{ matrix.arch }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: rebuild matches what is committed
+        run: |
+          sh v1alpha1/attach/shell/ttyshim/build.sh ${{ matrix.arch }}
+          git diff --exit-code -- v1alpha1/attach/shell/ttyshim/
+      - name: the gate catches broken builds
+        run: sh v1alpha1/attach/shell/ttyshim/negative.sh ${{ matrix.arch }}
+      - name: real programs through the shim
+        run: make shim-test
+
   # One binary per cell, six cells, cross-compiled on Linux — pure Go with CGO
   # off and -trimpath, so a cross-compile gives the same bytes a native build
   # would. The Makefile's PLATFORMS list is the source of truth for names; each
@@ -448,7 +474,7 @@ jobs:
   # before it ran regardless. Everything here is publishing: the bytes and
   # their signatures already exist, and this job is what gives them a name.
   release:
-    needs: [prepare, build-test, race, binaries, licenses, image]
+    needs: [prepare, build-test, race, binaries, licenses, image, ttyshim]
     if: >-
       needs.prepare.outputs.release == 'true'
       && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')))

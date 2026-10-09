@@ -300,6 +300,8 @@ tunneld is a thin layer over other people's work. Thank you to:
   `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
   `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded
   from jsDelivr when the page opens.
+- **ncurses**: the compiled `xterm-256color` terminfo entry the Linux binaries
+  carry, for programs served through the terminal shim on machines without one.
 
 And the rest of what tunneld requires directly:
 
