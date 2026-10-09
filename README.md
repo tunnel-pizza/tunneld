@@ -111,6 +111,7 @@ except one.
 | then <kbd>esc</kbd> | Never mind. |
 | wheel | Scrolls back through what went past. Any key returns to the live screen. |
 | drag | Selects, and copies to your clipboard. Double-click a word, triple-click a row, Shift-click to extend. |
+| double-click the address | Copies the tunnel's address. <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+click opens it. |
 
 On a container, Ctrl+C and Ctrl+D ask to be pressed twice, because once its
 main process exits there's nothing to come back to. On a program they go

@@ -539,7 +539,10 @@ same way in both places: drag across the pane, double-click a word,
 triple-click a row, or Shift-click to extend what is selected; a drag after a
 double or triple click grows a word or a row at a time. The selection is
 highlighted and copied to your clipboard on release, with `copied` in the
-bottom border to say so. In the tab the copy goes through the browser's clipboard API; on the
+bottom border to say so. A double click on the address in the top border
+copies the address; `Cmd` or `Ctrl`+click opens it. A single click does
+neither, since a terminal reports Shift, Alt and Ctrl with a click but not
+Cmd, and a single click could be the Cmd+click that opens it. In the tab the copy goes through the browser's clipboard API; on the
 console it goes through OSC 52, which iTerm2 honours once "Applications in
 terminal may access clipboard" is on, VS Code's terminal honours as is, and
 Terminal.app does not — there the highlight shows and nothing is copied.
