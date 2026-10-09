@@ -330,6 +330,10 @@ func TestPage(t *testing.T) {
 		// own build line, or anywhere a program's output points.
 		{"the page sends no Referer", "/", http.StatusOK, `<meta name="referrer" content="no-referrer">`},
 		{"and opens a link with no Referer and no opener", "/", http.StatusOK, `'noopener,noreferrer'`},
+		// The tunnel's own address opens on Cmd or Ctrl+click only: a plain
+		// click is the frame's, and a double one copies it. A panel's tile
+		// links to the same host with its ↗ chip, which opens on any click.
+		{"and opens its own address only on Cmd or Ctrl+click", "/", http.StatusOK, `if (!embedded && sameHost(uri) && !event.metaKey && !event.ctrlKey) return;`},
 		{"anything else is not found", "/favicon.ico", http.StatusNotFound, ""},
 		{"a nested path is not found", "/app/index.html", http.StatusNotFound, ""},
 	}

@@ -216,9 +216,12 @@ type frame struct {
 	// drag from it grows by.
 	unit selection
 
-	// onAddress is a press on the address in the top border, which its
-	// release copies.
-	onAddress bool
+	// onAddress is the second press of a double click on the address in
+	// the top border, which its release copies; lastAddress is when the last
+	// press on it was. A double click, because a single one may be the Cmd
+	// click that opens it, and a terminal does not report Cmd.
+	onAddress   bool
+	lastAddress time.Time
 
 	// asked is where the cursor was drawn when the frame last asked the
 	// terminal where it is, and asking that an answer is outstanding.
@@ -546,7 +549,12 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	if m.Button != tea.MouseLeft {
 		return f
 	}
-	f.onAddress = uv.Pos(m.X, m.Y).In(f.address())
+	f.onAddress = false
+	if uv.Pos(m.X, m.Y).In(f.address()) {
+		now := time.Now()
+		f.onAddress = now.Sub(f.lastAddress) <= clickWindow
+		f.lastAddress = now
+	}
 	if !uv.Pos(m.X, m.Y).In(f.pane()) {
 		f.selected, f.selecting, f.clip, f.clicks = false, false, "", 0
 		return f

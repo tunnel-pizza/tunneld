@@ -196,12 +196,17 @@
   // tunnel.pizza itself, for the name in the frame's build line. The feature
   // makes the new tab's request with no Referer whatever the page's policy
   // says, and implies noopener besides.
+  const sameHost = (uri) => { try { return new URL(uri).host === location.host; } catch { return false; } };
   const term = new Terminal({
     cursorBlink: true,
     convertEol: true,
     fontSize: 13,
     linkHandler: {
       activate(event, uri) {
+        // The tunnel's own address opens on Cmd or Ctrl+click only: a plain
+        // click is the frame's, and a double one copies it. A panel's tile
+        // links to the same host with its chip, which opens on any click.
+        if (!embedded && sameHost(uri) && !event.metaKey && !event.ctrlKey) return;
         event.preventDefault();
         window.open(uri, '_blank', 'noopener,noreferrer');
       },

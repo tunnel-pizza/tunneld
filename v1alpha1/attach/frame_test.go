@@ -2605,8 +2605,10 @@ func TestAPressAloneRedrawsNothing(t *testing.T) {
 	h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + 22, Y: pane.Min.Y, Button: tea.MouseLeft})
 }
 
-// TestClickingTheAddressCopiesIt pins a click on the top border's address
-// copying it. A click on the border elsewhere copies nothing.
+// TestClickingTheAddressCopiesIt pins a double click on the top border's
+// address copying it. A single click copies nothing: it may be the Cmd click
+// that opens it, and a terminal does not report Cmd. Nor does a click on the
+// border elsewhere.
 func TestClickingTheAddressCopiesIt(t *testing.T) {
 	h := consoleHarness(t)
 	const addr = "https://striped-worm.tunneled.pizza/?0"
@@ -2628,9 +2630,13 @@ func TestClickingTheAddressCopiesIt(t *testing.T) {
 	if cmd := click(1, y); cmd != nil {
 		t.Errorf("a click on the border away from the address produced %T", cmd())
 	}
+	h.f.lastAddress = time.Time{}
+	if cmd := click(x+5, y); cmd != nil {
+		t.Errorf("a single click on the address produced %T, want nothing", cmd())
+	}
 	cmd := click(x+5, y)
 	if cmd == nil {
-		t.Fatal("a click on the address copied nothing")
+		t.Fatal("a double click on the address copied nothing")
 	}
 	want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(addr)) + "\a"
 	if raw, ok := cmd().(tea.RawMsg); !ok || fmt.Sprint(raw.Msg) != want {
