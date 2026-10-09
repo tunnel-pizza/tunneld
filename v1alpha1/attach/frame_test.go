@@ -2381,3 +2381,51 @@ func TestEveryCommandIsOfferedAndHandled(t *testing.T) {
 		t.Errorf("offered %d commands on a console; want at least d x l q [ m", len(offered))
 	}
 }
+
+// TestClicksSelectWordsAndRows pins the console's clicks: a second press on
+// the same cell within the window selects the word, a third the row, and a
+// Shift-press extends what is selected to the click.
+func TestClicksSelectWordsAndRows(t *testing.T) {
+	h := newFrameHarness(t)
+	h.f.linger = true
+	if _, err := h.s.em.WriteString("hello wide world x\r\nsecond"); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.f.pane()
+	press := func(x, y int, mod tea.KeyMod) tea.Cmd {
+		h.mouse(t, tea.MouseClickMsg{X: pane.Min.X + x, Y: pane.Min.Y + y, Button: tea.MouseLeft, Mod: mod})
+		return h.mouse(t, tea.MouseReleaseMsg{X: pane.Min.X + x, Y: pane.Min.Y + y, Button: tea.MouseLeft})
+	}
+	copied := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		msg, ok := cmd().(tea.RawMsg)
+		return ok && strings.HasPrefix(fmt.Sprint(msg.Msg), "\x1b]52;c;")
+	}
+	press(7, 0, 0)
+	if !copied(press(7, 0, 0)) {
+		t.Fatal("a double click copied nothing")
+	}
+	if got := h.f.sel.text(h.f.composed()); got != "wide" {
+		t.Errorf("double click selected %q, want wide", got)
+	}
+	press(7, 0, 0)
+	if got := h.f.sel.text(h.f.composed()); got != "hello wide world x" {
+		t.Errorf("triple click selected %q, want the row", got)
+	}
+	press(2, 1, tea.ModShift)
+	if got := h.f.sel.text(h.f.composed()); got != "hello wide world x\nsec" {
+		t.Errorf("shift-click selected %q, want the row extended to the click", got)
+	}
+	h.f.lastPress = h.f.lastPress.Add(-2 * clickWindow)
+	press(1, 0, 0)
+	if h.f.selected {
+		t.Error("a single click after the window left a selection")
+	}
+	h.f.lastPress = h.f.lastPress.Add(-2 * clickWindow)
+	press(17, 0, 0)
+	if !copied(press(17, 0, 0)) || h.f.sel.text(h.f.composed()) != "x" {
+		t.Errorf("a double click on a one-letter word selected %q, want x copied", h.f.sel.text(h.f.composed()))
+	}
+}

@@ -84,6 +84,9 @@ const sizeGrace = 500 * time.Millisecond
 // double tap.
 const armGrace = 2 * time.Second
 
+// clickWindow is how soon a press on the same cell counts as the next click.
+const clickWindow = 400 * time.Millisecond
+
 // disarmMsg is an arming expiring. It carries the arming it belongs to, so a
 // tick from one that was already spent cannot clear the next one — press,
 // type on, press again inside two seconds, and the stale tick would otherwise
@@ -187,6 +190,12 @@ type frame struct {
 	sel       selection
 	selecting bool
 	selected  bool
+	// lastPress, lastAt and clicks count presses on one cell within
+	// clickWindow: two select the word, three the row. Bubble Tea's events
+	// carry no count of their own.
+	lastPress time.Time
+	lastAt    uv.Position
+	clicks    int
 
 	// reading is scrollback mode, on the console only (^K [): the history
 	// is this viewer's to move through with the keys, typing reaches nobody,
@@ -517,12 +526,33 @@ func (f frame) pressed(m tea.MouseClickMsg) frame {
 	if m.Button != tea.MouseLeft {
 		return f
 	}
-	f.selected, f.selecting, f.clip = false, false, ""
 	if !uv.Pos(m.X, m.Y).In(f.pane()) {
+		f.selected, f.selecting, f.clip, f.clicks = false, false, "", 0
 		return f
 	}
 	pos := f.onPane(m.X, m.Y)
-	f.sel = selection{anchor: pos, head: pos}
+	// Shift extends what is selected to the click, as a terminal does.
+	if m.Mod&tea.ModShift != 0 && (f.selected || f.selecting) {
+		f.sel.head, f.selecting, f.selected, f.clip = pos, true, false, ""
+		return f
+	}
+	now := time.Now()
+	if now.Sub(f.lastPress) <= clickWindow && pos == f.lastAt {
+		f.clicks++
+	} else {
+		f.clicks = 1
+	}
+	f.lastPress, f.lastAt = now, pos
+	f.selected, f.clip = false, ""
+	switch f.clicks {
+	case 2:
+		f.sel = wordAt(f.composed(), pos)
+	case 3:
+		f.sel = rowOf(f.composed(), pos.Y)
+	default:
+		f.clicks = 1
+		f.sel = selection{anchor: pos, head: pos}
+	}
 	f.selecting = true
 	return f
 }
@@ -535,8 +565,12 @@ func (f frame) released(m tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
 		return f, nil
 	}
 	f.selecting = false
-	f.sel.head = f.onPane(m.X, m.Y)
-	if f.sel.empty() {
+	// A word or a row keeps the ends its press gave it. A one-letter word is
+	// a selection as wide as a click, and still a word.
+	if f.clicks == 1 {
+		f.sel.head = f.onPane(m.X, m.Y)
+	}
+	if f.sel.empty() && (f.clicks != 2 || !wordChar(f.composed().CellAt(f.sel.anchor.X, f.sel.anchor.Y))) {
 		return f, nil
 	}
 	f.selected = true
