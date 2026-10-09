@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -2119,16 +2120,16 @@ func TestScrollbackModeReleasesTheMouse(t *testing.T) {
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "scrollback") {
 		t.Errorf("bottom border = %q, want it saying the mode is on", bottom)
 	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
+	h.press(t, typing('s'))
 	if h.f.reading || h.f.View().MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("after esc: reading %v, MouseMode %v; want live, the mouse asked for again", h.f.reading, h.f.View().MouseMode)
+		t.Errorf("after s: reading %v, MouseMode %v; want live, the mouse asked for again", h.f.reading, h.f.View().MouseMode)
 	}
 }
 
 // TestScrollbackModeKeysMoveTheHistory pins the keys in the mode: the arrows
 // (which a terminal's wheel becomes once the mouse is released), page keys,
 // home and end move this viewer through the history, typing reaches nobody,
-// and q leaves for the live screen.
+// and s leaves for the live screen.
 func TestScrollbackModeKeysMoveTheHistory(t *testing.T) {
 	h := consoleHarness(t)
 	rows := defaultRows - chromeHeight
@@ -2157,9 +2158,9 @@ func TestScrollbackModeKeysMoveTheHistory(t *testing.T) {
 	if got := h.paneRow(t, 0); got != live {
 		t.Errorf("after end, top row = %q, want the live screen's %q", got, live)
 	}
-	h.press(t, typing('q'))
+	h.press(t, typing('s'))
 	if h.f.reading || h.f.scrolled {
-		t.Error("q did not return to the live screen")
+		t.Error("s did not return to the live screen")
 	}
 	h.silent(t)
 }
@@ -2193,25 +2194,6 @@ func TestScrollbackModeCopiesEverything(t *testing.T) {
 	}
 	if !h.f.reading {
 		t.Error("c left the mode")
-	}
-}
-
-// TestTheBareViewDropsTheBorder pins f in the mode: no border, bar or labels
-// to pick up in a native selection, and f again brings them back.
-func TestTheBareViewDropsTheBorder(t *testing.T) {
-	h := consoleHarness(t)
-	if _, err := h.s.em.WriteString("hello"); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	h.enterScrollback(t)
-	h.press(t, typing('f'))
-	content := stripSGR(h.f.View().Content)
-	if strings.ContainsAny(content, "│╭╮╰╯─") || !strings.HasPrefix(content, "hello") {
-		t.Errorf("bare view = %q…, want the pane alone from the top left", content[:min(40, len(content))])
-	}
-	h.press(t, typing('f'))
-	if !strings.ContainsAny(stripSGR(h.f.View().Content), "│") {
-		t.Error("f again did not bring the border back")
 	}
 }
 
@@ -2253,9 +2235,9 @@ func TestTheEndDoesNotCutScrollbackShort(t *testing.T) {
 	if h.f.exiting || !h.f.reading {
 		t.Fatalf("an arrow after the end: exiting %v, reading %v; want still reading", h.f.exiting, h.f.reading)
 	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
+	h.press(t, typing('s'))
 	if h.f.exiting || h.f.reading {
-		t.Fatalf("esc after the end: exiting %v, reading %v; want out of the mode, not gone", h.f.exiting, h.f.reading)
+		t.Fatalf("s after the end: exiting %v, reading %v; want out of the mode, not gone", h.f.exiting, h.f.reading)
 	}
 	h.press(t, typing('x'))
 	if !h.f.exiting {
@@ -2298,20 +2280,6 @@ func TestCopyingTooMuchHistoryCopiesItsEnd(t *testing.T) {
 	}
 	if bottom := stripSGR(bottomOf(h)); !strings.Contains(bottom, "copied (end)") {
 		t.Errorf("bottom border = %q, want it saying only the end was copied", bottom)
-	}
-}
-
-// TestTheAltScreenModeOffersNoScrolling pins the hint on the alternate
-// screen, which has no history: the mode copies and goes bare there, and
-// offers no keys that would do nothing.
-func TestTheAltScreenModeOffersNoScrolling(t *testing.T) {
-	h := consoleHarness(t)
-	if _, err := h.s.em.WriteString("\x1b[?1049h"); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	h.enterScrollback(t)
-	if bottom := stripSGR(bottomOf(h)); strings.Contains(bottom, "↑↓") {
-		t.Errorf("bottom border = %q, offers scrolling where there is nothing to scroll", bottom)
 	}
 }
 
@@ -2389,11 +2357,10 @@ func TestClicksSelectWordsAndRows(t *testing.T) {
 	}
 }
 
-// TestScrollbackFollowsFiltersAndClears pins the k9s-style keys: the view
-// follows new output until the reader scrolls up, s and G toggle it and the
-// row says so; / filters the history by a pattern, ! inverting it, with the
-// matches reversed and the count in the row; C forgets the history up to now.
-func TestScrollbackFollowsFiltersAndClears(t *testing.T) {
+// TestScrollbackFollows pins follow: the view follows new output until the
+// reader scrolls up, G turns it back on and the row says which, and s, on or
+// off, is the way back to the live screen.
+func TestScrollbackFollows(t *testing.T) {
 	h := consoleHarness(t)
 	h.window(80, 12)
 	var b strings.Builder
@@ -2411,8 +2378,8 @@ func TestScrollbackFollowsFiltersAndClears(t *testing.T) {
 	row := func() string { return stripSGR(bottomOf(h)) }
 	write(b.String())
 	h.enterScrollback(t)
-	if !strings.Contains(row(), "follow:on") || !strings.Contains(row(), "live") {
-		t.Errorf("entering the mode shows %q, want follow:on and the way out", row())
+	if !strings.Contains(row(), "follow:on") {
+		t.Errorf("entering the mode shows %q, want follow:on", row())
 	}
 	write("line 21 odd\r\n")
 	if !strings.Contains(view(), "line 21") {
@@ -2432,139 +2399,14 @@ func TestScrollbackFollowsFiltersAndClears(t *testing.T) {
 		t.Error("G did not follow again")
 	}
 	h.press(t, typing('s'))
-	if !strings.Contains(row(), "follow:off") {
-		t.Errorf("s shows %q, want follow:off", row())
+	if h.f.reading || h.f.scrolled {
+		t.Error("s with follow on did not return to the live screen")
 	}
-	h.press(t, typing('s'))
-
-	h.press(t, typing('/'))
-	for _, r := range "EVEN" {
-		h.press(t, typing(r))
-	}
-	if !strings.Contains(row(), "EVEN") {
-		t.Errorf("typing a filter shows %q, want the pattern", row())
-	}
-	h.press(t, tea.Key{Code: tea.KeyEnter})
-	if v := view(); strings.Contains(v, "odd") || !strings.Contains(v, "line 22 even") {
-		t.Errorf("filtered view %q shows odd lines, or not the newest even one", v)
-	}
-	if !reversed(h.f.View().Content) {
-		t.Error("the matches are not reversed")
-	}
-	if !strings.Contains(row(), " of ") || !strings.Contains(row(), "lines") {
-		t.Errorf("the row %q does not count matches", row())
-	}
-	h.press(t, typing('/'))
-	for _, r := range "!even" {
-		h.press(t, typing(r))
-	}
-	h.press(t, tea.Key{Code: tea.KeyEnter})
-	if v := view(); strings.Contains(v, "even") || !strings.Contains(v, "odd") {
-		t.Errorf("inverted filter view %q shows even lines", v)
-	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
-	if h.f.pattern != "" || !h.f.reading {
-		t.Errorf("escape with a filter: pattern %q reading %v; want the filter cleared and the mode kept", h.f.pattern, h.f.reading)
-	}
-
-	h.press(t, typing('C'))
-	write("line 23 odd\r\n")
-	if v := view(); strings.Contains(v, "even") || !strings.Contains(v, "line 23") {
-		t.Errorf("after C the view %q still has old lines or lacks the new one", v)
-	}
-	h.press(t, typing('g'))
-	if v := view(); strings.Contains(v, "even") || strings.Contains(v, "line 01") {
-		t.Errorf("after C the top of the history %q still has old lines", v)
-	}
-	h.press(t, tea.Key{Code: tea.KeyEscape})
-	if h.f.reading || h.f.cleared != 0 {
-		t.Errorf("leaving the mode: reading %v cleared %d; want both reset", h.f.reading, h.f.cleared)
-	}
-}
-
-// TestThousands pins the count's separators.
-func TestThousands(t *testing.T) {
-	for n, want := range map[int]string{0: "0", 12: "12", 999: "999", 1000: "1,000", 4310: "4,310", 1234567: "1,234,567"} {
-		if got := thousands(n); got != want {
-			t.Errorf("thousands(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
-// TestClearHoldsOnceTheHistoryIsFull pins C past the history's cap: lines
-// dropping off the history's front move what C forgot with them, so the
-// view still shows everything written since.
-func TestClearHoldsOnceTheHistoryIsFull(t *testing.T) {
-	h := consoleHarness(t)
-	h.window(80, 12)
-	h.s.screen.Lock()
-	h.s.em.SetScrollbackSize(30)
-	h.s.screen.Unlock()
-	write := func(format string, n int) {
-		t.Helper()
-		for i := 1; i <= n; i++ {
-			if _, err := (&sink{s: h.s}).Write(fmt.Appendf(nil, format+"\r\n", i)); err != nil {
-				t.Fatal(err)
-			}
-		}
-		h.mouse(t, paneMsg{})
-	}
-	write("old %02d", 40)
 	h.enterScrollback(t)
-	h.press(t, typing('C'))
-	write("new %02d", 40)
-	if v := stripSGR(h.f.View().Content); strings.Contains(v, "old") || !strings.Contains(v, "new 34") || !strings.Contains(v, "new 40") {
-		t.Errorf("after C and a full history the view is %q; want the newest lines", v)
-	}
-	h.press(t, typing('/'))
-	for _, r := range "new" {
-		h.press(t, typing(r))
-	}
-	h.press(t, tea.Key{Code: tea.KeyEnter})
-	// 30 history rows and a 10-row screen, its last row blank: new 01 has
-	// dropped off the front as well, and 39 are left.
-	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "39 of 40 lines") {
-		t.Errorf("the filter's count %q; want the 39 new lines still kept, of 40 rows since C", row)
-	}
-}
-
-// TestAFilteredViewScrollsByMatches pins scrolling with a filter applied:
-// a step is a match, not a row of the history the matches are spread over.
-func TestAFilteredViewScrollsByMatches(t *testing.T) {
-	h := consoleHarness(t)
-	h.window(80, 12)
-	var b strings.Builder
-	for i := 1; i <= 200; i++ {
-		if i%10 == 0 {
-			fmt.Fprintf(&b, "line %03d hit\r\n", i)
-		} else {
-			fmt.Fprintf(&b, "line %03d\r\n", i)
-		}
-	}
-	if _, err := (&sink{s: h.s}).Write([]byte(b.String())); err != nil {
-		t.Fatal(err)
-	}
-	h.mouse(t, paneMsg{})
-	h.enterScrollback(t)
-	h.press(t, typing('/'))
-	for _, r := range "hit" {
-		h.press(t, typing(r))
-	}
-	h.press(t, tea.Key{Code: tea.KeyEnter})
-	view := func() string { return stripSGR(h.f.View().Content) }
-	if v := view(); !strings.Contains(v, "line 200") {
-		t.Fatalf("following, the filtered view %q lacks the newest match", v)
-	}
 	h.press(t, tea.Key{Code: tea.KeyUp})
-	if v := view(); strings.Contains(v, "line 200") {
-		t.Errorf("one step up, the filtered view %q still ends on the newest match", v)
-	}
-	if row := stripSGR(bottomOf(h)); !strings.Contains(row, "follow:off") {
-		t.Errorf("one step up shows %q, want follow:off", row)
-	}
-	h.press(t, typing('g'))
-	if v := view(); !strings.Contains(v, "line 010") {
-		t.Errorf("g in the filtered view %q; want the first match", v)
+	h.press(t, typing('s'))
+	if h.f.reading || h.f.scrolled {
+		t.Error("s with follow off did not return to the live screen")
 	}
 }
 
@@ -2588,33 +2430,6 @@ func TestATabAndTheConsoleOfferTheSameCommands(t *testing.T) {
 	}
 	if got, want := stripSGR(tab.f.hint()), stripSGR(con.f.hint()); got != want {
 		t.Errorf("a tab's row is %q, the console's %q", got, want)
-	}
-}
-
-// TestTheFilterEditsByCharacterAndSaysWhenItIsBad pins that Backspace takes
-// back a whole character, and that a pattern that does not compile says so
-// rather than counting no matches.
-func TestTheFilterEditsByCharacterAndSaysWhenItIsBad(t *testing.T) {
-	h := consoleHarness(t)
-	h.window(80, 12)
-	if _, err := (&sink{s: h.s}).Write([]byte("café\r\nplain\r\n")); err != nil {
-		t.Fatal(err)
-	}
-	h.mouse(t, paneMsg{})
-	row := func() string { return stripSGR(bottomOf(h)) }
-	h.enterScrollback(t)
-	h.press(t, typing('/'))
-	h.press(t, typing('a'))
-	h.press(t, typing('é'))
-	h.press(t, tea.Key{Code: tea.KeyBackspace})
-	if h.f.filter != "a" {
-		t.Errorf("Backspace after é left %q, want %q", h.f.filter, "a")
-	}
-	h.press(t, tea.Key{Code: tea.KeyBackspace})
-	h.press(t, typing('('))
-	h.press(t, tea.Key{Code: tea.KeyEnter})
-	if r := row(); !strings.Contains(r, "bad pattern") || strings.Contains(r, " of ") {
-		t.Errorf("an unbalanced ( shows %q, want it called a bad pattern", r)
 	}
 }
 
@@ -2652,4 +2467,94 @@ func TestADragAfterADoubleOrTripleClickKeepsItsUnit(t *testing.T) {
 	if got := drag(3, 3, 0, 2, 1); got != "hello wide world x\nsecond row" {
 		t.Errorf("triple click, drag to the next row: %q", got)
 	}
+}
+
+// TestAClearedTerminalIsRepainted pins the frame's answer to a terminal that
+// clears itself behind its back, as VS Code's Cmd+K does: asked where its
+// cursor is, a terminal that answers somewhere other than where the frame
+// put it gets the whole frame again, and one that answers where the frame
+// put it gets nothing. With no cursor drawn there is nothing to compare, and
+// nothing is asked.
+func TestAClearedTerminalIsRepainted(t *testing.T) {
+	h := newFrameHarness(t)
+	if _, err := h.s.em.WriteString("$ "); err != nil {
+		t.Fatal(err)
+	}
+	want := h.f.View().Cursor
+	if want == nil {
+		t.Fatal("no cursor drawn at a prompt")
+	}
+	asks := func(cmd tea.Cmd) bool {
+		t.Helper()
+		if cmd == nil {
+			return false
+		}
+		cmds := []tea.Cmd{cmd}
+		if batch, ok := cmd().(tea.BatchMsg); ok {
+			cmds = batch
+		}
+		for _, c := range cmds {
+			got := make(chan tea.Msg, 1)
+			go func() { got <- c() }()
+			select {
+			case msg := <-got:
+				if raw, ok := msg.(tea.RawMsg); ok && raw.Msg == ansi.RequestExtendedCursorPositionReport {
+					return true
+				}
+			case <-time.After(50 * time.Millisecond): // the next probe's tick
+			}
+		}
+		return false
+	}
+
+	if cmd := h.mouse(t, tea.CursorPositionMsg{X: 0, Y: 0}); cmd != nil {
+		t.Error("a position nobody asked for was acted on")
+	}
+	if !asks(h.mouse(t, probeMsg{})) {
+		t.Fatal("the probe did not ask the terminal where its cursor is")
+	}
+	if cmd := h.mouse(t, tea.CursorPositionMsg{X: want.X, Y: want.Y}); cmd != nil {
+		t.Errorf("a terminal with the cursor where the frame left it got %T", cmd())
+	}
+	h.mouse(t, probeMsg{})
+	cmd := h.mouse(t, tea.CursorPositionMsg{X: want.X, Y: 0})
+	if cmd == nil || !reflect.DeepEqual(cmd(), tea.ClearScreen()) {
+		t.Error("a terminal with the cursor moved to its top row was not repainted")
+	}
+
+	if _, err := h.s.scan.Write([]byte("\x1b[?25l")); err != nil {
+		t.Fatal(err)
+	}
+	if asks(h.mouse(t, probeMsg{})) {
+		t.Error("asked for the cursor with none drawn")
+	}
+}
+
+// TestScrollbackModeIsFollowAndCopy pins the mode's row and keys: follow and
+// copy, nothing else offered, and the keys that once filtered, cleared,
+// dropped the border or left spent like any other.
+func TestScrollbackModeIsFollowAndCopy(t *testing.T) {
+	h := consoleHarness(t)
+	h.scrollOff(t, 1, 3*(defaultRows-chromeHeight))
+	h.enterScrollback(t)
+	row := stripSGR(bottomOf(h))
+	for _, want := range []string{"scrollback", " s ", "follow:on", " c ", "copy"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the row %q lacks %q", row, want)
+		}
+	}
+	for _, gone := range []string{"filter", "clear", "bare", "live", "↑↓"} {
+		if strings.Contains(row, gone) {
+			t.Errorf("the row %q still offers %q", row, gone)
+		}
+	}
+	h.press(t, tea.Key{Code: tea.KeyUp})
+	before := stripSGR(h.f.View().Content)
+	for _, k := range []tea.Key{typing('/'), typing('C'), typing('f'), typing('q'), {Code: tea.KeyEscape}} {
+		h.press(t, k)
+	}
+	if !h.f.reading || stripSGR(h.f.View().Content) != before {
+		t.Errorf("a dropped key changed the mode: reading %v", h.f.reading)
+	}
+	h.silent(t)
 }

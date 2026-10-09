@@ -511,7 +511,7 @@ Every key reaches the program or the container except one:
 | then `r` | Restart. Ends the program and starts it again, for everyone watching; the address stays. Offered for a program, not a container. |
 | then `l` | Show tunneld's own recent log lines over the terminal. `esc` goes back. |
 | then `q` | Show the address as a QR code, for a phone pointed at the screen. `esc` goes back. |
-| then `[` | Scrollback mode: see below. `esc` or `q` goes back to the live screen. |
+| then `[` | Scrollback mode: see below. `s` goes back to the live screen. |
 | then `esc` | Cancel, and the keystroke is spent on cancelling. |
 | — | Messages from the provider sit above the frame in every view. No key moves them. |
 
@@ -552,18 +552,12 @@ mode** (`Ctrl+K` then `[`), the same on the console and in a tab. It releases
 the mouse, so your terminal or the tab's xterm selects natively, and typing
 reaches nobody. The arrows (which the wheel becomes), `PgUp`/`PgDn`,
 `Home`/`End` and `j`/`k`/`b`/space/`g`/`G` move through the history. It
-follows new output until you scroll up; `s` toggles that and the border says
-`follow:on` or `off`, `G` turns it back on. `/` filters the view to the rows
-matching a pattern (a case-insensitive regexp; `!` first inverts it), with
-the matches reversed and the border saying `12 of 4,310 lines`, or `bad
-pattern`; `esc` clears it. `C` forgets everything written so far, for this
-viewer only. `c` copies all of it and the live screen (or, past what a
-terminal will take, the end of it, and the border says `copied (end)`); `f`
-drops the border so a native selection picks up none of it; `esc` or `q` is
-the live screen again, and a run that ends while you read waits for that.
-The border lists as many of the mode's keys as fit, the way out among the
-first. The commands' row has no `esc` chip, so it fits 80 columns; any key
-that is not a command cancels.
+follows new output until you scroll up, and `G` follows again; the border
+says `follow:on` or `off`. `c` copies all of it and the live screen (or,
+past what a terminal will take, the end of it, and the border says `copied
+(end)`). `s` is the live screen again, and a run that ends while you read
+waits for that. The commands' row has no `esc` chip, so it fits 80 columns;
+any key that is not a command cancels.
 
 When a terminal goes, the page says so — and offers a way back only when there
 is one. Your own connection dropping leaves the terminal running, so it offers

@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -113,10 +112,6 @@ type session struct {
 	// race the emulator cannot prevent on its own. Never taken with mu held
 	// for longer than the call; a write can block on the pty's replies.
 	screen sync.RWMutex
-	// evicted is how many lines have dropped off the history's front since
-	// the session began, so a line's number counted from then stays put as
-	// the history moves under it. Under screen.
-	evicted int
 
 	// scan pulls the sequences a program uses to talk about itself out of its
 	// output before the emulator sees them. Built by watch, reset by revive.
@@ -400,7 +395,6 @@ func (s *session) revive() {
 	}
 
 	s.screen.Lock()
-	s.evicted += s.em.ScrollbackLen()
 	_, _ = s.em.Write([]byte("\x1bc"))
 	s.em.ClearScrollback()
 	s.screen.Unlock()
@@ -520,9 +514,7 @@ func (w *sink) Write(p []byte) (int, error) {
 	// hands every OSC and private mode to said. A frame woken before the
 	// emulator had the bytes would render the screen as it was, so the wake is
 	// after.
-	mark := s.historyMark()
 	_, _ = s.scan.Write(p)
-	s.countEvictions(mark)
 	s.wakeAll()
 	return len(p), nil
 }
@@ -1223,125 +1215,6 @@ func (s *session) drawPaneLocked(scr uv.Screen, area uv.Rectangle) {
 // kept, which is how far back a frame can look.
 func (s *session) history() int { return s.em.ScrollbackLen() }
 
-// written is the line the cursor is on, numbered from the session's start
-// (see evicted): every line before it has been written.
-func (s *session) written() int {
-	s.screen.RLock()
-	defer s.screen.RUnlock()
-	return s.evicted + s.em.ScrollbackLen() + s.em.CursorPosition().Y
-}
-
-// indexOf is where line n, numbered from the session's start, is in the
-// transcript now: negative once it has dropped off the history's front.
-func (s *session) indexOf(n int) int {
-	s.screen.RLock()
-	defer s.screen.RUnlock()
-	return n - s.evicted
-}
-
-// historyMark is the newest history line with cells, by where its cells
-// live, and its index: a line keeps its cells as it moves forward, so
-// finding it again says how many dropped off the front.
-type historyMark struct {
-	at   int
-	cell *uv.Cell
-}
-
-func (s *session) historyMark() historyMark {
-	s.screen.RLock()
-	defer s.screen.RUnlock()
-	lines := s.em.Scrollback().Lines()
-	for i := len(lines) - 1; i >= 0 && i >= len(lines)-64; i-- {
-		if len(lines[i]) > 0 {
-			return historyMark{at: i, cell: &lines[i][0]}
-		}
-	}
-	return historyMark{at: -1}
-}
-
-// countEvictions adds to evicted the lines that dropped off the history's
-// front since m was taken. Only a full history drops any.
-func (s *session) countEvictions(m historyMark) {
-	if m.at < 0 {
-		return
-	}
-	s.screen.Lock()
-	defer s.screen.Unlock()
-	sb := s.em.Scrollback()
-	lines := sb.Lines()
-	if len(lines) < sb.MaxLines() {
-		return
-	}
-	for j := min(m.at, len(lines)-1); j >= 0; j-- {
-		if len(lines[j]) > 0 && &lines[j][0] == m.cell {
-			s.evicted += m.at - j
-			return
-		}
-	}
-	s.evicted += m.at + 1
-}
-
-// scrollTexts is the transcript as text for a filter: the history lines
-// numbered from first (at least from), which is no earlier than the
-// history's front, and the live rows. The history is empty on the
-// alternate screen.
-func (s *session) scrollTexts(from int) (evicted, kept, first int, hist, live []string) {
-	s.screen.RLock()
-	defer s.screen.RUnlock()
-	evicted = s.evicted
-	w, h := s.em.Width(), s.em.Height()
-	if !s.em.IsAltScreen() {
-		kept = s.em.ScrollbackLen()
-	}
-	first = max(from, evicted)
-	for n := first; n < evicted+kept; n++ {
-		y := n - evicted
-		hist = append(hist, rowText(w, func(x int) *uv.Cell { return s.em.ScrollbackCellAt(x, y) }))
-	}
-	screen := uv.NewScreenBuffer(w, h)
-	s.drawPaneLocked(screen, screen.Bounds())
-	for y := range h {
-		live = append(live, rowText(w, func(x int) *uv.Cell { return screen.CellAt(x, y) }))
-	}
-	return evicted, kept, first, hist, live
-}
-
-// drawRows draws the transcript rows named, in order, one per row of area.
-func (s *session) drawRows(scr uv.Screen, area uv.Rectangle, rows []int) {
-	s.screen.RLock()
-	defer s.screen.RUnlock()
-	kept := 0
-	if !s.em.IsAltScreen() {
-		kept = s.em.ScrollbackLen()
-	}
-	screen := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
-	s.drawPaneLocked(screen, screen.Bounds())
-	for i := 0; i < area.Dy() && i < len(rows); i++ {
-		for x := range area.Dx() {
-			c := screen.CellAt(x, rows[i]-kept)
-			if rows[i] < kept {
-				c = s.em.ScrollbackCellAt(x, rows[i])
-			}
-			scr.SetCell(area.Min.X+x, area.Min.Y+i, c)
-		}
-	}
-}
-
-// rowText is one row of w cells as text, the way a selection reads it.
-func rowText(w int, at func(x int) *uv.Cell) string {
-	var b strings.Builder
-	for x := range w {
-		switch c := at(x); {
-		case c == nil:
-			b.WriteByte(' ')
-		case c.Content == "" && c.Width == 0:
-		default:
-			b.WriteString(c.Content)
-		}
-	}
-	return strings.TrimRight(b.String(), " ")
-}
-
 // drawHistory draws the pane as a viewer scrolled back sees it: the kept lines
 // from top downward, and below the last of them the live screen from its own
 // first row. A top at or past the end of the history is the live screen.
@@ -1354,7 +1227,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	s.screen.RLock()
 	defer s.screen.RUnlock()
 	kept := s.em.ScrollbackLen()
-	top = max(0, min(top, kept+s.em.Height()))
+	top = max(0, min(top, kept))
 
 	y := 0
 	for ; y < area.Dy() && top+y < kept; y++ {
@@ -1367,7 +1240,7 @@ func (s *session) drawHistory(scr uv.Screen, area uv.Rectangle, top int) {
 	}
 	live := uv.NewScreenBuffer(s.em.Width(), s.em.Height())
 	s.drawPaneLocked(live, live.Bounds())
-	for r := max(0, top-kept); y < area.Dy(); y, r = y+1, r+1 {
+	for r := 0; y < area.Dy(); y, r = y+1, r+1 {
 		for x := range area.Dx() {
 			scr.SetCell(area.Min.X+x, area.Min.Y+y, live.CellAt(x, r))
 		}

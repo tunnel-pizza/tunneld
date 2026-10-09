@@ -3,13 +3,10 @@ package attach
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -104,6 +101,19 @@ type settleMsg struct{}
 // screen — the emulator is the screen — so the message carries nothing: it
 // only says that rendering again is worth doing.
 type paneMsg struct{}
+
+// probeEvery is how often the frame asks its terminal where the cursor is.
+// A terminal can clear itself without a byte reaching the program — VS
+// Code's Cmd+K does — leaving the renderer drawing changes onto a screen
+// that no longer holds the rest, and the cursor jumping to the top row is
+// the one trace of it.
+const probeEvery = time.Second
+
+// probeMsg is the next time to ask.
+type probeMsg struct{}
+
+// probe asks again after probeEvery.
+func probe() tea.Cmd { return tea.Tick(probeEvery, func(time.Time) tea.Msg { return probeMsg{} }) }
 
 // goneMsg says the shared stream has ended. Every viewer's frame gets one,
 // because the session is over for all of them at once.
@@ -203,29 +213,20 @@ type frame struct {
 	// drag from it grows by.
 	unit selection
 
-	// reading is scrollback mode (^K [): the history
-	// is this viewer's to move through with the keys, typing reaches nobody,
-	// and the mouse is released so the viewer's terminal selects natively —
-	// its wheel then arrives as the arrow keys that scroll here. bare is the
-	// mode drawn without the border, bar or labels, so a native selection
-	// picks up none of them.
+	// asked is where the cursor was drawn when the frame last asked the
+	// terminal where it is, and asking that an answer is outstanding.
+	asked  tea.Position
+	asking bool
+
+	// reading is scrollback mode (^K [): the history is this viewer's to
+	// move through with the keys, typing reaches nobody, and the mouse is
+	// released so the viewer's terminal selects natively — its wheel then
+	// arrives as the arrow keys that scroll here.
 	reading bool
-	bare    bool
 
 	// follow keeps the reading view on the newest output; scrolling up turns
-	// it off, s toggles it, G turns it on. pattern filters the view to
-	// matching rows, "" for none; filtering is a pattern being typed, into
-	// filter; mtop is the first match shown when not following, and fc
-	// what has been matched so far. cleared is the line, numbered from the
-	// session's start (see written), the view starts from after C; the
-	// emulator keeps everything before it.
-	follow    bool
-	pattern   string
-	filtering bool
-	filter    string
-	mtop      int
-	fc        *filterCache
-	cleared   int
+	// it off, G turns it on, and s leaves the mode for the live screen.
+	follow bool
 
 	// clip is the chip the last copy left — "copied", or why it was not —
 	// shown until a key, a wheel or another click, as a selection is.
@@ -258,7 +259,7 @@ type frame struct {
 
 // Init asks for nothing. The first render happens as soon as the program
 // starts, and everything after it is driven by the pane and the keyboard.
-func (f frame) Init() tea.Cmd { return nil }
+func (f frame) Init() tea.Cmd { return probe() }
 
 // Update routes a keystroke to the frame or to the container, and nowhere
 // else. Ctrl-D is the one key the container never sees: it is what a viewer
@@ -291,6 +292,30 @@ func (f frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f.sized = true
 		f.sess.resizeViewer(f.v, msg.Width, msg.Height)
 		return f, nil
+
+	case probeMsg:
+		// Asked only with a cursor drawn: with none, where the renderer left
+		// it is the renderer's own business.
+		f.asking = false
+		if c := f.cursor(); c != nil {
+			f.asked, f.asking = c.Position, true
+			return f, tea.Batch(tea.Raw(ansi.RequestExtendedCursorPositionReport), probe())
+		}
+		return f, probe()
+
+	case tea.CursorPositionMsg:
+		// DECXCPR's answer, which no key shares. Where the cursor was when
+		// asked, or where it is now if a render landed in between; anywhere
+		// else, the screen is not the one the renderer last drew.
+		if !f.asking {
+			return f, nil
+		}
+		f.asking = false
+		at := tea.Position{X: msg.X, Y: msg.Y}
+		if c := f.cursor(); at == f.asked || (c != nil && at == c.Position) {
+			return f, nil
+		}
+		return f, tea.ClearScreen
 
 	case disarmMsg:
 		// Only if this is still the arming that tick belongs to.
@@ -656,9 +681,9 @@ func (f frame) behind() int {
 }
 
 // read handles a key in scrollback mode. The arrows, the page keys, home and
-// end (and their vi letters) move through the history; c copies all of it, f
-// drops the chrome, esc or q goes back to the live screen. Anything else is
-// spent: the mode is for reading, and a key that reached the program would
+// end (and their vi letters) move through the history; s is the live screen
+// again, on or off; c copies all of it. Anything else
+// is spent: the mode is for reading, and a key that reached the program would
 // change what is being read.
 func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 	f.clip = ""
@@ -667,49 +692,7 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 	if key == "" && k.Mod == 0 && k.Code < tea.KeyExtended {
 		key = string(k.Code)
 	}
-	if f.filtering {
-		switch {
-		case k.Code == tea.KeyEnter:
-			f.filtering, f.pattern, f.fc = false, f.filter, &filterCache{}
-			f.mtop = max(0, len(f.matches().rows)-page)
-		case k.Code == tea.KeyEscape:
-			f.filtering, f.filter = false, ""
-		case k.Code == tea.KeyBackspace:
-			_, n := utf8.DecodeLastRuneInString(f.filter)
-			f.filter = f.filter[:len(f.filter)-n]
-		case k.Text != "":
-			f.filter += k.Text
-		}
-		return f, nil
-	}
-	if f.pattern != "" {
-		// With a filter applied a step is a match.
-		switch {
-		case k.Code == tea.KeyUp || key == "k":
-			return f.scrollMatches(-1), nil
-		case k.Code == tea.KeyDown || key == "j":
-			return f.scrollMatches(1), nil
-		case k.Code == tea.KeyPgUp || key == "b":
-			return f.scrollMatches(-page), nil
-		case k.Code == tea.KeyPgDown || k.Code == tea.KeySpace || key == " ":
-			return f.scrollMatches(page), nil
-		case k.Code == tea.KeyHome || key == "g":
-			return f.scrollMatches(-len(f.matches().rows)), nil
-		case k.Code == tea.KeyEnd || key == "G":
-			f.follow = true
-			return f, nil
-		case key == "s" && f.follow:
-			// The view stays where following left it.
-			f.follow, f.mtop = false, max(0, len(f.matches().rows)-page)
-			return f, nil
-		}
-	}
 	switch {
-	case k.Code == tea.KeyEscape && f.pattern != "":
-		f.pattern, f.fc = "", nil
-	case k.Code == tea.KeyEscape || key == "q":
-		f.reading, f.bare, f.scrolled = false, false, false
-		f.follow, f.pattern, f.filter, f.cleared, f.fc = false, "", "", 0, nil
 	case k.Code == tea.KeyUp || key == "k":
 		f = f.scroll(-1)
 	case k.Code == tea.KeyDown || key == "j":
@@ -722,21 +705,8 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 		f = f.scroll(-f.sess.history() - page)
 	case k.Code == tea.KeyEnd || key == "G":
 		f = f.scroll(f.sess.history() + page)
-	case key == "f":
-		f.bare = !f.bare
 	case key == "s":
-		f.follow = !f.follow
-		if f.follow {
-			f = f.scroll(f.sess.history() + page)
-		}
-	case key == "/":
-		f.filtering, f.filter = true, ""
-	case key == "C":
-		// Everything written so far, the rows on screen above the cursor
-		// included: a clear that left them to scroll back into view would
-		// not be one.
-		f.cleared = f.sess.written()
-		f = f.scroll(f.sess.history() + page)
+		f.reading, f.scrolled, f.follow = false, false, false
 	case key == "c":
 		text, whole := fitting(f.everything())
 		f, cmd := f.copy(text)
@@ -783,140 +753,6 @@ func (f frame) scroll(step int) frame {
 		f.follow = f.top >= kept
 	}
 	return f
-}
-
-// matcher is the filter's regexp, case-insensitive, and whether a leading !
-// inverts it; nil when the pattern does not compile.
-func (f frame) matcher() (*regexp.Regexp, bool) {
-	pat, invert := strings.CutPrefix(f.pattern, "!")
-	re, err := regexp.Compile("(?i)" + pat)
-	if err != nil {
-		return nil, invert
-	}
-	return re, invert
-}
-
-// filterCache is what a filter has matched so far: whether each history
-// line from base on matched, by line number (see written). History lines
-// do not change once kept, so each is matched once; the live rows are
-// matched on every look.
-type filterCache struct {
-	pattern string
-	base    int
-	hist    []bool
-}
-
-// matched is the filter's result: the transcript rows from cleared on that
-// match, and how many rows there were.
-type matched struct {
-	rows  []int
-	total int
-}
-
-// matches is the filter's result now. A pattern that does not compile
-// matches nothing.
-func (f frame) matches() matched {
-	re, invert := f.matcher()
-	fc := f.fc
-	if fc == nil {
-		fc = &filterCache{}
-	}
-	if fc.pattern != f.pattern {
-		*fc = filterCache{pattern: f.pattern}
-	}
-	evicted, kept, first, hist, live := f.sess.scrollTexts(fc.base + len(fc.hist))
-	if d := min(max(0, evicted-fc.base), len(fc.hist)); d > 0 {
-		fc.hist, fc.base = fc.hist[d:], fc.base+d
-	}
-	if len(fc.hist) == 0 {
-		fc.base = first
-	}
-	match := func(text string) bool { return re != nil && re.MatchString(text) != invert }
-	for _, text := range hist {
-		fc.hist = append(fc.hist, match(text))
-	}
-	var m matched
-	for i, ok := range fc.hist {
-		if n := fc.base + i; ok && n >= f.cleared {
-			m.rows = append(m.rows, n-evicted)
-		}
-	}
-	for y, text := range live {
-		if n := evicted + kept + y; n >= f.cleared && match(text) {
-			m.rows = append(m.rows, kept+y)
-		}
-	}
-	m.total = max(0, evicted+kept+len(live)-max(f.cleared, evicted))
-	return m
-}
-
-// scrollMatches moves a reader of a filtered view step matches, clamped to
-// them; at the last page it is following.
-func (f frame) scrollMatches(step int) frame {
-	last := max(0, len(f.matches().rows)-max(1, f.pane().Dy()))
-	cur := f.mtop
-	if f.follow {
-		cur = last
-	}
-	f.mtop = max(0, min(cur+step, last))
-	f.follow = f.mtop >= last
-	return f
-}
-
-// drawFiltered draws the matching rows from where the reader is, their
-// matches reversed, into pixels.
-func (f frame) drawFiltered(pixels uv.ScreenBuffer) {
-	rows := f.matches().rows
-	h := pixels.Bounds().Dy()
-	start := max(0, len(rows)-h)
-	if !f.follow {
-		start = max(0, min(f.mtop, start))
-	}
-	shown := rows[start:min(len(rows), start+h)]
-	f.sess.drawRows(pixels, pixels.Bounds(), shown)
-	re, invert := f.matcher()
-	if re == nil || invert {
-		return
-	}
-	for y := range shown {
-		line, offs := cellText(pixels, y)
-		marks := re.FindAllStringIndex(line, -1)
-		for x := range pixels.Bounds().Dx() {
-			c := pixels.CellAt(x, y)
-			if c != nil && slices.ContainsFunc(marks, func(m []int) bool { return offs[x] >= m[0] && offs[x] < m[1] }) {
-				marked := *c
-				marked.Style.Attrs ^= uv.AttrReverse
-				pixels.SetCell(x, y, &marked)
-			}
-		}
-	}
-}
-
-// cellText is row y of buf as text, and the byte offset each cell starts at.
-func cellText(buf uv.ScreenBuffer, y int) (string, []int) {
-	w := buf.Bounds().Dx()
-	at := make([]int, w)
-	var b strings.Builder
-	for x := range w {
-		at[x] = b.Len()
-		switch c := buf.CellAt(x, y); {
-		case c == nil:
-			b.WriteByte(' ')
-		case c.Content == "" && c.Width == 0:
-		default:
-			b.WriteString(c.Content)
-		}
-	}
-	return b.String(), at
-}
-
-// thousands is n with commas between its thousands.
-func thousands(n int) string {
-	s := fmt.Sprint(n)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
 }
 
 // everything is the whole history and the live screen as text, for c in
@@ -1104,15 +940,6 @@ func (f frame) View() tea.View {
 		view.MouseMode = tea.MouseModeNone
 	}
 
-	// The bare view: the pane alone from the window's corner, nothing around
-	// it for a native selection to pick up, and no cursor.
-	if f.reading && f.bare {
-		buf := uv.NewScreenBuffer(f.width, f.height)
-		blit(buf, f.composed(), 0, 0)
-		view.Content = buf.Render()
-		return view
-	}
-
 	// A ScreenBuffer rather than a plain Buffer: it is the one that carries a
 	// width method, which is what makes a wide character occupy two columns
 	// here the way it does on the terminal this is drawn for.
@@ -1163,18 +990,26 @@ func (f frame) View() tea.View {
 	f.row(buf, f.frameRect().Max.Y-1, f.hint(), f.banner(), f.meta(), f.copied()+f.back(), f.back(), f.copied())
 
 	view.Content = buf.Render()
-	// No cursor when the frame owns the keyboard, when the reader has scrolled
-	// off the live screen, or when the program asked for none. The last is
-	// what a full-screen program does at startup, and the emulator keeps a
-	// position regardless — so drawing one there follows the program's writes
-	// around the screen rather than showing anybody where they are typing.
-	if !f.command && !f.logs && !f.qr && !f.reading && !f.scrolled && !f.ended && !f.sess.cursorHidden() {
-		pos := f.sess.paneCursor()
-		if pos.X < pane.Dx() && pos.Y < pane.Dy() {
-			view.Cursor = tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
-		}
-	}
+	view.Cursor = f.cursor()
 	return view
+}
+
+// cursor is the terminal's cursor as the frame draws it, nil for none: none
+// when the frame owns the keyboard, when the reader has scrolled off the live
+// screen, or when the program asked for none. The last is what a full-screen
+// program does at startup, and the emulator keeps a position regardless — so
+// drawing one there follows the program's writes around the screen rather
+// than showing anybody where they are typing.
+func (f frame) cursor() *tea.Cursor {
+	if f.command || f.logs || f.qr || f.reading || f.scrolled || f.ended || f.sess.cursorHidden() {
+		return nil
+	}
+	pane := f.pane()
+	pos := f.sess.paneCursor()
+	if pos.X >= pane.Dx() || pos.Y >= pane.Dy() {
+		return nil
+	}
+	return tea.NewCursor(pane.Min.X+pos.X, pane.Min.Y+pos.Y)
 }
 
 // drawBanner draws the provider's word into buf: one row per message across
@@ -1282,11 +1117,6 @@ func (f frame) composed() uv.ScreenBuffer {
 		}
 	case f.qr:
 		f.drawQR(pixels)
-	case f.scrolled && f.pattern != "":
-		f.drawFiltered(pixels)
-	case f.scrolled && f.cleared > 0:
-		// What was written since C, from this viewer's top.
-		f.sess.drawHistory(pixels, pixels.Bounds(), max(f.top, f.sess.indexOf(f.cleared)))
 	case f.scrolled:
 		// History from this viewer's top, and the live screen under it.
 		f.sess.drawHistory(pixels, pixels.Bounds(), f.top)
@@ -1730,52 +1560,14 @@ func (f frame) hint() string {
 	return b.String()
 }
 
-// readingHint is scrollback mode's keys. More than an 80-column row holds
-// beside the copy's chip and how far back the reader is, so they are taken
-// in order of what matters and drawn in reading order: the mode, follow and
-// the filter's count first, the way out next, the arrows last. No arrows
-// where there is nothing to scroll.
+// readingHint is scrollback mode's keys: the mode, follow and copy.
 func (f frame) readingHint() string {
-	if f.filtering {
-		return chipStyle.Styled(" / ") + hintStyle.Styled(" "+f.filter+"▏ enter apply · esc cancel ")
-	}
 	follow := "off"
 	if f.follow {
 		follow = "on"
 	}
-	var count string
-	if re, _ := f.matcher(); f.pattern != "" && re == nil {
-		count = chipStyle.Styled(" bad pattern ")
-	} else if f.pattern != "" {
-		m := f.matches()
-		count = chipStyle.Styled(fmt.Sprintf(" %s of %s lines ", thousands(len(m.rows)), thousands(m.total)))
-	}
-	var arrows string
-	if !f.sess.altScreen() {
-		arrows = hintStyle.Styled(" ↑↓ ")
-	}
 	key := func(k, label string) string { return chipStyle.Styled(" "+k+" ") + hintStyle.Styled(" "+label+" ") }
-	shown := []string{
-		chipStyle.Styled(" scrollback "), arrows, key("s", "follow:"+follow), key("/", "filter"), count,
-		key("C", "clear"), key("c", "copy"), key("f", "bare"), key("esc", "live"),
-	}
-	room := f.frameRect().Dx() - 3
-	if right := uv.NewStyledString(f.copied() + f.back()).UnicodeWidth(); right > 0 {
-		room -= right + 1
-	}
-	keep := make([]bool, len(shown))
-	for _, i := range []int{0, 2, 4, 8, 3, 6, 5, 7, 1} {
-		if w := uv.NewStyledString(shown[i]).UnicodeWidth(); w <= room {
-			keep[i], room = true, room-w
-		}
-	}
-	var b strings.Builder
-	for i, s := range shown {
-		if keep[i] {
-			b.WriteString(s)
-		}
-	}
-	return b.String()
+	return chipStyle.Styled(" scrollback ") + key("s", "follow:"+follow) + key("c", "copy")
 }
 
 // viewers names how many are watching, in the one place it is said.
