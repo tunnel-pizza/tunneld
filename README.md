@@ -297,8 +297,9 @@ tunneld is a thin layer over other people's work. Thank you to:
   (`github.com/modelcontextprotocol/go-sdk`): the Model Context Protocol
   server tunneld serves to agents on its control path.
 - **[xterm.js](https://xtermjs.org)**: `@xterm/xterm@6.0.0`, with
-  `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0` and
-  `@xterm/addon-clipboard@0.2.0`. It is the terminal in a browser tab, loaded
+  `@xterm/addon-fit@0.11.0`, `@xterm/addon-webgl@0.19.0`,
+  `@xterm/addon-clipboard@0.2.0`, `@xterm/addon-search@0.16.0` and
+  `@xterm/addon-serialize@0.14.0`. It is the terminal in a browser tab, loaded
   from jsDelivr when the page opens.
 - **ncurses**: the compiled `xterm-256color` terminfo entry the Linux binaries
   carry, for programs served through the terminal shim on machines without one.
