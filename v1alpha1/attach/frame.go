@@ -653,68 +653,81 @@ func (f frame) everything() string {
 	return strings.TrimRight(all.text(buf), "\n")
 }
 
-// commanded handles the keystroke after Ctrl-D and leaves command mode, which
+// action is one entry of the commands menu: its key, its label in the bottom
+// row, when it is offered, and what it does. One table, read by hint and
+// commanded both, so a key is never offered without a handler or handled
+// without being offered.
+type action struct {
+	key   rune
+	label string
+	when  func(frame) bool
+	run   func(frame) (frame, tea.Cmd)
+}
+
+var always = func(frame) bool { return true }
+
+var commands = []action{
+	// This viewer only: the stream is shared and stays up.
+	{'d', "detach", always, func(f frame) (frame, tea.Cmd) { return f, tea.Quit }},
+	// The whole run: the command ends and everything it started comes down
+	// with it, once the program has returned the terminal; see exiting.
+	{'x', "exit", always, func(f frame) (frame, tea.Cmd) {
+		f.exiting = true
+		return f, tea.Quit
+	}},
+	// Only where the program can be started over; a container cannot. Off
+	// this goroutine: ending a program takes as long as it takes to leave.
+	{'r', "restart", func(f frame) bool { return f.sess.restartable() }, func(f frame) (frame, tea.Cmd) {
+		go f.sess.restart()
+		return f, nil
+	}},
+	// tunneld's own lines, which go to a console somewhere else.
+	{'l', "logs", always, func(f frame) (frame, tea.Cmd) {
+		f.logs = true
+		return f, nil
+	}},
+	// The address as a QR code, for a phone pointed at the screen.
+	{'q', "qr", always, func(f frame) (frame, tea.Cmd) {
+		f.qr = true
+		return f, nil
+	}},
+	// Scrollback mode, on the console: see reading. A drag under way gets no
+	// release once the mouse is let go.
+	{'[', "scroll", frame.console, func(f frame) (frame, tea.Cmd) {
+		f.reading, f.selecting, f.selected = true, false, false
+		return f.scroll(0), nil
+	}},
+	// The mouse, released or asked for again outside the mode: see mouseOff.
+	{'m', "mouse", frame.console, func(f frame) (frame, tea.Cmd) {
+		f.mouseOff = !f.mouseOff
+		f.selecting, f.selected = false, false
+		return f, nil
+	}},
+}
+
+// offered is the commands this frame offers now.
+func (f frame) offered() []action {
+	var out []action
+	for _, a := range commands {
+		if a.when(f) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// commanded handles the keystroke after ^K and leaves command mode, which
 // every path does: a mode a viewer can be left in without noticing is worse
 // than one that needs the prefix again.
 func (f frame) commanded(k tea.Key) (tea.Model, tea.Cmd) {
 	f.command = false
-
-	switch k.Code {
-	case 'd':
-		// This viewer only. The stream is shared and stays up; the socket
-		// closing is all that happens, and the page says "detached".
-		return f, tea.Quit
-	case 'l':
-		// The lines tunneld writes about itself, which a viewer has no other
-		// way to see: they go to the console this process was started on, and
-		// that is somewhere else — or, on a mirrored console, underneath this
-		// very frame.
-		f.logs = true
-		return f, nil
-	case 'q':
-		// The address as a QR code, for the one reader that cannot click it:
-		// a phone pointed at the screen.
-		f.qr = true
-		return f, nil
-	case '[':
-		// Scrollback mode, on the console: see reading. A tab's page keeps
-		// the mouse and selects natively already, so there it is not offered.
-		if f.console() {
-			// A drag under way gets no release once the mouse is let go.
-			f.reading, f.selecting, f.selected = true, false, false
-			f = f.scroll(0)
+	for _, a := range f.offered() {
+		if k.Code == a.key {
+			return a.run(f)
 		}
-		return f, nil
-	case 'm':
-		// The mouse, released or asked for again outside the mode: see
-		// mouseOff. The console's alone, for the same reason.
-		if f.console() {
-			f.mouseOff = !f.mouseOff
-			f.selecting, f.selected = false, false
-		}
-		return f, nil
-	case 'r':
-		// The program, started over, for every viewer at once — where the
-		// program can be: a container has no PID 1 to start again, and the
-		// key is not offered there. Off this goroutine, because ending a
-		// program takes as long as it takes to leave.
-		if f.sess.restartable() {
-			go f.sess.restart()
-		}
-		return f, nil
-	case 'x':
-		// The whole run, not this viewer and not this origin: the command ends,
-		// its context goes with it, and everything it started — the programs,
-		// the attach servers, the tunnel — comes down together. Somebody who
-		// opened a terminal from their own machine has no other way to close
-		// it from inside, which is the point. Asked for here, done once the
-		// program has returned the terminal; see exiting.
-		f.exiting = true
-		return f, tea.Quit
 	}
 	// Escape, or anything unbound: the mode closes and the keystroke is spent
-	// on closing it. Not forwarded to the container, because a viewer who
-	// mistyped a command did not mean to type it at the prompt either.
+	// on closing it, not forwarded to the program.
 	return f, nil
 }
 
@@ -1409,29 +1422,16 @@ func (f frame) hint() string {
 	if !f.command {
 		return chipStyle.Styled(" ^K ") + hintStyle.Styled(" commands ")
 	}
-	// r only where it works: a program can be started over, a container
-	// cannot, and a key that appears to do nothing reads as a key that is
-	// broken.
-	var restart string
-	if f.sess.restartable() {
-		restart = chipStyle.Styled(" r ") + hintStyle.Styled(" restart ")
+	var b strings.Builder
+	for _, a := range f.offered() {
+		b.WriteString(chipStyle.Styled(" "+string(a.key)+" ") + hintStyle.Styled(" "+a.label+" "))
 	}
-	// Scrollback and the mouse only on the console: see reading. There esc
-	// gives up its chip so all of them fit 80 columns; any unbound key
-	// cancels anyway.
-	cancel := chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel ")
-	var console string
-	if f.console() {
-		console = chipStyle.Styled(" [ ") + hintStyle.Styled(" scroll ") +
-			chipStyle.Styled(" m ") + hintStyle.Styled(" mouse ")
-		cancel = ""
+	// esc gives up its chip on the console so everything fits 80 columns;
+	// any unbound key cancels anyway.
+	if !f.console() {
+		b.WriteString(chipStyle.Styled(" esc ") + hintStyle.Styled(" cancel "))
 	}
-	return chipStyle.Styled(" d ") + hintStyle.Styled(" detach ") +
-		chipStyle.Styled(" x ") + hintStyle.Styled(" exit ") +
-		restart +
-		chipStyle.Styled(" l ") + hintStyle.Styled(" logs ") +
-		chipStyle.Styled(" q ") + hintStyle.Styled(" qr ") +
-		console + cancel
+	return b.String()
 }
 
 // viewers names how many are watching, in the one place it is said.
