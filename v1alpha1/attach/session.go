@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -125,26 +126,18 @@ type session struct {
 	title    string
 	subtitle string
 
-	// modeMu guards hidden and mouse, and is separate from titleMu for the
+	// modeMu guards hidden and modes, and is separate from titleMu for the
 	// same reason titleMu is separate from mu: said writes them from the
-	// stream goroutine and a frame reads them from its own, and none of these
-	// fields has anything to do with the others.
+	// stream goroutine and a frame reads them from its own.
 	//
-	// hidden is what the program asked for with DECTCEM. A full-screen program
-	// hides the cursor once, at startup, and then leaves it wherever its last
-	// write ended — so a frame that draws one anyway shows a cursor skating
-	// around the screen on every redraw.
-	//
-	// mouse is the mouse-reporting modes the program has set and not yet
-	// cleared, by number. The emulator knows these too and encodes a mouse
-	// event only when one is on, but it does not say so — and the frame has
-	// to know before it sends, because a wheel the program does not want is
-	// the frame's to scroll with. Kept as a set rather than a flag because a
-	// program that sets 1000 and 1002 and then clears 1000 still wants the
-	// mouse.
+	// hidden is what the program asked for with DECTCEM. modes is every other
+	// private mode the program has set and not cleared, by number: the mouse
+	// modes decide whose the wheel is, and all of them are what a viewer
+	// joining later has to be told so its terminal is in the state the
+	// program believes it is.
 	modeMu sync.Mutex
 	hidden bool
-	mouse  map[int]bool
+	modes  map[int]bool
 
 	// restarting is non-nil while ^K r is ending the run to start it again,
 	// and closes when the new run is up. follow and redraw read it so a run
@@ -543,15 +536,10 @@ func paints(cmd int) bool {
 func (s *session) said(seq Sequence) {
 	switch seq.Kind {
 	case Mode:
-		// The CSI is already on the screen. Two things about it are the
-		// frame's business: whether the program wants a cursor drawn, and
-		// whether it wants the mouse — which decides whose the wheel is.
-		switch seq.Cmd {
-		case 25: // DECTCEM
-			s.setCursorHidden(!seq.Set)
-		case 9, 1000, 1001, 1002, 1003: // X10, normal, highlight, button-event, any-event
-			s.setMouse(seq.Cmd, seq.Set)
-		}
+		// The CSI is already on the screen. Recorded for a viewer joining
+		// later, and for the frame: whether a cursor is wanted, and whether
+		// the mouse is — which decides whose the wheel is.
+		s.setMode(seq.Cmd, seq.Set)
 	case OSC:
 		switch {
 		case names(seq.Cmd):
@@ -1068,18 +1056,36 @@ func (s *session) setCursorHidden(hidden bool) {
 	s.modeMu.Unlock()
 }
 
-// setMouse records one mouse-reporting mode being set or cleared.
-func (s *session) setMouse(mode int, set bool) {
+// setMode records one private mode being set or cleared. DECTCEM (25) is
+// kept as hidden instead.
+func (s *session) setMode(mode int, set bool) {
+	if mode == 25 {
+		s.setCursorHidden(!set)
+		return
+	}
 	s.modeMu.Lock()
 	defer s.modeMu.Unlock()
 	if !set {
-		delete(s.mouse, mode)
+		delete(s.modes, mode)
 		return
 	}
-	if s.mouse == nil {
-		s.mouse = map[int]bool{}
+	if s.modes == nil {
+		s.modes = map[int]bool{}
 	}
-	s.mouse[mode] = true
+	s.modes[mode] = true
+}
+
+// modesSet is every private mode the program has set and not cleared, in
+// order, for a snapshot to replay.
+func (s *session) modesSet() []int {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+	out := make([]int, 0, len(s.modes))
+	for m := range s.modes {
+		out = append(out, m)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // mouseWanted reports whether the program has any mouse-reporting mode on,
@@ -1087,7 +1093,12 @@ func (s *session) setMouse(mode int, set bool) {
 func (s *session) mouseWanted() bool {
 	s.modeMu.Lock()
 	defer s.modeMu.Unlock()
-	return len(s.mouse) > 0
+	for _, m := range []int{9, 1000, 1001, 1002, 1003} {
+		if s.modes[m] {
+			return true
+		}
+	}
+	return false
 }
 
 // resetModes forgets what the program asked for, for a program that is gone.
@@ -1096,7 +1107,7 @@ func (s *session) mouseWanted() bool {
 func (s *session) resetModes() {
 	s.modeMu.Lock()
 	s.hidden = false
-	s.mouse = nil
+	s.modes = nil
 	s.modeMu.Unlock()
 }
 

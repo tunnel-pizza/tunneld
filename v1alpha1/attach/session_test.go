@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -611,5 +612,37 @@ func TestFollowMotdSeesAChangeDuringTheLast(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("change %d was never applied", i+1)
 		}
+	}
+}
+
+// TestModesAreRecorded pins that every private mode the program sets is kept,
+// in order, until it clears it or the run resets: what a tab joining later
+// has to be told, and what decides whose the wheel is.
+func TestModesAreRecorded(t *testing.T) {
+	h := newFrameHarness(t)
+	s := h.s
+	write := func(seq string) {
+		t.Helper()
+		if _, err := s.scan.Write([]byte(seq)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?25l")
+	if got := s.modesSet(); !slices.Equal(got, []int{1000, 1006, 1049, 2004}) {
+		t.Errorf("modesSet() = %v, want 1000 1006 1049 2004 (25 is hidden's)", got)
+	}
+	if !s.cursorHidden() || !s.mouseWanted() {
+		t.Errorf("cursorHidden %v, mouseWanted %v; want both", s.cursorHidden(), s.mouseWanted())
+	}
+	write("\x1b[?1000l\x1b[?1006l")
+	if s.mouseWanted() {
+		t.Error("mouseWanted after both mouse modes were cleared")
+	}
+	if got := s.modesSet(); !slices.Equal(got, []int{1049, 2004}) {
+		t.Errorf("modesSet() after clearing = %v, want 1049 2004", got)
+	}
+	s.resetModes()
+	if got := s.modesSet(); len(got) != 0 || s.cursorHidden() {
+		t.Errorf("after resetModes: modes %v, hidden %v; want none", got, s.cursorHidden())
 	}
 }
