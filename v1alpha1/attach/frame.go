@@ -1543,7 +1543,8 @@ func (f frame) hint() string {
 		if a.off != nil && a.off(f) {
 			style = offStyle
 		}
-		b.WriteString(chipStyle.Styled(" "+string(a.key)+" ") + style.Styled(" "+a.label+" "))
+		b.WriteString(chipStyle.Styled(" " + string(a.key) + " "))
+		b.WriteString(style.Styled(" " + a.label + " "))
 	}
 	// No esc chip, so everything fits 80 columns; any unbound key cancels.
 	return b.String()

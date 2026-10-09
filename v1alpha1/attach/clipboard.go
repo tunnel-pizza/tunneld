@@ -50,7 +50,9 @@ func osc52(text string, getenv func(string) string) (seq, chip string) {
 	case strings.HasPrefix(getenv("TERM"), "screen"):
 		var b strings.Builder
 		for i := 0; i < len(plain); i += screenChunk {
-			b.WriteString("\x1bP" + plain[i:min(i+screenChunk, len(plain))] + "\x1b\\")
+			b.WriteString("\x1bP")
+			b.WriteString(plain[i:min(i+screenChunk, len(plain))])
+			b.WriteString("\x1b\\")
 		}
 		return b.String(), "copied"
 	}
