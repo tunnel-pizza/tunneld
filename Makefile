@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run
+.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run ttyshim ttyshim-check
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -118,6 +118,18 @@ licenses:
 	  done; \
 	} > dist/THIRD_PARTY_LICENSES.tmp; \
 	mv dist/THIRD_PARTY_LICENSES.tmp dist/THIRD_PARTY_LICENSES
+
+# The terminal shim (v1alpha1/attach/shell/ttyshim), rebuilt in Docker into
+# the objects committed beside its source; each build is gated by symbols.sh.
+ttyshim:
+	sh v1alpha1/attach/shell/ttyshim/build.sh amd64
+	sh v1alpha1/attach/shell/ttyshim/build.sh arm64
+
+# What CI runs: a rebuild that must match what is committed, and the gate's
+# own test.
+ttyshim-check: ttyshim
+	git diff --exit-code -- v1alpha1/attach/shell/ttyshim/
+	sh v1alpha1/attach/shell/ttyshim/negative.sh amd64
 
 # Cross-compile + vet for Windows. A build-only smoke so the binary doesn't
 # quietly stop building on the other major target.
