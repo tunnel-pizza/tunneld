@@ -2496,3 +2496,30 @@ func TestAFilteredViewScrollsByMatches(t *testing.T) {
 		t.Errorf("g in the filtered view %q; want the first match", v)
 	}
 }
+
+// TestTheFilterEditsByCharacterAndSaysWhenItIsBad pins that Backspace takes
+// back a whole character, and that a pattern that does not compile says so
+// rather than counting no matches.
+func TestTheFilterEditsByCharacterAndSaysWhenItIsBad(t *testing.T) {
+	h := consoleHarness(t)
+	h.window(80, 12)
+	if _, err := (&sink{s: h.s}).Write([]byte("café\r\nplain\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	h.mouse(t, paneMsg{})
+	row := func() string { return stripSGR(bottomOf(h)) }
+	h.enterScrollback(t)
+	h.press(t, typing('/'))
+	h.press(t, typing('a'))
+	h.press(t, typing('é'))
+	h.press(t, tea.Key{Code: tea.KeyBackspace})
+	if h.f.filter != "a" {
+		t.Errorf("Backspace after é left %q, want %q", h.f.filter, "a")
+	}
+	h.press(t, tea.Key{Code: tea.KeyBackspace})
+	h.press(t, typing('('))
+	h.press(t, tea.Key{Code: tea.KeyEnter})
+	if r := row(); !strings.Contains(r, "bad pattern") || strings.Contains(r, " of ") {
+		t.Errorf("an unbalanced ( shows %q, want it called a bad pattern", r)
+	}
+}

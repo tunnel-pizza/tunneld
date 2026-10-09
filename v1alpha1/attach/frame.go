@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -640,9 +641,8 @@ func (f frame) read(k tea.Key) (tea.Model, tea.Cmd) {
 		case k.Code == tea.KeyEscape:
 			f.filtering, f.filter = false, ""
 		case k.Code == tea.KeyBackspace:
-			if n := len(f.filter); n > 0 {
-				f.filter = f.filter[:n-1]
-			}
+			_, n := utf8.DecodeLastRuneInString(f.filter)
+			f.filter = f.filter[:len(f.filter)-n]
 		case k.Text != "":
 			f.filter += k.Text
 		}
@@ -1689,7 +1689,9 @@ func (f frame) readingHint() string {
 		follow = "on"
 	}
 	var count string
-	if f.pattern != "" {
+	if re, _ := f.matcher(); f.pattern != "" && re == nil {
+		count = chipStyle.Styled(" bad pattern ")
+	} else if f.pattern != "" {
 		m := f.matches()
 		count = chipStyle.Styled(fmt.Sprintf(" %s of %s lines ", thousands(len(m.rows)), thousands(m.total)))
 	}
