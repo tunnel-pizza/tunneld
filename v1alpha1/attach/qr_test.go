@@ -80,3 +80,19 @@ func TestQRLinesAreTheCode(t *testing.T) {
 		})
 	}
 }
+
+// TestQRSVGIsACode pins the SVG: one rect per dark module on a light field,
+// square, with the quiet zone.
+func TestQRSVGIsACode(t *testing.T) {
+	svg, err := QRSVG("https://x.tunneled.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(svg)
+	if !strings.HasPrefix(s, "<svg") || !strings.Contains(s, "<rect") || !strings.Contains(s, `viewBox="0 0 `) {
+		t.Errorf("not an SVG of rects: %q", s[:min(120, len(s))])
+	}
+	if _, err := QRSVG(strings.Repeat("x", 5000)); err == nil {
+		t.Error("a text too long to encode gave no error")
+	}
+}

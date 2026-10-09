@@ -1,6 +1,7 @@
 package attach
 
 import (
+	"fmt"
 	"strings"
 
 	"rsc.io/qr"
@@ -64,4 +65,26 @@ func QRLines(text string, level qr.Level) ([]string, error) {
 		lines = append(lines, b.String())
 	}
 	return lines, nil
+}
+
+// QRSVG is text as a code in SVG: a rect per dark module on a light field,
+// the quiet zone around it, sized in modules so the page scales it.
+func QRSVG(text string) ([]byte, error) {
+	code, err := qr.Encode(text, qr.L)
+	if err != nil {
+		return nil, err
+	}
+	n := code.Size + 2*quiet
+	var b strings.Builder
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" shape-rendering="crispEdges">`, n, n)
+	fmt.Fprintf(&b, `<rect width="%d" height="%d" fill="#fff"/>`, n, n)
+	for y := range code.Size {
+		for x := range code.Size {
+			if code.Black(x, y) {
+				fmt.Fprintf(&b, `<rect x="%d" y="%d" width="1" height="1"/>`, x+quiet, y+quiet)
+			}
+		}
+	}
+	b.WriteString(`</svg>`)
+	return []byte(b.String()), nil
 }

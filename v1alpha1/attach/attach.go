@@ -748,6 +748,19 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 		_, _ = io.WriteString(w, offer)
 	})
 
+	// sameOrigin is the socket's rule for a request that acts on the
+	// session: a browser's Origin must be this host; none means a non-browser
+	// client.
+	sameOrigin := func(w http.ResponseWriter, r *http.Request) bool {
+		if o := r.Header.Get("Origin"); o != "" {
+			if u, err := url.Parse(o); err != nil || u.Host != r.Host {
+				http.Error(w, "attach: cross-origin request refused", http.StatusForbidden)
+				return false
+			}
+		}
+		return true
+	}
+
 	// The attach handler hands the request to ServeAttach, which owns the
 	// websocket upgrade and the v4.channel.k8s.io framing on it.
 	//
@@ -781,11 +794,8 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 		// handshake, so no Origin means a non-browser client — curl, a script, a
 		// test — which was never the thing at risk here. Refusing it would break
 		// them and buy nothing.
-		if o := r.Header.Get("Origin"); o != "" {
-			if u, err := url.Parse(o); err != nil || u.Host != r.Host {
-				http.Error(w, "attach: cross-origin websocket refused", http.StatusForbidden)
-				return
-			}
+		if !sameOrigin(w, r) {
+			return
 		}
 
 		// ServeAttach hands the Target r.Context(), and on this one handler that
@@ -824,6 +834,50 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 	}
 	mux.HandleFunc("GET /attach", func(w http.ResponseWriter, r *http.Request) { attach(w, r, false) })
 	mux.HandleFunc("GET /attach/embedded", func(w http.ResponseWriter, r *http.Request) { attach(w, r, true) })
+	// The page's commands: what the frame's ^K does on a console, as routes
+	// a tab's strip can call.
+	mux.HandleFunc("GET /attach/logs", func(w http.ResponseWriter, r *http.Request) {
+		if !sameOrigin(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join(s.session.logLines(), "\n"))
+	})
+	mux.HandleFunc("GET /attach/qr.svg", func(w http.ResponseWriter, r *http.Request) {
+		if !sameOrigin(w, r) {
+			return
+		}
+		addr := s.session.announced()
+		if addr == "" {
+			http.Error(w, "no address yet", http.StatusNotFound)
+			return
+		}
+		svg, err := QRSVG(addr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		_, _ = w.Write(svg)
+	})
+	mux.HandleFunc("POST /attach/restart", func(w http.ResponseWriter, r *http.Request) {
+		if !sameOrigin(w, r) {
+			return
+		}
+		if !s.session.restartable() {
+			http.Error(w, "this program cannot be started over", http.StatusConflict)
+			return
+		}
+		go s.session.restart()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /attach/exit", func(w http.ResponseWriter, r *http.Request) {
+		if !sameOrigin(w, r) {
+			return
+		}
+		s.session.endRun()
+		w.WriteHeader(http.StatusNoContent)
+	})
 
 	s.srv = &http.Server{
 		Handler:           mux,

@@ -1832,3 +1832,60 @@ func TestSpawnersKeepTheOriginsOrder(t *testing.T) {
 		t.Errorf("Spawn through Bound = %d, want the target's 7", exit)
 	}
 }
+
+// TestTheCommandRoutes pins the page's commands: logs and the code to read,
+// restart and exit to do, each behind the socket's Origin rule.
+func TestTheCommandRoutes(t *testing.T) {
+	target := newRerunTarget(false)
+	target.holdFrom = 1
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+	base := s.URL().String()
+
+	get := func(path string) (*http.Response, string) {
+		t.Helper()
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp, string(body)
+	}
+	post := func(path string, origin string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, base+path, nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if resp, body := get("/attach/logs"); resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || !strings.Contains(body, testLogs{}.Lines()[0]) {
+		t.Errorf("GET /attach/logs = %d %q %q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+	s.session.announce("https://x.tunneled.test/")
+	if resp, body := get("/attach/qr.svg"); resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "image/svg+xml" || !strings.HasPrefix(body, "<svg") {
+		t.Errorf("GET /attach/qr.svg = %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if code := post("/attach/restart", "http://elsewhere.test"); code != http.StatusForbidden {
+		t.Errorf("a cross-origin POST /attach/restart = %d, want 403", code)
+	}
+	if code := post("/attach/restart", ""); code != http.StatusConflict {
+		t.Errorf("POST /attach/restart on a target that cannot restart = %d, want 409", code)
+	}
+	if code := post("/attach/exit", ""); code != http.StatusNoContent {
+		t.Errorf("POST /attach/exit = %d, want 204", code)
+	}
+	select {
+	case <-s.Done():
+	case <-time.After(5 * time.Second):
+		t.Error("exit did not ask the run to end")
+	}
+}
