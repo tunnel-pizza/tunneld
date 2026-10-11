@@ -237,9 +237,9 @@ func TestProtectedResource(t *testing.T) {
 		opts   []Option
 		server string
 	}{
-		"by default, tunnel.pizza": {nil, "https://tunnel.pizza"},
+		"by default, tunnel.pizza": {nil, "https://tunnel.pizza/"},
 		"the provider it is given": {[]Option{WithAuthorizationServer(func() string { return "https://p.example" })}, "https://p.example"},
-		"nil keeps tunnel.pizza":   {[]Option{WithAuthorizationServer(nil)}, "https://tunnel.pizza"},
+		"nil keeps tunnel.pizza":   {[]Option{WithAuthorizationServer(nil)}, "https://tunnel.pizza/"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest("GET", MetadataPath, nil)

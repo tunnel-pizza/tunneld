@@ -105,7 +105,7 @@ var _ Oidc = (*OidcImpl)(nil)
 // clock and a logger that discards.
 func New(opts ...Option) *OidcImpl {
 	return v1.Apply(&OidcImpl{
-		issuer: func() string { return "https://" + v1.DefaultProvider },
+		issuer: func() string { return "https://" + v1.DefaultProvider + "/" },
 		http:   &http.Client{Timeout: 10 * time.Second},
 		now:    time.Now,
 		log:    slog.New(slog.DiscardHandler),
@@ -188,10 +188,11 @@ func (o *OidcImpl) get(ctx context.Context, u string, dest any) (time.Duration, 
 }
 
 // discover is issuer's metadata, refused unless it names issuer exactly
-// (RFC 8414 §3.3) and the three endpoints used here.
+// (RFC 8414 §3.3) and the three endpoints used here. A terminating "/" comes
+// off the issuer before the well-known path goes on (OIDC Discovery §4).
 func (o *OidcImpl) discover(ctx context.Context, issuer string) (*Discovery, time.Duration, error) {
 	var d Discovery
-	ttl, err := o.get(ctx, issuer+"/.well-known/openid-configuration", &d)
+	ttl, err := o.get(ctx, strings.TrimSuffix(issuer, "/")+"/.well-known/openid-configuration", &d)
 	if err != nil {
 		return nil, 0, err
 	}

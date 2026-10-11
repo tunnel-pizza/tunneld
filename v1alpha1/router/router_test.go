@@ -1784,7 +1784,7 @@ func TestResourceMetadataFallback(t *testing.T) {
 			if tunneld != tc.tunneld {
 				t.Errorf("answered by tunneld = %v, want %v (headers %v)", tunneld, tc.tunneld, resp.Header)
 			}
-			if tc.tunneld && tc.method == "GET" && !strings.Contains(string(body), `"authorization_servers":["https://tunnel.pizza"]`) {
+			if tc.tunneld && tc.method == "GET" && !strings.Contains(string(body), `"authorization_servers":["https://tunnel.pizza/"]`) {
 				t.Errorf("metadata = %s, want tunneld's", body)
 			}
 		})

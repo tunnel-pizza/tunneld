@@ -3567,8 +3567,8 @@ func TestTheDefaultAuthNamesTheProvider(t *testing.T) {
 		opts []Option
 		want string
 	}{
-		"by default":   {nil, `"authorization_servers":["https://tunnel.pizza"]`},
-		"--provider's": {[]Option{WithProvider("p.example")}, `"authorization_servers":["https://p.example"]`},
+		"by default":   {nil, `"authorization_servers":["https://tunnel.pizza/"]`},
+		"--provider's": {[]Option{WithProvider("p.example")}, `"authorization_servers":["https://p.example/"]`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := New(tc.opts...)

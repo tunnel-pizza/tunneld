@@ -228,11 +228,12 @@ func (b *BuilderImpl) owner() string {
 	return b.runCache.Owner()
 }
 
-// authorizationServer is the provider's origin, as the --provider flag or its
-// default settles it: what the default auth names as the server a token for
-// this tunnel comes from.
+// authorizationServer is the provider's issuer, as the --provider flag or its
+// default settles it: its origin as a URL, with the trailing slash its
+// discovery and tokens name. What the default auth names as the server a
+// token for this tunnel comes from.
 func (b *BuilderImpl) authorizationServer() string {
-	return router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider))
+	return router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider)) + "/"
 }
 
 // WithRun replaces what takes a run's tunnel from its spec to its end. The

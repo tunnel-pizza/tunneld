@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -179,7 +180,7 @@ func TestOptions(t *testing.T) {
 		"none":    New(),
 		"all nil": New(WithIssuer(nil), WithHTTPClient(nil), WithClock(nil), WithLog(nil)),
 	} {
-		if o.issuer() != "https://tunnel.pizza" || o.http == nil || o.http.Timeout != 10*time.Second || o.now == nil || o.log == nil {
+		if o.issuer() != "https://tunnel.pizza/" || o.http == nil || o.http.Timeout != 10*time.Second || o.now == nil || o.log == nil {
 			t.Errorf("%s: issuer %q, client %v, clock %v, log %v", name, o.issuer(), o.http, o.now != nil, o.log != nil)
 		}
 	}
@@ -294,6 +295,25 @@ func TestDiscovery(t *testing.T) {
 			TokenEndpoint: iss.URL + "/oauth/token", JWKSURI: iss.URL + "/.well-known/jwks.json"}
 		if err != nil || d != want {
 			t.Errorf("Endpoints = %+v, %v; want %+v", d, err, want)
+		}
+	})
+	t.Run("an issuer named with its trailing slash", func(t *testing.T) {
+		iss := newIssuer(t)
+		iss.name = iss.URL + "/"
+		var asked []string
+		client := iss.Client()
+		next := client.Transport
+		client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			asked = append(asked, r.URL.Path)
+			return next.RoundTrip(r)
+		})
+		o := New(WithIssuer(func() string { return iss.URL + "/" }), WithHTTPClient(client))
+		d, err := o.Endpoints(t.Context())
+		if err != nil || d.Issuer != iss.URL+"/" {
+			t.Fatalf("Endpoints = %+v, %v; want issuer %q", d, err, iss.URL+"/")
+		}
+		if !slices.Equal(asked, []string{"/.well-known/openid-configuration"}) {
+			t.Errorf("asked %q; want only /.well-known/openid-configuration", asked)
 		}
 	})
 	t.Run("a new issuer forgets the old", func(t *testing.T) {
@@ -571,3 +591,7 @@ func TestVerifyID(t *testing.T) {
 		})
 	}
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
