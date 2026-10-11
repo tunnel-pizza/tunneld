@@ -95,7 +95,7 @@ func New(opts ...Option) *AuthImpl {
 	a := &AuthImpl{
 		secret: func() []byte { return nil },
 		owner:  func() string { return "" },
-		server: func() string { return "https://" + v1.DefaultProvider },
+		server: func() string { return "https://" + v1.DefaultProvider + "/" },
 		log:    slog.New(slog.DiscardHandler),
 		now:    time.Now,
 	}
