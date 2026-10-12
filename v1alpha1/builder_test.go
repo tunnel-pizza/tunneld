@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -601,9 +602,10 @@ func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 
 // Secret is the secret the fake was saved with, and Key the key of the
 // origins it was saved under.
-func (f *fakeCache) Secret() []byte { return f.secret }
-func (f *fakeCache) Owner() string  { return f.owner }
-func (f *fakeCache) Key() string    { return f.key }
+func (f *fakeCache) Secret() []byte         { return f.secret }
+func (f *fakeCache) Owner() string          { return f.owner }
+func (f *fakeCache) Get(name string) string { return f.tracking[name] }
+func (f *fakeCache) Key() string            { return f.key }
 
 // String is the file the fake saved, rendered as the real cache renders it,
 // and Handlers the real cache's endpoints serving that file.
@@ -1521,6 +1523,42 @@ func TestRun(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
+		}
+		// terminal_sessions answers the machine from what the run saved.
+		call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{}}}`
+		req, _ = http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(call))
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+		resp2, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp2.Body.Close()
+		got, _ := io.ReadAll(resp2.Body)
+		// One message, as JSON or one SSE event; decoded, so a Windows path's
+		// backslashes compare as the run saved them.
+		data := string(got)
+		if i := strings.Index(data, "data: "); i >= 0 {
+			data, _, _ = strings.Cut(data[i+len("data: "):], "\n")
+		}
+		var msg struct {
+			Result struct {
+				StructuredContent struct {
+					Machine struct {
+						PID int    `json:"pid"`
+						PWD string `json:"pwd"`
+					} `json:"machine"`
+				} `json:"structuredContent"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+			t.Fatalf("terminal_sessions = %s: %v", got, err)
+		}
+		machine := msg.Result.StructuredContent.Machine
+		if strconv.Itoa(machine.PID) != h.cache.tracking["PID"] || machine.PWD != h.cache.tracking["PWD"] {
+			t.Errorf("terminal_sessions machine = %+v, want PID %s and PWD %q from the run's tracking", machine, h.cache.tracking["PID"], h.cache.tracking["PWD"])
 		}
 	})
 	t.Run("the run saves the owner the mint named, and none when it named none", func(t *testing.T) {

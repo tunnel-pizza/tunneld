@@ -276,7 +276,7 @@ It offers one tool so far:
 
 | Tool | A token needs | Answers |
 |---|---|---|
-| `terminal_sessions` | `tunnel:attach` | the run's origins, `{sessions: [{n, origin, kind}]}`: `n` is the origin's index, a bare `?n` in a URL and none for a single origin, `kind` is `exec`, `attach` or `http` |
+| `terminal_sessions` | `tunnel:attach` | the machine and the run's origins, `{machine: {hostname, username, pid, pwd}, sessions: [{n, kind, name}]}`: `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `n` is the origin's index, a bare `?n` in a URL and none for a single origin; `kind` is `exec`, `attach` or `http`; `name` is what `kind` leaves out, an exec origin's program path (never its arguments), an http origin's host and port, an attach origin's container |
 
 The secret opens every tool. A token opens a tool only with the scope it
 needs: without it, the call answers a tool error naming the scope, so the

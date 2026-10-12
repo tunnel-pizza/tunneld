@@ -13,12 +13,16 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
 // Kind is what an origin is.
@@ -54,6 +58,7 @@ type Option = v1.Option[*McpImpl]
 type McpImpl struct {
 	origins []Origin
 	log     v1.Logger
+	cache   cache.Cache
 
 	server  *sdk.Server
 	handler http.Handler
@@ -73,7 +78,7 @@ func New(opts ...Option) *McpImpl {
 	sdk.AddTool(m.server, &sdk.Tool{
 		Name:        "terminal_sessions",
 		Title:       "Terminal sessions",
-		Description: "The run's origins, each with its n, the origin, and its kind: exec is a program in a terminal, attach a container, http an address. A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a terminal tool should act on.",
+		Description: "The machine the run is on (its hostname, the user it runs as, its process id and working directory) and the run's origins, each with its n, its kind and its name: exec is a program in a terminal, named by its path, attach a container, named by the container, http an address, named by host and port. A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a terminal tool should act on.",
 		// Answered from the run itself: the same each time, reaching nothing.
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 	}, m.terminalSessions)
@@ -91,6 +96,12 @@ func WithOrigins(origins []Origin) Option {
 	return func(m *McpImpl) { m.origins = origins }
 }
 
+// WithCache sets the run's cache, which terminal_sessions reads the
+// machine from: the lines the run's .env holds.
+func WithCache(c cache.Cache) Option {
+	return func(m *McpImpl) { m.cache = c }
+}
+
 // WithLog sets where the server logs. Nil keeps the one it has.
 func WithLog(log v1.Logger) Option {
 	return func(m *McpImpl) {
@@ -102,13 +113,23 @@ func WithLog(log v1.Logger) Option {
 
 // Session is one origin as terminal_sessions answers it.
 type Session struct {
-	N      int    `json:"n" jsonschema:"the origin's index, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
-	Origin string `json:"origin" jsonschema:"the origin as the run shows it, e.g. exec:///bin/bash"`
-	Kind   Kind   `json:"kind" jsonschema:"what the origin is: exec, attach or http"`
+	N    int    `json:"n" jsonschema:"the origin's index, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
+	Kind Kind   `json:"kind" jsonschema:"what the origin is: exec, attach or http"`
+	Name string `json:"name" jsonschema:"what kind leaves out: an exec origin's program path (never its arguments), an http origin's host and port, an attach origin's container"`
+}
+
+// Machine is the run's own process, as its .env holds it (HOSTNAME,
+// USERNAME, PID and PWD); a line the file does not hold is left out.
+type Machine struct {
+	Hostname string `json:"hostname,omitempty" jsonschema:"the machine's hostname"`
+	Username string `json:"username,omitempty" jsonschema:"the user tunneld runs as"`
+	PID      int    `json:"pid,omitempty" jsonschema:"tunneld's process id"`
+	PWD      string `json:"pwd,omitempty" jsonschema:"the directory tunneld was started in"`
 }
 
 // Sessions is terminal_sessions' answer.
 type Sessions struct {
+	Machine  Machine   `json:"machine"`
 	Sessions []Session `json:"sessions"`
 }
 
@@ -121,9 +142,9 @@ func (m *McpImpl) terminalSessions(ctx context.Context, _ *sdk.CallToolRequest, 
 	if refusal := m.refused(ctx, "terminal_sessions", attachScope, start); refusal != nil {
 		return refusal, Sessions{}, nil
 	}
-	out := Sessions{Sessions: make([]Session, len(m.origins))}
+	out := Sessions{Machine: m.machine(), Sessions: make([]Session, len(m.origins))}
 	for i, o := range m.origins {
-		out.Sessions[i] = Session{N: i, Origin: o.Name, Kind: o.Kind}
+		out.Sessions[i] = Session{N: i, Kind: o.Kind, Name: nameOf(o.Name)}
 	}
 	m.logged(ctx, "terminal_sessions", "ok", start)
 	return nil, out, nil
@@ -158,3 +179,38 @@ func (m *McpImpl) Handler() http.Handler { return m.handler }
 // Close ends whatever the server started, which is nothing: the one tool
 // keeps no state. Callable more than once.
 func (m *McpImpl) Close() error { return nil }
+
+// machine is the run's own process as its .env holds it, read from the
+// cache rather than worked out again; nothing without a cache.
+func (m *McpImpl) machine() Machine {
+	if m.cache == nil {
+		return Machine{}
+	}
+	pid, _ := strconv.Atoi(m.cache.Get("PID"))
+	return Machine{
+		Hostname: m.cache.Get("HOSTNAME"),
+		Username: m.cache.Get("USERNAME"),
+		PID:      pid,
+		PWD:      m.cache.Get("PWD"),
+	}
+}
+
+// nameOf is an origin as named beside its kind: an exec origin's program
+// path, without the arguments its query carries, which can hold a secret;
+// an http origin's host and port, and its path but for a bare "/", without
+// credentials or query; an attach origin's container. One that does not
+// parse is named as given.
+func nameOf(origin string) string {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return origin
+	}
+	switch u.Scheme {
+	case string(KindExec):
+		return u.Path
+	case string(KindAttach):
+		return strings.TrimPrefix(u.Path, "/")
+	default:
+		return u.Host + strings.TrimSuffix(u.Path, "/")
+	}
+}

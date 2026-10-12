@@ -1000,3 +1000,26 @@ func TestServedFileHidesThePassword(t *testing.T) {
 		t.Errorf("If-Match with the ETag of what GET served = %d, want 200", rec.Code)
 	}
 }
+
+// TestGet pins Get: a line as the run's .env holds it, from the tracking the
+// run handed over, never worked out again; "" for a line it does not hold,
+// and from a cache that keeps nothing.
+func TestGet(t *testing.T) {
+	c := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{"HOSTNAME": "box", "PID": "42"}))
+	if got := c.Get("HOSTNAME"); got != "box" {
+		t.Errorf("Get(HOSTNAME) = %q, want box", got)
+	}
+	if got := c.Get("PID"); got != "42" {
+		t.Errorf("Get(PID) = %q, want 42", got)
+	}
+	if got := c.Get("USERNAME"); got != "" {
+		t.Errorf("Get(USERNAME) = %q, want none", got)
+	}
+	c.Save(cache.WithTracking(map[string]string{"HOSTNAME": "other"}))
+	if got := c.Get("HOSTNAME"); got != "other" {
+		t.Errorf("Get(HOSTNAME) after a save = %q, want what it saved", got)
+	}
+	if got := (cache.None{}).Get("HOSTNAME"); got != "" {
+		t.Errorf("None.Get = %q, want none", got)
+	}
+}
