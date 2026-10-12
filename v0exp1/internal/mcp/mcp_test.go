@@ -89,9 +89,14 @@ func TestListsTerminalSessions(t *testing.T) {
 		t.Errorf("annotations = %+v, want read-only, idempotent, closed-world", a)
 	}
 	schema, _ := json.Marshal(tool.OutputSchema)
-	for _, s := range []string{"the ?n that picks it in a URL", "exec, attach or http"} {
+	for _, s := range []string{"a bare ?1 (not ?n=1)", "exec, attach or http"} {
 		if !strings.Contains(string(schema), s) {
 			t.Errorf("outputSchema %s lacks %q", schema, s)
+		}
+	}
+	for _, s := range []string{"A tunnel with a single origin needs no parameter in a URL", "a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first"} {
+		if !strings.Contains(tool.Description, s) {
+			t.Errorf("description %q lacks %q", tool.Description, s)
 		}
 	}
 }

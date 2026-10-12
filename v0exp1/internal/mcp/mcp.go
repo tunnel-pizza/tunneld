@@ -73,7 +73,7 @@ func New(opts ...Option) *McpImpl {
 	sdk.AddTool(m.server, &sdk.Tool{
 		Name:        "terminal_sessions",
 		Title:       "Terminal sessions",
-		Description: "The run's origins, each with its n (the ?n that picks it in a URL), the origin, and its kind: exec is a program in a terminal, attach a container, http an address. Use to find which origin a terminal tool should act on.",
+		Description: "The run's origins, each with its n, the origin, and its kind: exec is a program in a terminal, attach a container, http an address. A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a terminal tool should act on.",
 		// Answered from the run itself: the same each time, reaching nothing.
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 	}, m.terminalSessions)
@@ -102,7 +102,7 @@ func WithLog(log v1.Logger) Option {
 
 // Session is one origin as terminal_sessions answers it.
 type Session struct {
-	N      int    `json:"n" jsonschema:"the origin's index: the ?n that picks it in a URL, 0 the default"`
+	N      int    `json:"n" jsonschema:"the origin's index, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
 	Origin string `json:"origin" jsonschema:"the origin as the run shows it, e.g. exec:///bin/bash"`
 	Kind   Kind   `json:"kind" jsonschema:"what the origin is: exec, attach or http"`
 }
