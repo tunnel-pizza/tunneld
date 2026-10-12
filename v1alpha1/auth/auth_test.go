@@ -58,9 +58,9 @@ const (
 
 // grantFor is who a fake token is, and what it is for.
 type grantFor struct {
-	sub             string
-	aud             []string
-	clientID, scope string
+	sub                    string
+	aud                    []string
+	clientID, scope, actor string
 }
 
 // oidcOf stands in for the provider: a token in tokens is valid for its aud
@@ -89,6 +89,7 @@ func fakeOidc() *oidcOf {
 			"subject-other": {sub: "github:2", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
 			"mcp-client":    {sub: "github:1", aud: site, clientID: "https://inspector.example/client.json", scope: "openid tunnel:token"},
 			"no-scope":      {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "openid profile"},
+			"exchanged":     {sub: "github:2", aud: mcp, clientID: fakeIssuer, scope: "tunnel:attach tunnel:exec", actor: "https://claude.ai/client.json"},
 		},
 		sub: "github:1", username: "alice",
 	}
@@ -119,7 +120,7 @@ func (o *oidcOf) VerifyAccessClaims(ctx context.Context, token, resource string)
 		return oidc.AccessClaims{}, err
 	}
 	g := o.tokens[token]
-	return oidc.AccessClaims{Subject: sub, ClientID: g.clientID, Scope: g.scope}, nil
+	return oidc.AccessClaims{Subject: sub, ClientID: g.clientID, Scope: g.scope, Actor: g.actor}, nil
 }
 
 func (o *oidcOf) Exchange(_ context.Context, code, verifier, redirectURI, clientID, assertion string) (string, error) {
@@ -274,6 +275,10 @@ func TestProtectedResource(t *testing.T) {
 	var mcp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &mcp); err != nil || mcp["resource"] != "https://h.example/_tunneld/mcp" {
 		t.Errorf("MCP metadata = %v, %v; want the MCP server as the resource", mcp, err)
+	}
+	// And the scope its terminal tools need.
+	if got := mcp["scopes_supported"]; !reflect.DeepEqual(got, []any{"openid", "profile", "offline_access", "tunnel:attach"}) {
+		t.Errorf("MCP scopes_supported = %v, want tunnel:attach beside the sign-in's", got)
 	}
 	// Or wherever the mint named an owner, whose token opens it on any tunnel.
 	rec = httptest.NewRecorder()
@@ -748,7 +753,7 @@ func TestTheDefaultOidcAsksTheServer(t *testing.T) {
 // was sent is ok, or says why not.
 func TestBearer(t *testing.T) {
 	site := "https://" + ssoHost
-	ask := func(a *AuthImpl, auth, resource string) (string, bool, error) {
+	ask := func(a *AuthImpl, auth, resource string) (Access, bool, error) {
 		req := httptest.NewRequest("GET", "/x", nil)
 		if auth != "" {
 			req.Header.Set("Authorization", auth)
@@ -783,11 +788,35 @@ func TestBearer(t *testing.T) {
 		"owned by nobody":     {owned(New(WithOidc(fakeOidc())), ""), "Bearer listed", site, "", false, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sub, ok, err := ask(tc.a, tc.auth, tc.resource)
-			if sub != tc.sub || ok != tc.ok || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
-				t.Errorf("Bearer = %q, %v, %v; want %q, %v, %v", sub, ok, err, tc.sub, tc.ok, tc.err)
+			got, ok, err := ask(tc.a, tc.auth, tc.resource)
+			if got.Sub != tc.sub || ok != tc.ok || !errors.Is(err, tc.err) || (tc.err == nil && err != nil) {
+				t.Errorf("Bearer = %q, %v, %v; want %q, %v, %v", got.Sub, ok, err, tc.sub, tc.ok, tc.err)
 			}
 		})
+	}
+	t.Run("an exchanged token says its client, scopes and who acts", func(t *testing.T) {
+		got, ok, err := ask(owned(pwAuth(t, fakeOidc()), "github:2"), "Bearer exchanged", site+"/_tunneld/mcp")
+		want := Access{Sub: "github:2", ClientID: fakeIssuer, Scopes: []string{"tunnel:attach", "tunnel:exec"}, Actor: "https://claude.ai/client.json"}
+		if !ok || err != nil || got.Sub != want.Sub || got.ClientID != want.ClientID || got.Actor != want.Actor || !slices.Equal(got.Scopes, want.Scopes) {
+			t.Errorf("Bearer = %+v, %v, %v; want %+v", got, ok, err, want)
+		}
+	})
+}
+
+// TestAccessContext pins the carrier from the router's guard to a handler:
+// what WithAccess puts on a context, AccessOf reads back; a context the guard
+// never touched, the secret's, has none.
+func TestAccessContext(t *testing.T) {
+	if _, ok := AccessOf(t.Context()); ok {
+		t.Error("AccessOf a bare context: ok, want none")
+	}
+	a := Access{Sub: "github:1", Scopes: []string{"tunnel:attach"}}
+	got, ok := AccessOf(WithAccess(t.Context(), a))
+	if !ok || got.Sub != a.Sub || !slices.Equal(got.Scopes, a.Scopes) {
+		t.Errorf("AccessOf = %+v, %v; want %+v", got, ok, a)
+	}
+	if !got.Has("tunnel:attach") || got.Has("tunnel:exec") {
+		t.Errorf("Has: %+v", got)
 	}
 }
 

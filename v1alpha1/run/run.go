@@ -289,6 +289,10 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// deciding only a banner the client itself shows. Sent on every
 		// mint, empty when public.
 		WithHeader(r.auth.Header()).
+		// What the tunnel serves, so the provider can say so to the
+		// tunnel's owner without asking the tunnel. Sent on every mint.
+		WithHeader(originsHeader(r.origins)).
+		WithHeader(hostHeader()).
 		WithLogger(log).
 		WithContext(tctx).
 		WithEventListener(listen).
@@ -717,4 +721,26 @@ func label(u *url.URL) string {
 		return bare.String()
 	}
 	return u.String()
+}
+
+// originsHeader is X-Tunneld-Origins for these origins: each as scheme,
+// host and path, in order. A query, a fragment or credentials can hold a
+// secret, so they are dropped rather than sent to the provider.
+func originsHeader(origins v1.Origins) (key, value string) {
+	if origins == nil {
+		return v1.OriginsHeader, ""
+	}
+	shown := make([]string, 0, origins.Len())
+	for _, u := range origins.URLs() {
+		bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}
+		shown = append(shown, bare.String())
+	}
+	return v1.OriginsHeader, strings.Join(shown, ", ")
+}
+
+// hostHeader is X-Tunneld-Host: the machine's hostname, empty when it has
+// none to give.
+func hostHeader() (key, value string) {
+	name, _ := os.Hostname()
+	return v1.HostHeader, name
 }

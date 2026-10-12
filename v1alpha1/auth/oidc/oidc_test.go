@@ -265,12 +265,14 @@ func TestVerifyAccessClaims(t *testing.T) {
 	tok := accessToken(t, iss, testKey(), func(c map[string]any) {
 		c["client_id"] = "https://tunnel.pizza"
 		c["scope"] = "tunnel:token"
+		c["act"] = map[string]any{"sub": "https://claude.ai/oauth/claude-code-client-metadata"}
 	})
 	c, err := o.VerifyAccessClaims(t.Context(), tok, "https://"+host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Subject != "github:1" || c.ClientID != "https://tunnel.pizza" || c.Scope != "tunnel:token" {
+	if c.Subject != "github:1" || c.ClientID != "https://tunnel.pizza" || c.Scope != "tunnel:token" ||
+		c.Actor != "https://claude.ai/oauth/claude-code-client-metadata" {
 		t.Errorf("claims %+v", c)
 	}
 	if _, err := o.VerifyAccessClaims(t.Context(), tok, "https://elsewhere.example"); !errors.Is(err, ErrInvalidToken) {

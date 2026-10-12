@@ -298,6 +298,18 @@ const (
 	// answer to GET /_tunneld/.env made with the tunnel secret.
 	GrantHeader = "X-Tunneld-Grant"
 
+	// OriginsHeader is what a tunnel serves, on every mint request: each
+	// origin in order, as scheme, host and path only, comma-joined in one
+	// value (RFC 9110 §5.6.1). Credentials, a query and a fragment never
+	// leave the machine. A provider shows them to the tunnel's owner and the
+	// agents the owner approves; n in ?n is an origin's place in the list.
+	OriginsHeader = "X-Tunneld-Origins"
+
+	// HostHeader is the machine's hostname, on every mint request: the
+	// HOSTNAME a run saves, so a provider can say which machine localhost in
+	// an origin is. Empty when the system has no name to give.
+	HostHeader = "X-Tunneld-Host"
+
 	// OwnerHeader is who the provider says owns a tunnel, on its mint answer,
 	// in the form a provider access token's sub takes ("github:<id>"):
 	// absent when the mint named nobody. The owner's token opens the MCP

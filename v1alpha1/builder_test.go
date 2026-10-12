@@ -1079,7 +1079,8 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": "}; !slices.Equal(got, want) {
+		host, _ := os.Hostname()
+		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": ", v1.OriginsHeader + ": http://localhost:3000", v1.HostHeader + ": " + host}; !slices.Equal(got, want) {
 			t.Errorf("headers = %q, want %q", got, want)
 		}
 	})

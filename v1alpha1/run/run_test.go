@@ -4,10 +4,13 @@ package run
 
 import (
 	"net/url"
+	"os"
 	"slices"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"net/http"
 )
 
@@ -114,8 +117,10 @@ func (gateOf) Set(string) error                                                 
 func (gateOf) Value() string                                                       { return "" }
 func (gateOf) Unauthorized(http.ResponseWriter, *http.Request)                     {}
 func (gateOf) ResourceMetadata(http.ResponseWriter, *http.Request)                 {}
-func (gateOf) Bearer(*http.Request, string) (string, bool, error)                  { return "", false, nil }
-func (g gateOf) Header() (string, string)                                          { return v1.AuthenticateHeader, string(g) }
+func (gateOf) Bearer(*http.Request, string) (auth.Access, bool, error) {
+	return auth.Access{}, false, nil
+}
+func (g gateOf) Header() (string, string) { return v1.AuthenticateHeader, string(g) }
 
 // TestAuth pins the gate a mint is told about: the auth's own public form,
 // public ("") by default, and a nil auth keeps that rather than leaving mint
@@ -134,5 +139,51 @@ func TestAuth(t *testing.T) {
 				t.Errorf("auth.Header() = %q, %q; want %s, %q", name, got, v1.AuthenticateHeader, tc.want)
 			}
 		})
+	}
+}
+
+// TestOriginsHeader pins what a mint tells the provider about the origins:
+// every one, in order, as scheme, host and path only. Credentials, a query
+// and a fragment can carry secrets, so they never leave the machine.
+func TestOriginsHeader(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	for name, tc := range map[string]struct {
+		urls []string
+		want string
+	}{
+		"one exec":  {[]string{"exec:///bin/bash"}, "exec:///bin/bash"},
+		"in order":  {[]string{"http://localhost:3000", "exec:///usr/bin/htop"}, "http://localhost:3000, exec:///usr/bin/htop"},
+		"no secret": {[]string{"http://user:pw@localhost:3000/app?token=x#frag"}, "http://localhost:3000/app"},
+		"none":      {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var opts []origins.Option
+			for _, raw := range tc.urls {
+				opts = append(opts, origins.WithURL(parse(raw)))
+			}
+			key, got := originsHeader(origins.New(opts...))
+			if key != v1.OriginsHeader || got != tc.want {
+				t.Errorf("originsHeader = %q, %q; want %s, %q", key, got, v1.OriginsHeader, tc.want)
+			}
+		})
+	}
+}
+
+// TestHostHeader pins what a mint tells the provider about the machine: its
+// hostname, the HOSTNAME a run saves, so localhost in an origin has a name.
+func TestHostHeader(t *testing.T) {
+	want, err := os.Hostname()
+	if err != nil {
+		t.Skipf("os.Hostname: %v", err)
+	}
+	key, got := hostHeader()
+	if key != v1.HostHeader || got != want {
+		t.Errorf("hostHeader = %q, %q; want %s, %q", key, got, v1.HostHeader, want)
 	}
 }

@@ -353,12 +353,16 @@ type accessClaims struct {
 	jwt.Claims
 	ClientID string `json:"client_id"`
 	Scope    string `json:"scope"`
+	Act      struct {
+		Sub string `json:"sub"`
+	} `json:"act"`
 }
 
 // AccessClaims is what a caller reads of an access token VerifyAccessClaims
-// accepted: who, which client it was issued to, and its scope.
+// accepted: who, which client it was issued to, its scope, and who acts for
+// the subject when a token exchange said so (act.sub, RFC 8693 §4.1).
 type AccessClaims struct {
-	Subject, ClientID, Scope string
+	Subject, ClientID, Scope, Actor string
 }
 
 // VerifyAccess is the subject of token when it is an access token the issuer
@@ -378,7 +382,7 @@ func (o *OidcImpl) VerifyAccessClaims(ctx context.Context, token, resource strin
 	if err := checkClaims(c.Claims, o.issuer(), resource, o.now()); err != nil {
 		return AccessClaims{}, err
 	}
-	return AccessClaims{Subject: c.Subject, ClientID: c.ClientID, Scope: c.Scope}, nil
+	return AccessClaims{Subject: c.Subject, ClientID: c.ClientID, Scope: c.Scope, Actor: c.Act.Sub}, nil
 }
 
 // checkClaims is what every token here must carry: iss the issuer, aud

@@ -1280,7 +1280,9 @@ func (authOf) Unauthorized(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("WWW-Authenticate", "Fake")
 	w.WriteHeader(401)
 }
-func (authOf) Bearer(*http.Request, string) (string, bool, error) { return "", false, nil }
+func (authOf) Bearer(*http.Request, string) (auth.Access, bool, error) {
+	return auth.Access{}, false, nil
+}
 
 // bearerOf is an auth whose Bearer says what it is told, and records what
 // resource it was asked about.
@@ -1293,11 +1295,11 @@ type bearerOf struct {
 	seen *[]string
 }
 
-func (b bearerOf) Bearer(_ *http.Request, resource string) (string, bool, error) {
+func (b bearerOf) Bearer(_ *http.Request, resource string) (auth.Access, bool, error) {
 	b.mu.Lock()
 	*b.seen = append(*b.seen, resource)
 	b.mu.Unlock()
-	return b.sub, b.ok, b.err
+	return auth.Access{Sub: b.sub, Scopes: []string{"tunnel:attach"}}, b.ok, b.err
 }
 
 // TestAuthorizeTakesABearer pins the control path on a tunnel set to Single
@@ -1355,6 +1357,27 @@ func TestAuthorizeTakesABearer(t *testing.T) {
 			}
 		})
 	}
+	t.Run("the MCP server learns whose token let the call in", func(t *testing.T) {
+		var mu sync.Mutex
+		var seen []string
+		var got auth.Access
+		var had bool
+		who := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got, had = auth.AccessOf(r.Context()) })}
+		r := New(WithCache(cacheOf{"LIBTUNNEL_SPEC='x'\n", secret, runKey}), WithAuth(bearerOf{sub: "github:1", ok: true, mu: &mu, seen: &seen}), WithMcp(who))
+		base := strings.TrimSuffix(controlOf(t, r, ".env"), ".env")
+		if resp, _ := ask(t, "POST", base+"mcp", "Bearer t0ken"); resp.StatusCode != 200 {
+			t.Fatalf("POST mcp = %d", resp.StatusCode)
+		}
+		if !had || got.Sub != "github:1" || !got.Has("tunnel:attach") {
+			t.Errorf("AccessOf = %+v, %v; want github:1 with tunnel:attach", got, had)
+		}
+		if resp, _ := ask(t, "POST", base+"mcp", tokenOf(secret)); resp.StatusCode != 200 {
+			t.Fatalf("POST mcp with the secret = %d", resp.StatusCode)
+		}
+		if had {
+			t.Errorf("the secret's call carried %+v, want no access", got)
+		}
+	})
 	t.Run("the secret is asked first", func(t *testing.T) {
 		var mu sync.Mutex
 		var seen []string
