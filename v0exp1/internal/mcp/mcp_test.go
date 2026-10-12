@@ -13,6 +13,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
 // connect stands m's server up over an in-memory transport and returns a
@@ -133,7 +134,7 @@ func callOver(t *testing.T, m *McpImpl, access *auth.Access) (int, string) {
 // gets a tool error naming the scope, and no origin.
 func TestTerminalSessions(t *testing.T) {
 	origins := []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}, {Name: "exec:///bin/sh", Kind: KindExec}}
-	all := &Sessions{Sessions: []Session{{0, "http://localhost:3000", KindHTTP}, {1, "exec:///bin/sh", KindExec}}}
+	all := &Sessions{Sessions: []Session{{N: 0, Kind: KindHTTP, Name: "localhost:3000"}, {N: 1, Kind: KindExec, Name: "/bin/sh"}}}
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		want   *Sessions
@@ -144,7 +145,11 @@ func TestTerminalSessions(t *testing.T) {
 		"without the scope": {&auth.Access{Sub: "github:1", Scopes: []string{"openid"}}, nil, "needs the tunnel:attach scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			status, body := callOver(t, New(WithOrigins(origins)), tc.access)
+			tracked := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{
+				"HOSTNAME": "box.local", "USERNAME": "christian", "PID": "16653", "PWD": "/Users/christian/cnuss",
+				"SHELL": "/bin/zsh",
+			}))
+			status, body := callOver(t, New(WithOrigins(origins), WithCache(tracked)), tc.access)
 			if status != 200 {
 				t.Fatalf("status %d: %s", status, body)
 			}
@@ -167,6 +172,10 @@ func TestTerminalSessions(t *testing.T) {
 			}
 			if tc.want != nil && (r.StructuredContent == nil || !slices.Equal(r.StructuredContent.Sessions, tc.want.Sessions)) {
 				t.Errorf("structuredContent = %+v, want %+v", r.StructuredContent, tc.want)
+			}
+			machine := Machine{Hostname: "box.local", Username: "christian", PID: 16653, PWD: "/Users/christian/cnuss"}
+			if tc.want != nil && r.StructuredContent.Machine != machine {
+				t.Errorf("machine = %+v, want %+v, from the run's .env", r.StructuredContent.Machine, machine)
 			}
 			if tc.says != "" && (len(r.Content) != 1 || !strings.Contains(r.Content[0].Text, tc.says) || strings.Contains(body, "/bin/sh")) {
 				t.Errorf("refusal %s, want %q and no origin", body, tc.says)
@@ -240,5 +249,35 @@ func TestServeAcceptsAForwardedHost(t *testing.T) {
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("initialize with a forwarded Host = %d %s, want 200", resp.StatusCode, b)
+	}
+}
+
+// TestNameOf pins how an origin is named beside its kind: what the kind does
+// not already say, and never an exec origin's arguments.
+func TestNameOf(t *testing.T) {
+	for raw, want := range map[string]string{
+		"exec:///bin/zsh": "/bin/zsh",
+		"exec:///Users/c/.local/bin/claude?arg=--resume&arg=b2e1": "/Users/c/.local/bin/claude",
+		"http://localhost:3000":                                   "localhost:3000",
+		"http://localhost:3000/":                                  "localhost:3000",
+		"http://127.0.0.1:8080/app?x=1":                           "127.0.0.1:8080/app",
+		"https://u:pw@example.test/admin":                         "example.test/admin",
+		"attach://dockerd/web":                                    "web",
+		"not a url %zz":                                           "not a url %zz",
+	} {
+		if got := nameOf(raw); got != want {
+			t.Errorf("nameOf(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// TestMachineWithoutACache pins a server with no cache, or one that holds no
+// tracking yet: the machine says nothing rather than guessing.
+func TestMachineWithoutACache(t *testing.T) {
+	if got := New().machine(); got != (Machine{}) {
+		t.Errorf("machine() = %+v, want nothing", got)
+	}
+	if got := New(WithCache(cache.None{})).machine(); got != (Machine{}) {
+		t.Errorf("machine() from None = %+v, want nothing", got)
 	}
 }

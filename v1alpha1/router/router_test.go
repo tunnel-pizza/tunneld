@@ -1249,6 +1249,8 @@ func TestEveryAnswerIsUnstored(t *testing.T) {
 // cacheOf's Bearer: one fixed grant, "g00d", is live.
 func (c cacheOf) Owner() string { return "" }
 
+func (c cacheOf) Get(string) string { return "" }
+
 func (c cacheOf) Bearer(r *http.Request) (string, bool, error) {
 	return "", r.Header.Get("Authorization") == "Bearer g00d", nil
 }

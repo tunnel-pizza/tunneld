@@ -601,9 +601,10 @@ func (f *fakeCache) Load(...cache.Option) string { return f.cached }
 
 // Secret is the secret the fake was saved with, and Key the key of the
 // origins it was saved under.
-func (f *fakeCache) Secret() []byte { return f.secret }
-func (f *fakeCache) Owner() string  { return f.owner }
-func (f *fakeCache) Key() string    { return f.key }
+func (f *fakeCache) Secret() []byte         { return f.secret }
+func (f *fakeCache) Owner() string          { return f.owner }
+func (f *fakeCache) Get(name string) string { return f.tracking[name] }
+func (f *fakeCache) Key() string            { return f.key }
 
 // String is the file the fake saved, rendered as the real cache renders it,
 // and Handlers the real cache's endpoints serving that file.
@@ -1521,6 +1522,27 @@ func TestRun(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)
 			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
+		}
+		// terminal_sessions answers the machine from what the run saved.
+		call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{}}}`
+		req, _ = http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(call))
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
+		resp2, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp2.Body.Close()
+		got, _ := io.ReadAll(resp2.Body)
+		for _, want := range []string{
+			`"pid":` + h.cache.tracking["PID"],
+			`"pwd":"` + h.cache.tracking["PWD"] + `"`,
+		} {
+			if !strings.Contains(string(got), want) {
+				t.Errorf("terminal_sessions = %s, want %s from the run's tracking", got, want)
+			}
 		}
 	})
 	t.Run("the run saves the owner the mint named, and none when it named none", func(t *testing.T) {

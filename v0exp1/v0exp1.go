@@ -18,6 +18,7 @@ import (
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp"
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
 // Experiments is every experiment, one method each. A method returning nil is
@@ -55,6 +56,10 @@ type McpOption = mcp.Option
 
 // McpWithOrigins sets the run's origins, index n being origin n.
 func McpWithOrigins(origins []McpOrigin) McpOption { return mcp.WithOrigins(origins) }
+
+// McpWithCache sets the run's cache, which terminal_sessions reads the
+// machine from: the lines the run's .env holds.
+func McpWithCache(c cache.Cache) McpOption { return mcp.WithCache(c) }
 
 // McpWithLog sets where the server logs. Nil keeps the one it has.
 func McpWithLog(log *slog.Logger) McpOption { return mcp.WithLog(log) }

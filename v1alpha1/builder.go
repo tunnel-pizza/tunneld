@@ -535,17 +535,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	defer bound.Close()
 
-	// The agent server, while the experiment is on: one over every shown
-	// origin, each with its spawner where the bound origin has one, so a tool
-	// that names origin n reaches what ?n reaches. Mounted on the control
-	// path below, behind the tunnel secret, and closed before the bound
-	// origins are, since what it holds are processes on them.
-	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithLog(log)); m != nil {
-		defer m.Close()
-		agents = append(agents, router.WithMcp(m))
-	}
-
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -562,6 +551,17 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		spec = cache.New(cache.WithDir(""))
 	}
 	b.runCache = spec
+
+	// The agent server, while the experiment is on: one over every shown
+	// origin, each with its spawner where the bound origin has one, so a tool
+	// that names origin n reaches what ?n reaches. Mounted on the control
+	// path below, behind the tunnel secret, and closed before the bound
+	// origins are, since what it holds are processes on them.
+	var agents []router.Option
+	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithCache(spec), v0exp1.McpWithLog(log)); m != nil {
+		defer m.Close()
+		agents = append(agents, router.WithMcp(m))
+	}
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 

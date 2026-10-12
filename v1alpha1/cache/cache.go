@@ -79,7 +79,9 @@ const dirName = "tunneld"
 // the run last saved it, "" for nobody: whose token the auth admits to the
 // MCP server. Mutable is what the file said about a variable a PATCH may
 // change, set says whether it said anything at all (an empty line is a
-// choice); SetMutable records what the builder settled, for the file.
+// choice); SetMutable records what the builder settled, for the file. Get is
+// a tracking line as the run's file holds it (HOSTNAME, PID, PWD...), from
+// the tracking the run handed over, "" for one it does not hold.
 type Cache interface {
 	Load(opts ...Option) string
 	Save(opts ...Option)
@@ -92,6 +94,7 @@ type Cache interface {
 	Owner() string
 	Mutable(name string) (string, bool)
 	SetMutable(name, value string)
+	Get(name string) string
 }
 
 // Option configures a CacheImpl, at construction or when Load or Save is
@@ -328,6 +331,7 @@ func (None) Bearer(*http.Request) (string, bool, error) { return "", false, nil 
 func (None) Mutable(string) (string, bool)              { return "", false }
 func (None) Owner() string                              { return "" }
 func (None) SetMutable(string, string)                  {}
+func (None) Get(string) string                          { return "" }
 
 // Spec is never a new spec: a run with caching off keeps its tunnel.
 func (None) Spec() <-chan string { return nil }
@@ -434,6 +438,14 @@ func WithLog(log v1.Logger) Option {
 			c.log = log
 		}
 	}
+}
+
+// Get is a tracking line as the run's file holds it: what the run handed
+// over to be saved, never worked out again.
+func (c *CacheImpl) Get(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tracking[name]
 }
 
 // Origins and Tracking read back what the options set, for a caller standing
