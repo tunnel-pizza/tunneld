@@ -186,7 +186,7 @@ else is the origins', passed through exactly as it was sent.
 | ---- | ---- | ------- |
 | `GET /_tunneld/ping` | none | `200 pong`: the edge, the tunnel and tunneld are all up, whatever state the origins are in |
 | `GET /_tunneld/.env` | token | the run's cache file as last saved — `LIBTUNNEL_SPEC` and what the run settled on — with a password's `TUNNELD_WWW_AUTHENTICATE` redacted (`Basic pw="$pbkdf2-sha256$i=600000$…$…"`: every parameter as set, but pw's salt and hash; the file on disk keeps them), or a bare `404` before the first save |
-| `POST /_tunneld/mcp` | token, or a token for it from the [owner](#the-owner) or, on an SSO tunnel, a listed person | an [MCP](https://modelcontextprotocol.io) server for agents, with no tools yet: see [Agents](#agents) |
+| `POST /_tunneld/mcp` | token, or a token for it from the [owner](#the-owner) or, on an SSO tunnel, a listed person | an [MCP](https://modelcontextprotocol.io) server for agents: see [Agents](#agents) |
 | `GET /_tunneld/client.json` | none | the tunnel's own OAuth client, a [Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/): see [Single Sign-On](#single-sign-on) |
 | `GET /_tunneld/callback` | none | where the provider sends a browser back after it signs in |
 | `POST /_tunneld/token` | none (a subject token in the body) | the owner's [tunnel token](#tunnel-tokens), traded for the provider's subject token ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)) |
@@ -272,8 +272,19 @@ gate. The run writes the owner into the cache file as `TUNNELD_OWNER`, for
 whoever opens it, and drops the line when a mint names nobody; the line is
 never read back, and setting `TUNNELD_OWNER` yourself does nothing.
 
-It offers no tools yet: the agent surface is being redesigned, and a client
-that connects gets an empty list.
+It offers one tool so far:
+
+| Tool | A token needs | Answers |
+|---|---|---|
+| `terminal_sessions` | `tunnel:attach` | the run's origins, `{sessions: [{n, origin, kind}]}`: `n` is the origin's `?n`, `kind` is `exec`, `attach` or `http` |
+
+The secret opens every tool. A token opens a tool only with the scope it
+needs: without it, the call answers a tool error naming the scope, so the
+client can ask the provider for it. The MCP server's metadata lists
+`tunnel:attach` in `scopes_supported`. A token can carry `act` (RFC 8693
+§4.1), the client acting for the person when a provider made it by token
+exchange. Each call logs one line, with the tool, the token's `sub`, its
+`act`, and how the call ended, and never its arguments or its answer.
 
 The server is an experiment, `v0exp1.Experimental().Mcp()` to a program
 embedding tunneld, and may change in any release.
@@ -1150,6 +1161,14 @@ Every mint tells the provider what the tunnel's gate is:
 publicly accessible." out of a protected tunnel's messages. Every answer under `/_tunneld/`, `ping` among them, carries `X-Tunneld-Authenticate`
 with the challenge in public form, the same way, absent when the tunnel is
 public.
+
+Every mint also says what the tunnel serves: `X-Tunneld-Origins`, each origin
+in order as scheme, host and path (`exec:///bin/bash, http://localhost:3000`).
+A query, a fragment and credentials are dropped first, since they can hold a
+secret. tunnel.pizza shows the list to the tunnel's owner and to agents the
+owner approves, and an origin's place in it is its `n` in `?n`. With it goes
+`X-Tunneld-Host`, the machine's hostname (the `HOSTNAME` a run saves in its
+`.env`), so `localhost` in an origin has a machine to name.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so
 a client cannot send the tunnel's password and the app's at once. Get the

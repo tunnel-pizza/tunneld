@@ -538,9 +538,9 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 			if !slices.Contains(m.methods, req.Method) {
 				continue
 			}
-			switch ok, err := m.assert(a, c, req); {
+			switch through, ok, err := m.assert(a, c, req); {
 			case ok:
-				next.ServeHTTP(w, req)
+				next.ServeHTTP(w, through)
 				return
 			case refused(w, err):
 				return
@@ -655,30 +655,35 @@ var publicMethods = map[string][]string{
 // authMethods is every path under the ControlPath a credential other than
 // the secret opens, by its name there, "*" standing for every name not
 // listed: for each set of methods, assert says whether the request carries
-// that credential, given the auth and the cache as handed over. A request none admits is the auth's Unauthorized; an error one
-// returns is answered by refused.
+// that credential, given the auth and the cache as handed over, and the
+// request to go on with. A request none admits is the auth's Unauthorized;
+// an error one returns is answered by refused.
 var authMethods = map[string][]struct {
 	methods []string
-	assert  func(auth.Auth, cache.Cache, *http.Request) (bool, error)
+	assert  func(auth.Auth, cache.Cache, *http.Request) (*http.Request, bool, error)
 }{
 	// The tunnel's credential: a provider token never opens it, only the
 	// secret or, from the owner's browser, a live grant the cache issued to
 	// the secret's holder.
 	".env": {
-		{[]string{http.MethodPatch}, func(_ auth.Auth, c cache.Cache, r *http.Request) (bool, error) {
+		{[]string{http.MethodPatch}, func(_ auth.Auth, c cache.Cache, r *http.Request) (*http.Request, bool, error) {
 			_, ok, err := c.Bearer(r)
-			return ok, err
+			return r, ok, err
 		}},
 	},
 	// On a tunnel set to Single Sign-On, a listed person's token issued for
-	// the MCP server.
+	// the MCP server. The token's access goes on with the request, for the
+	// tools to check their scopes against.
 	"mcp": {
 		{[]string{
 			http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
 			http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
-		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (bool, error) {
-			_, ok, err := a.Bearer(r, "https://"+r.Host+ControlPath+"mcp")
-			return ok, err
+		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (*http.Request, bool, error) {
+			access, ok, err := a.Bearer(r, "https://"+r.Host+ControlPath+"mcp")
+			if ok {
+				r = r.WithContext(auth.WithAccess(r.Context(), access))
+			}
+			return r, ok, err
 		}},
 	},
 	// Every name not listed above: on a tunnel set to Single Sign-On, a
@@ -687,9 +692,9 @@ var authMethods = map[string][]struct {
 		{[]string{
 			http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
 			http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
-		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (bool, error) {
+		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (*http.Request, bool, error) {
 			_, ok, err := a.Bearer(r, "https://"+r.Host)
-			return ok, err
+			return r, ok, err
 		}},
 	},
 }

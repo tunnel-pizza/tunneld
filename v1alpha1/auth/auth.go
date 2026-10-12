@@ -2,6 +2,7 @@ package auth
 
 import (
 	"cmp"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -48,7 +49,33 @@ type Auth interface {
 	Header() (key, value string)
 	Unauthorized(w http.ResponseWriter, r *http.Request)
 	ResourceMetadata(w http.ResponseWriter, r *http.Request)
-	Bearer(r *http.Request, resource string) (sub string, ok bool, err error)
+	Bearer(r *http.Request, resource string) (access Access, ok bool, err error)
+}
+
+// Access is what an access token Bearer accepted says: who, the client it
+// was issued to, its scopes, and who acts for the subject when a token
+// exchange said so (act.sub, RFC 8693 §4.1).
+type Access struct {
+	Sub, ClientID, Actor string
+	Scopes               []string
+}
+
+// Has is whether the token holds scope.
+func (a Access) Has(scope string) bool { return slices.Contains(a.Scopes, scope) }
+
+type accessKey struct{}
+
+// WithAccess is ctx carrying a, for the handler behind the guard that let
+// its token in.
+func WithAccess(ctx context.Context, a Access) context.Context {
+	return context.WithValue(ctx, accessKey{}, a)
+}
+
+// AccessOf is the access WithAccess put on ctx. ok is false when there is
+// none: the request got in some other way, the tunnel's secret among them.
+func AccessOf(ctx context.Context) (a Access, ok bool) {
+	a, ok = ctx.Value(accessKey{}).(Access)
+	return a, ok
 }
 
 // SubHeader is who a request Single Sign-On let in is from, as the origin
@@ -281,10 +308,10 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			return
 		}
 		if _, sent := bearerToken(r); sent && s.bearer {
-			sub, ok, err := a.Bearer(r, "https://"+r.Host)
+			access, ok, err := a.Bearer(r, "https://"+r.Host)
 			switch {
 			case ok:
-				a.pass(w, r, next, true, sub)
+				a.pass(w, r, next, true, access.Sub)
 			case errors.Is(err, ErrUnavailable):
 				refuse(w, http.StatusServiceUnavailable, "Retry-After", "30")
 			case errors.Is(err, ErrNotListed):
@@ -376,20 +403,21 @@ func bearerToken(r *http.Request) (string, bool) {
 // is false otherwise: with err nil when there was no token to ask about
 // (neither, or no Bearer credential), and ErrInvalidToken, ErrNotListed (sub
 // then says who it was) or ErrUnavailable when there was.
-func (a *AuthImpl) Bearer(r *http.Request, resource string) (sub string, ok bool, err error) {
+func (a *AuthImpl) Bearer(r *http.Request, resource string) (access Access, ok bool, err error) {
 	s := a.state.Load()
 	token, sent := bearerToken(r)
 	if !sent || !a.byToken(s) {
-		return "", false, nil
+		return Access{}, false, nil
 	}
-	sub, err = a.oidc.VerifyAccess(r.Context(), token, resource)
+	c, err := a.oidc.VerifyAccessClaims(r.Context(), token, resource)
 	if err != nil {
-		return "", false, err
+		return Access{}, false, err
 	}
-	if !slices.Contains(a.listed(s), sub) {
-		return sub, false, ErrNotListed
+	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Scopes: strings.Fields(c.Scope)}
+	if !slices.Contains(a.listed(s), access.Sub) {
+		return access, false, ErrNotListed
 	}
-	return sub, true, nil
+	return access, true, nil
 }
 
 // byToken is whether a provider token can open anything here: the value
@@ -534,6 +562,7 @@ type metadata struct {
 // the tunnel then refuses.
 func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	resource := "https://" + r.Host
+	scopes := []string{"openid", "profile", "offline_access"}
 	if r.URL.Path == MCPMetadataPath {
 		if !a.byToken(a.state.Load()) {
 			w.Header().Set("Content-Length", "0")
@@ -541,12 +570,14 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resource += v1.ControlPath + "mcp"
+		// What the MCP server's terminal tools need.
+		scopes = append(scopes, "tunnel:attach")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata{
 		Resource:               resource,
 		AuthorizationServers:   []string{a.server()},
-		ScopesSupported:        []string{"openid", "profile", "offline_access"},
+		ScopesSupported:        scopes,
 		BearerMethodsSupported: []string{"header"},
 	})
 }
