@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1536,13 +1537,28 @@ func TestRun(t *testing.T) {
 		}
 		defer resp2.Body.Close()
 		got, _ := io.ReadAll(resp2.Body)
-		for _, want := range []string{
-			`"pid":` + h.cache.tracking["PID"],
-			`"pwd":"` + h.cache.tracking["PWD"] + `"`,
-		} {
-			if !strings.Contains(string(got), want) {
-				t.Errorf("terminal_sessions = %s, want %s from the run's tracking", got, want)
-			}
+		// One message, as JSON or one SSE event; decoded, so a Windows path's
+		// backslashes compare as the run saved them.
+		data := string(got)
+		if i := strings.Index(data, "data: "); i >= 0 {
+			data, _, _ = strings.Cut(data[i+len("data: "):], "\n")
+		}
+		var msg struct {
+			Result struct {
+				StructuredContent struct {
+					Machine struct {
+						PID int    `json:"pid"`
+						PWD string `json:"pwd"`
+					} `json:"machine"`
+				} `json:"structuredContent"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+			t.Fatalf("terminal_sessions = %s: %v", got, err)
+		}
+		machine := msg.Result.StructuredContent.Machine
+		if strconv.Itoa(machine.PID) != h.cache.tracking["PID"] || machine.PWD != h.cache.tracking["PWD"] {
+			t.Errorf("terminal_sessions machine = %+v, want PID %s and PWD %q from the run's tracking", machine, h.cache.tracking["PID"], h.cache.tracking["PWD"])
 		}
 	})
 	t.Run("the run saves the owner the mint named, and none when it named none", func(t *testing.T) {
