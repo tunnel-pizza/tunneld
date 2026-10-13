@@ -641,6 +641,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithMcp(mcp.New(
 			mcp.WithContext(ctx),
 			mcp.WithOrigins(origins),
+			mcp.WithBound(bound),
 			mcp.WithCache(spec),
 			mcp.WithLog(log),
 		)),

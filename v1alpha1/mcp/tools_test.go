@@ -16,7 +16,7 @@ func TestTools(t *testing.T) {
 	for _, tool := range res.Tools {
 		names = append(names, tool.Name)
 	}
-	if want := []string{"terminal_exec", "terminal_sessions"}; !slices.Equal(names, want) {
+	if want := []string{"terminal_exec", "terminal_screen", "terminal_send", "terminal_sessions"}; !slices.Equal(names, want) {
 		t.Errorf("tools = %v, want %v", names, want)
 	}
 }

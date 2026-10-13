@@ -245,7 +245,7 @@ is real.
 | `terminal_screen` | the origin's | `url` | `{rows: string[], cursor: {row, col}, alt_screen, title}` |
 | `terminal_read` | the origin's | `url`, `since?` | `{text, next, dropped}` |
 | `terminal_wait` | the origin's | `url`, `since`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, next, matched, timed_out}` |
-| `terminal_send` | the origin's | `url`, `text?`, `keys?` | `{next}` |
+| `terminal_send` | the origin's | `url`, `input: [{text} or {key}]` | `{next}` |
 | `terminal_exec` | the origin's | `url`, `command`, `timeout_ms?` | `{output, exit_code?, ended_by, next, interrupted}` |
 
 - **`url`** is the terminal's address on the tunnel, `https://<host>/` with
@@ -256,7 +256,10 @@ is real.
   which work on any program (bash, k9s, htop) with the agent polling. Then
   the output log with `terminal_read` and `terminal_wait`. `terminal_exec`
   stays a stub until a run can tell a command finished.
-- **`keys`** are names, never escape sequences: `Enter`, `Tab`, `Esc`,
+- **`input`** is steps sent in order, each exactly one of `text` or `key`,
+  so a key can come before text (`Esc`, then `:wq`). A step that cannot be
+  sent, anywhere in the list, sends nothing.
+- **Keys** are names, never escape sequences: `Enter`, `Tab`, `Esc`,
   `Backspace`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`,
   `PageDown`, `F1`-`F12`, and `Ctrl-<letter>`. They go through the
   emulator's `SendKey`, so the program gets what a tab would send in its

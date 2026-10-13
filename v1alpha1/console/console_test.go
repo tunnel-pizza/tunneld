@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/creack/pty"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"time"
 )
 
@@ -23,13 +24,14 @@ var discard = slog.New(slog.DiscardHandler)
 // told to, which is the whole of what a console does to one. It is also the
 // closer For is given, since that is where For looks for both answers.
 type fakeOrigin struct {
-	mu      sync.Mutex
-	in      io.Reader
-	out     io.Writer
-	release chan struct{}
-	err     error
-	drew    chan struct{}
-	ended   chan struct{}
+	attach.Bound // the rest, which a console never asks of it
+	mu           sync.Mutex
+	in           io.Reader
+	out          io.Writer
+	release      chan struct{}
+	err          error
+	drew         chan struct{}
+	ended        chan struct{}
 }
 
 func newFakeOrigin(err error) *fakeOrigin {
@@ -212,7 +214,7 @@ func TestForRefusesWhatItCannotDraw(t *testing.T) {
 
 // noOrigin is a bound closer that cannot be mirrored, which is what the binder
 // hands back for anything but a single served origin.
-type noOrigin struct{}
+type noOrigin struct{ attach.Bound }
 
 func (noOrigin) Close() error          { return nil }
 func (noOrigin) Announce([]string)     {}

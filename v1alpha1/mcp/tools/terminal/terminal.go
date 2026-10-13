@@ -5,8 +5,10 @@ package terminal
 import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/exec"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/screen"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/send"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/sessions"
 )
 
 // Tools is every terminal_ tool, each in a package of its own here.
-var Tools = []tool.Tool{sessions.Tool, exec.Tool}
+var Tools = []tool.Tool{sessions.Tool, screen.Tool, send.Tool, exec.Tool}

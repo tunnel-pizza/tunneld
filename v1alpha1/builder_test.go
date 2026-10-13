@@ -681,8 +681,9 @@ func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.O
 // fakeBinder stands in for the attach package: it hands the origins back
 // unchanged and closes nothing, so TestRun never stands up a real listener.
 type fakeBinder struct {
-	err    error
-	closed bool
+	attach.Bound // the rest, which a run never asks of it
+	err          error
+	closed       bool
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}

@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -89,4 +91,48 @@ func Origins(t *testing.T, raws ...string) v1.Origins {
 		opts = append(opts, origins.WithURL(u))
 	}
 	return origins.New(opts...)
+}
+
+// Bound is a run's served origins as a test arranges them: its terminals,
+// by index.
+type Bound struct {
+	attach.Bound // the rest, which a tool never asks of it
+	Terminals    map[int]attach.Terminal
+}
+
+// Terminal is the terminal at index.
+func (b Bound) Terminal(index int) (attach.Terminal, bool) {
+	t, ok := b.Terminals[index]
+	return t, ok
+}
+
+// Terminal is a terminal that keeps what it was sent and shows Shows. Err,
+// when set, is what Send answers, having kept nothing.
+type Terminal struct {
+	Shows attach.Screen
+	Err   error
+
+	mu   sync.Mutex
+	sent []attach.Input
+}
+
+// Send keeps input, in order.
+func (t *Terminal) Send(input ...attach.Input) error {
+	if t.Err != nil {
+		return t.Err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sent = append(t.sent, input...)
+	return nil
+}
+
+// Screen is Shows.
+func (t *Terminal) Screen() attach.Screen { return t.Shows }
+
+// Sent is every step Send was given, in order.
+func (t *Terminal) Sent() []attach.Input {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]attach.Input(nil), t.sent...)
 }

@@ -2,11 +2,14 @@ package tooltest
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
@@ -56,5 +59,36 @@ func TestOrigins(t *testing.T) {
 	o := Origins(t, "http://localhost:3000", "exec:///bin/sh")
 	if o.Len() != 2 || o.At(1).Scheme != v1.ExecScheme || o.At(1).Ref != "/bin/sh" {
 		t.Errorf("Origins = %+v", o.All())
+	}
+}
+
+// TestBound pins the fake run: a terminal at the index it was given, none
+// elsewhere.
+func TestBound(t *testing.T) {
+	term := &Terminal{}
+	b := Bound{Terminals: map[int]attach.Terminal{1: term}}
+	if got, ok := b.Terminal(1); !ok || got != term {
+		t.Errorf("Terminal(1) = %v, %v; want the one given", got, ok)
+	}
+	if got, ok := b.Terminal(0); ok || got != nil {
+		t.Errorf("Terminal(0) = %v, %v; want none", got, ok)
+	}
+}
+
+// TestTerminal pins the fake terminal: it keeps every step in order and
+// shows what it was given, and with Err keeps nothing.
+func TestTerminal(t *testing.T) {
+	term := &Terminal{Shows: attach.Screen{Title: "sh"}}
+	_ = term.Send(attach.Input{Text: "ls"}, attach.Input{Key: "Enter"})
+	_ = term.Send(attach.Input{Key: "Ctrl-C"})
+	if want := []attach.Input{{Text: "ls"}, {Key: "Enter"}, {Key: "Ctrl-C"}}; !slices.Equal(term.Sent(), want) {
+		t.Errorf("Sent = %q, want %q", term.Sent(), want)
+	}
+	if term.Screen().Title != "sh" {
+		t.Errorf("Screen = %+v, want the one given", term.Screen())
+	}
+	failing := &Terminal{Err: attach.ErrUnknownKey}
+	if err := failing.Send(attach.Input{Text: "ls"}); !errors.Is(err, attach.ErrUnknownKey) || failing.Sent() != nil {
+		t.Errorf("Send = %v with %q kept, want Err and nothing", err, failing.Sent())
 	}
 }

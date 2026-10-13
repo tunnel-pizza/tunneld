@@ -1,7 +1,8 @@
 // Package mcp is the MCP server tunneld serves to agents: one per run, over
 // streamable HTTP on the control path, knowing every origin of the run by
 // the index the routing parameter and the stderr map use. It offers
-// terminal_sessions and terminal_exec, the first of the terminal tools.
+// the terminal tools: terminal_sessions, terminal_screen, terminal_send and
+// terminal_exec.
 package mcp
 
 import (
@@ -12,6 +13,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
@@ -32,6 +34,7 @@ type Option = v1.Option[*McpImpl]
 // handler to mount on the control path and a Close for the run's end.
 type McpImpl struct {
 	origins v1.Origins
+	bound   attach.Bound
 	log     v1.Logger
 	cache   cache.Cache
 	ctx     context.Context
@@ -52,7 +55,7 @@ type McpImpl struct {
 func New(opts ...Option) *McpImpl {
 	m := v1.Apply(&McpImpl{log: slog.New(slog.DiscardHandler)}, opts...)
 	m.server = sdk.NewServer(&sdk.Implementation{Name: "tunneld", Version: "0"}, nil)
-	c := tool.Context{Origins: m.origins, Cache: m.cache, Log: m.log}
+	c := tool.Context{Origins: m.origins, Bound: m.bound, Cache: m.cache, Log: m.log}
 	for _, t := range tools {
 		t.Add(m.server, c)
 	}
@@ -71,6 +74,12 @@ func New(opts ...Option) *McpImpl {
 // routing parameter and the stderr map use.
 func WithOrigins(origins v1.Origins) Option {
 	return func(m *McpImpl) { m.origins = origins }
+}
+
+// WithBound sets the servers standing in for the run's served origins, which
+// the terminal tools type into and read.
+func WithBound(bound attach.Bound) Option {
+	return func(m *McpImpl) { m.bound = bound }
 }
 
 // WithCache sets the run's cache, which terminal_sessions reads the

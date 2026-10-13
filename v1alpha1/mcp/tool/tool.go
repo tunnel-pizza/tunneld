@@ -6,18 +6,22 @@ package tool
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
 // Context is the run a tool reads: its origins, nil when it was given none,
-// its cache, nil when it has none, and where a call is logged.
+// the servers standing in for the ones it serves, nil when none, its cache,
+// nil when it has none, and where a call is logged.
 type Context struct {
 	Origins v1.Origins
+	Bound   attach.Bound
 	Cache   cache.Cache
 	Log     v1.Logger
 }
@@ -67,6 +71,31 @@ func (c Context) Refused(ctx context.Context, tool, scope string, start time.Tim
 	}
 	c.Logged(ctx, tool, "refused", start)
 	return Failed("This sign-in can't use the terminal: " + tool + " needs the " + scope + " scope.")
+}
+
+// Terminal is the terminal at url, or the tool error saying why not,
+// logged: url names an origin of the run, the run serves it with a
+// terminal, and the caller holds the scope of its scheme (tunnel:exec for a
+// program).
+func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time) (attach.Terminal, *sdk.CallToolResult) {
+	if c.Origins == nil || c.Bound == nil {
+		c.Logged(ctx, tool, "refused", start)
+		return nil, Failed("This run serves no terminal.")
+	}
+	origin, err := c.Origins.From(url)
+	if err != nil {
+		c.Logged(ctx, tool, "refused", start)
+		return nil, Failed(err.Error() + ". terminal_sessions lists the terminals.")
+	}
+	term, ok := c.Bound.Terminal(origin.Index)
+	if !ok {
+		c.Logged(ctx, tool, "refused", start)
+		return nil, Failed(url + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals.")
+	}
+	if refusal := c.Refused(ctx, tool, "tunnel:"+string(origin.Scheme), start); refusal != nil {
+		return nil, refusal
+	}
+	return term, nil
 }
 
 // Logged is a call's one log line: the tool, who, the client acting for

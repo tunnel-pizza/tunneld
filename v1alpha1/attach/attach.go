@@ -414,6 +414,9 @@ type Bound interface {
 	io.Closer
 	Announce(public []string)
 	Done() <-chan struct{}
+	// Terminal is the session serving origin index, false for an origin
+	// this run dials rather than serves, or an index past the run.
+	Terminal(index int) (Terminal, bool)
 }
 
 // bound is every attach server a Bind call started, with the place in the
@@ -462,6 +465,16 @@ func (b bound) Done() <-chan struct{} {
 		return make(chan struct{})
 	}
 	return b.origins[0].srv.Done()
+}
+
+// Terminal is the session of the server that took index.
+func (b bound) Terminal(index int) (Terminal, bool) {
+	for _, o := range b.origins {
+		if o.at == index {
+			return o.srv.session, true
+		}
+	}
+	return nil, false
 }
 
 type boundOrigin struct {

@@ -3,13 +3,16 @@ package tool
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // logged is a Context logging into a buffer, and what it has logged so far.
@@ -85,5 +88,71 @@ func TestLogged(t *testing.T) {
 func TestAll(t *testing.T) {
 	if got := (Context{}).All(); got != nil {
 		t.Errorf("All() = %v, want none", got)
+	}
+}
+
+// served is a run's served origins as a test arranges them, terminals by
+// index.
+type served struct {
+	attach.Bound // the rest, which a tool never asks of it
+	at           map[int]attach.Terminal
+}
+
+func (b served) Terminal(index int) (attach.Terminal, bool) {
+	t, ok := b.at[index]
+	return t, ok
+}
+
+// TestTerminal pins how a tool reaches a terminal: url names an origin of
+// the run, that origin is served with a terminal, and the caller holds the
+// scope of its scheme. Each refusal is a tool error, logged.
+func TestTerminal(t *testing.T) {
+	var opts []origins.Option
+	for _, raw := range []string{"http://localhost:3000", "exec:///bin/sh", "attach://dockerd/api"} {
+		u, _ := url.Parse(raw)
+		opts = append(opts, origins.WithURL(u))
+	}
+	type terminal struct {
+		attach.Terminal
+		name string
+	}
+	shell, container := attach.Terminal(terminal{name: "sh"}), attach.Terminal(terminal{name: "api"})
+	run := served{at: map[int]attach.Terminal{1: shell, 2: container}}
+	exec := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"tunnel:exec"}})
+	for name, tc := range map[string]struct {
+		c    Context
+		ctx  context.Context
+		url  string
+		want attach.Terminal
+		says string
+	}{
+		"the secret":                       {Context{Origins: origins.New(opts...), Bound: run}, t.Context(), "https://0tabc.tunneled.pizza/?1", shell, ""},
+		"the scheme's scope":               {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?1", shell, ""},
+		"another scheme's scope":           {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?2", nil, "a_tool needs the tunnel:attach scope"},
+		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/", nil, "https://0tabc.tunneled.pizza/ is not a terminal: origin 0 is http"},
+		"past the list":                    {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?5", nil, "names origin 5"},
+		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneled.pizza/?1", nil, "This run serves no terminal."},
+		"a run with no origins":            {Context{Bound: run}, t.Context(), "https://0tabc.tunneled.pizza/?1", nil, "This run serves no terminal."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := logged(t)
+			tc.c.Log = c.Log
+			term, refusal := tc.c.Terminal(tc.ctx, "a_tool", tc.url, time.Now())
+			if term != tc.want {
+				t.Errorf("Terminal = %v, want %v", term, tc.want)
+			}
+			if tc.says == "" {
+				if refusal != nil {
+					t.Errorf("refusal = %+v, want none", refusal)
+				}
+				return
+			}
+			if refusal == nil || !refusal.IsError || !strings.Contains(refusal.Content[0].(*sdk.TextContent).Text, tc.says) {
+				t.Errorf("refusal = %+v, want a tool error saying %q", refusal, tc.says)
+			}
+			if !strings.Contains(got(), "ended=refused") {
+				t.Errorf("log %q, want the refusal", got())
+			}
+		})
 	}
 }
