@@ -105,18 +105,6 @@ type Target interface {
 	Close() error
 }
 
-// Spawner is what a Target can do beyond being attached to: start one
-// private process on the origin, over pipes — no terminal, no echo, no
-// viewer — and say how it ended. It is what an agent's one-shot command runs
-// on, beside the shared terminal a person may be watching, and a provider
-// that cannot do it simply does not implement it.
-//
-// exit is the process's exit code, -1 when a signal ended it; err is a
-// failure to start, never a non-zero exit. The process ends with ctx.
-type Spawner interface {
-	Spawn(ctx context.Context, argv []string, stdin io.Reader, stdout, stderr io.Writer) (exit int, err error)
-}
-
 // Sink is told what a program said about itself, as it said it — every OSC and
 // every private-mode CSI the scanner pulls out of the target's output.
 //
@@ -346,7 +334,7 @@ func (b *BinderImpl) answered() []string {
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
 	dialable := make([]*url.URL, 0, shown.Len())
-	servers := bound{shown: shown.Len()}
+	servers := bound{}
 	asked := newAsk()
 	for at, origin := range shown.URLs() {
 		// Anything no provider claims is an address the tunnel dials itself.
@@ -388,10 +376,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		// A target that can start a private process says so by having the
-		// method; kept at the origin's index for Spawners.
-		spawner, _ := target.(Spawner)
-		servers.origins = append(servers.origins, boundOrigin{at: at, srv: server, spawner: spawner})
+		servers.origins = append(servers.origins, boundOrigin{at: at, srv: server})
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
 	}
@@ -424,10 +409,9 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.bound.show(ctx, in, out)
 }
 
-// Bound is what a Bind call hands back: the servers it started, and the four
-// things every one of them can do — be closed, be told the public addresses,
-// say when a viewer has asked the run to end, and hand over each origin's
-// Spawner.
+// Bound is what a Bind call hands back: the servers it started, and the
+// three things every one of them can do — be closed, be told the public
+// addresses, and say when a viewer has asked the run to end.
 //
 // None of those is conditional, which is why they are here rather than
 // discovered by type assertion one at a time. Exactly one thing is: a bound
@@ -438,11 +422,6 @@ type Bound interface {
 	io.Closer
 	Announce(public []string)
 	Done() <-chan struct{}
-	// Spawners is one slot per shown origin, in order: the origin's Spawner
-	// where its target has one, nil for an address and for a target that
-	// cannot spawn. Unconditional — every bound list can answer — which is
-	// why it is here and not a type assertion.
-	Spawners() []Spawner
 }
 
 // bound is every attach server a Bind call started, with the place in the
@@ -454,9 +433,6 @@ type Bound interface {
 // derived from n.
 type bound struct {
 	origins []boundOrigin
-	// shown is how many origins the run has, served or not: the length of
-	// what Spawners answers, since index n is origin n there too.
-	shown int
 }
 
 // show puts the one origin bound here on the given streams.
@@ -499,20 +475,6 @@ func (b bound) Done() <-chan struct{} {
 type boundOrigin struct {
 	at  int
 	srv *Server
-	// spawner is the target's own Spawner, nil when it has none.
-	spawner Spawner
-}
-
-// Spawners is one slot per shown origin, the served ones' spawners at the
-// index each origin had, nil everywhere else.
-func (b bound) Spawners() []Spawner {
-	out := make([]Spawner, b.shown)
-	for _, o := range b.origins {
-		if o.spawner != nil && o.at < len(out) {
-			out[o.at] = o.spawner
-		}
-	}
-	return out
 }
 
 // Close shuts every attach server down, and with it every container client

@@ -13,8 +13,6 @@ import (
 
 	"github.com/creack/pty"
 	"time"
-
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
 
 // discard is the logger every case hands Draw: nothing here asserts on the
@@ -41,8 +39,6 @@ func newFakeOrigin(err error) *fakeOrigin {
 func (f *fakeOrigin) Close() error { return nil }
 
 func (f *fakeOrigin) Announce([]string) {}
-
-func (f *fakeOrigin) Spawners() []attach.Spawner { return nil }
 
 func (f *fakeOrigin) Done() <-chan struct{} { return f.ended }
 
@@ -221,9 +217,6 @@ type noOrigin struct{}
 func (noOrigin) Close() error          { return nil }
 func (noOrigin) Announce([]string)     {}
 func (noOrigin) Done() <-chan struct{} { return nil }
-func (noOrigin) Spawners() []attach.Spawner {
-	return nil
-}
 
 // TestDrawHandsOverTheStreamsItWasGiven pins that the console the origin draws
 // on is the one configured, and that a failure is a debug line rather than

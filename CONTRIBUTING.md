@@ -437,11 +437,6 @@ a local program run on a pseudo-terminal. What opens one by reference —
 `TargetsImpl.Open` in either — sits behind `attach`'s own `Targets` contract,
 which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
 
-A provider may also implement `attach.Spawner`: one private process over
-pipes, with its exit code, which the agent server is handed for each origin.
-`shell.TargetImpl` does; `docker.TargetImpl` does not yet. `Bind` keeps each
-spawner at its origin's index on `Bound.Spawners`, nil where there is none.
-
 **A served origin is spelled by verb, provider, reference.** The scheme says
 what tunneld does — `attach`, `exec` — the authority says where it does it, and
 the path is what it does it to. `attach://dockerd/api` and a future

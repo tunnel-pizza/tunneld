@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
@@ -38,7 +39,7 @@ func connect(t *testing.T, m *McpImpl) *sdk.ClientSession {
 // TestNew pins the options: the origins are kept in order, a log replaces
 // the discarding default, and a nil log keeps it.
 func TestNew(t *testing.T) {
-	origins := []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}, {Name: "exec:///bin/sh", Kind: KindExec}}
+	origins := []Origin{{Name: "http://localhost:3000", Scheme: v1.HttpScheme}, {Name: "exec:///bin/sh", Scheme: v1.ExecScheme}}
 	log := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
 		name    string
@@ -79,10 +80,13 @@ func TestListsTerminalSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 1 || res.Tools[0].Name != "terminal_sessions" {
-		t.Fatalf("tools = %+v, want terminal_sessions alone", res.Tools)
+	if len(res.Tools) != 2 || res.Tools[0].Name != "terminal_exec" || res.Tools[1].Name != "terminal_sessions" {
+		t.Fatalf("tools = %+v, want terminal_exec and terminal_sessions", res.Tools)
 	}
-	tool := res.Tools[0]
+	if a := res.Tools[0].Annotations; a == nil || a.ReadOnlyHint || a.DestructiveHint == nil || !*a.DestructiveHint {
+		t.Errorf("terminal_exec annotations = %+v, want destructive, not read-only", a)
+	}
+	tool := res.Tools[1]
 	if tool.Title != "Terminal sessions" {
 		t.Errorf("title = %q", tool.Title)
 	}
@@ -90,7 +94,7 @@ func TestListsTerminalSessions(t *testing.T) {
 		t.Errorf("annotations = %+v, want read-only, idempotent, closed-world", a)
 	}
 	schema, _ := json.Marshal(tool.OutputSchema)
-	for _, s := range []string{"a bare ?1 (not ?n=1)", "exec, attach or http"} {
+	for _, s := range []string{"a bare ?1 (not ?n=1)", "never its arguments"} {
 		if !strings.Contains(string(schema), s) {
 			t.Errorf("outputSchema %s lacks %q", schema, s)
 		}
@@ -102,10 +106,20 @@ func TestListsTerminalSessions(t *testing.T) {
 	}
 }
 
-// callOver calls terminal_sessions on m's handler over HTTP, the way the
-// router hands a request on: with access on its context when a token let it
-// in, with none when the secret did.
-func callOver(t *testing.T, m *McpImpl, access *auth.Access) (int, string) {
+// callOver calls terminal_sessions for scheme on m's handler over HTTP, the
+// way the router hands a request on: with access on its context when a token
+// let it in, with none when the secret did. An empty scheme sends none.
+func callOver(t *testing.T, m *McpImpl, access *auth.Access, scheme string) (int, string) {
+	t.Helper()
+	args := `{}`
+	if scheme != "" {
+		args = `{"scheme":"` + scheme + `"}`
+	}
+	return callTool(t, m, access, "terminal_sessions", args)
+}
+
+// callTool calls tool with args, a JSON object, as callOver does.
+func callTool(t *testing.T, m *McpImpl, access *auth.Access, tool, args string) (int, string) {
 	t.Helper()
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if access != nil {
@@ -115,7 +129,7 @@ func callOver(t *testing.T, m *McpImpl, access *auth.Access) (int, string) {
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{}}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tool + `","arguments":` + args + `}}`
 	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -129,27 +143,37 @@ func callOver(t *testing.T, m *McpImpl, access *auth.Access) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// TestTerminalSessions pins the tool: the run's origins by their ?n, to the
-// secret's holder and to a token holding tunnel:attach; a token without it
-// gets a tool error naming the scope, and no origin.
+// TestTerminalSessions pins the tool: the run's origins of the scheme asked
+// for, each by its run-wide ?n, to the secret's holder and to any token the
+// MCP server admits, whatever its scopes: listing is not acting. A scheme
+// that is not one is a tool error, with no origin.
 func TestTerminalSessions(t *testing.T) {
-	origins := []Origin{{Name: "http://localhost:3000", Kind: KindHTTP}, {Name: "exec:///bin/sh", Kind: KindExec}}
-	all := &Sessions{Sessions: []Session{{N: 0, Kind: KindHTTP, Name: "localhost:3000"}, {N: 1, Kind: KindExec, Name: "/bin/sh"}}}
+	origins := []Origin{
+		{Name: "http://localhost:3000", Scheme: v1.HttpScheme},
+		{Name: "exec:///bin/sh", Scheme: v1.ExecScheme},
+		{Name: "attach://dockerd/web", Scheme: v1.AttachScheme},
+		{Name: "exec:///usr/bin/k9s?arg=--readonly", Scheme: v1.ExecScheme},
+	}
+	execs := &Sessions{Sessions: []Session{{N: 1, Name: "/bin/sh"}, {N: 3, Name: "/usr/bin/k9s"}}}
+	containers := &Sessions{Sessions: []Session{{N: 2, Name: "web"}}}
 	for name, tc := range map[string]struct {
 		access *auth.Access
+		scheme string
 		want   *Sessions
 		says   string
 	}{
-		"the secret":        {nil, all, ""},
-		"tunnel:attach":     {&auth.Access{Sub: "github:1", Scopes: []string{"tunnel:attach"}}, all, ""},
-		"without the scope": {&auth.Access{Sub: "github:1", Scopes: []string{"openid"}}, nil, "needs the tunnel:attach scope"},
+		"the secret, exec":              {nil, "exec", execs, ""},
+		"any admitted token, exec":      {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "exec", execs, ""},
+		"any admitted token, attach":    {&auth.Access{Sub: "github:1"}, "attach", containers, ""},
+		"no scheme":                     {nil, "", nil, "missing properties"},
+		"a scheme that is none of them": {nil, "ssh", nil, "exec, attach or http"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tracked := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{
 				"HOSTNAME": "box.local", "USERNAME": "christian", "PID": "16653", "PWD": "/Users/christian/cnuss",
 				"SHELL": "/bin/zsh",
 			}))
-			status, body := callOver(t, New(WithOrigins(origins), WithCache(tracked)), tc.access)
+			status, body := callOver(t, New(WithOrigins(origins), WithCache(tracked)), tc.access, tc.scheme)
 			if status != 200 {
 				t.Fatalf("status %d: %s", status, body)
 			}
@@ -195,8 +219,8 @@ func TestTerminalSessionsLogs(t *testing.T) {
 		defer mu.Unlock()
 		return buf.Write(p)
 	}), nil))
-	m := New(WithOrigins([]Origin{{Name: "exec:///bin/sh", Kind: KindExec}}), WithLog(log))
-	callOver(t, m, &auth.Access{Sub: "github:1", Actor: "https://claude.ai/client.json", Scopes: []string{"tunnel:attach"}})
+	m := New(WithOrigins([]Origin{{Name: "exec:///bin/sh", Scheme: v1.ExecScheme}}), WithLog(log))
+	callOver(t, m, &auth.Access{Sub: "github:1", Actor: "https://claude.ai/client.json", Scopes: []string{"tunnel:exec"}}, "exec")
 	mu.Lock()
 	got := buf.String()
 	mu.Unlock()
@@ -279,5 +303,42 @@ func TestMachineWithoutACache(t *testing.T) {
 	}
 	if got := New(WithCache(cache.None{})).machine(); got != (Machine{}) {
 		t.Errorf("machine() from None = %+v, want nothing", got)
+	}
+}
+
+// TestTerminalSessionsWithoutTerminals pins a run that serves no program: an
+// empty list, never null, so a client reads "none" rather than "unknown".
+func TestTerminalSessionsWithoutTerminals(t *testing.T) {
+	_, body := callOver(t, New(WithOrigins([]Origin{{Name: "http://localhost:3000", Scheme: v1.HttpScheme}})), nil, "exec")
+	if !strings.Contains(body, `"sessions":[]`) || strings.Contains(body, "localhost:3000") {
+		t.Errorf("terminal_sessions = %s, want an empty sessions list", body)
+	}
+}
+
+// TestTerminalExec pins the stub: the secret, and a token holding
+// tunnel:exec, reach it and learn it is not implemented; a token without the
+// scope is refused, naming it, before anything else; n and command are
+// required.
+func TestTerminalExec(t *testing.T) {
+	m := func() *McpImpl {
+		return New(WithOrigins([]Origin{{Name: "exec:///bin/sh", Scheme: v1.ExecScheme}}))
+	}
+	args := `{"n":0,"command":"uptime"}`
+	for name, tc := range map[string]struct {
+		access *auth.Access
+		args   string
+		says   string
+	}{
+		"the secret":          {nil, args, "terminal_exec is not implemented yet"},
+		"tunnel:exec":         {&auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}}, args, "terminal_exec is not implemented yet"},
+		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, args, "needs the tunnel:exec scope"},
+		"no command":          {nil, `{"n":0}`, "missing properties"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, body := callTool(t, m(), tc.access, "terminal_exec", tc.args)
+			if status != 200 || !strings.Contains(body, tc.says) || !strings.Contains(body, `"isError":true`) {
+				t.Errorf("terminal_exec = %d %s, want a tool error saying %q", status, body, tc.says)
+			}
+		})
 	}
 }

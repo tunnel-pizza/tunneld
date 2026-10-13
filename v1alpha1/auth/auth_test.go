@@ -277,8 +277,8 @@ func TestProtectedResource(t *testing.T) {
 		t.Errorf("MCP metadata = %v, %v; want the MCP server as the resource", mcp, err)
 	}
 	// And the scope its terminal tools need.
-	if got := mcp["scopes_supported"]; !reflect.DeepEqual(got, []any{"openid", "profile", "offline_access", "tunnel:attach"}) {
-		t.Errorf("MCP scopes_supported = %v, want tunnel:attach beside the sign-in's", got)
+	if got := mcp["scopes_supported"]; !reflect.DeepEqual(got, []any{"openid", "profile", "offline_access", "tunnel:exec"}) {
+		t.Errorf("MCP scopes_supported = %v, want tunnel:exec beside the sign-in's", got)
 	}
 	// Or wherever the mint named an owner, whose token opens it on any tunnel.
 	rec = httptest.NewRecorder()

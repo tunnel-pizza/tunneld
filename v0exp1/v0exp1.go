@@ -65,18 +65,8 @@ func McpWithCache(c cache.Cache) McpOption { return mcp.WithCache(c) }
 func McpWithLog(log *slog.Logger) McpOption { return mcp.WithLog(log) }
 
 // McpOrigin is what the server is told about one origin: how it is shown,
-// what it is, and what can spawn a process on it, nil for nothing.
+// and what it is.
 type McpOrigin = mcp.Origin
-
-// McpKind is what an origin is: McpExec, McpAttach or McpHTTP.
-type McpKind = mcp.Kind
-
-// The kinds of origin.
-const (
-	McpExec   = mcp.KindExec
-	McpAttach = mcp.KindAttach
-	McpHTTP   = mcp.KindHTTP
-)
 
 // ErrBuiltinNoTerminal is Builtin.Origin's answer on a platform with no
 // pseudo-terminals.

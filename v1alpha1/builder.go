@@ -23,7 +23,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
@@ -553,12 +552,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	b.runCache = spec
 
 	// The agent server, while the experiment is on: one over every shown
-	// origin, each with its spawner where the bound origin has one, so a tool
-	// that names origin n reaches what ?n reaches. Mounted on the control
-	// path below, behind the tunnel secret, and closed before the bound
-	// origins are, since what it holds are processes on them.
+	// origin, so a tool that names origin n reaches what ?n reaches, reading
+	// the machine from the run's cache. Mounted on the control path below,
+	// behind the tunnel secret, and closed before the bound origins are.
 	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithCache(spec), v0exp1.McpWithLog(log)); m != nil {
+	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins)), v0exp1.McpWithCache(spec), v0exp1.McpWithLog(log)); m != nil {
 		defer m.Close()
 		agents = append(agents, router.WithMcp(m))
 	}
@@ -1064,22 +1062,15 @@ func (b *BuilderImpl) cached() Origins {
 }
 
 // mcpOrigins is what the agent server is told about each shown origin: how
-// it was shown, what kind it is by its scheme, and its spawner, which the
-// bound origins hand over by index — nil, an address's or a provider's that
-// cannot, stays nil.
-func mcpOrigins(shown Origins, spawners []attach.Spawner) []v0exp1.McpOrigin {
+// it was shown, and its scheme (an https address an HttpScheme like any
+// other).
+func mcpOrigins(shown Origins) []v0exp1.McpOrigin {
 	urls := shown.URLs()
 	list := make([]v0exp1.McpOrigin, len(urls))
 	for i, u := range urls {
-		o := v0exp1.McpOrigin{Name: u.String(), Kind: v0exp1.McpHTTP}
-		switch u.Scheme {
-		case v1.ExecScheme:
-			o.Kind = v0exp1.McpExec
-		case v1.AttachScheme:
-			o.Kind = v0exp1.McpAttach
-		}
-		if i < len(spawners) && spawners[i] != nil {
-			o.Spawner = spawners[i]
+		o := v0exp1.McpOrigin{Name: u.String(), Scheme: v1.HttpScheme}
+		if u.Scheme == v1.ExecScheme || u.Scheme == v1.AttachScheme {
+			o.Scheme = u.Scheme
 		}
 		list[i] = o
 	}

@@ -338,7 +338,7 @@ const (
 	// exec://dockerd/api, differing in the word that says what is being done
 	// rather than in the word that says to what. DockerProvider is the only
 	// authority this scheme answers today.
-	AttachScheme = "attach"
+	AttachScheme Scheme = "attach"
 
 	// ExecScheme names something run as an origin instead of an HTTP service:
 	// an exec:///path/to/program origin runs that program and exposes its
@@ -366,7 +366,12 @@ const (
 	// carries the resolved path rather than the word — exec:///usr/bin/htop,
 	// not exec://htop — because a bare name says which program only on the
 	// machine that looked it up.
-	ExecScheme = "exec"
+	ExecScheme Scheme = "exec"
+
+	// HttpScheme names an address the tunnel dials: an http:// origin, and
+	// an https:// one too where a scheme says what kind of origin something
+	// is rather than how it is dialed.
+	HttpScheme Scheme = "http"
 
 	// ArgKey is the query key a program's arguments ride under in an exec://
 	// origin: exec:///usr/bin/claude?arg=--resume&arg=--model runs claude
@@ -445,6 +450,11 @@ type Origins interface {
 	// not either. Stable across runs, and safe as a filename.
 	Key() string
 }
+
+// Scheme is what an origin is, by its URL's scheme: ExecScheme, a program;
+// AttachScheme, a container; HttpScheme, an address. An alias, so a URL's
+// own Scheme compares against these as it is.
+type Scheme = string
 
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
 // configured by that package's options, and call the terminal Command to

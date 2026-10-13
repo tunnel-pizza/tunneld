@@ -272,16 +272,17 @@ gate. The run writes the owner into the cache file as `TUNNELD_OWNER`, for
 whoever opens it, and drops the line when a mint names nobody; the line is
 never read back, and setting `TUNNELD_OWNER` yourself does nothing.
 
-It offers one tool so far:
+It offers these tools so far:
 
 | Tool | A token needs | Answers |
 |---|---|---|
-| `terminal_sessions` | `tunnel:attach` | the machine and the run's origins, `{machine: {hostname, username, pid, pwd}, sessions: [{n, kind, name}]}`: `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `n` is the origin's index, a bare `?n` in a URL and none for a single origin; `kind` is `exec`, `attach` or `http`; `name` is what `kind` leaves out, an exec origin's program path (never its arguments), an http origin's host and port, an attach origin's container |
+| `terminal_sessions` | none beyond opening the server | the machine and the run's origins of one `scheme`, `{machine: {hostname, username, pid, pwd}, sessions: [{n, name}]}`: `scheme` (required) is `exec`, `attach` or `http` (an https origin is `http` too); `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `n` is the origin's index among all the run's origins (a bare `?n` in a URL, none for a single origin); `name` is an exec origin's program path (never its arguments), an attach origin's container, or an http origin's host and port |
+| `terminal_exec` | `tunnel:exec` | not implemented yet: takes `{n, command}` (an exec origin's `n` and a command line), refuses a token without `tunnel:exec`, and answers anyone else that it is not implemented |
 
 The secret opens every tool. A token opens a tool only with the scope it
-needs: without it, the call answers a tool error naming the scope, so the
+needs, if it needs one: without it, the call answers a tool error naming the scope, so the
 client can ask the provider for it. The MCP server's metadata lists
-`tunnel:attach` in `scopes_supported`. A token can carry `act` (RFC 8693
+`tunnel:exec` in `scopes_supported`, for the tools that act on a program's terminal; listing needs none. A token can carry `act` (RFC 8693
 §4.1), the client acting for the person when a provider made it by token
 exchange. Each call logs one line, with the tool, the token's `sub`, its
 `act`, and how the call ended, and never its arguments or its answer.

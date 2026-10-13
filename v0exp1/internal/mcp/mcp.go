@@ -1,11 +1,10 @@
 // Package mcp is the MCP server tunneld serves to agents: one per run, over
 // streamable HTTP on the control path, knowing every origin of the run by
 // the index the routing parameter and the stderr map use. It offers
-// terminal_sessions, the first of the terminal tools.
+// terminal_sessions and terminal_exec, the first of the terminal tools.
 //
 // The types a caller hands in are declared here and aliased by v0exp1,
-// which is the only package allowed to import this one; a spawner is
-// attach.Spawner, the one interface every origin's provider implements.
+// which is the only package allowed to import this one.
 package mcp
 
 import (
@@ -20,25 +19,14 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
-// Kind is what an origin is.
-type Kind string
-
-const (
-	KindExec   Kind = "exec"   // exec://: a program on this machine
-	KindAttach Kind = "attach" // attach://: a container
-	KindHTTP   Kind = "http"   // an address the tunnel dials
-)
-
 // Origin is what the server knows about one origin of the run.
 type Origin struct {
-	Name    string         // the origin as shown, e.g. exec:///bin/sh
-	Kind    Kind           // what it is
-	Spawner attach.Spawner // nil when the origin cannot start a process
+	Name   string    // the origin as shown, e.g. exec:///bin/sh
+	Scheme v1.Scheme // what it is: v1.ExecScheme, v1.AttachScheme or v1.HttpScheme
 }
 
 // Mcp serves one run's origins to agents over streamable HTTP, named by the
@@ -78,10 +66,16 @@ func New(opts ...Option) *McpImpl {
 	sdk.AddTool(m.server, &sdk.Tool{
 		Name:        "terminal_sessions",
 		Title:       "Terminal sessions",
-		Description: "The machine the run is on (its hostname, the user it runs as, its process id and working directory) and the run's origins, each with its n, its kind and its name: exec is a program in a terminal, named by its path, attach a container, named by the container, http an address, named by host and port. A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a terminal tool should act on.",
+		Description: "The machine the run is on (its hostname, the user it runs as, its process id and working directory) and the run's origins of one scheme, each with its n and its name. scheme is exec (a program in a terminal, named by its path), attach (a container, named by the container) or http (an address, named by host and port). A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a tool should act on.",
 		// Answered from the run itself: the same each time, reaching nothing.
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 	}, m.terminalSessions)
+	sdk.AddTool(m.server, &sdk.Tool{
+		Name:        "terminal_exec",
+		Title:       "Run a command in a terminal",
+		Description: "Runs command in the terminal of the exec origin n (from terminal_sessions), as the person typing it would. Needs the tunnel:exec scope. Not implemented yet: it answers that it is not, once the caller may use it.",
+		Annotations: &sdk.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(false)},
+	}, m.terminalExec)
 	m.handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return m.server }, &sdk.StreamableHTTPOptions{
 		Stateless:                    true,
 		DisableLocalhostProtection:   true,
@@ -111,11 +105,16 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Session is one origin as terminal_sessions answers it.
+// Session is one origin of the scheme asked for, as terminal_sessions
+// answers it.
 type Session struct {
-	N    int    `json:"n" jsonschema:"the origin's index, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
-	Kind Kind   `json:"kind" jsonschema:"what the origin is: exec, attach or http"`
-	Name string `json:"name" jsonschema:"what kind leaves out: an exec origin's program path (never its arguments), an http origin's host and port, an attach origin's container"`
+	N    int    `json:"n" jsonschema:"the origin's index among all the run's origins, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
+	Name string `json:"name" jsonschema:"an exec origin's program path (never its arguments), an attach origin's container, an http origin's host and port"`
+}
+
+// SessionsIn is what terminal_sessions takes.
+type SessionsIn struct {
+	Scheme v1.Scheme `json:"scheme" jsonschema:"which origins: exec, attach or http"`
 }
 
 // Machine is the run's own process, as its .env holds it (HOSTNAME,
@@ -133,18 +132,26 @@ type Sessions struct {
 	Sessions []Session `json:"sessions"`
 }
 
-// attachScope is what a provider token needs for the read-only terminal
-// tools.
-const attachScope = "tunnel:attach"
-
-func (m *McpImpl) terminalSessions(ctx context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, Sessions, error) {
+func (m *McpImpl) terminalSessions(ctx context.Context, _ *sdk.CallToolRequest, in SessionsIn) (*sdk.CallToolResult, Sessions, error) {
 	start := time.Now()
-	if refusal := m.refused(ctx, "terminal_sessions", attachScope, start); refusal != nil {
-		return refusal, Sessions{}, nil
+	switch in.Scheme {
+	case v1.ExecScheme, v1.AttachScheme, v1.HttpScheme:
+	default:
+		m.logged(ctx, "terminal_sessions", "refused", start)
+		return &sdk.CallToolResult{
+			IsError: true,
+			Content: []sdk.Content{&sdk.TextContent{Text: "scheme must be exec, attach or http."}},
+		}, Sessions{}, nil
 	}
-	out := Sessions{Machine: m.machine(), Sessions: make([]Session, len(m.origins))}
+	// Listing needs no scope beyond what let the call in: acting on an
+	// origin is what a tool asks a scope for.
+	// Each by its index among all the origins, which is what ?n and the
+	// other tools name it by.
+	out := Sessions{Machine: m.machine(), Sessions: []Session{}}
 	for i, o := range m.origins {
-		out.Sessions[i] = Session{N: i, Kind: o.Kind, Name: nameOf(o.Name)}
+		if o.Scheme == in.Scheme {
+			out.Sessions = append(out.Sessions, Session{N: i, Name: nameOf(o.Name)})
+		}
 	}
 	m.logged(ctx, "terminal_sessions", "ok", start)
 	return nil, out, nil
@@ -173,6 +180,29 @@ func (m *McpImpl) logged(ctx context.Context, tool, ended string, start time.Tim
 	m.log.Info("mcp: call", "tool", tool, "sub", access.Sub, "actor", access.Actor, "ended", ended, "took", time.Since(start).Round(time.Millisecond))
 }
 
+// ExecIn is what terminal_exec takes.
+type ExecIn struct {
+	N       int    `json:"n" jsonschema:"the exec origin's n, as terminal_sessions gives it"`
+	Command string `json:"command" jsonschema:"the command line to run, as typed at the prompt"`
+}
+
+// execScope is what a provider token needs to act on an exec origin.
+const execScope = "tunnel:exec"
+
+// terminalExec is a stub: the scope is checked as the real tool will check
+// it, and a caller who may use it is told it is not implemented.
+func (m *McpImpl) terminalExec(ctx context.Context, _ *sdk.CallToolRequest, _ ExecIn) (*sdk.CallToolResult, any, error) {
+	start := time.Now()
+	if refusal := m.refused(ctx, "terminal_exec", execScope, start); refusal != nil {
+		return refusal, nil, nil
+	}
+	m.logged(ctx, "terminal_exec", "not implemented", start)
+	return &sdk.CallToolResult{
+		IsError: true,
+		Content: []sdk.Content{&sdk.TextContent{Text: "terminal_exec is not implemented yet."}},
+	}, nil, nil
+}
+
 // Handler answers the MCP endpoint.
 func (m *McpImpl) Handler() http.Handler { return m.handler }
 
@@ -195,7 +225,7 @@ func (m *McpImpl) machine() Machine {
 	}
 }
 
-// nameOf is an origin as named beside its kind: an exec origin's program
+// nameOf is an origin as named beside its scheme: an exec origin's program
 // path, without the arguments its query carries, which can hold a secret;
 // an http origin's host and port, and its path but for a bare "/", without
 // credentials or query; an attach origin's container. One that does not
@@ -206,9 +236,9 @@ func nameOf(origin string) string {
 		return origin
 	}
 	switch u.Scheme {
-	case string(KindExec):
+	case v1.ExecScheme:
 		return u.Path
-	case string(KindAttach):
+	case v1.AttachScheme:
 		return strings.TrimPrefix(u.Path, "/")
 	default:
 		return u.Host + strings.TrimSuffix(u.Path, "/")

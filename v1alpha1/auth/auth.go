@@ -571,7 +571,7 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		resource += v1.ControlPath + "mcp"
 		// What the MCP server's terminal tools need.
-		scopes = append(scopes, "tunnel:attach")
+		scopes = append(scopes, "tunnel:exec")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata{
