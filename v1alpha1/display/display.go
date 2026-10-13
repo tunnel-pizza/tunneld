@@ -299,20 +299,20 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 					Origins:  make([]tile, 0, origins.Len()),
 					Messages: d.messages(),
 				}
-				for i, origin := range origins.URLs() {
+				for i, origin := range origins.All() {
 					// How a tile names the origin behind it: an http origin is
 					// named by its host, because the scheme is the assumption
 					// and the host is the thing the operator typed. Anything
 					// else keeps its scheme, so a tile framing a container
 					// reads as attach://dockerd/api rather than as a bare
 					// hostname that happens to be a container name.
-					local := origin.Host
-					terminal := origin.Scheme != "http" && origin.Scheme != "https"
+					local := origin.URI.Host
+					terminal := origin.Scheme != v1.HttpScheme
 					if terminal {
 						// A served origin is the verb, the provider that
 						// answers it and the reference — and the reference is
 						// always the path, so the three join in order.
-						local = origin.Scheme + "://" + origin.Host + origin.Path
+						local = origin.URI.Scheme + "://" + origin.URI.Host + origin.URI.Path
 					}
 					data.Origins = append(data.Origins, tile{
 						Index:    i,

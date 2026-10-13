@@ -165,7 +165,7 @@ func (f *fakeTarget) Name() string { return f.name }
 // is — the frame offers r on exactly that.
 func (f *fakeTarget) End(context.Context) error { return nil }
 func (f *fakeTarget) Origin() string {
-	return cmp.Or(f.origin, v1.AttachScheme+"://"+v1.DockerProvider+"/"+f.name)
+	return cmp.Or(f.origin, string(v1.AttachScheme)+"://"+string(v1.DockerProvider)+"/"+f.name)
 }
 func (f *fakeTarget) Repeatable() bool { return f.repeat }
 func (f *fakeTarget) TTY() bool        { return f.tty }
@@ -906,7 +906,7 @@ func TestAliveSaysWhatComingBackWouldDo(t *testing.T) {
 // and the overlay covers that corner, so the name has to be said here too.
 func TestThePageNamesTheOrigin(t *testing.T) {
 	target := newFakeTarget("api", true, true)
-	target.origin = v1.ExecScheme + "://" + "/usr/bin/api"
+	target.origin = string(v1.ExecScheme) + "://" + "/usr/bin/api"
 	s := serveFake(t, target)
 
 	resp, err := http.Get(s.URL().String() + "/")
@@ -1117,17 +1117,17 @@ type stubTargets struct {
 	// attach://dockerd pair most cases here are about. provider is meaningful
 	// when empty, so it takes a flag rather than a zero value: exec:// answers
 	// the empty authority, which is this machine.
-	verb     string
-	provider string
+	verb     v1.Scheme
+	provider v1.Provider
 	local    bool
 	asked    []string
 	failOn   int
 	opened   []*stubTarget
 }
 
-func (s *stubTargets) Verb() string { return cmp.Or(s.verb, v1.AttachScheme) }
+func (s *stubTargets) Scheme() v1.Scheme { return cmp.Or(s.verb, v1.AttachScheme) }
 
-func (s *stubTargets) Provider() string {
+func (s *stubTargets) Provider() v1.Provider {
 	if s.local {
 		return ""
 	}
@@ -1140,7 +1140,7 @@ func (s *stubTargets) Open(_ context.Context, ref string, args []string, _ *slog
 	if s.failOn > 0 && len(s.asked) == s.failOn {
 		return nil, errors.New("no such container")
 	}
-	target := &stubTarget{name: ref, origin: s.Verb() + "://" + s.Provider() + "/" + ref}
+	target := &stubTarget{name: ref, origin: string(s.Scheme()) + "://" + string(s.Provider()) + "/" + ref}
 	s.opened = append(s.opened, target)
 	return target, nil
 }
@@ -1173,12 +1173,12 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 	}
 	// The http origin passes through as itself; the other two were replaced by
 	// the loopback servers standing in for them, at their own indexes.
-	if got := dialable.At(0).String(); got != "http://localhost:3000" {
+	if got := uriAt(dialable, 0).String(); got != "http://localhost:3000" {
 		t.Errorf("origin 0 = %q, want the address untouched", got)
 	}
 	for _, at := range []int{1, 2} {
-		if got := dialable.At(at).Hostname(); got != "127.0.0.1" {
-			t.Errorf("origin %d = %q, want a loopback server", at, dialable.At(at))
+		if got := uriAt(dialable, at).Hostname(); got != "127.0.0.1" {
+			t.Errorf("origin %d = %q, want a loopback server", at, uriAt(dialable, at))
 		}
 	}
 }
@@ -1240,7 +1240,7 @@ func (r *rerunTarget) letOneGo() { r.hold <- struct{}{} }
 func (r *rerunTarget) release() { r.letGo.Do(func() { close(r.hold) }) }
 
 func (r *rerunTarget) Name() string     { return "prog" }
-func (r *rerunTarget) Origin() string   { return v1.ExecScheme + "://" + "/usr/bin/prog" }
+func (r *rerunTarget) Origin() string   { return string(v1.ExecScheme) + "://" + "/usr/bin/prog" }
 func (r *rerunTarget) TTY() bool        { return true }
 func (r *rerunTarget) Stdin() bool      { return true }
 func (r *rerunTarget) Close() error     { return nil }
@@ -1566,15 +1566,15 @@ func TestBindKeepsOrder(t *testing.T) {
 	if dialable.Len() != display.Len() {
 		t.Fatalf("dialable has %d entries, want %d", dialable.Len(), display.Len())
 	}
-	if got := dialable.At(0).String(); got != "http://localhost:3000" {
+	if got := uriAt(dialable, 0).String(); got != "http://localhost:3000" {
 		t.Errorf("dialable.At(0) = %q, want the http origin unchanged", got)
 	}
-	if got := dialable.At(2).String(); got != "http://localhost:4000" {
+	if got := uriAt(dialable, 2).String(); got != "http://localhost:4000" {
 		t.Errorf("dialable.At(2) = %q, want the http origin unchanged", got)
 	}
 	for _, i := range []int{1, 3} {
-		if !strings.HasPrefix(dialable.At(i).Host, "127.0.0.1:") {
-			t.Errorf("dialable[%d] = %q, want a loopback origin", i, dialable.At(i))
+		if !strings.HasPrefix(uriAt(dialable, i).Host, "127.0.0.1:") {
+			t.Errorf("dialable[%d] = %q, want a loopback origin", i, uriAt(dialable, i))
 		}
 	}
 	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
@@ -1651,8 +1651,8 @@ func TestBindWithoutContainers(t *testing.T) {
 	if len(targets.asked) != 0 {
 		t.Errorf("opened %q, want nothing", targets.asked)
 	}
-	for i, u := range dialable.URLs() {
-		if u != display.At(i) {
+	for i, u := range urisOf(dialable) {
+		if *u != display.At(i).URI {
 			t.Errorf("dialable[%d] = %q, want the original origin", i, u)
 		}
 	}
@@ -1797,4 +1797,20 @@ func TestRestartIsNothingForAContainer(t *testing.T) {
 		t.Error("restart ended a container's run")
 	default:
 	}
+}
+
+// uriAt is origin i's URI, as a pointer: what URL methods are called on.
+func uriAt(origins v1.Origins, i int) *url.URL {
+	u := origins.At(i).URI
+	return &u
+}
+
+// urisOf is every origin's URI, in order.
+func urisOf(origins v1.Origins) []*url.URL {
+	all := origins.All()
+	out := make([]*url.URL, len(all))
+	for i := range all {
+		out[i] = &all[i].URI
+	}
+	return out
 }

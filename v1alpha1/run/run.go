@@ -395,11 +395,11 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	if r.screen == nil {
 		if view != "" {
 			fmt.Fprintf(stdout, "%s\n", view)
-			for _, origin := range origins.URLs() {
+			for _, origin := range origins.All() {
 				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 			}
 		} else {
-			for i, origin := range origins.URLs() {
+			for i, origin := range origins.All() {
 				fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
 				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
 			}
@@ -414,7 +414,8 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// TODO(#209): show it to the operator beneath the map, from the builder,
 	// once there is one place that prints the run's human lines.
 	for _, i := range r.router.Unanswered(ctx, origins) {
-		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).Redacted())
+		uri := origins.At(i).URI
+		log.Warn("nothing is listening on an origin yet", "origin", uri.Redacted())
 	}
 
 	// What the provider said with the spec, learned here because Messages
@@ -714,11 +715,10 @@ func publicURL(public *url.URL, i, n int) string {
 // program; how it was started is in the cache file beside the spec, and in
 // the key that names the file. An http origin's query is part of its address
 // and stays.
-func label(u *url.URL) string {
-	if u.Scheme == v1.ExecScheme && u.RawQuery != "" {
-		bare := *u
-		bare.RawQuery = ""
-		return bare.String()
+func label(origin v1.Origin) string {
+	u := origin.URI
+	if origin.Scheme == v1.ExecScheme {
+		u.RawQuery = ""
 	}
 	return u.String()
 }
@@ -731,7 +731,8 @@ func originsHeader(origins v1.Origins) (key, value string) {
 		return v1.OriginsHeader, ""
 	}
 	shown := make([]string, 0, origins.Len())
-	for _, u := range origins.URLs() {
+	for _, origin := range origins.All() {
+		u := origin.URI
 		bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}
 		shown = append(shown, bare.String())
 	}

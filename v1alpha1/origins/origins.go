@@ -10,9 +10,11 @@ package origins
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -31,8 +33,8 @@ type Option = v1.Option[*OriginsImpl]
 type OriginsImpl struct {
 	// dir is the working directory this run's identity is scoped to, so two
 	// projects serving :3000 are two tunnels rather than one.
-	dir  string
-	urls []*url.URL
+	dir     string
+	origins []v1.Origin
 	// ws is the index of the origin that owns WebSockets, or -1 for none.
 	ws int
 }
@@ -54,9 +56,39 @@ func New(opts ...Option) *OriginsImpl {
 // WithURL adds origins, in order, appending across calls — so a list can be
 // assembled from more than one source without the caller joining them first.
 // A repeat costs nothing: Key deduplicates, and the run exposes what it was
-// given.
-func WithURL(url ...*url.URL) Option {
-	return func(o *OriginsImpl) { o.urls = append(o.urls, url...) }
+// given. Each is worked out into a v1.Origin here, once.
+func WithURL(urls ...*url.URL) Option {
+	return func(o *OriginsImpl) {
+		for _, u := range urls {
+			o.origins = append(o.origins, originOf(len(o.origins), u))
+		}
+	}
+}
+
+// originOf is u as the origin at index: what it counts as, who it is asked
+// of and what for.
+//
+// The reference is the path, and the authority decides how much of it: with
+// a provider named the leading separator belongs to the URL and not to the
+// reference (attach://dockerd/api is the container api), and without one the
+// empty authority is this machine, so the path is a filesystem path and keeps
+// every byte (exec:///usr/bin/top). An address's reference is its host and
+// port, with its path but for a bare "/".
+func originOf(index int, u *url.URL) v1.Origin {
+	o := v1.Origin{Index: index, URI: *u, Scheme: v1.HttpScheme}
+	switch scheme := v1.Scheme(u.Scheme); scheme {
+	case v1.ExecScheme, v1.AttachScheme:
+		o.Scheme = scheme
+		o.Provider = v1.Provider(u.Host)
+		o.Ref = u.Path
+		if u.Host != "" {
+			o.Ref = strings.TrimPrefix(o.Ref, "/")
+		}
+		o.Args = u.Query()[v1.ArgKey]
+	default:
+		o.Ref = u.Host + strings.TrimSuffix(u.Path, "/")
+	}
+	return o
 }
 
 // WithWebSocket names the origin at index i as the one that owns WebSockets:
@@ -75,16 +107,54 @@ func WithDir(dir string) Option {
 }
 
 // Len implements v1.Origins.
-func (o *OriginsImpl) Len() int { return len(o.urls) }
+func (o *OriginsImpl) Len() int { return len(o.origins) }
 
-// At implements v1.Origins. The caller has already bounded i by Len, so an
-// index outside it panics the way a slice does.
-func (o *OriginsImpl) At(i int) *url.URL { return o.urls[i] }
+// At implements v1.Origins, as a copy. The caller has already bounded i by
+// Len, so an index outside it panics the way a slice does.
+func (o *OriginsImpl) At(i int) v1.Origin { return clone(o.origins[i]) }
 
-// URLs implements v1.Origins, as a copy: Key sorts, and a caller that sorted
-// what it was handed would reorder the run's routing parameters as a side
-// effect of asking what they are.
-func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
+// All implements v1.Origins, as a copy: Key sorts, and a caller that sorted
+// or changed what it was handed would change the run's routing as a side
+// effect of asking what it is.
+func (o *OriginsImpl) All() []v1.Origin {
+	out := make([]v1.Origin, len(o.origins))
+	for i, origin := range o.origins {
+		out[i] = clone(origin)
+	}
+	return out
+}
+
+// From implements v1.Origins.
+func (o *OriginsImpl) From(raw string) (v1.Origin, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return v1.Origin{}, fmt.Errorf("%w: %q is not an address on the tunnel", v1.ErrInvalidOrigin, raw)
+	}
+	// The router's rule: a segment Atoi accepts is a bare numeric parameter;
+	// a valued one ("1=x") carries '=' and is the application's own.
+	index := 0
+	for seg := range strings.SplitSeq(u.RawQuery, "&") {
+		if n, err := strconv.Atoi(seg); err == nil {
+			index = n
+			break
+		}
+	}
+	if index < 0 || index >= len(o.origins) {
+		return v1.Origin{}, fmt.Errorf("%w: %q names origin %d, and there are %d", v1.ErrInvalidOrigin, raw, index, len(o.origins))
+	}
+	return clone(o.origins[index]), nil
+}
+
+// clone is origin with nothing shared: its Args and its URI's credentials are
+// its own.
+func clone(origin v1.Origin) v1.Origin {
+	origin.Args = slices.Clone(origin.Args)
+	if origin.URI.User != nil {
+		user := *origin.URI.User
+		origin.URI.User = &user
+	}
+	return origin
+}
 
 // WebSocket is the index of the origin that owns WebSockets — the one an
 // operator marked +ws — and false when none is marked. The marker is routing
@@ -96,7 +166,7 @@ func (o *OriginsImpl) URLs() []*url.URL { return slices.Clone(o.urls) }
 // and a method on the public interface is one every implementation outside
 // this module would have to grow.
 func (o *OriginsImpl) WebSocket() (int, bool) {
-	if o.ws < 0 || o.ws >= len(o.urls) {
+	if o.ws < 0 || o.ws >= len(o.origins) {
 		return -1, false
 	}
 	return o.ws, true
@@ -120,9 +190,9 @@ func (o *OriginsImpl) WebSocket() (int, bool) {
 // what it opened when run apart (#182). The arguments ride the origin as a
 // query, in order, so the whole URL is the whole invocation.
 func (o *OriginsImpl) Key() string {
-	parts := make([]string, 0, len(o.urls))
-	for _, u := range o.urls {
-		parts = append(parts, u.String())
+	parts := make([]string, 0, len(o.origins))
+	for _, origin := range o.origins {
+		parts = append(parts, origin.URI.String())
 	}
 	slices.Sort(parts)
 	parts = slices.Compact(parts)

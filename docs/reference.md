@@ -276,8 +276,8 @@ It offers these tools so far:
 
 | Tool | A token needs | Answers |
 |---|---|---|
-| `terminal_sessions` | none beyond opening the server | the machine and the run's origins of one `scheme`, `{machine: {hostname, username, pid, pwd}, sessions: [{n, name}]}`: `scheme` (required) is `exec`, `attach` or `http` (an https origin is `http` too); `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `n` is the origin's index among all the run's origins (a bare `?n` in a URL, none for a single origin); `name` is an exec origin's program path (never its arguments), an attach origin's container, or an http origin's host and port |
-| `terminal_exec` | `tunnel:exec` | not implemented yet: takes `{n, command}` (an exec origin's `n` and a command line), refuses a token without `tunnel:exec`, and answers anyone else that it is not implemented |
+| `terminal_sessions` | none beyond opening the server | the machine and the run's origins of one `scheme`, `{machine: {hostname, username, pid, pwd}, sessions: [{index, scheme, provider, ref}]}`: `scheme` (required) is `exec`, `attach` or `http` (an https origin is `http` too); `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `index` is the origin's place among all the run's origins (a bare `?n` in a URL, none for a single origin); `provider` is `dockerd` for a container and left out for this machine; `ref` is an exec origin's program path, an attach origin's container, or an http origin's host and port. Never an origin's arguments or its URI |
+| `terminal_exec` | `tunnel:exec` | not implemented yet: takes `{url, command}`, `url` being the terminal's address on the tunnel (`https://<host>/?n`, none needed for a single origin) and `command` a command line; refuses a token without `tunnel:exec`, then a `url` that names no origin or an origin that is not a terminal, and answers anyone else that it is not implemented |
 
 The secret opens every tool. A token opens a tool only with the scope it
 needs, if it needs one: without it, the call answers a tool error naming the scope, so the

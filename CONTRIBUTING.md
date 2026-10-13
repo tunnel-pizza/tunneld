@@ -26,7 +26,8 @@ Deep-link by filename; line numbers will drift.
 | Local-program provider, `Resolve`, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
-| The MCP server served to agents on the control path, toolless while it is redesigned | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
+| The MCP server served to agents on the control path | [`v0exp1/internal/mcp/`](./v0exp1/internal/mcp) |
+| What every MCP tool shares, and one package per tool | [`v0exp1/internal/mcp/tool/`](./v0exp1/internal/mcp/tool), [`v0exp1/internal/mcp/tools/`](./v0exp1/internal/mcp/tools) |
 | Ring of tunneld's own log lines (`logs.Log`)   | [`v1alpha1/logs/`](./v1alpha1/logs)                             |
 | Messages of the day: parsing, and rendering for the frame and the panel (`Motd`) | [`v1alpha1/motd/`](./v1alpha1/motd) |
 | Password protection: the challenge, PBKDF2 checks, the cookie, the login page (`Auth`) | [`v1alpha1/auth/`](./v1alpha1/auth) |
@@ -445,7 +446,7 @@ the path is what it does it to. `attach://dockerd/api` and a future
 asked of different places. The empty authority is this machine, which only
 `exec://` has.
 
-**One provider, one pair.** `Targets.Verb()` and `Targets.Provider()` are the
+**One provider, one pair.** `Targets.Scheme()` and `Targets.Provider()` are the
 whole of the dispatch: `WithTargets` keys providers by the pair each one says
 it answers (`answers()` builds that key, and both sides call it, so a provider
 cannot be registered under a key no origin can produce), and `Bind` looks the

@@ -309,7 +309,7 @@ func TestAttachPassesTheArguments(t *testing.T) {
 
 	// The origin the frame shows names the program and not how it was
 	// started: the query is the carrier, and a person is shown the path.
-	if got, want := target.Origin(), v1.ExecScheme+"://"+path; got != want {
+	if got, want := target.Origin(), string(v1.ExecScheme)+"://"+path; got != want {
 		t.Errorf("Origin() = %q, want %q", got, want)
 	}
 }

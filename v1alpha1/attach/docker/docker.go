@@ -44,12 +44,12 @@ func New(opts ...Option) *TargetsImpl {
 	return v1.Apply(&TargetsImpl{}, opts...)
 }
 
-// Verb is v1.AttachScheme and Provider is v1.DockerProvider: this provider
+// Scheme is v1.AttachScheme and Provider is v1.DockerProvider: this provider
 // answers attach://dockerd/ origins and no others, which is the whole of how
 // the binder picks it. A container has one way in today; exec://dockerd/ is
 // the same daemon asked for a different thing, and nothing answers it yet.
-func (*TargetsImpl) Verb() string     { return v1.AttachScheme }
-func (*TargetsImpl) Provider() string { return v1.DockerProvider }
+func (*TargetsImpl) Scheme() v1.Scheme     { return v1.AttachScheme }
+func (*TargetsImpl) Provider() v1.Provider { return v1.DockerProvider }
 
 // Open resolves ref — a container name, an id, or a Compose service — against
 // the daemon named by the environment ($DOCKER_HOST and friends) and inspects
@@ -307,7 +307,7 @@ func (a *TargetImpl) Name() string { return a.ref }
 // Origin is this container's origin as it was typed: the verb, this daemon,
 // and the reference the operator gave.
 func (a *TargetImpl) Origin() string {
-	return v1.AttachScheme + "://" + v1.DockerProvider + "/" + a.ref
+	return string(v1.AttachScheme) + "://" + string(v1.DockerProvider) + "/" + a.ref
 }
 
 // TTY reports Config.Tty — whether the container was started with -t. It is

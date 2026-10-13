@@ -2,6 +2,7 @@ package origins
 
 import (
 	"net/url"
+	"reflect"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -79,18 +80,19 @@ func TestNewSeedsTheWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TestURLsCannotBeUsedToReorderTheRun pins the defensive copy. Key sorts, and
+// TestAllCannotBeUsedToReorderTheRun pins the defensive copy. Key sorts, and
 // a caller that sorted the slice it was handed would reorder the routing
 // parameters as a side effect of asking what they are.
-func TestURLsCannotBeUsedToReorderTheRun(t *testing.T) {
+func TestAllCannotBeUsedToReorderTheRun(t *testing.T) {
 	a, b := must(t, "http://localhost:3000"), must(t, "http://localhost:3001")
 	o := New(WithURL(a, b))
 
-	got := o.URLs()
+	got := o.All()
 	got[0], got[1] = got[1], got[0]
 
-	if o.At(0) != a || o.At(1) != b {
-		t.Errorf("At(0), At(1) = %v, %v, want %v, %v — URLs handed out the list itself", o.At(0), o.At(1), a, b)
+	first, second := o.At(0).URI, o.At(1).URI
+	if first != *a || second != *b {
+		t.Errorf("At(0), At(1) = %v, %v, want %v, %v — All handed out the list itself", &first, &second, a, b)
 	}
 	if o.Len() != 2 {
 		t.Errorf("Len() = %d, want 2", o.Len())
@@ -157,5 +159,124 @@ func TestWebSocket(t *testing.T) {
 	plain := New(WithDir("/work"), WithURL(a, b)).Key()
 	if marked := New(WithDir("/work"), WithURL(a, b), WithWebSocket(1)).Key(); marked != plain {
 		t.Errorf("Key() = %q marked and %q not, want one tunnel", marked, plain)
+	}
+}
+
+// TestKeyIsPinned pins Key to the values it had before origins became
+// v1.Origin: the key names a run's cache file, so a change here silently
+// starts every tunnel over on a new hostname.
+func TestKeyIsPinned(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	for _, tc := range []struct {
+		urls []string
+		want string
+	}{
+		{[]string{"http://localhost:3000"}, "bf28bd8b3e4167f2"},
+		{[]string{"exec:///bin/zsh"}, "986d9abba66a86e9"},
+		{[]string{"http://localhost:3000", "exec:///usr/bin/claude?arg=--resume&arg=b2e1"}, "4303f5452b48b7f8"},
+		{[]string{"attach://dockerd/web", "https://example.test/app"}, "5a72d67e085224bb"},
+	} {
+		var opts []Option
+		for _, raw := range tc.urls {
+			opts = append(opts, WithURL(parse(raw)))
+		}
+		if got := New(append(opts, WithDir("/srv/project"))...).Key(); got != tc.want {
+			t.Errorf("Key(%v) = %q, want %q", tc.urls, got, tc.want)
+		}
+	}
+}
+
+// TestOriginsAreParsedOnce pins what an origin is, worked out once from the
+// URL it was settled as: its index, the URL itself, the scheme it counts as
+// (https is http), its provider, its reference and an exec origin's
+// arguments. All is a copy: changing it changes nothing in the run.
+func TestOriginsAreParsedOnce(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	raws := []string{
+		"http://localhost:3000",
+		"exec:///usr/bin/claude?arg=--resume&arg=b2e1",
+		"attach://dockerd/web",
+		"https://example.test/app",
+		"exec://dockerd/api",
+	}
+	var opts []Option
+	for _, raw := range raws {
+		opts = append(opts, WithURL(parse(raw)))
+	}
+	o := New(opts...)
+	want := []v1.Origin{
+		{Index: 0, URI: *parse(raws[0]), Scheme: v1.HttpScheme, Ref: "localhost:3000"},
+		{Index: 1, URI: *parse(raws[1]), Scheme: v1.ExecScheme, Ref: "/usr/bin/claude", Args: []string{"--resume", "b2e1"}},
+		{Index: 2, URI: *parse(raws[2]), Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"},
+		{Index: 3, URI: *parse(raws[3]), Scheme: v1.HttpScheme, Ref: "example.test/app"},
+		{Index: 4, URI: *parse(raws[4]), Scheme: v1.ExecScheme, Provider: v1.DockerProvider, Ref: "api"},
+	}
+	got := o.All()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("All() =\n%+v\nwant\n%+v", got, want)
+	}
+	for i := range want {
+		if !reflect.DeepEqual(o.At(i), want[i]) {
+			t.Errorf("At(%d) = %+v, want %+v", i, o.At(i), want[i])
+		}
+	}
+	got[1].Args[0] = "changed"
+	got[0].URI.Host = "changed"
+	if again := o.All(); again[1].Args[0] != "--resume" || again[0].URI.Host != "localhost:3000" {
+		t.Errorf("All() handed out the run's own origins: %+v", again)
+	}
+}
+
+// TestFrom pins From: an address on the tunnel names an origin the way the
+// router routes it, by the first bare numeric parameter, none meaning the
+// first; anything that names no origin is an error.
+func TestFrom(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	two := New(WithURL(parse("http://localhost:3000"), parse("exec:///bin/zsh")))
+	one := New(WithURL(parse("exec:///bin/zsh")))
+	for _, tc := range []struct {
+		name   string
+		of     *OriginsImpl
+		url    string
+		index  int
+		failed bool
+	}{
+		{"no parameter is the first", two, "https://0tabc.tunneled.pizza/", 0, false},
+		{"a bare index", two, "https://0tabc.tunneled.pizza/?1", 1, false},
+		{"the first bare index wins", two, "https://0tabc.tunneled.pizza/app?x=1&1&0", 1, false},
+		{"a valued parameter is not an index", two, "https://0tabc.tunneled.pizza/?1=x", 0, false},
+		{"a single origin needs none", one, "https://0tabc.tunneled.pizza", 0, false},
+		{"past the list", two, "https://0tabc.tunneled.pizza/?2", 0, true},
+		{"negative", two, "https://0tabc.tunneled.pizza/?-1", 0, true},
+		{"not a URL", two, "https://%zz", 0, true},
+		{"not an address", two, "exec:///bin/zsh", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.of.From(tc.url)
+			if (err != nil) != tc.failed {
+				t.Fatalf("From(%q) = %+v, %v; want failed=%v", tc.url, got, err, tc.failed)
+			}
+			if !tc.failed && !reflect.DeepEqual(got, tc.of.At(tc.index)) {
+				t.Errorf("From(%q) = %+v, want origin %d", tc.url, got, tc.index)
+			}
+		})
 	}
 }

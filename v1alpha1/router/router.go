@@ -382,10 +382,11 @@ func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
 // request would reach an app that does with a visit nobody made. All at once,
 // so a report waits on one slow dial at most.
 func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
-	urls := origins.URLs()
-	down := make([]bool, len(urls))
+	all := origins.All()
+	down := make([]bool, len(all))
 	var wg sync.WaitGroup
-	for i, u := range urls {
+	for i, origin := range all {
+		u := origin.URI
 		port := u.Port()
 		switch {
 		case u.Scheme != "http" && u.Scheme != "https":
@@ -454,7 +455,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	// The visitor side: the origins, the panel in front of them, and auth in
 	// front of both. The control path sits beside it rather than under it:
 	// it has its own guard (authorize), and the panel answers nothing there.
-	var site http.Handler = redirect(dialable.Len(), proxy(dialable.URLs(), ws, log))
+	var site http.Handler = redirect(dialable.Len(), proxy(urlsOf(dialable), ws, log))
 	if front != nil {
 		site = front(site)
 	}
@@ -846,6 +847,17 @@ func (r *RouterImpl) Cancel() {
 	for _, stop := range stops {
 		stop()
 	}
+}
+
+// urlsOf is each origin's URI, in order: what the reverse proxy and its
+// transport dial.
+func urlsOf(origins v1.Origins) []*url.URL {
+	all := origins.All()
+	out := make([]*url.URL, len(all))
+	for i := range all {
+		out[i] = &all[i].URI
+	}
+	return out
 }
 
 // proxy relays each request to one of origins, relaying the response verbatim

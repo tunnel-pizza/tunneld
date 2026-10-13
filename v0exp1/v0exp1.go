@@ -18,6 +18,7 @@ import (
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp"
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 )
 
@@ -55,7 +56,7 @@ type Mcp = mcp.Mcp
 type McpOption = mcp.Option
 
 // McpWithOrigins sets the run's origins, index n being origin n.
-func McpWithOrigins(origins []McpOrigin) McpOption { return mcp.WithOrigins(origins) }
+func McpWithOrigins(origins v1.Origins) McpOption { return mcp.WithOrigins(origins) }
 
 // McpWithCache sets the run's cache, which terminal_sessions reads the
 // machine from: the lines the run's .env holds.
@@ -63,10 +64,6 @@ func McpWithCache(c cache.Cache) McpOption { return mcp.WithCache(c) }
 
 // McpWithLog sets where the server logs. Nil keeps the one it has.
 func McpWithLog(log *slog.Logger) McpOption { return mcp.WithLog(log) }
-
-// McpOrigin is what the server is told about one origin: how it is shown,
-// and what it is.
-type McpOrigin = mcp.Origin
 
 // ErrBuiltinNoTerminal is Builtin.Origin's answer on a platform with no
 // pseudo-terminals.

@@ -165,7 +165,7 @@ type Noticer interface {
 // here: attach/docker and attach/shell import this package for the contract,
 // so naming either of them from here is an import cycle.
 type Targets interface {
-	// Verb is the scheme this provider answers — what tunneld does to the
+	// Scheme is the scheme this provider answers — what tunneld does to the
 	// origin — and Provider is the authority beside it, which is where it does
 	// it. Empty is this machine, which only exec:// has.
 	//
@@ -174,8 +174,8 @@ type Targets interface {
 	// and a future exec://dockerd are the same daemon asked for different
 	// things, and exec:// and exec://dockerd are the same thing asked of
 	// different places.
-	Verb() string
-	Provider() string
+	Scheme() v1.Scheme
+	Provider() v1.Provider
 	//
 	// args are the program's arguments, for a provider that runs one; a
 	// provider that attaches to something already running ignores them. They
@@ -187,7 +187,9 @@ type Targets interface {
 // by: the verb and the authority, spelled the way an origin spells them. The
 // one function both sides call, so a provider cannot be registered under a key
 // no origin can produce.
-func answers(verb, provider string) string { return verb + "://" + provider }
+func answers(verb v1.Scheme, provider v1.Provider) string {
+	return string(verb) + "://" + string(provider)
+}
 
 // CopyOutput copies a target's output into the ends ServeAttach handed it. It
 // is the single place the wire format between a provider and this package is
@@ -275,7 +277,7 @@ func WithTargets(targets ...Targets) Option {
 			b.targets = make(map[string]Targets, len(targets))
 		}
 		for _, t := range targets {
-			b.targets[answers(t.Verb(), t.Provider())] = t
+			b.targets[answers(t.Scheme(), t.Provider())] = t
 		}
 	}
 }
@@ -336,36 +338,26 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	dialable := make([]*url.URL, 0, shown.Len())
 	servers := bound{}
 	asked := newAsk()
-	for at, origin := range shown.URLs() {
+	for _, origin := range shown.All() {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
 		// judgement. A +ws marker never reaches here: the parser takes it off
 		// the scheme and keeps it as an index beside the list.
-		provider, served := b.targets[answers(origin.Scheme, origin.Host)]
+		provider, served := b.targets[answers(v1.Scheme(origin.URI.Scheme), v1.Provider(origin.URI.Host))]
 		if !served {
-			if origin.Scheme != "http" && origin.Scheme != "https" {
+			if origin.URI.Scheme != "http" && origin.URI.Scheme != "https" {
 				_ = servers.Close()
 				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
-					origin.Scheme, origin.Host, strings.Join(b.answered(), ", "))
+					origin.URI.Scheme, origin.URI.Host, strings.Join(b.answered(), ", "))
 			}
-			dialable = append(dialable, origin)
+			dialable = append(dialable, &origin.URI)
 			continue
 		}
 
-		// The reference is the path, and the authority decides how much of it.
-		// With a provider named the leading separator belongs to the URL and
-		// not to the reference — attach://dockerd/api is the container api —
-		// and without one the empty authority is this machine, so the path is
-		// a filesystem path and keeps every byte: exec:///usr/bin/top.
-		ref := origin.Path
-		if origin.Host != "" {
-			ref = strings.TrimPrefix(ref, "/")
-		}
-		// The words after a program on the command line, carried here as the
-		// origin's query so they arrive the same way from argv, the
-		// environment and a seed.
-		target, err := provider.Open(ctx, ref, origin.Query()[v1.ArgKey], log)
+		// The reference and the words after a program on the command line,
+		// as the origin carries them.
+		target, err := provider.Open(ctx, origin.Ref, origin.Args, log)
 		if err != nil {
 			_ = servers.Close()
 			return nil, nil, err
@@ -376,9 +368,9 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		servers.origins = append(servers.origins, boundOrigin{at: at, srv: server})
+		servers.origins = append(servers.origins, boundOrigin{at: origin.Index, srv: server})
 		dialable = append(dialable, server.URL())
-		log.Info("serving a reference as an origin", "reference", origin.Host+origin.Path, "scheme", origin.Scheme, "origin", server.URL())
+		log.Info("serving a reference as an origin", "reference", origin.URI.Host+origin.URI.Path, "scheme", origin.URI.Scheme, "origin", server.URL())
 	}
 	// A closer that can be shown on a console says so by carrying the method,
 	// and only when it can: one origin in the whole run, and that one served.

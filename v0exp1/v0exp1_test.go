@@ -2,8 +2,9 @@ package v0exp1
 
 import (
 	"errors"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"log/slog"
+	"net/url"
 	"testing"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -30,8 +31,7 @@ func TestBuiltin(t *testing.T) {
 // the options it is handed, a handler to mount, and a closer that can be
 // closed twice — once by the run's defer, once by whatever else ends it.
 func TestMcp(t *testing.T) {
-	origins := []McpOrigin{{Name: "http://localhost:3000", Scheme: v1.HttpScheme}}
-	m := Experimental().Mcp(McpWithOrigins(origins), McpWithLog(slog.New(slog.DiscardHandler)))
+	m := Experimental().Mcp(McpWithOrigins(origins.New(origins.WithURL(&url.URL{Scheme: "http", Host: "localhost:3000"}))), McpWithLog(slog.New(slog.DiscardHandler)))
 	if m == nil {
 		t.Skip("the MCP server is turned off")
 	}

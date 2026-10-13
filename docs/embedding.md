@@ -145,10 +145,24 @@ type Builder interface {
 // these origins are, which is what the spec cache files it under.
 type Origins interface {
     Len() int
-    At(i int) *url.URL
-    URLs() []*url.URL
+    At(i int) Origin
+    All() []Origin
+    From(url string) (Origin, error) // https://<host>/?n, routed as a visit is
     Key() string
 }
+
+// Origin is one origin, worked out once from the URL it was settled as.
+type Origin struct {
+    Index    int      // its ?n
+    URI      url.URL  // exec:///bin/zsh?arg=-l, attach://dockerd/web, http://localhost:3000
+    Scheme   Scheme   // ExecScheme, AttachScheme, or HttpScheme (http and https)
+    Provider Provider // "" for this machine and for an address; DockerProvider
+    Ref      string   // /bin/zsh, web, localhost:3000
+    Args     []string // an exec origin's arguments
+}
+
+type Scheme string   // ExecScheme, AttachScheme, HttpScheme
+type Provider string // DockerProvider
 
 // match with errors.Is
 var ErrInvalidEnv      = errors.New("invalid environment value")

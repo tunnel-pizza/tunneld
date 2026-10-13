@@ -62,7 +62,7 @@ func Origin() (string, error) {
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
-	u := url.URL{Scheme: v1.ExecScheme, Path: exe, RawQuery: url.Values{v1.ArgKey: {Arg}}.Encode()}
+	u := url.URL{Scheme: string(v1.ExecScheme), Path: exe, RawQuery: url.Values{v1.ArgKey: {Arg}}.Encode()}
 	return u.String(), nil
 }
 

@@ -101,7 +101,7 @@ func TestRouteALoneOriginIsRouted(t *testing.T) {
 		t.Fatalf("Route: %v", err)
 	}
 	t.Cleanup(r.Cancel)
-	if got.Host == list.At(0).Host {
+	if got.Host == uriAt(list, 0).Host {
 		t.Fatalf("Route() = %v, the origin itself; want the router in front of it", got)
 	}
 	base := strings.TrimSuffix(got.String(), "/")
@@ -723,7 +723,7 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 	down := echo(t, "B")
 	list := listOf(t, echo(t, "A"), down)
 	down.Close()
-	host := list.At(1).Host
+	host := uriAt(list, 1).Host
 	// A loopback origin is named by its port, the way a person starting a
 	// server on it says it.
 	_, port, _ := net.SplitHostPort(host)
@@ -892,7 +892,7 @@ func TestUnanswered(t *testing.T) {
 	gone.Close()
 	alsoGone.Close()
 	served := &url.URL{Scheme: "attach", Host: "dockerd", Path: "/api"}
-	list = origins.New(origins.WithURL(append(list.URLs(), served)...))
+	list = origins.New(origins.WithURL(append(urisOf(list), served)...))
 
 	if got := New().Unanswered(t.Context(), list); !slices.Equal(got, []int{1, 3}) {
 		t.Errorf("Unanswered() = %v, want [1 3]: the two with nothing listening", got)
@@ -1814,4 +1814,20 @@ func TestResourceMetadataFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// uriAt is origin i's URI, as a pointer: what URL methods are called on.
+func uriAt(origins v1.Origins, i int) *url.URL {
+	u := origins.At(i).URI
+	return &u
+}
+
+// urisOf is every origin's URI, in order.
+func urisOf(origins v1.Origins) []*url.URL {
+	all := origins.All()
+	out := make([]*url.URL, len(all))
+	for i := range all {
+		out[i] = &all[i].URI
+	}
+	return out
 }
