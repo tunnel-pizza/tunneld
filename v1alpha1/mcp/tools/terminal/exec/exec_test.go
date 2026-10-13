@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool/tooltest"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
 )
 
 // TestTerminalExecListing pins how terminal_exec is listed: it acts, so it

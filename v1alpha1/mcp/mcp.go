@@ -2,20 +2,18 @@
 // streamable HTTP on the control path, knowing every origin of the run by
 // the index the routing parameter and the stderr map use. It offers
 // terminal_sessions and terminal_exec, the first of the terminal tools.
-//
-// The types a caller hands in are declared here and aliased by v0exp1,
-// which is the only package allowed to import this one.
 package mcp
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
 
 // Mcp serves one run's origins to agents over streamable HTTP, named by the
@@ -36,9 +34,11 @@ type McpImpl struct {
 	origins v1.Origins
 	log     v1.Logger
 	cache   cache.Cache
+	ctx     context.Context
 
 	server  *sdk.Server
 	handler http.Handler
+	stop    func() bool
 }
 
 // New returns a McpImpl configured by opts: no origins, and a log that
@@ -61,6 +61,9 @@ func New(opts ...Option) *McpImpl {
 		DisableLocalhostProtection:   true,
 		PropagateRequestCancellation: true,
 	})
+	if m.ctx != nil {
+		m.stop = context.AfterFunc(m.ctx, func() { _ = m.Close() })
+	}
 	return m
 }
 
@@ -74,6 +77,12 @@ func WithOrigins(origins v1.Origins) Option {
 // machine from: the lines the run's .env holds.
 func WithCache(c cache.Cache) Option {
 	return func(m *McpImpl) { m.cache = c }
+}
+
+// WithContext closes the server once ctx is done, so the caller has no
+// Close to defer.
+func WithContext(ctx context.Context) Option {
+	return func(m *McpImpl) { m.ctx = ctx }
 }
 
 // WithLog sets where the server logs. Nil keeps the one it has.

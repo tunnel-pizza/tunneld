@@ -287,8 +287,8 @@ client can ask the provider for it. The MCP server's metadata lists
 exchange. Each call logs one line, with the tool, the token's `sub`, its
 `act`, and how the call ended, and never its arguments or its answer.
 
-The server is an experiment, `v0exp1.Experimental().Mcp()` to a program
-embedding tunneld, and may change in any release.
+The server is `v1alpha1/mcp`, mounted on every run, and like the rest of
+`v1alpha1` may change in any release.
 
 ## Programs
 

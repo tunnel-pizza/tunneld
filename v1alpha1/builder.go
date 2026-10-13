@@ -28,6 +28,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
@@ -551,16 +552,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	b.runCache = spec
 
-	// The agent server, while the experiment is on: one over every shown
-	// origin, so a tool that names origin n reaches what ?n reaches, reading
-	// the machine from the run's cache. Mounted on the control path below,
-	// behind the tunnel secret, and closed before the bound origins are.
-	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(origins), v0exp1.McpWithCache(spec), v0exp1.McpWithLog(log)); m != nil {
-		defer m.Close()
-		agents = append(agents, router.WithMcp(m))
-	}
-
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
 	// The banner goes out before the tunnel is asked for a URL, not after it
@@ -635,7 +626,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// over and its tunnel has drained. It is stood up here, immediately before
 	// the tunnel it is handed to, so nothing between the two can return and
 	// leave it serving with no tunnel to end it.
-	local, err := b.router.Route(ctx, append([]router.Option{
+	local, err := b.router.Route(ctx,
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
 		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
@@ -647,12 +638,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithAuth(b.auth),
 		router.WithAllowOrigin(router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider))),
 		router.WithLog(log),
+		router.WithMcp(mcp.New(
+			mcp.WithContext(ctx),
+			mcp.WithOrigins(origins),
+			mcp.WithCache(spec),
+			mcp.WithLog(log),
+		)),
 		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
 		// request at warn; showing it belongs here in the builder, at a point
 		// where a line cannot land in the middle of a frame, not on the
 		// request's goroutine deep in the router.
-	}, agents...)...)
+	)
 	if err != nil {
 		return err
 	}

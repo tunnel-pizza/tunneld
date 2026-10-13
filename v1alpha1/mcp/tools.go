@@ -3,7 +3,7 @@ package mcp
 import (
 	"slices"
 
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tools/terminal"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal"
 )
 
 // tools is every tool the server offers: each group under tools/ hands over

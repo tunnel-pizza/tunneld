@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
 
 type in struct {

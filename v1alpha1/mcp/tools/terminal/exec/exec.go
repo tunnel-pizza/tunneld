@@ -8,8 +8,8 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
 
 // Tool is terminal_exec.
@@ -37,26 +37,19 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	if refusal := c.Refused(ctx, "terminal_exec", scope, start); refusal != nil {
 		return refusal, nil, nil
 	}
-	if text := terminal(c, in.URL); text != "" {
+	if c.Origins == nil {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed(text), nil, nil
+		return tool.Failed("This run serves no terminal."), nil, nil
+	}
+	origin, err := c.Origins.From(in.URL)
+	if err != nil {
+		c.Logged(ctx, "terminal_exec", "refused", start)
+		return tool.Failed(err.Error() + ". terminal_sessions lists the terminals."), nil, nil
+	}
+	if origin.Scheme != v1.ExecScheme {
+		c.Logged(ctx, "terminal_exec", "refused", start)
+		return tool.Failed(in.URL + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals."), nil, nil
 	}
 	c.Logged(ctx, "terminal_exec", "not implemented", start)
 	return tool.Failed("terminal_exec is not implemented yet."), nil, nil
-}
-
-// terminal is why url names none of the run's terminals, "" when it names
-// one.
-func terminal(c tool.Context, url string) string {
-	if c.Origins == nil {
-		return "This run serves no terminal."
-	}
-	origin, err := c.Origins.From(url)
-	if err != nil {
-		return err.Error() + ". terminal_sessions lists the terminals."
-	}
-	if origin.Scheme != v1.ExecScheme {
-		return url + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals."
-	}
-	return ""
 }

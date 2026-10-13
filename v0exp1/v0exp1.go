@@ -7,20 +7,12 @@
 // Experimental, which makes each use of an experiment visible at its call:
 //
 //	origin, err := v0exp1.Experimental().Builtin().Origin()
-//	server := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(origins))
 //
 // Importing this package links the built-in shell, whose init turns a process
 // started with its argument into that shell before main runs.
 package v0exp1
 
-import (
-	"log/slog"
-
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
-)
+import "github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
 
 // Experiments is every experiment, one method each. A method returning nil is
 // that experiment turned off, and every caller checks for it — so switching
@@ -29,9 +21,6 @@ type Experiments interface {
 	// Builtin is the shell built into tunneld, for a machine with none; nil
 	// when it is turned off.
 	Builtin() Builtin
-	// Mcp is the MCP server tunneld serves to agents on its control path,
-	// configured by opts; nil when it is turned off.
-	Mcp(opts ...McpOption) Mcp
 }
 
 // Builtin is the shell built into tunneld: Elvish, with u-root's commands on
@@ -46,25 +35,6 @@ type Builtin interface {
 	Run() int
 }
 
-// Mcp is mcp.Mcp: the MCP server, a handler to mount on the control path and
-// a closer for the run's end.
-type Mcp = mcp.Mcp
-
-// McpOption configures the MCP server. Prefixed, as every Mcp name here is,
-// because this package is every experiment's and Option alone would claim
-// the word for one of them.
-type McpOption = mcp.Option
-
-// McpWithOrigins sets the run's origins, index n being origin n.
-func McpWithOrigins(origins v1.Origins) McpOption { return mcp.WithOrigins(origins) }
-
-// McpWithCache sets the run's cache, which terminal_sessions reads the
-// machine from: the lines the run's .env holds.
-func McpWithCache(c cache.Cache) McpOption { return mcp.WithCache(c) }
-
-// McpWithLog sets where the server logs. Nil keeps the one it has.
-func McpWithLog(log *slog.Logger) McpOption { return mcp.WithLog(log) }
-
 // ErrBuiltinNoTerminal is Builtin.Origin's answer on a platform with no
 // pseudo-terminals.
 var ErrBuiltinNoTerminal = builtin.ErrNoTerminal
@@ -77,12 +47,6 @@ type ExperimentsImpl struct{}
 
 // Builtin is the shell built into tunneld.
 func (ExperimentsImpl) Builtin() Builtin { return BuiltinImpl{} }
-
-// Mcp is the MCP server, configured by opts.
-func (ExperimentsImpl) Mcp(opts ...McpOption) Mcp { return mcp.New(opts...) }
-
-// McpImpl is Mcp: v0exp1/internal/mcp's.
-type McpImpl = mcp.McpImpl
 
 // BuiltinImpl is Builtin, over v0exp1/internal/shell/builtin.
 type BuiltinImpl struct{}

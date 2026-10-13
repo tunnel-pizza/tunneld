@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool/tooltest"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
 )
 
 // TestTerminalSessionsListing pins how terminal_sessions is listed: its

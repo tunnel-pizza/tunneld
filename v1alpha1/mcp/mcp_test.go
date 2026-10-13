@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,8 +10,8 @@ import (
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tunnel-pizza/tunneld/v0exp1/internal/mcp/tool/tooltest"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
 )
 
 // connect stands m's server up over an in-memory transport and returns a
@@ -63,7 +64,7 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestCloseTwice pins the closer: the run's defer and whatever else ends it
+// TestCloseTwice pins the closer: the context's end and a caller's own Close
 // may both close it.
 func TestCloseTwice(t *testing.T) {
 	m := New()
@@ -71,6 +72,17 @@ func TestCloseTwice(t *testing.T) {
 		if err := m.Close(); err != nil {
 			t.Errorf("Close: %v", err)
 		}
+	}
+}
+
+// TestWithContext pins the run's context as the closer: once it is done the
+// server is closed, with nothing left for a caller to defer.
+func TestWithContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	m := New(WithContext(ctx))
+	cancel()
+	if m.stop == nil || m.stop() {
+		t.Error("the context is done and the server was not closed")
 	}
 }
 

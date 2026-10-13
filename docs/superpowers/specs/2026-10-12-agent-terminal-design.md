@@ -121,15 +121,23 @@ On main today:
 - **Input** from a viewer reaches the program through the emulator's
   `SendKey`, `SendText` and `Paste`. Size is negotiated across viewers.
 - **Viewers are anonymous.** `count()` is the only notion of who is there.
-- **`/_tunneld/mcp`** is mounted with the Go SDK (v1.8.0), stateless, with
-  no tools. It opens to the tunnel's secret, or to a tunnel.pizza access
-  token whose audience is `https://<host>/_tunneld/mcp` and whose `sub` is
-  the owner or listed in the SSO challenge. Tokens are verified offline
-  against tunnel.pizza's keys. No scope is checked.
+- **`/_tunneld/mcp`** is `v1alpha1/mcp`, the Go SDK (v1.8.0), stateless,
+  mounted on every run. It opens to the tunnel's secret, or to a
+  tunnel.pizza access token whose audience is
+  `https://<host>/_tunneld/mcp` and whose `sub` is the owner or listed in
+  the SSO challenge. Tokens are verified offline against tunnel.pizza's
+  keys.
+- **Two tools.** `terminal_sessions` lists the run's origins of one scheme
+  as `v1.Origin`s, with the machine's `HOSTNAME`, `USERNAME`, `PID` and
+  `PWD`, and needs no scope. `terminal_exec` takes `{url, command}`, checks
+  `tunnel:exec`, resolves `url` with `Origins.From`, and answers that it is
+  not implemented. The MCP server holds the run's `v1.Origins` and its
+  cache, and nothing that reaches a session.
 - **No shell integration.** OSC 133 passes through to the page unhandled.
 
 So the screen model this design needs is already there. What it adds is
-an agent viewer with an identity, a cursor-addressed output log, a way to
+a way for the MCP server to reach a session, an agent viewer with an
+identity, a cursor-addressed output log, a way to
 tell when a command finished, tools, scopes, and the relay.
 
 ## Shape
@@ -140,7 +148,8 @@ agent --MCP--> https://tunnel.pizza              (one server, one sign-in)
                  token exchange: caller's mcp token -> token for
                    aud https://<host>/_tunneld/mcp, scope tunnel:attach/exec
                  --MCP--> https://<host>/_tunneld/mcp   (tools/call relayed)
-                            tunneld: agent viewer on the shared session
+                            tunneld: Origins.From(url) -> index
+                              Bound.Terminal(index) -> the shared session
                               read:  emulator screen, output log
                               write: SendText / SendKey, as a tab does
                             tab: "claude is typing", the person's keys win
@@ -148,10 +157,44 @@ agent --MCP--> https://tunnel.pizza              (one server, one sign-in)
 
 ## tunneld
 
+### Reaching the session
+
+The MCP server reaches a session through what `Bind` already returns, not
+through the attach server's HTTP and not through the program's stdio.
+
+- **`attach.Terminal`** is a new interface in `v1alpha1/attach`, beside the
+  session it is implemented by. It is what an agent can do to one session:
+  type (`SendText`, `SendKey`, as a tab's input does), read the screen,
+  read the output log, wait. Every method takes the caller's identity, so
+  the session knows which agent acted.
+- **`Bound` gains `Terminal(index int) (Terminal, bool)`**: the session
+  serving origin `index`, or false for an origin with none (an `http`
+  origin, an index out of range). On `Bound`, not a narrower copy in
+  `mcp`, by the one-interface rule.
+- **`mcp.WithBound(bound)`** hands it to the server. The builder has
+  `bound` from `Bind` before it stands up the router, so it is one more
+  option in the `mcp.New` call inside `router.WithMcp`.
+- A tool resolves `url` with `Origins.From`, then `Terminal(origin.Index)`.
+  An origin whose scheme is not the tool's, or with no terminal, is refused
+  as `terminal_exec` refuses today.
+
+Rejected:
+
+- **The attach server's HTTP, with a handler for the MCP server.** A
+  loopback hop through the websocket and cri-streaming framing to reach
+  memory in the same process, a viewer that votes on the size, and a
+  second way past the control path's guard.
+- **Stdio on a `v1.Origin`.** `Origin` stays data. The target's stdin is
+  the session's and is replaced on every restart, and its stdout is
+  consumed by the scanner and the emulator, so a second reader races them.
+
+The handle outlives a restart: it holds the session, and the session swaps
+the run underneath it.
+
 ### The agent viewer
 
-An MCP tool call that touches a session joins it as a **headless viewer**.
-It is the same `*viewer` a tab is, but with no frame, no size vote and an
+An MCP tool call that touches a session, through its `Terminal`, makes the
+agent a **headless viewer**. It has no frame and no size vote, only an
 identity: the token's `sub` and `client_id`. A tab's viewers gain an
 identity too (the SSO `sub` when there is one), so presence becomes "who",
 not only "how many". The chrome's `viewers` field lists them, and the
@@ -177,7 +220,7 @@ cursor, whether the alternate screen is up, and the title.
 
 ### Knowing when a command finished
 
-`terminal_run` sends a line to a shell and returns its output and exit
+`terminal_exec` sends a line to a shell and returns its output and exit
 code. tunneld knows a command finished in one of three ways, best first:
 
 1. **OSC 133 (shell integration).** When the origin is a shell tunneld
@@ -198,15 +241,21 @@ is real.
 
 | Tool | Scope | Arguments | Result |
 |---|---|---|---|
-| `terminal_sessions` | `tunnel:attach` | none | `[{origin, n, command, cols, rows, viewers}]` |
-| `terminal_screen` | `tunnel:attach` | `n?` | `{rows: string[], cursor: {row, col}, alt_screen, title}` |
-| `terminal_read` | `tunnel:attach` | `n?`, `since?` | `{text, next, dropped}` |
-| `terminal_wait` | `tunnel:attach` | `n?`, `since`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, next, matched, timed_out}` |
-| `terminal_send` | `tunnel:exec` | `n?`, `text?`, `keys?` | `{next}` |
-| `terminal_run` | `tunnel:exec` | `n?`, `command`, `timeout_ms?` | `{output, exit_code?, ended_by, next, interrupted}` |
+| `terminal_sessions` | none | `scheme` | `{machine, sessions: [v1.Origin]}` |
+| `terminal_screen` | the origin's | `url` | `{rows: string[], cursor: {row, col}, alt_screen, title}` |
+| `terminal_read` | the origin's | `url`, `since?` | `{text, next, dropped}` |
+| `terminal_wait` | the origin's | `url`, `since`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, next, matched, timed_out}` |
+| `terminal_send` | the origin's | `url`, `text?`, `keys?` | `{next}` |
+| `terminal_exec` | the origin's | `url`, `command`, `timeout_ms?` | `{output, exit_code?, ended_by, next, interrupted}` |
 
-- **`n`** picks the origin, as `?n` does in a URL. It defaults to the first
-  attached origin.
+- **`url`** is the terminal's address on the tunnel, `https://<host>/` with
+  the bare `?n` index when the tunnel presents several origins, resolved by
+  `Origins.From`.
+- **Built in this order:** `terminal_send` and `terminal_screen` first
+  (#293),
+  which work on any program (bash, k9s, htop) with the agent polling. Then
+  the output log with `terminal_read` and `terminal_wait`. `terminal_exec`
+  stays a stub until a run can tell a command finished.
 - **`keys`** are names, never escape sequences: `Enter`, `Tab`, `Esc`,
   `Backspace`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`,
   `PageDown`, `F1`-`F12`, and `Ctrl-<letter>`. They go through the
@@ -222,7 +271,7 @@ is real.
 
 ### The person's keys win
 
-- While an agent's `terminal_run` or `terminal_send` is in flight, a
+- While an agent's `terminal_exec` or `terminal_send` is in flight, a
   keystroke from any tab ends the agent's call. The call returns
   `interrupted: true` with what it had.
 - For 2 seconds after a person's last keystroke, agent input is refused
@@ -235,13 +284,19 @@ is real.
 
 ### Scopes
 
-tunneld starts checking scopes on access tokens at `/_tunneld/mcp`:
+tunneld checks scopes on access tokens at `/_tunneld/mcp`, one per origin
+scheme. A tool needs the scope of the origin `url` names, to read or to
+type:
 
 | Scope | Allows |
 |---|---|
-| `tunnel:attach` | the read tools: `terminal_sessions`, `terminal_screen`, `terminal_read`, `terminal_wait` |
-| `tunnel:exec` | `terminal_send` and `terminal_run`, on the running session |
+| `tunnel:exec` | the terminal tools on an `exec:` origin, a program on the machine |
+| `tunnel:attach` | the terminal tools on a container origin |
+| `tunnel:http` | an `http` origin's site (#284) |
 | `tunnel:spawn` | defined now, refused until it ships: a process of the agent's own (the 10-05 spec's `exec`, `put_file`, `get_file` and `session_*`, and #245's isolation) |
+
+`terminal_sessions` needs none: it lists what the run serves, which
+`list_tunnels` already shows as origins.
 
 A token with none of them still opens the endpoint, as today, but every
 tool refuses with "this sign-in can't use the terminal" and the scope it
@@ -370,7 +425,9 @@ the person, and that the person sees it in the tab.
 
 ## Testing
 
-- tunneld, `attach`: an agent viewer joins and leaves with no size vote.
+- tunneld, `attach`: `Bound.Terminal` answers a session for an attached
+  origin and false for an `http` one or an index out of range, and the
+  handle keeps working across a restart. An agent viewer joins and leaves with no size vote.
   The output log hands out offsets and reports drops. OSC 133 marks end a
   run with its exit code. The sentinel ends one and never reaches a tab.
   Quiet ends one. A tab keystroke interrupts a run, and agent input within

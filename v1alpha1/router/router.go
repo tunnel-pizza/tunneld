@@ -37,10 +37,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 )
 
 // Cookie is the sticky-routing cookie an explicit top-level pick answers
@@ -172,7 +172,7 @@ type env struct {
 	mu         sync.Mutex
 	cache      cache.Cache
 	auth       auth.Auth
-	mcp        v0exp1.Mcp
+	mcp        mcp.Mcp
 	registered map[string]bool
 }
 
@@ -228,7 +228,7 @@ func WithWrap(wrap func(http.Handler) http.Handler) Option {
 // server answers is asked on every request, so applied again, it replaces
 // the server rather than registering the endpoint twice; once nil, the path
 // is a 404.
-func WithMcp(m v0exp1.Mcp) Option {
+func WithMcp(m mcp.Mcp) Option {
 	return func(r *RouterImpl) {
 		e := r.env
 		e.mu.Lock()

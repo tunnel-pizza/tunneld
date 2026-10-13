@@ -2,9 +2,6 @@ package v0exp1
 
 import (
 	"errors"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
-	"log/slog"
-	"net/url"
 	"testing"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -24,23 +21,5 @@ func TestBuiltin(t *testing.T) {
 	want, wantErr := builtin.Origin()
 	if got != want || !errors.Is(gotErr, wantErr) {
 		t.Errorf("Experimental().Builtin().Origin() = %q, %v; want %q, %v", got, gotErr, want, wantErr)
-	}
-}
-
-// TestMcp holds Experimental().Mcp() to the package it fronts: built from
-// the options it is handed, a handler to mount, and a closer that can be
-// closed twice — once by the run's defer, once by whatever else ends it.
-func TestMcp(t *testing.T) {
-	m := Experimental().Mcp(McpWithOrigins(origins.New(origins.WithURL(&url.URL{Scheme: "http", Host: "localhost:3000"}))), McpWithLog(slog.New(slog.DiscardHandler)))
-	if m == nil {
-		t.Skip("the MCP server is turned off")
-	}
-	if m.Handler() == nil {
-		t.Fatal("Handler = nil, want one to mount")
-	}
-	for range 2 {
-		if err := m.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
 	}
 }
