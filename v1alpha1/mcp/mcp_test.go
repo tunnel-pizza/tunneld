@@ -123,7 +123,7 @@ func TestServeAcceptsAForwardedHost(t *testing.T) {
 }
 
 // TestATerminalOverMcp drives a real /bin/sh through the server, as an agent
-// does: terminal_sessions finds it, terminal_send types a command and
+// does: terminal_sessions finds it, terminal_exec types a command and
 // presses Enter, terminal_wait from the offset it answered reads the reply,
 // and terminal_screen shows it.
 func TestATerminalOverMcp(t *testing.T) {
@@ -163,13 +163,13 @@ func TestATerminalOverMcp(t *testing.T) {
 		_ = json.Unmarshal(raw, &r)
 		return r
 	}
-	// terminal_send waits for the reply itself.
-	first := answer(call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
+	// terminal_exec waits for the reply itself.
+	first := answer(call("terminal_exec", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
 	if !first.Matched || !strings.Contains(first.Text, "echo $((6*7))\n42\n") || first.Cursor == "" {
-		t.Fatalf("terminal_send = %+v, want the command echoed and 42 under it, matched, and a cursor", first)
+		t.Fatalf("terminal_exec = %+v, want the command echoed and 42 under it, matched, and a cursor", first)
 	}
 	// Sent without waiting, then read on from where this caller stopped.
-	call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo second"},{"key":"Enter"}],"idle_ms":0}`)
+	call("terminal_exec", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo second"},{"key":"Enter"}],"idle_ms":0}`)
 	second := answer(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","until":"(?m)^second$"}`))
 	if !second.Matched || !strings.Contains(second.Text, "second\n") || strings.Contains(second.Text, "42") {
 		t.Fatalf("terminal_wait = %+v, want the second reply alone, matched", second)

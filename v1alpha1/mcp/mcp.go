@@ -2,7 +2,7 @@
 // streamable HTTP on the control path, knowing every origin of the run by
 // the index the routing parameter and the stderr map use. It offers
 // the terminal tools: terminal_sessions, terminal_screen, terminal_read,
-// terminal_wait, terminal_send and terminal_exec.
+// terminal_wait and terminal_exec.
 package mcp
 
 import (

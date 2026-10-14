@@ -176,7 +176,7 @@ through the attach server's HTTP and not through the program's stdio.
   option in the `mcp.New` call inside `router.WithMcp`.
 - A tool resolves `url` with `Origins.From`, then `Terminal(origin.Index)`.
   An origin whose scheme is not the tool's, or with no terminal, is refused
-  as `terminal_exec` refuses today.
+  as every terminal tool refuses it.
 
 Rejected:
 
@@ -224,7 +224,7 @@ old one would read the wrong text with nothing saying so. tunneld keeps a
   `sub` and `act`; the tunnel's secret is "the secret". Every Claude Code
   session on one machine shares that sign-in, so the sign-in's position is
   for an agent working alone.
-- **A cursor, for agents that are not.** `terminal_send`, `terminal_read` and
+- **A cursor, for agents that are not.** `terminal_exec`, `terminal_read` and
   `terminal_wait` each answer an opaque `cursor`: the run's identity and the
   log offset. `terminal_read` and `terminal_wait` take one back, optionally,
   and read from it instead of the sign-in's position. A cursor from another
@@ -232,7 +232,7 @@ old one would read the wrong text with nothing saying so. tunneld keeps a
   output was reset, never read as an offset into the wrong log. The tool
   descriptions tell an agent to pass its last `cursor` back when other
   sessions may share the terminal.
-- `terminal_send` moves the caller's position to the log's end as the
+- `terminal_exec` moves the caller's position to the log's end as the
   input goes in, so what it reads next is the reply.
 - `terminal_read` and `terminal_wait` answer from the caller's position and
   move it to where they stopped.
@@ -245,8 +245,10 @@ cursor, whether the alternate screen is up, and the title.
 
 ### Knowing when a command finished
 
-`terminal_exec` sends a line to a shell and returns its output and exit
-code. tunneld knows a command finished in one of three ways, best first:
+`terminal_exec` waits for its reply until a pattern, quiet, or a timeout.
+For a shell, request options can make it a one-off command with a
+definite end and an exit code, still one tool: tunneld knows a command
+finished in one of three ways, best first:
 
 1. **OSC 133 (shell integration).** When the origin is a shell tunneld
    recognises (bash, zsh, fish), it starts it with a small integration that
@@ -270,22 +272,23 @@ is real.
 | `terminal_screen` | the origin's | `url` | `{rows: string[], cursor: {row, col}, alt_screen, title}` |
 | `terminal_read` | the origin's | `url`, `cursor?` | `{text, cursor, dropped, truncated}` |
 | `terminal_wait` | the origin's | `url`, `cursor?`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, cursor, dropped, matched, timed_out, truncated}` |
-| `terminal_send` | the origin's | `url`, `input: [{text} or {key}]`, `until?`, `idle_ms?`, `timeout_ms?` | `{text, cursor, dropped, matched, timed_out, truncated}` |
-| `terminal_exec` | the origin's | `url`, `command`, `timeout_ms?` | `{output, exit_code?, ended_by, next, interrupted}` |
+| `terminal_exec` | the origin's | `url`, `input: [{text} or {key}]`, `until?`, `idle_ms?`, `timeout_ms?` | `{text, cursor, dropped, matched, timed_out, truncated}` |
 
 - **`url`** is the terminal's address on the tunnel, `https://<host>/` with
   the bare `?n` index when the tunnel presents several origins, resolved by
   `Origins.From`.
-- **Built in this order:** `terminal_send` and `terminal_screen` first
-  (#293),
+- **Built in this order:** typing and `terminal_screen` first (#293),
   which work on any program (bash, k9s, htop) with the agent polling. Then
-  the output log with `terminal_read` and `terminal_wait`. `terminal_exec`
-  stays a stub until a run can tell a command finished.
-- **`terminal_send` waits for the reply.** It sends `input`, then waits
+  the output log with `terminal_read` and `terminal_wait` (#294). Typing
+  is `terminal_exec`, one tool for any program: a one-off shell command
+  with an exit code is options on its request when it comes (see
+  [Knowing when a command finished](#knowing-when-a-command-finished)),
+  not a tool of its own.
+- **`terminal_exec` waits for the reply.** It sends `input`, then waits
   as `terminal_wait` does, from where the input went in, and answers what
   the program printed. `idle_ms: 0` with no `until` answers at once, with
   nothing read. So "run this and show me" is one call, and a long build is
-  `terminal_send` then `terminal_wait` until done.
+  `terminal_exec` then `terminal_wait` until done.
 - **`input`** is steps sent in order, each exactly one of `text` or `key`,
   so a key can come before text (`Esc`, then `:wq`). A step that cannot be
   sent, anywhere in the list, sends nothing.
@@ -304,7 +307,7 @@ is real.
 
 ### The person's keys win
 
-- While an agent's `terminal_exec` or `terminal_send` is in flight, a
+- While an agent's `terminal_exec` is in flight, a
   keystroke from any tab ends the agent's call. The call returns
   `interrupted: true` with what it had.
 - For 2 seconds after a person's last keystroke, agent input is refused
