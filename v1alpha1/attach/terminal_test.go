@@ -60,6 +60,33 @@ func TestTerminalSends(t *testing.T) {
 	}
 }
 
+// TestTerminalSeparatesAnEscape pins an Esc step with input after it:
+// the program reads the Esc alone, escapeGap before the rest, so a program
+// that reads Esc and a key together as Alt and that key (tcell, vim) sees
+// the Esc it was sent.
+func TestTerminalSeparatesAnEscape(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	term := Terminal(serveFake(t, target).session)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := term.Send("a", Input{Key: "Esc"}, Input{Text: "/local-path"}, Input{Key: "Enter"})
+		sent <- err
+	}()
+	if got := readIn(t, target, "\x1b"); got != "\x1b" {
+		t.Fatalf("first read %q, want the Esc alone", got)
+	}
+	start := time.Now()
+	if got := readIn(t, target, "/local-path\r"); got != "/local-path\r" {
+		t.Errorf("then read %q, want the rest", got)
+	}
+	if gap := time.Since(start); gap < escapeGap/2 {
+		t.Errorf("the rest came %v after the Esc, want about %v", gap, escapeGap)
+	}
+	if err := <-sent; err != nil {
+		t.Errorf("Send: %v", err)
+	}
+}
+
 // TestTerminalRefusesABadStep pins that a step Send cannot send, anywhere in
 // the input, sends nothing, not even the steps before it.
 func TestTerminalRefusesABadStep(t *testing.T) {

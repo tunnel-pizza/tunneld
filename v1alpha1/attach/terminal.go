@@ -106,6 +106,11 @@ func keyNamed(name string) (uv.Key, bool) {
 	return uv.Key{}, false
 }
 
+// escapeGap is how long Send waits after an Esc with input behind it: past
+// the escape timeout of a program that reads Esc and the next key together
+// as Alt and that key (tcell's, vim's ttimeoutlen).
+const escapeGap = 150 * time.Millisecond
+
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
 // before any is sent.
@@ -134,6 +139,9 @@ func (s *session) Send(reader string, input ...Input) (string, error) {
 			continue
 		}
 		s.em.SendKey(ev)
+		if input[i].Key == "Esc" && i < len(events)-1 {
+			time.Sleep(escapeGap)
+		}
 	}
 	return s.out.cursor(next), nil
 }
