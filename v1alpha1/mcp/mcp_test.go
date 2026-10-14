@@ -163,6 +163,11 @@ func TestATerminalOverMcp(t *testing.T) {
 		_ = json.Unmarshal(raw, &r)
 		return r
 	}
+	// The shell's prompt first, as an agent waits for it: typed before it,
+	// the input is echoed ahead of the prompt.
+	if prompt := answer(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","until":"\\$ $"}`)); !prompt.Matched {
+		t.Fatalf("terminal_wait for the prompt = %+v, want it matched", prompt)
+	}
 	// terminal_exec waits for the reply itself.
 	first := answer(call("terminal_exec", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
 	if !first.Matched || !strings.Contains(first.Text, "echo $((6*7))\n42\n") || first.Cursor == "" {
