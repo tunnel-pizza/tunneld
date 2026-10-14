@@ -215,7 +215,13 @@ and never setting it, so a redraw (a shell echoing what was typed, a
 progress bar's carriage return, a cleared line) reads as the screen shows
 it. A row goes into the log once the cursor moves below it or it scrolls
 off; the cursor's row is read as far as the cursor and is not yet at an
-offset. A full-screen program's screen is its own and leaves nothing, so
+offset. A row the terminal wrapped onto the next is joined to it: an
+autowrap takes the cursor from the last column straight to the column
+after the first character of the next row, which no control character
+does on a screen wider than four columns, and the cursor-moving ESC and
+CSI sequences that could are seen through handlers that pass them on. The
+log marks the wrapped row's last cell, on its own screen that is never
+drawn, so the mark moves with the row and goes when the row is rewritten. A full-screen program's screen is its own and leaves nothing, so
 while one is up every answer carries the screen, `until` matches its rows,
 and a wait goes quiet once the screen stops changing. A run started again clears it;
 offsets keep counting.
