@@ -45,6 +45,8 @@ type Input struct {
 // with where the cursor is, its title, and whether the program is on the
 // alternate screen.
 type Screen struct {
+	Width     int      `json:"width" jsonschema:"the screen's width in columns, the person's: an agent never sets it"`
+	Height    int      `json:"height" jsonschema:"the screen's height in rows"`
 	Rows      []string `json:"rows" jsonschema:"the visible rows, top first, trailing blanks dropped"`
 	Cursor    Cursor   `json:"cursor" jsonschema:"where the cursor is"`
 	AltScreen bool     `json:"alt_screen" jsonschema:"whether a full-screen program (an editor, k9s, htop) is on the alternate screen"`
@@ -228,5 +230,5 @@ func (s *session) Screen() Screen {
 		rows[y] = strings.TrimRight(b.String(), " ")
 	}
 	at := s.em.CursorPosition()
-	return Screen{Rows: rows, Cursor: Cursor{Row: at.Y, Col: at.X}, AltScreen: s.em.IsAltScreen(), Title: title}
+	return Screen{Width: w, Height: h, Rows: rows, Cursor: Cursor{Row: at.Y, Col: at.X}, AltScreen: s.em.IsAltScreen(), Title: title}
 }

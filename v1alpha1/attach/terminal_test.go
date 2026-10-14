@@ -140,6 +140,9 @@ func TestTerminalScreen(t *testing.T) {
 	if got.AltScreen {
 		t.Error("AltScreen = true, want the main screen")
 	}
+	if got.Width != defaultCols || got.Height != defaultRows {
+		t.Errorf("size = %dx%d, want %dx%d", got.Width, got.Height, defaultCols, defaultRows)
+	}
 }
 
 // TestTerminalStartsARepeatableTargetAgain pins that typing into a program
