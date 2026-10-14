@@ -16,7 +16,7 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_sessions",
 	Title:       "Terminal sessions",
-	Description: "The machine the run is on (its hostname, the user it runs as, its process id and working directory) and the run's origins of one scheme, each with its index, scheme, provider and ref. scheme is exec (a program in a terminal, its ref the program's path), attach (a container, its ref the container) or http (an address, its ref host and port). A tunnel with a single origin needs no parameter in a URL. With several, a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first. Use to find which origin a tool should act on.",
+	Description: "The machine the run is on, and the run's origins of one scheme, each with its index and ref.",
 	// Answered from the run itself: the same each time, reaching nothing.
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 }, run)

@@ -21,12 +21,12 @@ func TestTerminalExecListing(t *testing.T) {
 		t.Errorf("annotations = %+v, want destructive, not read-only", a)
 	}
 	schema, _ := json.Marshal(listed.InputSchema)
-	for _, s := range []string{"https://hostname/?1, not ?n=1", "or Ctrl-", "PageDown", "exactly one of text or key"} {
+	for _, s := range []string{"https://hostname/?n", "or Ctrl-", "PageDown", "exactly one of text or key"} {
 		if !strings.Contains(string(schema), s) {
 			t.Errorf("inputSchema %s lacks %q", schema, s)
 		}
 	}
-	for _, says := range []string{"waits for the reply", "cursor", "other sessions"} {
+	for _, says := range []string{"waits for the reply", "tunnel:exec"} {
 		if !strings.Contains(listed.Description, says) {
 			t.Errorf("description %q lacks %q", listed.Description, says)
 		}
