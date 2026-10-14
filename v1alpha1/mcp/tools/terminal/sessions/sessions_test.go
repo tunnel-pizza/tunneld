@@ -30,7 +30,7 @@ func TestTerminalSessionsListing(t *testing.T) {
 			t.Errorf("outputSchema %s lacks %q", schema, s)
 		}
 	}
-	for _, s := range []string{"A tunnel with a single origin needs no parameter in a URL", "a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first"} {
+	for _, s := range []string{"origins of one scheme", "index"} {
 		if !strings.Contains(listed.Description, s) {
 			t.Errorf("description %q lacks %q", listed.Description, s)
 		}

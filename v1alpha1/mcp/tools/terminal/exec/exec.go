@@ -16,13 +16,13 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_exec",
 	Title:       "Run in a terminal",
-	Description: "Types into the terminal at url, as the person at it would (they see it land), then waits for the reply as terminal_wait does. input is steps in order, each exactly one of text or key: [{\"key\":\"Esc\"},{\"text\":\":wq\"},{\"key\":\"Enter\"}]. An Esc with steps after it goes alone, 150 ms ahead of them, so it is not read as Alt: send an Esc with what follows it, in one call. Text comes as the terminal shows it, a line at a time (one wider than the screen kept whole), capped at its last 64 KiB (truncated). A full-screen program (an editor, k9s, htop) leaves no text: the answer carries screen, as terminal_screen gives it. Pass the answer's cursor to the next read when other sessions may share this sign-in, so their reads do not move yours. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "Types input into the terminal at url, then waits for the reply as terminal_wait does. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	Annotations: &sdk.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_exec takes.
 type In struct {
-	URL   string         `json:"url" jsonschema:"The terminal's address on the tunnel: https://hostname/. If the tunnel presents multiple origins, add the terminal's index from terminal_sessions as a bare query parameter: https://hostname/?1, not ?n=1. The first origin, index 0, needs none."`
+	URL   string         `json:"url" jsonschema:"the terminal's address: https://hostname/, or https://hostname/?n for the origin at index n"`
 	Input []attach.Input `json:"input" jsonschema:"what to send, in order: each step exactly one of text or key"`
 	output.WaitFor
 }

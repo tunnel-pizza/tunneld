@@ -17,7 +17,7 @@ func TestTerminalReadListing(t *testing.T) {
 	if a := listed.Annotations; a == nil || !a.ReadOnlyHint {
 		t.Errorf("annotations = %+v, want read-only", a)
 	}
-	for _, says := range []string{"cursor", "other sessions"} {
+	for _, says := range []string{"since cursor", "tunnel:exec"} {
 		if !strings.Contains(listed.Description, says) {
 			t.Errorf("description %q lacks %q", listed.Description, says)
 		}

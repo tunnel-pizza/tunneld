@@ -248,6 +248,10 @@ too, from the tunnel's [owner](#the-owner) on any tunnel, or from a listed
 person on one set to [Single Sign-On](#single-sign-on). Whether a token is
 issued for the MCP server at all is the provider's to decide.
 
+Agents reach these tools through tunnel.pizza's MCP server, which relays
+each call here; its tool descriptions are the ones an agent reads. The
+descriptions this server lists are a line each.
+
 ```sh
 claude mcp add --transport http tunneld https://<host>/_tunneld/mcp \
   --header "Authorization: token <secret>"
