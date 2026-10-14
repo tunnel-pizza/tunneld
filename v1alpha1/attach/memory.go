@@ -27,7 +27,10 @@ const (
 // historyLines is how many lines a session's history keeps: a sixteenth of
 // the memory free when the session starts, at lineCost a line. One session
 // runs per origin, so a sixteenth leaves room for several.
-func historyLines() int { return linesFor(freeMemory()) }
+func historyLines() int { return linesFor(memory()) }
+
+// memory is how historyLines reads the memory free.
+var memory = freeMemory
 
 // freeMemory is the memory the system says is available, or this process's
 // cgroup's headroom when a container limits it to less.
