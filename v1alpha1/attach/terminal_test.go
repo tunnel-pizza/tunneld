@@ -385,6 +385,18 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	}
 }
 
+// TestTerminalReadsNoTitle pins a title the program sets: it names the
+// terminal, and is not text a read answers, whatever characters it has.
+func TestTerminalReadsNoTitle(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	_, _ = (&sink{s.session}).Write([]byte("❯ \x1b]0;✳ Pong reply\x07"))
+	got, err := Terminal(s.session).Read("a", s.session.out.cursor(0))
+	if err != nil || got.Text != "❯ " {
+		t.Errorf("Read = %q, %v; want the prompt alone", got.Text, err)
+	}
+}
+
 // TestTerminalReadsAtThePersonsSize pins the log following the size the
 // person's window settled: a cursor sent past the right edge stops at
 // theirs.

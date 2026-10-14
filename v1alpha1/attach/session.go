@@ -206,7 +206,7 @@ type embeddedKey struct{}
 // lock. The scanner owns every OSC and reports every private mode, and said
 // routes them.
 func (s *session) watch() {
-	s.scan = newScanner(lockedScreen{s}, s.said)
+	s.scan = newScanner(screens{s}, s.said)
 }
 
 // newSession opens the one attach and starts feeding the emulator from it. It
@@ -514,16 +514,26 @@ func (w lockedScreen) Write(p []byte) (int, error) {
 	return w.s.em.Write(p)
 }
 
+// screens is where the scanner writes the screen bytes: the emulator, and
+// the output log's own, so both draw the same stream and a title (an OSC,
+// which x/vt misreads when it is not ASCII) reaches neither.
+type screens struct{ s *session }
+
+func (w screens) Write(p []byte) (int, error) {
+	_, _ = lockedScreen(w).Write(p)
+	_, _ = w.s.out.Write(p)
+	return len(p), nil
+}
+
 func (w *sink) Close() error { return nil }
 
 func (w *sink) Write(p []byte) (int, error) {
 	s := w.s
 	// Through the scanner, which writes the screen bytes to the emulator and
-	// hands every OSC and private mode to said. A frame woken before the
+	// the output log, and hands every OSC and private mode to said. A frame woken before the
 	// emulator had the bytes would render the screen as it was, so the wake is
 	// after.
 	_, _ = s.scan.Write(p)
-	_, _ = s.out.Write(p)
 	s.wakeAll()
 	return len(p), nil
 }
