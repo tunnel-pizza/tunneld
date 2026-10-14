@@ -182,7 +182,8 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 			text = strings.Join(screen.Rows, "\n")
 		}
 		if until != nil && until.MatchString(text) {
-			return s.answered(reader, s.out.take(since), screen), true, nil
+			s.redrawn(ctx)
+			return s.answered(reader, s.out.take(since), s.fullScreen()), true, nil
 		}
 		select {
 		case <-changed:
@@ -193,6 +194,37 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 			return s.answered(reader, s.out.take(since), screen), false, nil
 		case <-ctx.Done():
 			return s.answered(reader, s.out.take(since), screen), false, nil
+		}
+	}
+}
+
+// A match can land part way through a program redrawing a row, before the
+// write that erases what is left of the old text: a wait that matches holds
+// its answer until the screen has been unchanged for redrawQuiet, for at
+// most redrawMost.
+const (
+	redrawQuiet = 50 * time.Millisecond
+	redrawMost  = 250 * time.Millisecond
+)
+
+// redrawn returns once the screen has been unchanged for redrawQuiet, after
+// redrawMost, or when ctx ends.
+func (s *session) redrawn(ctx context.Context) {
+	most := time.NewTimer(redrawMost)
+	defer most.Stop()
+	for {
+		quiet := time.NewTimer(redrawQuiet)
+		select {
+		case <-s.out.changed():
+			quiet.Stop()
+		case <-quiet.C:
+			return
+		case <-most.C:
+			quiet.Stop()
+			return
+		case <-ctx.Done():
+			quiet.Stop()
+			return
 		}
 	}
 }

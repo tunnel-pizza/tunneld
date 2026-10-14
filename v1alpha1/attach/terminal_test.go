@@ -385,6 +385,25 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	}
 }
 
+// TestTerminalWaitLetsARedrawFinish pins a match that lands while a
+// program is part way through redrawing a row: the answer is the row once
+// the redraw has finished, not torn.
+func TestTerminalWaitLetsARedrawFinish(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	out := &sink{s.session}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = out.Write([]byte("✻ done 7:29 PMh high effort)"))
+		time.Sleep(20 * time.Millisecond)
+		_, _ = out.Write([]byte("\x1b[14D\x1b[K"))
+	}()
+	got, matched, err := Terminal(s.session).Wait(t.Context(), "a", s.session.out.cursor(0), regexp.MustCompile(`done \d+:\d+`), 0)
+	if err != nil || !matched || got.Text != "✻ done 7:29 PM" {
+		t.Errorf("Wait = %q, %v, %v; want the row once its redraw finished", got.Text, matched, err)
+	}
+}
+
 // TestTerminalReadsNoTitle pins a title the program sets: it names the
 // terminal, and is not text a read answers, whatever characters it has.
 func TestTerminalReadsNoTitle(t *testing.T) {
