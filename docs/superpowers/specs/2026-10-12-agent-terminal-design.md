@@ -213,9 +213,14 @@ added beside it: the program's output as the terminal shows it, the last
 session. The log keeps its own emulator, the size of the person's screen
 and never setting it, so a redraw (a shell echoing what was typed, a
 progress bar's carriage return, a cleared line) reads as the screen shows
-it. A row goes into the log once the cursor moves below it or it scrolls
-off; the cursor's row is read as far as the cursor and is not yet at an
-offset. A row the terminal wrapped onto the next is joined to it: an
+it. A row above the cursor is held until it settles: it goes into the log
+when it scrolls off, when the screen has not changed for 300 ms, when a
+read or a wait answers it, or when the whole screen is erased; until then
+it is read, but not yet at an offset, as is the cursor's row, as far as
+the cursor. So a program redrawing rows in place (a spinner, a status
+block) leaves their last state once, not every frame, and a line written
+over a logged row and scrolled off in the same write is logged as what it
+became. A row the terminal wrapped onto the next is joined to it: an
 autowrap takes the cursor from the last column straight to the column
 after the first character of the next row, which no control character
 does on a screen wider than four columns, and the cursor-moving ESC and

@@ -2,6 +2,7 @@ package attach
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +83,8 @@ func TestOutputJoinsSoftWraps(t *testing.T) {
 
 // TestOutputRedraws pins lines the log already has that the screen then
 // changes: a clear, and a row rewritten above the cursor. What was logged
-// stays, and every line drawn after is logged, each once.
+// stays, and every line drawn after is logged, each once. The log keeps
+// what is on the screen between writes, as the screen falling still does.
 func TestOutputRedraws(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -98,11 +100,82 @@ func TestOutputRedraws(t *testing.T) {
 			l := newOutput(1 << 10)
 			for _, w := range tc.writes {
 				_, _ = l.Write([]byte(w))
+				l.keep()
 			}
 			if got := l.read(0).Text; got != tc.want {
 				t.Errorf("read(0) = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestOutputHoldsRowsThatChange pins a program redrawing rows in place
+// (a spinner, a status block): while they change they are read, but not
+// logged, so the log has their last state once, not every frame.
+func TestOutputHoldsRowsThatChange(t *testing.T) {
+	l := newOutput(1 << 16)
+	_, _ = l.Write([]byte("> ask\r\n"))
+	l.keep()
+	_, _ = l.Write([]byte("thinking 0\r\n───\r\n> "))
+	for i := range 50 {
+		_, _ = l.Write([]byte(fmt.Sprintf("\x1b[2A\r\x1b[Jthinking %d\r\n───\r\n> ", i)))
+		if got := l.read(0).Text; !strings.Contains(got, fmt.Sprintf("thinking %d\n", i)) {
+			t.Fatalf("frame %d reads %q, want it", i, got)
+		}
+	}
+	_, _ = l.Write([]byte("\x1b[2A\r\x1b[J⏺ pong\r\n───\r\n> "))
+	got := l.take(0)
+	if got.Text != "> ask\n⏺ pong\n───\n> " || strings.Contains(got.Text, "thinking") {
+		t.Errorf("take(0) = %q, want the last frame alone", got.Text)
+	}
+	if again := l.read(got.Next); again.Text != "> " {
+		t.Errorf("read after a take = %q, want only the line in progress", again.Text)
+	}
+}
+
+// TestOutputKeepsRowsAClearErases pins a clear arriving while rows are
+// held: they are kept first, as the screen showed them, so a command's
+// output followed straight away by a clear is not lost.
+func TestOutputKeepsRowsAClearErases(t *testing.T) {
+	for _, clear := range []string{"\x1b[H\x1b[2J", "\x1b[3J\x1b[H\x1b[2J"} {
+		l := newOutput(1 << 10)
+		_, _ = l.Write([]byte("a\r\n\r\nb\r\n"))
+		_, _ = l.Write([]byte(clear + "c\r\n"))
+		if got := l.take(0).Text; got != "a\n\nb\nc\n" {
+			t.Errorf("after %q, take(0) = %q, want a, a blank, b, then c", clear, got)
+		}
+	}
+}
+
+// TestOutputKeepsStillRows pins the screen falling still: rows above the
+// cursor go into the log once nothing has changed for still.
+func TestOutputKeepsStillRows(t *testing.T) {
+	l := newOutput(1 << 10)
+	l.still = 20 * time.Millisecond
+	_, _ = l.Write([]byte("a\r\nb\r\n$ "))
+	if got := l.read(0); got.Next != 0 || got.Text != "a\nb\n$ " {
+		t.Fatalf("read(0) at once = %+v, want a and b held, not yet at an offset", got)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for l.offset() != 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("offset = %d after the screen fell still, want 4", l.offset())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestOutputKeepsRowsRewrittenAsTheyScroll pins rows the log has that a
+// program writes over and scrolls off in one write: what they became is
+// logged, not taken for what they were.
+func TestOutputKeepsRowsRewrittenAsTheyScroll(t *testing.T) {
+	l := newOutput(1 << 10)
+	l.resize(10, 4)
+	_, _ = l.Write([]byte("1\r\n2\r\n3\r\n"))
+	l.keep()
+	_, _ = l.Write([]byte("\x1b[3A\rX\r\nY\r\nZ\r\n4\r\n5\r\n6\r\n7\r\n"))
+	if got := l.take(0).Text; got != "1\n2\n3\nX\nY\nZ\n4\n5\n6\n7\n" {
+		t.Errorf("take(0) = %q, want X, Y and Z kept as they scrolled off", got)
 	}
 }
 
@@ -144,7 +217,7 @@ func TestOutputFollowsTheSize(t *testing.T) {
 func TestOutputOffsets(t *testing.T) {
 	l := newOutput(8)
 	_, _ = l.Write([]byte("a\r\nb\r\n$ "))
-	if got := l.read(0); got.Text != "a\nb\n$ " || got.Next != 4 || got.Dropped {
+	if got := l.take(0); got.Text != "a\nb\n$ " || got.Next != 4 || got.Dropped {
 		t.Errorf("read(0) = %+v, want a, b and the prompt, up to 4", got)
 	}
 	if got := l.read(2); got.Text != "b\n$ " || got.Next != 4 {
@@ -158,7 +231,7 @@ func TestOutputOffsets(t *testing.T) {
 	}
 
 	_, _ = l.Write([]byte("ls\r\n" + strings.Repeat("x\r\n", 9)))
-	got := l.read(0)
+	got := l.take(0)
 	if !got.Dropped || got.Next != 27 || len(got.Text) < 8 || strings.Trim(got.Text, "x\n") != "" {
 		t.Errorf("read(0) after 27 bytes in an 8-byte log = %+v, want dropped, at least the last 8 bytes, up to 27", got)
 	}
@@ -173,6 +246,7 @@ func TestOutputOffsets(t *testing.T) {
 func TestOutputResets(t *testing.T) {
 	l := newOutput(1 << 10)
 	_, _ = l.Write([]byte("run 1\r\n\x1b]0;half a ti"))
+	l.keep()
 	woken := l.changed()
 	l.reset()
 	select {
@@ -181,7 +255,7 @@ func TestOutputResets(t *testing.T) {
 		t.Error("reset woke nobody")
 	}
 	_, _ = l.Write([]byte("run 2\r\n"))
-	if got := l.read(0); got.Text != "run 2\n" || got.Next != 12 || !got.Dropped {
+	if got := l.take(0); got.Text != "run 2\n" || got.Next != 12 || !got.Dropped {
 		t.Errorf("read(0) after a reset = %+v, want run 2 alone up to 12, the first run dropped", got)
 	}
 }

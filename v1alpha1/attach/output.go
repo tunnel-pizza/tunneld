@@ -20,6 +20,10 @@ import (
 // least.
 const outputSize = 1 << 20
 
+// stillFor is how long the screen stays unchanged before the rows above
+// the cursor go into the log.
+const stillFor = 300 * time.Millisecond
+
 // readerIdle is how long a reader's position is kept unused.
 const readerIdle = time.Hour
 
@@ -62,6 +66,13 @@ type output struct {
 	// logged is the text of the screen's first rows, those already in buf,
 	// as they were when they went in.
 	logged []string
+	// held is the rows above the cursor not yet in buf, as the log keeps
+	// them: a row a program is still redrawing (a spinner, a status block)
+	// goes in once, when it scrolls off, the screen falls still for still,
+	// or a reader takes it.
+	held  string
+	still time.Duration
+	timer *time.Timer
 	// line is the cursor's line, as far as the cursor, when it is not in buf.
 	line string
 	// alt is whether a full-screen program's screen was up after the last
@@ -104,6 +115,7 @@ func newOutput(size int) *output {
 	o := &output{
 		em:      em,
 		size:    size,
+		still:   stillFor,
 		wake:    make(chan struct{}),
 		readers: map[string]position{},
 		now:     time.Now,
@@ -116,6 +128,22 @@ func newOutput(size int) *output {
 		em.RegisterCsiHandler(cmd, func(ansi.Params) bool { return o.place() })
 	}
 	em.RegisterEscHandler('8', o.place)
+	// A whole-screen erase (ED 2, ED 3) ends what was on the screen: every
+	// row down to the last with text is kept first, wherever the cursor is. x/vt's ED 3 blanks the screen as well as the
+	// scrollback.
+	em.RegisterCsiHandler('J', func(p ansi.Params) bool {
+		if n, _, _ := p.Param(0, 0); n == 2 || n == 3 {
+			o.settle()
+			bottom := 0
+			for y := range o.em.Height() {
+				if t, _ := text(o.em.Width(), o.cells(y)); t != "" {
+					bottom = y + 1
+				}
+			}
+			o.keepRows(bottom)
+		}
+		return false
+	})
 	_, _ = rand.Read(o.id[:])
 	return o
 }
@@ -223,23 +251,34 @@ func (o *output) resize(width, height int) {
 	o.settle()
 }
 
-// settle moves into buf each line the program is done with, once: those
-// that left the screen without being logged, then those above the cursor.
-// What left the screen went from logged first; a logged row the screen no
-// longer shows, and every row below it, is logged again once the cursor is
-// past it. A full-screen program's screen is its own and leaves nothing,
-// but every write to it is a change. Called with mu held.
+// settle moves into buf each line that left the screen without being
+// logged, and holds the rows above the cursor. A line that left is logged
+// unless it is the next logged row, unchanged (past blank ones, which a
+// clear leaves in place); a logged row the screen no longer shows, and
+// every row below it, is held again. A full-screen
+// program's screen is its own and leaves nothing, but every write to it is
+// a change. Called with mu held.
 func (o *output) settle() {
-	before, line := len(o.buf), o.line
+	before, shown := len(o.buf), o.held+o.line
 	sb := o.em.Scrollback()
 	left := sb.Lines()
-	gone := min(len(left), len(o.logged))
-	for _, l := range left[gone:] {
+	same, j := 0, 0
+	for same < len(left) && j < len(o.logged) {
+		switch l := left[same]; {
+		case logged(len(l), l.At) == o.logged[j]:
+			same, j = same+1, j+1
+		case o.logged[j] == "\n":
+			j++ // a clear moves only the rows with text
+		default:
+			j = len(o.logged)
+		}
+	}
+	for _, l := range left[same:] {
 		o.buf = append(o.buf, logged(len(l), l.At)...)
 	}
-	o.logged = o.logged[gone:]
+	o.logged = o.logged[min(len(left), len(o.logged)):]
 	sb.Clear()
-	o.line = ""
+	o.held, o.line = "", ""
 	if !o.em.IsAltScreen() {
 		for y, was := range o.logged {
 			if o.row(y) != was {
@@ -248,27 +287,66 @@ func (o *output) settle() {
 			}
 		}
 		at := o.em.CursorPosition()
+		var held strings.Builder
 		for y := len(o.logged); y < at.Y; y++ {
-			row := o.row(y)
-			o.buf = append(o.buf, row...)
-			o.logged = append(o.logged, row)
+			held.WriteString(o.row(y))
 		}
-		if len(o.logged) == at.Y {
+		o.held = held.String()
+		if len(o.logged) <= at.Y {
 			o.line, _ = text(o.em.Width(), o.cells(at.Y))
 			if pad := at.X - ansi.StringWidth(o.line); pad > 0 {
 				o.line += strings.Repeat(" ", pad)
 			}
 		}
 	}
+	switch {
+	case o.held == "" && o.timer != nil:
+		o.timer.Stop()
+	case o.held != "" && o.timer == nil:
+		o.timer = time.AfterFunc(o.still, o.keep)
+	case o.held != "":
+		o.timer.Reset(o.still)
+	}
 	alt := o.alt
 	o.alt = o.em.IsAltScreen()
-	if added := len(o.buf) - before; added > 0 || o.line != line || alt || o.alt {
-		o.end += int64(added)
-		if len(o.buf) > 2*o.size {
-			o.buf = append(o.buf[:0], o.buf[len(o.buf)-o.size:]...)
-		}
+	if added := o.grew(before); added > 0 || o.held+o.line != shown || alt || o.alt {
 		o.notify()
 	}
+}
+
+// keep moves the held rows into buf.
+func (o *output) keep() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.keepHeld()
+}
+
+// keepHeld is keep, called with mu held, of the rows above the cursor as
+// the screen has them now.
+func (o *output) keepHeld() { o.keepRows(o.em.CursorPosition().Y) }
+
+// keepRows moves the rows from the last logged one up to row bottom into
+// buf. Called with mu held.
+func (o *output) keepRows(bottom int) {
+	before := len(o.buf)
+	for y := len(o.logged); y < bottom; y++ {
+		row := o.row(y)
+		o.buf = append(o.buf, row...)
+		o.logged = append(o.logged, row)
+	}
+	o.held = ""
+	o.grew(before)
+}
+
+// grew counts what buf took on since it was before bytes long, and
+// compacts it. Called with mu held.
+func (o *output) grew(before int) int {
+	added := len(o.buf) - before
+	o.end += int64(added)
+	if len(o.buf) > 2*o.size {
+		o.buf = append(o.buf[:0], o.buf[len(o.buf)-o.size:]...)
+	}
+	return added
 }
 
 // row is row y of the log's screen as the log keeps it.
@@ -320,6 +398,20 @@ func text(width int, at func(x int) *uv.Cell) (string, bool) {
 func (o *output) read(since int64) chunk {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	return o.readLocked(since)
+}
+
+// take is read, with what it reads kept first: a row a reader has seen is
+// in the log, and a later read goes on from after it.
+func (o *output) take(since int64) chunk {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.keepHeld()
+	return o.readLocked(since)
+}
+
+// readLocked is read, called with mu held.
+func (o *output) readLocked(since int64) chunk {
 	start := o.end - int64(len(o.buf))
 	since = min(since, o.end)
 	dropped := since < start
@@ -333,13 +425,14 @@ func (o *output) read(since int64) chunk {
 			text = text[1:]
 		}
 	}
-	return chunk{Text: string(text) + o.line, Next: o.end, Dropped: dropped}
+	return chunk{Text: string(text) + o.held + o.line, Next: o.end, Dropped: dropped}
 }
 
-// offset is where the next text will start.
+// offset is where the next text will start, the held rows kept first.
 func (o *output) offset() int64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.keepHeld()
 	return o.end
 }
 
@@ -351,14 +444,18 @@ func (o *output) changed() <-chan struct{} {
 }
 
 // reset drops what the last run printed, and any sequence it left half
-// written. Offsets keep counting.
+// written. Offsets keep counting, past what was held.
 func (o *output) reset() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	o.keepHeld()
 	_, _ = o.em.Write([]byte("\x1bc"))
 	o.em.ClearScrollback()
 	o.buf = o.buf[:0]
-	o.logged, o.line = nil, ""
+	o.logged, o.held, o.line = nil, "", ""
+	if o.timer != nil {
+		o.timer.Stop()
+	}
 	o.notify()
 }
 
