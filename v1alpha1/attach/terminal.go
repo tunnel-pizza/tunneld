@@ -17,18 +17,20 @@ import (
 type Terminal interface {
 	// Send sends each step of input in order, starting the program again
 	// first if it has exited and can be, as a tab arriving does, and answers
-	// the output's offset as the input went in: what the program prints in
-	// reply is read from there. A step it cannot send sends nothing:
-	// ErrUnknownKey for a key name it does not know, ErrBadInput for a step
-	// that is not exactly one of text or key.
-	Send(input ...Input) (int64, error)
-	// Read is the program's output after since, as text.
-	Read(since int64) Output
-	// Wait is Read(since) once until matches its text, the program has
-	// printed nothing for idle, or ctx is done, whichever is first, and
-	// whether until matched. A nil until never matches, and an idle of zero
-	// never ends it.
-	Wait(ctx context.Context, since int64, until *regexp.Regexp, idle time.Duration) (Output, bool)
+	// the cursor the input went in at, which reader's position moves to:
+	// what the program prints in reply is read from there. A step it cannot
+	// send sends nothing: ErrUnknownKey for a key name it does not know,
+	// ErrBadInput for a step that is not exactly one of text or key.
+	Send(reader string, input ...Input) (string, error)
+	// Read is the program's output from cursor, or from where reader last
+	// stopped when cursor is "", as text; reader's position moves to where
+	// it stops. A cursor not this terminal's is ErrStaleCursor or
+	// ErrBadCursor.
+	Read(reader, cursor string) (Output, error)
+	// Wait is Read once until matches its text, the program has printed
+	// nothing for idle, or ctx is done, whichever is first, and whether until
+	// matched. A nil until never matches, and an idle of zero never ends it.
+	Wait(ctx context.Context, reader, cursor string, until *regexp.Regexp, idle time.Duration) (Output, bool, error)
 	// Screen is what the terminal shows now.
 	Screen() Screen
 }
@@ -107,16 +109,16 @@ func keyNamed(name string) (uv.Key, bool) {
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
 // before any is sent.
-func (s *session) Send(input ...Input) (int64, error) {
+func (s *session) Send(reader string, input ...Input) (string, error) {
 	events := make([]uv.KeyEvent, 0, len(input))
 	for i, in := range input {
 		switch {
 		case (in.Text == "") == (in.Key == ""):
-			return 0, fmt.Errorf("%w, not both or neither: step %d", ErrBadInput, i+1)
+			return "", fmt.Errorf("%w, not both or neither: step %d", ErrBadInput, i+1)
 		case in.Key != "":
 			k, ok := keyNamed(in.Key)
 			if !ok {
-				return 0, fmt.Errorf("%w %q: step %d", ErrUnknownKey, in.Key, i+1)
+				return "", fmt.Errorf("%w %q: step %d", ErrUnknownKey, in.Key, i+1)
 			}
 			events = append(events, uv.KeyPressEvent(k))
 		default:
@@ -125,6 +127,7 @@ func (s *session) Send(input ...Input) (int64, error) {
 	}
 	s.revive()
 	next := s.out.offset()
+	s.out.moved(reader, next)
 	for i, ev := range events {
 		if ev == nil {
 			s.em.SendText(input[i].Text)
@@ -132,16 +135,26 @@ func (s *session) Send(input ...Input) (int64, error) {
 		}
 		s.em.SendKey(ev)
 	}
-	return next, nil
+	return s.out.cursor(next), nil
 }
 
-// Read is the output log's text after since.
-func (s *session) Read(since int64) Output { return s.out.read(since) }
+// Read reads the output log from cursor, or reader's position.
+func (s *session) Read(reader, cursor string) (Output, error) {
+	since, err := s.from(reader, cursor)
+	if err != nil {
+		return Output{}, err
+	}
+	return s.answered(reader, s.out.read(since)), nil
+}
 
 // Wait reads again each time the log changes, until one of its ends. What
-// it answers on quiet or ctx is the last read, its Next where that read
+// it answers on quiet or ctx is the last read, its cursor where that read
 // stopped, so nothing printed meanwhile is skipped by the next read.
-func (s *session) Wait(ctx context.Context, since int64, until *regexp.Regexp, idle time.Duration) (Output, bool) {
+func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp.Regexp, idle time.Duration) (Output, bool, error) {
+	since, err := s.from(reader, cursor)
+	if err != nil {
+		return Output{}, false, err
+	}
 	var timer *time.Timer
 	var quiet <-chan time.Time
 	if idle > 0 {
@@ -153,7 +166,7 @@ func (s *session) Wait(ctx context.Context, since int64, until *regexp.Regexp, i
 		changed := s.out.changed()
 		got := s.out.read(since)
 		if until != nil && until.MatchString(got.Text) {
-			return got, true
+			return s.answered(reader, got), true, nil
 		}
 		select {
 		case <-changed:
@@ -161,11 +174,27 @@ func (s *session) Wait(ctx context.Context, since int64, until *regexp.Regexp, i
 				timer.Reset(idle)
 			}
 		case <-quiet:
-			return got, false
+			return s.answered(reader, got), false, nil
 		case <-ctx.Done():
-			return got, false
+			return s.answered(reader, got), false, nil
 		}
 	}
+}
+
+// from is where a read starts: cursor's offset, or reader's position when
+// there is no cursor.
+func (s *session) from(reader, cursor string) (int64, error) {
+	if cursor == "" {
+		return s.out.position(reader), nil
+	}
+	return s.out.at(cursor)
+}
+
+// answered moves reader's position to where got stopped, and answers got as
+// an agent reads it.
+func (s *session) answered(reader string, got chunk) Output {
+	s.out.moved(reader, got.Next)
+	return Output{Text: got.Text, Cursor: s.out.cursor(got.Next), Dropped: got.Dropped}
 }
 
 // Screen reads the live screen under the screen lock, so output arriving

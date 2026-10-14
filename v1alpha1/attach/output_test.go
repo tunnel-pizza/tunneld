@@ -1,8 +1,10 @@
 package attach
 
 import (
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestOutputStripsTheTerminal pins what the log keeps of a program's
@@ -104,5 +106,53 @@ func TestOutputWakes(t *testing.T) {
 	case <-ch:
 	default:
 		t.Fatal("changed did not close for text")
+	}
+}
+
+// TestOutputCursors pins a cursor: an offset this log gave reads back as
+// itself, one from another log (another terminal, or this one before
+// tunneld started again) is ErrStaleCursor, and anything else ErrBadCursor.
+func TestOutputCursors(t *testing.T) {
+	l := newOutput(1 << 10)
+	for _, at := range []int64{0, 5, 1 << 40} {
+		got, err := l.at(l.cursor(at))
+		if err != nil || got != at {
+			t.Errorf("at(cursor(%d)) = %d, %v; want %d", at, got, err, at)
+		}
+	}
+	if _, err := l.at(newOutput(1 << 10).cursor(5)); !errors.Is(err, ErrStaleCursor) {
+		t.Errorf("another log's cursor: %v, want ErrStaleCursor", err)
+	}
+	for _, bad := range []string{"", "x", "not a cursor at all", l.cursor(5) + "AA"} {
+		if _, err := l.at(bad); !errors.Is(err, ErrBadCursor) {
+			t.Errorf("at(%q) = %v, want ErrBadCursor", bad, err)
+		}
+	}
+}
+
+// TestOutputReaders pins a reader's position: none until it reads, from
+// the start; where it last stopped after; one reader's never another's;
+// and forgotten once unused for readerIdle.
+func TestOutputReaders(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := newOutput(1 << 10)
+	l.now = func() time.Time { return now }
+	if got := l.position("a"); got != 0 {
+		t.Errorf("a new reader's position = %d, want the start", got)
+	}
+	l.moved("a", 7)
+	if got := l.position("a"); got != 7 {
+		t.Errorf("position after moving to 7 = %d", got)
+	}
+	if got := l.position("b"); got != 0 {
+		t.Errorf("b's position = %d, want its own, the start", got)
+	}
+	now = now.Add(readerIdle - time.Second)
+	if got := l.position("a"); got != 7 {
+		t.Errorf("a's position just inside the idle time = %d, want 7", got)
+	}
+	now = now.Add(readerIdle + time.Second)
+	if got := l.position("a"); got != 0 {
+		t.Errorf("a's position after an idle hour = %d, want forgotten", got)
 	}
 }

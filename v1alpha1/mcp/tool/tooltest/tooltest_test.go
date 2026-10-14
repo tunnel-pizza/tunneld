@@ -81,8 +81,8 @@ func TestBound(t *testing.T) {
 // shows what it was given, and with Err keeps nothing.
 func TestTerminal(t *testing.T) {
 	term := &Terminal{Shows: attach.Screen{Title: "sh"}}
-	_, _ = term.Send(attach.Input{Text: "ls"}, attach.Input{Key: "Enter"})
-	_, _ = term.Send(attach.Input{Key: "Ctrl-C"})
+	_, _ = term.Send("a", attach.Input{Text: "ls"}, attach.Input{Key: "Enter"})
+	_, _ = term.Send("a", attach.Input{Key: "Ctrl-C"})
 	if want := []attach.Input{{Text: "ls"}, {Key: "Enter"}, {Key: "Ctrl-C"}}; !slices.Equal(term.Sent(), want) {
 		t.Errorf("Sent = %q, want %q", term.Sent(), want)
 	}
@@ -90,29 +90,43 @@ func TestTerminal(t *testing.T) {
 		t.Errorf("Screen = %+v, want the one given", term.Screen())
 	}
 	failing := &Terminal{Err: attach.ErrUnknownKey}
-	if _, err := failing.Send(attach.Input{Text: "ls"}); !errors.Is(err, attach.ErrUnknownKey) || failing.Sent() != nil {
+	if _, err := failing.Send("a", attach.Input{Text: "ls"}); !errors.Is(err, attach.ErrUnknownKey) || failing.Sent() != nil {
 		t.Errorf("Send = %v with %q kept, want Err and nothing", err, failing.Sent())
 	}
 }
 
-// TestTerminalPrints pins the fake's log: Send answers where Prints ends,
-// Read is Prints after an offset, and Wait keeps what it was asked and
-// matches until against what it read.
+// TestTerminalPrints pins the fake's log: Send answers the cursor where
+// Prints ended, moves the reader there, and appends Reply; Read is Prints
+// from a cursor or the reader's position, moving it; a stale or junk cursor
+// is refused; and Wait keeps what it was asked and matches until.
 func TestTerminalPrints(t *testing.T) {
-	term := &Terminal{Prints: "$ ls\ngo.mod\n"}
-	if next, _ := term.Send(attach.Input{Key: "Enter"}); next != 12 {
-		t.Errorf("Send = %d, want 12, where Prints ends", next)
+	term := &Terminal{Prints: "$ ls\n", Reply: "go.mod\n"}
+	sent, err := term.Send("a", attach.Input{Key: "Enter"})
+	if err != nil || sent != "@5" {
+		t.Errorf("Send = %q, %v; want @5, where Prints ended", sent, err)
 	}
-	if got := term.Read(5); got.Text != "go.mod\n" || got.Next != 12 {
-		t.Errorf("Read(5) = %+v, want go.mod up to 12", got)
+	if got, err := term.Read("a", ""); err != nil || got.Text != "go.mod\n" || got.Cursor != "@12" {
+		t.Errorf("a's Read = %+v, %v; want the reply, up to @12", got, err)
+	}
+	if got, _ := term.Read("b", ""); got.Text != "$ ls\ngo.mod\n" {
+		t.Errorf("b's Read = %+v, want everything: a's position is not b's", got)
+	}
+	if got, _ := term.Read("a", "@2"); got.Text != "ls\ngo.mod\n" {
+		t.Errorf("Read from @2 = %+v", got)
+	}
+	if _, err := term.Read("a", "stale"); !errors.Is(err, attach.ErrStaleCursor) {
+		t.Errorf("a stale cursor: %v, want ErrStaleCursor", err)
+	}
+	if _, err := term.Read("a", "junk"); !errors.Is(err, attach.ErrBadCursor) {
+		t.Errorf("a junk cursor: %v, want ErrBadCursor", err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
-	got, matched := term.Wait(ctx, 0, regexp.MustCompile(`go\.mod`), time.Second)
-	if !matched || got.Text != term.Prints {
-		t.Errorf("Wait = %+v, %v; want Prints, matched", got, matched)
+	got, matched, err := term.Wait(ctx, "c", "@0", regexp.MustCompile(`go\.mod`), time.Second)
+	if err != nil || !matched || got.Text != term.Prints {
+		t.Errorf("Wait = %+v, %v, %v; want Prints, matched", got, matched, err)
 	}
-	if w := term.LastWait(); w.Until != `go\.mod` || w.Idle != time.Second || w.Left <= 0 || w.Left > time.Minute {
+	if w := term.LastWait(); w.Reader != "c" || w.Cursor != "@0" || w.Until != `go\.mod` || w.Idle != time.Second || w.Left <= 0 || w.Left > time.Minute {
 		t.Errorf("LastWait = %+v, want what Wait was asked", w)
 	}
 }

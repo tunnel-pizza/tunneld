@@ -50,7 +50,7 @@ func TestTerminalSends(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := newFakeTarget("api", true, true)
 			term := Terminal(serveFake(t, target).session)
-			if _, err := term.Send(tc.input...); err != nil {
+			if _, err := term.Send("a", tc.input...); err != nil {
 				t.Fatalf("Send(%+v): %v", tc.input, err)
 			}
 			if got := readIn(t, target, tc.want); got != tc.want {
@@ -76,7 +76,7 @@ func TestTerminalRefusesABadStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := newFakeTarget("api", true, true)
 			term := Terminal(serveFake(t, target).session)
-			_, err := term.Send(Input{Text: "echo hi"}, tc.bad)
+			_, err := term.Send("a", Input{Text: "echo hi"}, tc.bad)
 			if !errors.Is(err, tc.is) || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Send = %v, want %v saying %q", err, tc.is, tc.says)
 			}
@@ -125,7 +125,7 @@ func TestTerminalStartsARepeatableTargetAgain(t *testing.T) {
 	target.awaitOver(t, 1)
 	awaitEnded(t, s)
 
-	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+	if _, err := Terminal(s.session).Send("a", Input{Text: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	target.awaitRun(t, 2)
@@ -151,30 +151,70 @@ func readIn(t *testing.T, target *fakeTarget, want string) string {
 }
 
 // TestTerminalReads pins the log through the handle: what the program
-// printed, as text, and Send answering the offset its input was sent at, so
-// what a reply prints is read from there.
+// printed, as text; each reader from where it last stopped, the start for
+// one never seen, and no reader's read moving another's; a cursor reading
+// from where it says whoever passes it; and Send answering the cursor its
+// input went in at, so what a reply prints is read from there.
 func TestTerminalReads(t *testing.T) {
 	target := newFakeTarget("api", true, true)
 	target.out = "\x1b[1mbanner\x1b[0m\r\n"
-	term := Terminal(serveFake(t, target).session)
-	got := awaitRead(t, term, 0, "banner\n")
-	if got.Next != 7 || got.Dropped {
-		t.Errorf("Read(0) = %+v, want banner up to 7", got)
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	awaitRead(t, term, s.session.out.cursor(0), "banner\n")
+
+	read := func(reader, cursor string) Output {
+		t.Helper()
+		got, err := term.Read(reader, cursor)
+		if err != nil {
+			t.Fatalf("Read(%q, %q): %v", reader, cursor, err)
+		}
+		return got
 	}
-	next, err := term.Send(Input{Text: "x"})
-	if err != nil || next != 7 {
-		t.Errorf("Send = %d, %v; want the offset the input went in at, 7", next, err)
+	if got := read("a", ""); got.Text != "banner\n" || got.Dropped || got.Cursor != s.session.out.cursor(7) {
+		t.Errorf("a's first read = %+v, want banner, up to 7", got)
+	}
+	if got := read("a", ""); got.Text != "" {
+		t.Errorf("a's second read = %+v, want nothing new", got)
+	}
+	if got := read("b", ""); got.Text != "banner\n" {
+		t.Errorf("b's first read = %+v, want banner: a's reads are not b's", got)
+	}
+	sent, err := term.Send("b", Input{Text: "x"})
+	if err != nil || sent != s.session.out.cursor(7) {
+		t.Errorf("Send = %q, %v; want the cursor the input went in at, 7", sent, err)
+	}
+	if got := read("a", s.session.out.cursor(0)); got.Text != "banner\n" {
+		t.Errorf("a's read from the start's cursor = %+v, want banner again", got)
+	}
+}
+
+// TestTerminalRefusesACursorNotItsOwn pins a cursor from another terminal,
+// or from before tunneld started again, as ErrStaleCursor, and one no
+// terminal gave as ErrBadCursor, for Read and Wait alike.
+func TestTerminalRefusesACursorNotItsOwn(t *testing.T) {
+	term := Terminal(serveFake(t, newFakeTarget("api", true, true)).session)
+	other := newOutput(1 << 10).cursor(0)
+	if _, err := term.Read("a", other); !errors.Is(err, ErrStaleCursor) {
+		t.Errorf("Read with another log's cursor: %v, want ErrStaleCursor", err)
+	}
+	if _, _, err := term.Wait(t.Context(), "a", other, nil, time.Millisecond); !errors.Is(err, ErrStaleCursor) {
+		t.Errorf("Wait with another log's cursor: %v, want ErrStaleCursor", err)
+	}
+	if _, err := term.Read("a", "junk"); !errors.Is(err, ErrBadCursor) {
+		t.Errorf("Read with junk: %v, want ErrBadCursor", err)
 	}
 }
 
 // TestTerminalWaits pins Wait's three ends: the pattern matching what came
-// after since, the program falling quiet, and the context.
+// after the cursor, the program falling quiet, and the context; and a wait
+// with no cursor reading on from where the reader's last one stopped.
 func TestTerminalWaits(t *testing.T) {
 	target := newFakeTarget("api", true, true)
 	target.out = "building\r\n"
 	s := serveFake(t, target)
 	term := Terminal(s.session)
-	awaitRead(t, term, 0, "building\n")
+	start := s.session.out.cursor(0)
+	awaitRead(t, term, start, "building\n")
 
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -182,27 +222,28 @@ func TestTerminalWaits(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		_, _ = s.session.out.Write([]byte("done: 0\r\n"))
 	}()
-	got, matched := term.Wait(t.Context(), 0, regexp.MustCompile(`done: \d`), time.Second)
-	if !matched || got.Text != "building\nstep 1\ndone: 0\n" {
-		t.Errorf("Wait for done = %+v, %v; want everything since 0, matched", got, matched)
+	got, matched, err := term.Wait(t.Context(), "a", start, regexp.MustCompile(`done: \d`), time.Second)
+	if err != nil || !matched || got.Text != "building\nstep 1\ndone: 0\n" {
+		t.Errorf("Wait for done = %+v, %v, %v; want everything since the start, matched", got, matched, err)
 	}
 
-	start := time.Now()
-	got, matched = term.Wait(t.Context(), got.Next, nil, 100*time.Millisecond)
-	if matched || got.Text != "" || time.Since(start) < 100*time.Millisecond {
-		t.Errorf("Wait for quiet = %+v, %v after %v; want nothing, unmatched, after the quiet", got, matched, time.Since(start))
+	start2 := time.Now()
+	got, matched, err = term.Wait(t.Context(), "a", "", nil, 100*time.Millisecond)
+	if err != nil || matched || got.Text != "" || time.Since(start2) < 100*time.Millisecond {
+		t.Errorf("Wait for quiet from a's position = %+v, %v, %v after %v; want nothing, unmatched, after the quiet", got, matched, err, time.Since(start2))
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	got, matched = term.Wait(ctx, got.Next, regexp.MustCompile("never"), 0)
-	if matched || ctx.Err() == nil {
-		t.Errorf("Wait for never = %+v, %v; want unmatched once the context is done", got, matched)
+	got, matched, err = term.Wait(ctx, "a", got.Cursor, regexp.MustCompile("never"), 0)
+	if err != nil || matched || ctx.Err() == nil {
+		t.Errorf("Wait for never = %+v, %v, %v; want unmatched once the context is done", got, matched, err)
 	}
 }
 
 // TestTerminalLogResetsWithTheScreen pins a run starting again: the last
-// run's output goes with its screen.
+// run's output goes with its screen, and a cursor from before reads what
+// is left, saying some was dropped.
 func TestTerminalLogResetsWithTheScreen(t *testing.T) {
 	target := newRerunTarget(true)
 	t.Cleanup(target.release)
@@ -212,26 +253,26 @@ func TestTerminalLogResetsWithTheScreen(t *testing.T) {
 	if got := s.session.out.read(0); got.Text != "run 1" {
 		t.Fatalf("read(0) = %+v, want the first run's output", got)
 	}
-	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+	if _, err := Terminal(s.session).Send("a", Input{Text: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	target.awaitRun(t, 2)
-	if got := awaitRead(t, Terminal(s.session), 0, "run 2"); !got.Dropped || got.Next != 10 {
-		t.Errorf("after a restart, Read(0) = %+v, want run 2 alone up to 10, the first run dropped", got)
+	if got := awaitRead(t, Terminal(s.session), s.session.out.cursor(0), "run 2"); !got.Dropped || got.Cursor != s.session.out.cursor(10) {
+		t.Errorf("after a restart, a read from the start = %+v, want run 2 alone up to 10, the first run dropped", got)
 	}
 }
 
-// awaitRead is Read(since) once it reads want.
-func awaitRead(t *testing.T, term Terminal, since int64, want string) Output {
+// awaitRead is a read from cursor once it reads want.
+func awaitRead(t *testing.T, term Terminal, cursor, want string) Output {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		got := term.Read(since)
-		if got.Text == want {
+		got, err := term.Read("await", cursor)
+		if err == nil && got.Text == want {
 			return got
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Read(%d) = %+v, want %q", since, got, want)
+			t.Fatalf("Read(%q) = %+v, %v; want %q", cursor, got, err, want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -252,12 +293,12 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	before := s.session.size
 
 	term := Terminal(s.session)
-	if _, err := term.Send(Input{Text: "ls"}, Input{Key: "Enter"}); err != nil {
+	if _, err := term.Send("a", Input{Text: "ls"}, Input{Key: "Enter"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	_ = term.Screen()
-	_ = term.Read(0)
-	_, _ = term.Wait(t.Context(), 0, nil, 50*time.Millisecond)
+	_, _ = term.Read("a", "")
+	_, _, _ = term.Wait(t.Context(), "a", "", nil, 50*time.Millisecond)
 
 	select {
 	case size := <-target.seenSz:
@@ -295,7 +336,7 @@ func TestTerminalRestartKeepsThePersonsSize(t *testing.T) {
 	target.awaitOver(t, 2)
 	awaitEnded(t, s)
 
-	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+	if _, err := Terminal(s.session).Send("a", Input{Text: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	target.awaitRun(t, 3)

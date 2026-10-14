@@ -1,7 +1,12 @@
 package attach
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -9,13 +14,30 @@ import (
 // least.
 const outputSize = 1 << 20
 
-// Output is a stretch of a program's output as text: what came after an
-// offset, the offset to read from next, and whether some of what came after
-// it was no longer kept.
+// readerIdle is how long a reader's position is kept unused.
+const readerIdle = time.Hour
+
+// ErrBadCursor is a cursor no terminal gave.
+var ErrBadCursor = errors.New("attach: not a cursor")
+
+// ErrStaleCursor is a cursor from another terminal, or from this one before
+// tunneld started again: its offsets mean nothing in this log.
+var ErrStaleCursor = errors.New("attach: a cursor from another terminal, or from before tunneld started again")
+
+// Output is a stretch of a program's output as text, the cursor to read
+// from next, and whether some of what came before it was no longer kept.
 type Output struct {
-	Text    string `json:"text" jsonschema:"the program's output after since, as text: control sequences and carriage returns dropped"`
-	Next    int64  `json:"next" jsonschema:"the offset to read from next"`
-	Dropped bool   `json:"dropped" jsonschema:"whether output after since was no longer kept, so text starts later than since"`
+	Text    string `json:"text" jsonschema:"the program's output, as text: control sequences and carriage returns dropped"`
+	Cursor  string `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
+	Dropped bool   `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
+}
+
+// chunk is a read of the log by offset: the text, the offset after it, and
+// whether some of what came after since was no longer kept.
+type chunk struct {
+	Text    string
+	Next    int64
+	Dropped bool
 }
 
 // output is a session's log: the text of everything its program printed,
@@ -32,10 +54,76 @@ type output struct {
 	buf  []byte
 	end  int64
 	wake chan struct{}
+
+	// id is this log's, random: a cursor carries it, so one from another
+	// log, another terminal's or this one's before tunneld started again,
+	// is refused rather than read as an offset into the wrong text.
+	id [8]byte
+	// readers is each reader's position, by reader, and when it was last
+	// moved; one unused for readerIdle is forgotten.
+	readers map[string]position
+	now     func() time.Time
+}
+
+type position struct {
+	at   int64
+	used time.Time
 }
 
 func newOutput(size int) *output {
-	return &output{size: size, wake: make(chan struct{})}
+	o := &output{
+		size:    size,
+		wake:    make(chan struct{}),
+		readers: map[string]position{},
+		now:     time.Now,
+	}
+	_, _ = rand.Read(o.id[:])
+	return o
+}
+
+// cursor is offset at in this log, opaque: the log's id, then the offset.
+func (o *output) cursor(at int64) string {
+	b := make([]byte, 16)
+	copy(b, o.id[:])
+	binary.BigEndian.PutUint64(b[8:], uint64(at))
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// at is the offset cursor names in this log.
+func (o *output) at(cursor string) (int64, error) {
+	b, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil || len(b) != 16 {
+		return 0, ErrBadCursor
+	}
+	if [8]byte(b[:8]) != o.id {
+		return 0, ErrStaleCursor
+	}
+	return int64(binary.BigEndian.Uint64(b[8:])), nil
+}
+
+// position is where reader last stopped, the start for a reader with none.
+func (o *output) position(reader string) int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.forget()
+	return o.readers[reader].at
+}
+
+// moved puts reader's position at at.
+func (o *output) moved(reader string, at int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.forget()
+	o.readers[reader] = position{at: at, used: o.now()}
+}
+
+// forget drops the readers unused for readerIdle. Called with mu held.
+func (o *output) forget() {
+	for reader, p := range o.readers {
+		if o.now().Sub(p.used) > readerIdle {
+			delete(o.readers, reader)
+		}
+	}
 }
 
 // Write keeps the text in p.
@@ -56,7 +144,7 @@ func (o *output) Write(p []byte) (int, error) {
 
 // read is the text after since, from the oldest kept when since is older,
 // and from the end when it is past it.
-func (o *output) read(since int64) Output {
+func (o *output) read(since int64) chunk {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	start := o.end - int64(len(o.buf))
@@ -72,7 +160,7 @@ func (o *output) read(since int64) Output {
 			text = text[1:]
 		}
 	}
-	return Output{Text: string(text), Next: o.end, Dropped: dropped}
+	return chunk{Text: string(text), Next: o.end, Dropped: dropped}
 }
 
 // offset is where the next text will start.

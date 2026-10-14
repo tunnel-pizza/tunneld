@@ -12,19 +12,25 @@ import (
 )
 
 // TestTerminalWaitListing pins how terminal_wait is listed: it reads, and
-// changes nothing.
+// changes nothing but where this sign-in reads from next.
 func TestTerminalWaitListing(t *testing.T) {
-	if a := tooltest.Listed(t, Tool).Annotations; a == nil || !a.ReadOnlyHint {
+	listed := tooltest.Listed(t, Tool)
+	if a := listed.Annotations; a == nil || !a.ReadOnlyHint {
 		t.Errorf("annotations = %+v, want read-only", a)
+	}
+	for _, says := range []string{"cursor", "other sessions"} {
+		if !strings.Contains(listed.Description, says) {
+			t.Errorf("description %q lacks %q", listed.Description, says)
+		}
 	}
 }
 
-// TestTerminalWait pins the call: the arguments reach Wait with their
-// defaults and the timeout's cap, the answer says how it ended, and a bad
-// pattern or what Context.Terminal refuses is a tool error.
+// TestTerminalWait pins the call: the wait is the caller's, from its
+// position or a cursor, with the defaults tool.Reply gives, and what
+// Context.Terminal or the terminal refuses is a tool error.
 func TestTerminalWait(t *testing.T) {
-	exec := &auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}}
-	at := func(rest string) string { return `{"url":"https://0tabc.tunneled.pizza/?1",` + rest + `}` }
+	exec := &auth.Access{Sub: "github:1", Grant: "g-1", Scopes: []string{"mcp", "tunnel:exec"}}
+	at := func(rest string) string { return `{"url":"https://0tabc.tunneled.pizza/?1"` + rest + `}` }
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		args   string
@@ -32,13 +38,13 @@ func TestTerminalWait(t *testing.T) {
 		says   string
 		failed bool
 	}{
-		"defaults":            {exec, at(`"since":5`), tooltest.Waited{Since: 5, Idle: 500 * time.Millisecond, Left: 10 * time.Second}, `"matched":false,"next":12,"text":"go.mod\n","timed_out":false`, false},
-		"a match":             {nil, at(`"since":0,"until":"go\\.mod"`), tooltest.Waited{Until: `go\.mod`, Idle: 500 * time.Millisecond, Left: 10 * time.Second}, `"matched":true`, false},
-		"no quiet":            {nil, at(`"since":0,"idle_ms":0,"timeout_ms":2000`), tooltest.Waited{Left: 2 * time.Second}, `"matched":false`, false},
-		"past the cap":        {nil, at(`"since":0,"timeout_ms":60000`), tooltest.Waited{Idle: 500 * time.Millisecond, Left: 25 * time.Second}, `"next":12`, false},
-		"a bad pattern":       {exec, at(`"since":0,"until":"("`), tooltest.Waited{}, "until is not a regular expression", true},
-		"no since":            {exec, `{"url":"https://0tabc.tunneled.pizza/?1"}`, tooltest.Waited{}, "missing properties", true},
-		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at(`"since":0`), tooltest.Waited{}, "needs the tunnel:exec scope", true},
+		"from where this sign-in stopped": {exec, at(""), tooltest.Waited{Reader: "grant g-1", Idle: 500 * time.Millisecond}, `"cursor":"@12"`, false},
+		"from a cursor, until":            {exec, at(`,"cursor":"@5","until":"go\\.mod"`), tooltest.Waited{Reader: "grant g-1", Cursor: "@5", Until: `go\.mod`, Idle: 500 * time.Millisecond}, `"matched":true`, false},
+		"the secret":                      {nil, at(""), tooltest.Waited{Reader: "secret", Idle: 500 * time.Millisecond}, `"text":"$ ls\ngo.mod\n"`, false},
+		"a stale cursor":                  {exec, at(`,"cursor":"stale"`), tooltest.Waited{Reader: "grant g-1", Cursor: "stale", Idle: 500 * time.Millisecond}, "not this terminal's", true},
+		"a bad pattern":                   {exec, at(`,"until":"("`), tooltest.Waited{}, "until is not a regular expression", true},
+		"since, not cursor":               {exec, at(`,"since":0`), tooltest.Waited{}, "unexpected additional properties", true},
+		"without tunnel:exec":             {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at(""), tooltest.Waited{}, "needs the tunnel:exec scope", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			term := &tooltest.Terminal{Prints: "$ ls\ngo.mod\n"}
@@ -51,11 +57,10 @@ func TestTerminalWait(t *testing.T) {
 			if status != 200 || !strings.Contains(body, tc.says) || strings.Contains(body, `"isError":true`) != tc.failed {
 				t.Fatalf("terminal_wait = %d %.400s, want %q, a tool error: %v", status, body, tc.says, tc.failed)
 			}
-			if tc.failed {
-				return
-			}
+			// Refused before the wait, nothing was asked: the zero Waited.
 			got := term.LastWait()
-			if got.Since != tc.waited.Since || got.Until != tc.waited.Until || got.Idle != tc.waited.Idle || got.Left > tc.waited.Left || got.Left < tc.waited.Left-time.Second {
+			got.Left = 0
+			if got != tc.waited {
 				t.Errorf("Wait was asked %+v, want %+v", got, tc.waited)
 			}
 		})

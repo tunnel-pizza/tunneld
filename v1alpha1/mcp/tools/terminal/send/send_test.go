@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
@@ -25,35 +26,50 @@ func TestTerminalSendListing(t *testing.T) {
 			t.Errorf("inputSchema %s lacks %q", schema, s)
 		}
 	}
-	if !strings.Contains(listed.Description, "terminal_wait") {
-		t.Errorf("description %q does not say how to read the result", listed.Description)
+	for _, says := range []string{"waits for the reply", "cursor", "other sessions"} {
+		if !strings.Contains(listed.Description, says) {
+			t.Errorf("description %q lacks %q", listed.Description, says)
+		}
 	}
 }
 
 // TestTerminalSend pins the call: the steps reach the terminal url names in
-// order, and what Context.Terminal or the terminal refuses is a tool error.
+// order, the reply is waited for from where the input went in, under the
+// caller's sign-in, and what Context.Terminal or the terminal refuses is a
+// tool error, with nothing sent.
 func TestTerminalSend(t *testing.T) {
-	exec := &auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}}
+	exec := &auth.Access{Sub: "github:1", Grant: "g-1", Scopes: []string{"mcp", "tunnel:exec"}}
 	ls := `[{"text":"ls"},{"key":"Enter"}]`
-	at := func(url, input string) string { return `{"url":"` + url + `","input":` + input + `}` }
+	at := func(url, input, rest string) string {
+		return `{"url":"` + url + `","input":` + input + rest + `}`
+	}
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		args   string
 		err    error
 		sent   []attach.Input
 		says   string
+		waited tooltest.Waited
 	}{
-		"text, then a key":    {exec, at("https://0tabc.tunneled.pizza/?1", ls), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}}, ""},
-		"a key, then text":    {nil, at("https://0tabc.tunneled.pizza/?1", `[{"key":"Esc"},{"text":":wq"}]`), nil, []attach.Input{{Key: "Esc"}, {Text: ":wq"}}, ""},
-		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at("https://0tabc.tunneled.pizza/?1", ls), nil, nil, "needs the tunnel:exec scope"},
-		"not a terminal":      {exec, at("https://0tabc.tunneled.pizza/", ls), nil, nil, "is not a terminal"},
-		"a step it refuses":   {exec, at("https://0tabc.tunneled.pizza/?1", `[{"key":"Hyper-Q"}]`), attach.ErrUnknownKey, nil, "unknown key"},
-		"nothing to send":     {exec, at("https://0tabc.tunneled.pizza/?1", `[]`), nil, nil, "Nothing to send"},
-		"no input":            {exec, `{"url":"https://0tabc.tunneled.pizza/?1"}`, nil, nil, "missing properties"},
-		"text, not input":     {exec, `{"url":"https://0tabc.tunneled.pizza/?1","text":"ls"}`, nil, nil, "unexpected additional properties"},
+		"text, then a key, and the reply": {exec, at("https://0tabc.tunneled.pizza/?1", ls, ""), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+			`"structuredContent":{"cursor":"@10","dropped":false,"matched":false,"text":"go.mod\n","timed_out":false,"truncated":false}`,
+			tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Idle: 500 * time.Millisecond}},
+		"until the prompt": {exec, at("https://0tabc.tunneled.pizza/?1", ls, `,"until":"go\\.mod"`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+			`"matched":true`, tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Until: `go\.mod`, Idle: 500 * time.Millisecond}},
+		"no wait": {exec, at("https://0tabc.tunneled.pizza/?1", ls, `,"idle_ms":0`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+			`"structuredContent":{"cursor":"@3","dropped":false,"matched":false,"text":"","timed_out":false,"truncated":false}`, tooltest.Waited{}},
+		"the secret": {nil, at("https://0tabc.tunneled.pizza/?1", `[{"key":"Esc"},{"text":":wq"}]`, ""), nil, []attach.Input{{Key: "Esc"}, {Text: ":wq"}},
+			`"text":"go.mod\n"`, tooltest.Waited{Reader: "secret", Cursor: "@3", Idle: 500 * time.Millisecond}},
+		"a bad pattern":       {exec, at("https://0tabc.tunneled.pizza/?1", ls, `,"until":"("`), nil, nil, "until is not a regular expression", tooltest.Waited{}},
+		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at("https://0tabc.tunneled.pizza/?1", ls, ""), nil, nil, "needs the tunnel:exec scope", tooltest.Waited{}},
+		"not a terminal":      {exec, at("https://0tabc.tunneled.pizza/", ls, ""), nil, nil, "is not a terminal", tooltest.Waited{}},
+		"a step it refuses":   {exec, at("https://0tabc.tunneled.pizza/?1", `[{"key":"Hyper-Q"}]`, ""), attach.ErrUnknownKey, nil, "unknown key", tooltest.Waited{}},
+		"nothing to send":     {exec, at("https://0tabc.tunneled.pizza/?1", `[]`, ""), nil, nil, "Nothing to send", tooltest.Waited{}},
+		"no input":            {exec, `{"url":"https://0tabc.tunneled.pizza/?1"}`, nil, nil, "missing properties", tooltest.Waited{}},
+		"text, not input":     {exec, `{"url":"https://0tabc.tunneled.pizza/?1","text":"ls"}`, nil, nil, "unexpected additional properties", tooltest.Waited{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			term := &tooltest.Terminal{Prints: "$ \n", Err: tc.err}
+			term := &tooltest.Terminal{Prints: "$ \n", Reply: "go.mod\n", Err: tc.err}
 			c := tool.Context{
 				Origins: tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh"),
 				Bound:   tooltest.Bound{Terminals: map[int]attach.Terminal{1: term}},
@@ -62,14 +78,17 @@ func TestTerminalSend(t *testing.T) {
 			if status != 200 {
 				t.Fatalf("terminal_send = %d %s", status, body)
 			}
-			if failed := strings.Contains(body, `"isError":true`); failed != (tc.says != "") || !strings.Contains(body, tc.says) {
-				t.Errorf("terminal_send = %s, want a tool error saying %q: %v", body, tc.says, tc.says != "")
-			}
-			if tc.says == "" && !strings.Contains(body, `"structuredContent":{"next":3}`) {
-				t.Errorf("terminal_send = %s, want the offset the input went in at, 3", body)
+			failed := strings.Contains(body, `"isError":true`)
+			if !strings.Contains(body, tc.says) || failed != (len(tc.sent) == 0) {
+				t.Errorf("terminal_send = %s, want %q, a tool error: %v", body, tc.says, len(tc.sent) == 0)
 			}
 			if !slices.Equal(term.Sent(), tc.sent) {
 				t.Errorf("sent %q, want %q", term.Sent(), tc.sent)
+			}
+			got := term.LastWait()
+			got.Left = 0
+			if got != tc.waited {
+				t.Errorf("waited %+v, want %+v", got, tc.waited)
 			}
 		})
 	}

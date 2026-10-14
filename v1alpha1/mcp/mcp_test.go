@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -152,17 +151,33 @@ func TestATerminalOverMcp(t *testing.T) {
 	if listed, _ := json.Marshal(call("terminal_sessions", `{"scheme":"exec"}`).StructuredContent); !strings.Contains(string(listed), `"index":1`) {
 		t.Fatalf("terminal_sessions = %s, want the shell at index 1", listed)
 	}
-	sent, _ := json.Marshal(call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}]}`).StructuredContent)
-	var next struct{ Next int64 }
-	_ = json.Unmarshal(sent, &next)
-	waited, _ := json.Marshal(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","since":`+strconv.FormatInt(next.Next, 10)+`,"until":"(?m)^42$","timeout_ms":10000}`).StructuredContent)
-	var reply struct {
+	type reply struct {
 		Text    string
+		Cursor  string
 		Matched bool
 	}
-	_ = json.Unmarshal(waited, &reply)
-	if !reply.Matched || !strings.Contains(reply.Text, "echo $((6*7))\n42\n") {
-		t.Fatalf("terminal_wait = %s, want the command echoed and 42 under it, matched", waited)
+	answer := func(res *sdk.CallToolResult) reply {
+		t.Helper()
+		raw, _ := json.Marshal(res.StructuredContent)
+		var r reply
+		_ = json.Unmarshal(raw, &r)
+		return r
+	}
+	// terminal_send waits for the reply itself.
+	first := answer(call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
+	if !first.Matched || !strings.Contains(first.Text, "echo $((6*7))\n42\n") || first.Cursor == "" {
+		t.Fatalf("terminal_send = %+v, want the command echoed and 42 under it, matched, and a cursor", first)
+	}
+	// Sent without waiting, then read on from where this caller stopped.
+	call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo second"},{"key":"Enter"}],"idle_ms":0}`)
+	second := answer(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","until":"(?m)^second$"}`))
+	if !second.Matched || !strings.Contains(second.Text, "second\n") || strings.Contains(second.Text, "42") {
+		t.Fatalf("terminal_wait = %+v, want the second reply alone, matched", second)
+	}
+	// A cursor reads from where it says, whatever this caller's position.
+	again := answer(call("terminal_read", `{"url":"https://0tabc.tunneled.pizza/?1","cursor":"`+first.Cursor+`"}`))
+	if !strings.Contains(again.Text, "echo second\nsecond\n") {
+		t.Fatalf("terminal_read from the first answer's cursor = %+v, want the second command and its reply", again)
 	}
 
 	deadline := time.Now().Add(10 * time.Second)

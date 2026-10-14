@@ -58,9 +58,9 @@ const (
 
 // grantFor is who a fake token is, and what it is for.
 type grantFor struct {
-	sub                    string
-	aud                    []string
-	clientID, scope, actor string
+	sub                           string
+	aud                           []string
+	clientID, scope, actor, grant string
 }
 
 // oidcOf stands in for the provider: a token in tokens is valid for its aud
@@ -89,7 +89,7 @@ func fakeOidc() *oidcOf {
 			"subject-other": {sub: "github:2", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
 			"mcp-client":    {sub: "github:1", aud: site, clientID: "https://inspector.example/client.json", scope: "openid tunnel:token"},
 			"no-scope":      {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "openid profile"},
-			"exchanged":     {sub: "github:2", aud: mcp, clientID: fakeIssuer, scope: "tunnel:attach tunnel:exec", actor: "https://claude.ai/client.json"},
+			"exchanged":     {sub: "github:2", aud: mcp, clientID: fakeIssuer, scope: "tunnel:attach tunnel:exec", actor: "https://claude.ai/client.json", grant: "grant-1"},
 		},
 		sub: "github:1", username: "alice",
 	}
@@ -120,7 +120,7 @@ func (o *oidcOf) VerifyAccessClaims(ctx context.Context, token, resource string)
 		return oidc.AccessClaims{}, err
 	}
 	g := o.tokens[token]
-	return oidc.AccessClaims{Subject: sub, ClientID: g.clientID, Scope: g.scope, Actor: g.actor}, nil
+	return oidc.AccessClaims{Subject: sub, ClientID: g.clientID, Scope: g.scope, Actor: g.actor, Grant: g.grant}, nil
 }
 
 func (o *oidcOf) Exchange(_ context.Context, code, verifier, redirectURI, clientID, assertion string) (string, error) {
@@ -794,10 +794,10 @@ func TestBearer(t *testing.T) {
 			}
 		})
 	}
-	t.Run("an exchanged token says its client, scopes and who acts", func(t *testing.T) {
+	t.Run("an exchanged token says its client, scopes, who acts and its sign-in", func(t *testing.T) {
 		got, ok, err := ask(owned(pwAuth(t, fakeOidc()), "github:2"), "Bearer exchanged", site+"/_tunneld/mcp")
-		want := Access{Sub: "github:2", ClientID: fakeIssuer, Scopes: []string{"tunnel:attach", "tunnel:exec"}, Actor: "https://claude.ai/client.json"}
-		if !ok || err != nil || got.Sub != want.Sub || got.ClientID != want.ClientID || got.Actor != want.Actor || !slices.Equal(got.Scopes, want.Scopes) {
+		want := Access{Sub: "github:2", ClientID: fakeIssuer, Scopes: []string{"tunnel:attach", "tunnel:exec"}, Actor: "https://claude.ai/client.json", Grant: "grant-1"}
+		if !ok || err != nil || got.Sub != want.Sub || got.ClientID != want.ClientID || got.Actor != want.Actor || got.Grant != want.Grant || !slices.Equal(got.Scopes, want.Scopes) {
 			t.Errorf("Bearer = %+v, %v, %v; want %+v", got, ok, err, want)
 		}
 	})
