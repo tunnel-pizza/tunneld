@@ -33,7 +33,7 @@ var ErrStaleCursor = errors.New("attach: a cursor from another terminal, or from
 // Output is a stretch of a program's output as text, the cursor to read
 // from next, and whether some of what came before it was no longer kept.
 type Output struct {
-	Text    string  `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row: the row the cursor is on last, as far as the cursor"`
+	Text    string  `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row, so a line wider than the screen is split at its width: the row the cursor is on last, as far as the cursor"`
 	Cursor  string  `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
 	Dropped bool    `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
 	Screen  *Screen `json:"screen,omitempty" jsonschema:"the screen, as terminal_screen gives it, while a full-screen program is up: it leaves no text"`
