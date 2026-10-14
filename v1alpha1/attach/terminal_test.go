@@ -385,6 +385,32 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	}
 }
 
+// TestTerminalSendAnswersFromTheReadersPosition pins Send's cursor on a
+// terminal someone else uses too: from where this reader last stopped, so
+// what the other did since comes before the reply, and for a reader that
+// never read, where its input went in.
+func TestTerminalSendAnswersFromTheReadersPosition(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	out := &sink{s.session}
+	_, _ = out.Write([]byte("$ first\r\n"))
+	if _, err := term.Read("a", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = out.Write([]byte("$ theirs\r\nanswered\r\n"))
+	sent, err := term.Send("a", Input{Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := term.Read("a", sent); got.Text != "$ theirs\nanswered\n" {
+		t.Errorf("a read from Send's cursor = %q, want the other's exchange first", got.Text)
+	}
+	if sent, _ := term.Send("new", Input{Text: "y"}); sent != s.session.out.cursor(s.session.out.offset()) {
+		t.Errorf("a new reader's Send = %q, want where its input went in", sent)
+	}
+}
+
 // TestTerminalWaitLetsARedrawFinish pins a match that lands while a
 // program is part way through redrawing a row: the answer is the row once
 // the redraw has finished, not torn.

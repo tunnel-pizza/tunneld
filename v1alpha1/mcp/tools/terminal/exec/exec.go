@@ -28,7 +28,8 @@ type In struct {
 }
 
 // run types into the terminal url names, then waits for the reply from
-// where the input went in, unless told to answer at once.
+// where this sign-in last read (where the input went in, the first time),
+// unless told to answer at once.
 func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, output.Reply, error) {
 	start := time.Now()
 	if len(in.Input) == 0 {

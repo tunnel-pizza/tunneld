@@ -115,7 +115,9 @@ const escapeGap = 150 * time.Millisecond
 
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
-// before any is sent.
+// before any is sent. The cursor it answers is where reader last stopped,
+// so what anyone else at the terminal did since comes before the reply, or
+// where the input went in for a reader that never read.
 func (s *session) Send(reader string, input ...Input) (string, error) {
 	events := make([]uv.KeyEvent, 0, len(input))
 	for i, in := range input {
@@ -133,8 +135,8 @@ func (s *session) Send(reader string, input ...Input) (string, error) {
 		}
 	}
 	s.revive()
-	next := s.out.offset()
-	s.out.moved(reader, next)
+	from := s.out.since(reader, s.out.offset())
+	s.out.moved(reader, from)
 	for i, ev := range events {
 		if ev == nil {
 			s.em.SendText(input[i].Text)
@@ -145,7 +147,7 @@ func (s *session) Send(reader string, input ...Input) (string, error) {
 			time.Sleep(escapeGap)
 		}
 	}
-	return s.out.cursor(next), nil
+	return s.out.cursor(from), nil
 }
 
 // Read reads the output log from cursor, or reader's position.

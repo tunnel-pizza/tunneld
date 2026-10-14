@@ -210,6 +210,17 @@ func (o *output) position(reader string) int64 {
 	return o.readers[reader].at
 }
 
+// since is where reader last stopped, or fallback for a reader with none.
+func (o *output) since(reader string, fallback int64) int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.forget()
+	if p, ok := o.readers[reader]; ok {
+		return min(p.at, fallback)
+	}
+	return fallback
+}
+
 // moved puts reader's position at at.
 func (o *output) moved(reader string, at int64) {
 	o.mu.Lock()
