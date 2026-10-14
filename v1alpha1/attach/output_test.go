@@ -147,6 +147,31 @@ func TestOutputKeepsRowsAClearErases(t *testing.T) {
 	}
 }
 
+// TestOutputLeavesOutAPlaceholder pins faint text from the cursor on, on
+// the line in progress: a suggestion drawn in an empty input box, or ghost
+// text after what was typed, is not input, and is left out. Faint text the
+// cursor is past, and text that is not faint, are kept.
+func TestOutputLeavesOutAPlaceholder(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream string
+		want   string
+	}{
+		{"a suggestion in an empty box", "❯\u00a0\x1b[2mTry \"how does x work?\"\x1b[22m\x1b[3G", "❯\u00a0"},
+		{"ghost text after what was typed", "❯ hello\x1b[2m world\x1b[22m\x1b[8G", "❯ hello"},
+		{"faint text the cursor is past", "\x1b[2mdim\x1b[22m ok", "dim ok"},
+		{"plain text after the cursor", "❯ hello world\x1b[8G", "❯ hello world"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newOutput(1 << 10)
+			_, _ = l.Write([]byte(tc.stream))
+			if got := l.read(0).Text; got != tc.want {
+				t.Errorf("read(0) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestOutputHoldsUnreadRows pins rows nobody reads: however long the
 // screen is still, they stay held until a read takes them, so a spinner
 // that changes slowly logs no frame of its own.

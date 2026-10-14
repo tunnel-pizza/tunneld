@@ -286,7 +286,15 @@ func (o *output) settle() {
 		}
 		o.held = held.String()
 		if len(o.logged) <= at.Y {
-			o.line, _ = text(o.em.Width(), o.cells(at.Y))
+			// Faint text from the cursor on is a placeholder or ghost
+			// text, not input: a suggestion in an empty input box.
+			row := o.cells(at.Y)
+			o.line, _ = text(o.em.Width(), func(x int) *uv.Cell {
+				if c := row(x); c == nil || x < at.X || c.Style.Attrs&uv.AttrFaint == 0 {
+					return c
+				}
+				return nil
+			})
 			if pad := at.X - ansi.StringWidth(o.line); pad > 0 {
 				o.line += strings.Repeat(" ", pad)
 			}
