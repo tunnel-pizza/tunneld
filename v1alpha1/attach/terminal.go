@@ -113,6 +113,11 @@ func keyNamed(name string) (uv.Key, bool) {
 // as Alt and that key (tcell's, vim's ttimeoutlen).
 const escapeGap = 150 * time.Millisecond
 
+// enterGap is how long Send waits before an Enter that follows text: a
+// program that tells a paste by its speed (Claude Code) would read an Enter
+// in the same burst as a newline in a paste, not a key press.
+const enterGap = 100 * time.Millisecond
+
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
 // before any is sent. The cursor it answers is where reader last stopped,
@@ -141,6 +146,9 @@ func (s *session) Send(reader string, input ...Input) (string, error) {
 		if ev == nil {
 			s.em.SendText(input[i].Text)
 			continue
+		}
+		if input[i].Key == "Enter" && i > 0 && input[i-1].Text != "" {
+			time.Sleep(enterGap)
 		}
 		s.em.SendKey(ev)
 		if input[i].Key == "Esc" && i < len(events)-1 {
