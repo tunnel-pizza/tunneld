@@ -20,10 +20,6 @@ import (
 // least.
 const outputSize = 1 << 20
 
-// stillFor is how long the screen stays unchanged before the rows above
-// the cursor go into the log.
-const stillFor = 300 * time.Millisecond
-
 // readerIdle is how long a reader's position is kept unused.
 const readerIdle = time.Hour
 
@@ -67,12 +63,10 @@ type output struct {
 	// as they were when they went in.
 	logged []string
 	// held is the rows above the cursor not yet in buf, as the log keeps
-	// them: a row a program is still redrawing (a spinner, a status block)
-	// goes in once, when it scrolls off, the screen falls still for still,
-	// or a reader takes it.
-	held  string
-	still time.Duration
-	timer *time.Timer
+	// them: a row a program is redrawing (a spinner, a status block) goes in
+	// once, as it stands when it scrolls off, a reader takes it, input goes
+	// in, or the screen is erased.
+	held string
 	// line is the cursor's line, as far as the cursor, when it is not in buf.
 	line string
 	// alt is whether a full-screen program's screen was up after the last
@@ -115,7 +109,6 @@ func newOutput(size int) *output {
 	o := &output{
 		em:      em,
 		size:    size,
-		still:   stillFor,
 		wake:    make(chan struct{}),
 		readers: map[string]position{},
 		now:     time.Now,
@@ -299,14 +292,6 @@ func (o *output) settle() {
 			}
 		}
 	}
-	switch {
-	case o.held == "" && o.timer != nil:
-		o.timer.Stop()
-	case o.held != "" && o.timer == nil:
-		o.timer = time.AfterFunc(o.still, o.keep)
-	case o.held != "":
-		o.timer.Reset(o.still)
-	}
 	alt := o.alt
 	o.alt = o.em.IsAltScreen()
 	if added := o.grew(before); added > 0 || o.held+o.line != shown || alt || o.alt {
@@ -314,15 +299,8 @@ func (o *output) settle() {
 	}
 }
 
-// keep moves the held rows into buf.
-func (o *output) keep() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.keepHeld()
-}
-
-// keepHeld is keep, called with mu held, of the rows above the cursor as
-// the screen has them now.
+// keepHeld moves the rows above the cursor into buf, as the screen has
+// them now. Called with mu held.
 func (o *output) keepHeld() { o.keepRows(o.em.CursorPosition().Y) }
 
 // keepRows moves the rows from the last logged one up to row bottom into
@@ -453,9 +431,6 @@ func (o *output) reset() {
 	o.em.ClearScrollback()
 	o.buf = o.buf[:0]
 	o.logged, o.held, o.line = nil, "", ""
-	if o.timer != nil {
-		o.timer.Stop()
-	}
 	o.notify()
 }
 

@@ -84,7 +84,7 @@ func TestOutputJoinsSoftWraps(t *testing.T) {
 // TestOutputRedraws pins lines the log already has that the screen then
 // changes: a clear, and a row rewritten above the cursor. What was logged
 // stays, and every line drawn after is logged, each once. The log keeps
-// what is on the screen between writes, as the screen falling still does.
+// what is on the screen between writes, as a reader taking it does.
 func TestOutputRedraws(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -100,7 +100,7 @@ func TestOutputRedraws(t *testing.T) {
 			l := newOutput(1 << 10)
 			for _, w := range tc.writes {
 				_, _ = l.Write([]byte(w))
-				l.keep()
+				_ = l.take(0)
 			}
 			if got := l.read(0).Text; got != tc.want {
 				t.Errorf("read(0) = %q, want %q", got, tc.want)
@@ -115,7 +115,7 @@ func TestOutputRedraws(t *testing.T) {
 func TestOutputHoldsRowsThatChange(t *testing.T) {
 	l := newOutput(1 << 16)
 	_, _ = l.Write([]byte("> ask\r\n"))
-	l.keep()
+	_ = l.take(0)
 	_, _ = l.Write([]byte("thinking 0\r\n───\r\n> "))
 	for i := range 50 {
 		_, _ = l.Write([]byte(fmt.Sprintf("\x1b[2A\r\x1b[Jthinking %d\r\n───\r\n> ", i)))
@@ -147,21 +147,21 @@ func TestOutputKeepsRowsAClearErases(t *testing.T) {
 	}
 }
 
-// TestOutputKeepsStillRows pins the screen falling still: rows above the
-// cursor go into the log once nothing has changed for still.
-func TestOutputKeepsStillRows(t *testing.T) {
+// TestOutputHoldsUnreadRows pins rows nobody reads: however long the
+// screen is still, they stay held until a read takes them, so a spinner
+// that changes slowly logs no frame of its own.
+func TestOutputHoldsUnreadRows(t *testing.T) {
 	l := newOutput(1 << 10)
-	l.still = 20 * time.Millisecond
-	_, _ = l.Write([]byte("a\r\nb\r\n$ "))
-	if got := l.read(0); got.Next != 0 || got.Text != "a\nb\n$ " {
-		t.Fatalf("read(0) at once = %+v, want a and b held, not yet at an offset", got)
+	_, _ = l.Write([]byte("a\r\nthinking 0\r\n> "))
+	for i := 1; i <= 3; i++ {
+		time.Sleep(400 * time.Millisecond)
+		_, _ = l.Write([]byte(fmt.Sprintf("\x1b[1A\r\x1b[2Kthinking %d\r\n> ", i)))
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for l.offset() != 4 {
-		if time.Now().After(deadline) {
-			t.Fatalf("offset = %d after the screen fell still, want 4", l.offset())
-		}
-		time.Sleep(5 * time.Millisecond)
+	if got := l.read(0); got.Next != 0 {
+		t.Fatalf("read(0) = %+v, want everything still held", got)
+	}
+	if got := l.take(0).Text; got != "a\nthinking 3\n> " {
+		t.Errorf("take(0) = %q, want the last frame alone", got)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestOutputKeepsRowsRewrittenAsTheyScroll(t *testing.T) {
 	l := newOutput(1 << 10)
 	l.resize(10, 4)
 	_, _ = l.Write([]byte("1\r\n2\r\n3\r\n"))
-	l.keep()
+	_ = l.take(0)
 	_, _ = l.Write([]byte("\x1b[3A\rX\r\nY\r\nZ\r\n4\r\n5\r\n6\r\n7\r\n"))
 	if got := l.take(0).Text; got != "1\n2\n3\nX\nY\nZ\n4\n5\n6\n7\n" {
 		t.Errorf("take(0) = %q, want X, Y and Z kept as they scrolled off", got)
@@ -246,7 +246,7 @@ func TestOutputOffsets(t *testing.T) {
 func TestOutputResets(t *testing.T) {
 	l := newOutput(1 << 10)
 	_, _ = l.Write([]byte("run 1\r\n\x1b]0;half a ti"))
-	l.keep()
+	_ = l.take(0)
 	woken := l.changed()
 	l.reset()
 	select {
