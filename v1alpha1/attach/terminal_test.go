@@ -218,6 +218,48 @@ func TestTerminalReads(t *testing.T) {
 	}
 }
 
+// TestTerminalAnswersAFullScreen pins reads and waits while a full-screen
+// program is up: each answer carries the screen, until matches its rows,
+// and a wait goes quiet once the screen stops changing. On the main screen
+// an answer carries none.
+func TestTerminalAnswersAFullScreen(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	out := &sink{s.session}
+	_, _ = out.Write([]byte("$ top\r\n"))
+	if got, err := term.Read("a", ""); err != nil || got.Screen != nil {
+		t.Errorf("Read on the main screen = %+v, %v; want no screen", got, err)
+	}
+
+	_, _ = out.Write([]byte("\x1b[?1049h\x1b[2J\x1b[HCPU 3%"))
+	got, err := term.Read("a", "")
+	if err != nil || got.Screen == nil || got.Screen.Rows[0] != "CPU 3%" || !got.Screen.AltScreen {
+		t.Fatalf("Read on a full screen = %+v, %v; want the screen, CPU 3%% on top", got, err)
+	}
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = out.Write([]byte("\x1b[HCPU 42%"))
+	}()
+	got, matched, err := term.Wait(t.Context(), "a", "", regexp.MustCompile(`CPU 4\d%`), 0)
+	if err != nil || !matched || got.Screen == nil || got.Screen.Rows[0] != "CPU 42%" {
+		t.Errorf("Wait for CPU 4x%% = %+v, %v, %v; want it matched on the screen", got, matched, err)
+	}
+
+	start := time.Now()
+	go func() {
+		for range 3 {
+			time.Sleep(40 * time.Millisecond)
+			_, _ = out.Write([]byte("\x1b[HCPU 7% "))
+		}
+	}()
+	got, matched, err = term.Wait(t.Context(), "a", "", nil, 100*time.Millisecond)
+	if err != nil || matched || got.Screen == nil || time.Since(start) < 200*time.Millisecond {
+		t.Errorf("Wait for quiet = %+v, %v, %v after %v; want the screen once it stopped changing", got, matched, err, time.Since(start))
+	}
+}
+
 // TestTerminalRefusesACursorNotItsOwn pins a cursor from another terminal,
 // or from before tunneld started again, as ErrStaleCursor, and one no
 // terminal gave as ErrBadCursor, for Read and Wait alike.
