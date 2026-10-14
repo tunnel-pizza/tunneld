@@ -214,8 +214,8 @@ session. The log keeps its own emulator, the size of the person's screen
 and never setting it, so a redraw (a shell echoing what was typed, a
 progress bar's carriage return, a cleared line) reads as the screen shows
 it. A row above the cursor is held until it settles: it goes into the log
-when it scrolls off, when the screen has not changed for 300 ms, when a
-read or a wait answers it, or when the whole screen is erased; until then
+when it scrolls off, when a read or a wait answers it, when input goes
+in, or when the whole screen is erased; until then
 it is read, but not yet at an offset, as is the cursor's row, as far as
 the cursor. So a program redrawing rows in place (a spinner, a status
 block) leaves their last state once, not every frame, and a line written

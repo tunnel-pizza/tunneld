@@ -385,6 +385,63 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	}
 }
 
+// TestTerminalSendAnswersFromTheReadersPosition pins Send's cursor on a
+// terminal someone else uses too: from where this reader last stopped, so
+// what the other did since comes before the reply, and for a reader that
+// never read, where its input went in.
+func TestTerminalSendAnswersFromTheReadersPosition(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	out := &sink{s.session}
+	_, _ = out.Write([]byte("$ first\r\n"))
+	if _, err := term.Read("a", ""); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = out.Write([]byte("$ theirs\r\nanswered\r\n"))
+	sent, err := term.Send("a", Input{Text: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := term.Read("a", sent); got.Text != "$ theirs\nanswered\n" {
+		t.Errorf("a read from Send's cursor = %q, want the other's exchange first", got.Text)
+	}
+	if sent, _ := term.Send("new", Input{Text: "y"}); sent != s.session.out.cursor(s.session.out.offset()) {
+		t.Errorf("a new reader's Send = %q, want where its input went in", sent)
+	}
+}
+
+// TestTerminalWaitLetsARedrawFinish pins a match that lands while a
+// program is part way through redrawing a row: the answer is the row once
+// the redraw has finished, not torn.
+func TestTerminalWaitLetsARedrawFinish(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	out := &sink{s.session}
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_, _ = out.Write([]byte("✻ done 7:29 PMh high effort)"))
+		time.Sleep(20 * time.Millisecond)
+		_, _ = out.Write([]byte("\x1b[14D\x1b[K"))
+	}()
+	got, matched, err := Terminal(s.session).Wait(t.Context(), "a", s.session.out.cursor(0), regexp.MustCompile(`done \d+:\d+`), 0)
+	if err != nil || !matched || got.Text != "✻ done 7:29 PM" {
+		t.Errorf("Wait = %q, %v, %v; want the row once its redraw finished", got.Text, matched, err)
+	}
+}
+
+// TestTerminalReadsNoTitle pins a title the program sets: it names the
+// terminal, and is not text a read answers, whatever characters it has.
+func TestTerminalReadsNoTitle(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	_, _ = (&sink{s.session}).Write([]byte("❯ \x1b]0;✳ Pong reply\x07"))
+	got, err := Terminal(s.session).Read("a", s.session.out.cursor(0))
+	if err != nil || got.Text != "❯ " {
+		t.Errorf("Read = %q, %v; want the prompt alone", got.Text, err)
+	}
+}
+
 // TestTerminalReadsAtThePersonsSize pins the log following the size the
 // person's window settled: a cursor sent past the right edge stops at
 // theirs.
