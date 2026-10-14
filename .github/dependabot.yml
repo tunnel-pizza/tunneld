@@ -32,6 +32,10 @@ updates:
     # unaffected.
     allow:
       - dependency-type: direct
+    # The output log reads soft wraps from x/vt's cursor callback and the
+    # order its handlers run in; a bump is by hand, with the wrap tests.
+    ignore:
+      - dependency-name: github.com/charmbracelet/x/vt
     patterns: ["*"]
     multi-ecosystem-group: deps
     # Batch security updates (which run outside the version-update stream and

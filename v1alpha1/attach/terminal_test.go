@@ -386,7 +386,8 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 }
 
 // TestTerminalReadsAtThePersonsSize pins the log following the size the
-// person's window settled: a line wraps where theirs does.
+// person's window settled: a cursor sent past the right edge stops at
+// theirs.
 func TestTerminalReadsAtThePersonsSize(t *testing.T) {
 	target := newFakeTarget("api", true, true)
 	s := serveFake(t, target)
@@ -406,9 +407,9 @@ func TestTerminalReadsAtThePersonsSize(t *testing.T) {
 			t.Fatalf("the log is %d wide, want %d", logWidth(), width)
 		}
 	}
-	_, _ = (&sink{s.session}).Write([]byte(strings.Repeat("x", width+3) + "\r\n"))
+	_, _ = (&sink{s.session}).Write([]byte("x\x1b[200Cy\r\n"))
 	got, err := Terminal(s.session).Read("a", s.session.out.cursor(0))
-	if want := strings.Repeat("x", width) + "\nxxx\n"; err != nil || got.Text != want {
+	if want := "x" + strings.Repeat(" ", width-2) + "y\n"; err != nil || got.Text != want {
 		t.Errorf("Read = %q, %v; want %q", got.Text, err, want)
 	}
 }

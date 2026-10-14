@@ -33,7 +33,7 @@ var ErrStaleCursor = errors.New("attach: a cursor from another terminal, or from
 // Output is a stretch of a program's output as text, the cursor to read
 // from next, and whether some of what came before it was no longer kept.
 type Output struct {
-	Text    string  `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row, so a line wider than the screen is split at its width: the row the cursor is on last, as far as the cursor"`
+	Text    string  `json:"text" jsonschema:"the program's output as the terminal shows it, a line wider than the screen kept whole: the line the cursor is on last, as far as the cursor"`
 	Cursor  string  `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
 	Dropped bool    `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
 	Screen  *Screen `json:"screen,omitempty" jsonschema:"the screen, as terminal_screen gives it, while a full-screen program is up: it leaves no text"`
@@ -67,6 +67,10 @@ type output struct {
 	// alt is whether a full-screen program's screen was up after the last
 	// write: every write to it is a change, though it leaves no text.
 	alt bool
+	// placed is a sequence about to set the cursor, from placedFrom: the
+	// move it makes is not a wrap.
+	placed     bool
+	placedFrom uv.Position
 	// buf is the kept text, oldest first, ending at offset end. It holds at
 	// least size bytes once that much has arrived, and at most twice that:
 	// compacting to size only once it doubles keeps a busy program's every
@@ -104,8 +108,57 @@ func newOutput(size int) *output {
 		readers: map[string]position{},
 		now:     time.Now,
 	}
+	em.SetCallbacks(vt.Callbacks{CursorPosition: o.moveCursor})
+	// Every sequence that can put the cursor back to the left: CUU, CUD,
+	// CUF, CUB, CNL, CPL, CHA, CUP, CHT, CBT, HPA, HPR, VPA, VPR, HVP, and
+	// DECRC. Each passes on to the emulator's own handler.
+	for _, cmd := range []int{'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'Z', '`', 'a', 'd', 'e', 'f'} {
+		em.RegisterCsiHandler(cmd, func(ansi.Params) bool { return o.place() })
+	}
+	em.RegisterEscHandler('8', o.place)
 	_, _ = rand.Read(o.id[:])
 	return o
+}
+
+// wrapMark is on the last cell of a row the terminal wrapped onto the next.
+// The log's screen is never drawn, so the mark is a link parameter no
+// program sets: it moves with the row as the screen scrolls, into the
+// scrollback, and goes when the cell is written again.
+const wrapMark = "tunneld-wrap"
+
+// place notes a sequence about to set the cursor. It handles nothing.
+func (o *output) place() bool {
+	o.placed, o.placedFrom = true, o.em.CursorPosition()
+	return false
+}
+
+// moveCursor marks the row above the cursor wrapped when the cursor went
+// from the last column straight to the column after the first character
+// of the next row: an autowrap, which no control character does on a
+// screen wider than four columns, and a sequence that does is placed.
+func (o *output) moveCursor(from, to uv.Position) {
+	if o.placed {
+		o.placed = false
+		if from == o.placedFrom {
+			return
+		}
+	}
+	width := o.em.Width()
+	if width <= 4 || to.Y == 0 || to.Y != from.Y || from.X != width-1 || to.X < 1 || to.X > 2 || o.em.IsAltScreen() {
+		return
+	}
+	x := width - 1
+	c := o.em.CellAt(x, to.Y-1)
+	if c != nil && c.Width == 0 {
+		x--
+		c = o.em.CellAt(x, to.Y-1)
+	}
+	if c == nil {
+		return
+	}
+	marked := *c
+	marked.Link.Params = wrapMark
+	o.em.SetCell(x, to.Y-1, &marked)
 }
 
 // cursor is offset at in this log, opaque: the log's id, then the offset.
@@ -182,7 +235,7 @@ func (o *output) settle() {
 	left := sb.Lines()
 	gone := min(len(left), len(o.logged))
 	for _, l := range left[gone:] {
-		o.buf = append(append(o.buf, text(len(l), l.At)...), '\n')
+		o.buf = append(o.buf, logged(len(l), l.At)...)
 	}
 	o.logged = o.logged[gone:]
 	sb.Clear()
@@ -197,11 +250,11 @@ func (o *output) settle() {
 		at := o.em.CursorPosition()
 		for y := len(o.logged); y < at.Y; y++ {
 			row := o.row(y)
-			o.buf = append(append(o.buf, row...), '\n')
+			o.buf = append(o.buf, row...)
 			o.logged = append(o.logged, row)
 		}
 		if len(o.logged) == at.Y {
-			o.line = o.row(at.Y)
+			o.line, _ = text(o.em.Width(), o.cells(at.Y))
 			if pad := at.X - ansi.StringWidth(o.line); pad > 0 {
 				o.line += strings.Repeat(" ", pad)
 			}
@@ -218,16 +271,33 @@ func (o *output) settle() {
 	}
 }
 
-// row is the text on the log's screen at row y.
-func (o *output) row(y int) string {
-	return text(o.em.Width(), func(x int) *uv.Cell { return o.em.CellAt(x, y) })
+// row is row y of the log's screen as the log keeps it.
+func (o *output) row(y int) string { return logged(o.em.Width(), o.cells(y)) }
+
+// cells is row y of the log's screen, a cell at a time.
+func (o *output) cells(y int) func(x int) *uv.Cell {
+	return func(x int) *uv.Cell { return o.em.CellAt(x, y) }
 }
 
-// text is a row of width cells as text, without the blanks after the last.
-func text(width int, at func(x int) *uv.Cell) string {
+// logged is a row as the log keeps it: its text and a newline, or its text
+// alone when the terminal wrapped it onto the next row.
+func logged(width int, at func(x int) *uv.Cell) string {
+	t, wraps := text(width, at)
+	if wraps {
+		return t
+	}
+	return t + "\n"
+}
+
+// text is a row of width cells as text, and whether it wraps onto the next
+// row: a row that does keeps the blanks it ends with, as part of its line,
+// and one that does not drops them.
+func text(width int, at func(x int) *uv.Cell) (string, bool) {
 	var b strings.Builder
+	wraps := false
 	for x := range width {
-		switch c := at(x); {
+		c := at(x)
+		switch {
 		case c == nil:
 			b.WriteByte(' ')
 		case c.Content == "" && c.Width == 0:
@@ -235,8 +305,14 @@ func text(width int, at func(x int) *uv.Cell) string {
 		default:
 			b.WriteString(c.Content)
 		}
+		if c != nil && x >= width-2 && c.Link.Params == wrapMark {
+			wraps = true
+		}
 	}
-	return strings.TrimRight(b.String(), " ")
+	if wraps {
+		return b.String(), true
+	}
+	return strings.TrimRight(b.String(), " "), false
 }
 
 // read is the text after since, from the oldest kept when since is older,

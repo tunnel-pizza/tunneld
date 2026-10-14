@@ -47,6 +47,39 @@ func TestOutputRendersTheTerminal(t *testing.T) {
 	}
 }
 
+// TestOutputJoinsSoftWraps pins a line wider than the screen: logged
+// whole, where the terminal wrapped it, however the stream is cut. A line
+// that fills the screen exactly and then breaks stays a line, and a column
+// set from the last by a sequence is no wrap.
+func TestOutputJoinsSoftWraps(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream string
+		want   string
+	}{
+		{"output wider than the screen", "abcdefghijklmno\r\n", "abcdefghijklmno\n"},
+		{"three rows", "abcdefghij0123456789ABCDE\r\n", "abcdefghij0123456789ABCDE\n"},
+		{"a space at the wrap", "abcdefghi jklm\r\n", "abcdefghi jklm\n"},
+		{"the line in progress", "abcdefghijklm", "abcdefghijklm"},
+		{"exactly the width", "0123456789\r\nnext\r\n", "0123456789\nnext\n"},
+		{"a shell crossing the edge as zsh does", "$ echo aft \r\x1b[Ke\rer\r\r\nafter\r\n$ ", "$ echo after\nafter\n$ "},
+		{"scrolled off, wrapped", strings.Repeat("abcdefghijklmno\r\n", 6), strings.Repeat("abcdefghijklmno\n", 6)},
+		{"a column set from the last", "first\r\n0123456789\x1b[2Gx\r\n", "first\n0x23456789\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for cut := range len(tc.stream) + 1 {
+				l := newOutput(1 << 10)
+				l.resize(10, 4)
+				_, _ = l.Write([]byte(tc.stream[:cut]))
+				_, _ = l.Write([]byte(tc.stream[cut:]))
+				if got := l.read(0).Text; got != tc.want {
+					t.Fatalf("cut at %d: %q, want %q", cut, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // TestOutputRedraws pins lines the log already has that the screen then
 // changes: a clear, and a row rewritten above the cursor. What was logged
 // stays, and every line drawn after is logged, each once.
