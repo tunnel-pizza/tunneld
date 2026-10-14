@@ -33,9 +33,10 @@ var ErrStaleCursor = errors.New("attach: a cursor from another terminal, or from
 // Output is a stretch of a program's output as text, the cursor to read
 // from next, and whether some of what came before it was no longer kept.
 type Output struct {
-	Text    string `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row: the row the cursor is on last, as far as the cursor"`
-	Cursor  string `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
-	Dropped bool   `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
+	Text    string  `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row, so a line wider than the screen is split at its width: the row the cursor is on last, as far as the cursor"`
+	Cursor  string  `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
+	Dropped bool    `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
+	Screen  *Screen `json:"screen,omitempty" jsonschema:"the screen, as terminal_screen gives it, while a full-screen program is up: it leaves no text"`
 }
 
 // chunk is a read of the log by offset: the text, the offset after it, and
@@ -63,6 +64,9 @@ type output struct {
 	logged []string
 	// line is the cursor's line, as far as the cursor, when it is not in buf.
 	line string
+	// alt is whether a full-screen program's screen was up after the last
+	// write: every write to it is a change, though it leaves no text.
+	alt bool
 	// buf is the kept text, oldest first, ending at offset end. It holds at
 	// least size bytes once that much has arrived, and at most twice that:
 	// compacting to size only once it doubles keeps a busy program's every
@@ -170,8 +174,8 @@ func (o *output) resize(width, height int) {
 // that left the screen without being logged, then those above the cursor.
 // What left the screen went from logged first; a logged row the screen no
 // longer shows, and every row below it, is logged again once the cursor is
-// past it. A full-screen program's screen is its own, and leaves nothing.
-// Called with mu held.
+// past it. A full-screen program's screen is its own and leaves nothing,
+// but every write to it is a change. Called with mu held.
 func (o *output) settle() {
 	before, line := len(o.buf), o.line
 	sb := o.em.Scrollback()
@@ -203,7 +207,9 @@ func (o *output) settle() {
 			}
 		}
 	}
-	if added := len(o.buf) - before; added > 0 || o.line != line {
+	alt := o.alt
+	o.alt = o.em.IsAltScreen()
+	if added := len(o.buf) - before; added > 0 || o.line != line || alt || o.alt {
 		o.end += int64(added)
 		if len(o.buf) > 2*o.size {
 			o.buf = append(o.buf[:0], o.buf[len(o.buf)-o.size:]...)

@@ -173,6 +173,24 @@ func TestOutputWakes(t *testing.T) {
 	}
 }
 
+// TestOutputWakesForAFullScreen pins changed on a full-screen program's
+// screen, which leaves no text: every write to it closes changed, so a wait
+// can tell the screen moved.
+func TestOutputWakesForAFullScreen(t *testing.T) {
+	l := newOutput(1 << 10)
+	_, _ = l.Write([]byte("\x1b[?1049h"))
+	ch := l.changed()
+	_, _ = l.Write([]byte("\x1b[HCPU 3%"))
+	select {
+	case <-ch:
+	default:
+		t.Fatal("changed did not close for a full-screen program's drawing")
+	}
+	if got := l.read(0).Text; got != "" {
+		t.Errorf("read(0) = %q, want no text from a full-screen program", got)
+	}
+}
+
 // TestOutputCursors pins a cursor: an offset this log gave reads back as
 // itself, one from another log (another terminal, or this one before
 // tunneld started again) is ErrStaleCursor, and anything else ErrBadCursor.

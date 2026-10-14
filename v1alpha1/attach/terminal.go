@@ -45,6 +45,8 @@ type Input struct {
 // with where the cursor is, its title, and whether the program is on the
 // alternate screen.
 type Screen struct {
+	Width     int      `json:"width" jsonschema:"the screen's width in columns, the person's: an agent never sets it"`
+	Height    int      `json:"height" jsonschema:"the screen's height in rows"`
 	Rows      []string `json:"rows" jsonschema:"the visible rows, top first, trailing blanks dropped"`
 	Cursor    Cursor   `json:"cursor" jsonschema:"where the cursor is"`
 	AltScreen bool     `json:"alt_screen" jsonschema:"whether a full-screen program (an editor, k9s, htop) is on the alternate screen"`
@@ -106,6 +108,11 @@ func keyNamed(name string) (uv.Key, bool) {
 	return uv.Key{}, false
 }
 
+// escapeGap is how long Send waits after an Esc with input behind it: past
+// the escape timeout of a program that reads Esc and the next key together
+// as Alt and that key (tcell's, vim's ttimeoutlen).
+const escapeGap = 150 * time.Millisecond
+
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
 // before any is sent.
@@ -134,6 +141,9 @@ func (s *session) Send(reader string, input ...Input) (string, error) {
 			continue
 		}
 		s.em.SendKey(ev)
+		if input[i].Key == "Esc" && i < len(events)-1 {
+			time.Sleep(escapeGap)
+		}
 	}
 	return s.out.cursor(next), nil
 }
@@ -144,12 +154,14 @@ func (s *session) Read(reader, cursor string) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	return s.answered(reader, s.out.read(since)), nil
+	return s.answered(reader, s.out.read(since), s.fullScreen()), nil
 }
 
 // Wait reads again each time the log changes, until one of its ends. What
 // it answers on quiet or ctx is the last read, its cursor where that read
-// stopped, so nothing printed meanwhile is skipped by the next read.
+// stopped, so nothing printed meanwhile is skipped by the next read. While
+// a full-screen program is up, until matches the screen's rows, and every
+// change to the screen is one.
 func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp.Regexp, idle time.Duration) (Output, bool, error) {
 	since, err := s.from(reader, cursor)
 	if err != nil {
@@ -164,9 +176,13 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 	}
 	for {
 		changed := s.out.changed()
-		got := s.out.read(since)
-		if until != nil && until.MatchString(got.Text) {
-			return s.answered(reader, got), true, nil
+		got, screen := s.out.read(since), s.fullScreen()
+		text := got.Text
+		if screen != nil {
+			text = strings.Join(screen.Rows, "\n")
+		}
+		if until != nil && until.MatchString(text) {
+			return s.answered(reader, got, screen), true, nil
 		}
 		select {
 		case <-changed:
@@ -174,9 +190,9 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 				timer.Reset(idle)
 			}
 		case <-quiet:
-			return s.answered(reader, got), false, nil
+			return s.answered(reader, got, screen), false, nil
 		case <-ctx.Done():
-			return s.answered(reader, got), false, nil
+			return s.answered(reader, got, screen), false, nil
 		}
 	}
 }
@@ -191,10 +207,18 @@ func (s *session) from(reader, cursor string) (int64, error) {
 }
 
 // answered moves reader's position to where got stopped, and answers got as
-// an agent reads it.
-func (s *session) answered(reader string, got chunk) Output {
+// an agent reads it, with screen when a full-screen program is up.
+func (s *session) answered(reader string, got chunk, screen *Screen) Output {
 	s.out.moved(reader, got.Next)
-	return Output{Text: got.Text, Cursor: s.out.cursor(got.Next), Dropped: got.Dropped}
+	return Output{Text: got.Text, Cursor: s.out.cursor(got.Next), Dropped: got.Dropped, Screen: screen}
+}
+
+// fullScreen is the screen while a full-screen program is up, nil when not.
+func (s *session) fullScreen() *Screen {
+	if screen := s.Screen(); screen.AltScreen {
+		return &screen
+	}
+	return nil
 }
 
 // Screen reads the live screen under the screen lock, so output arriving
@@ -220,5 +244,5 @@ func (s *session) Screen() Screen {
 		rows[y] = strings.TrimRight(b.String(), " ")
 	}
 	at := s.em.CursorPosition()
-	return Screen{Rows: rows, Cursor: Cursor{Row: at.Y, Col: at.X}, AltScreen: s.em.IsAltScreen(), Title: title}
+	return Screen{Width: w, Height: h, Rows: rows, Cursor: Cursor{Row: at.Y, Col: at.X}, AltScreen: s.em.IsAltScreen(), Title: title}
 }

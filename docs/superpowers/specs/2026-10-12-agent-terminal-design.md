@@ -215,8 +215,9 @@ and never setting it, so a redraw (a shell echoing what was typed, a
 progress bar's carriage return, a cleared line) reads as the screen shows
 it. A row goes into the log once the cursor moves below it or it scrolls
 off; the cursor's row is read as far as the cursor and is not yet at an
-offset. A full-screen program's screen is its own and leaves nothing:
-`terminal_screen` reads it. A run started again clears it;
+offset. A full-screen program's screen is its own and leaves nothing, so
+while one is up every answer carries the screen, `until` matches its rows,
+and a wait goes quiet once the screen stops changing. A run started again clears it;
 offsets keep counting.
 
 **Offsets never reach the agent.** A model carrying a number from call to

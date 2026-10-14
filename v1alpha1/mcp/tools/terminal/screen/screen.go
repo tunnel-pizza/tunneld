@@ -15,7 +15,7 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_screen",
 	Title:       "Read a terminal's screen",
-	Description: "What the terminal at url shows now, as the person at it sees it: the visible rows as text, where the cursor is, the title the program set, and whether a full-screen program is up. Not the history above the screen. url is the terminal's address on the tunnel: https://hostname/. If the tunnel presents multiple origins, add the terminal's index from terminal_sessions as a bare query parameter: https://hostname/?1, not ?n=1. The first origin, index 0, needs none. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "What the terminal at url shows now, as the person at it sees it: its width and height (the person's; an agent never sets them), the visible rows as text, where the cursor is, the title the program set, and whether a full-screen program is up. Not the history above the screen. url is the terminal's address on the tunnel: https://hostname/. If the tunnel presents multiple origins, add the terminal's index from terminal_sessions as a bare query parameter: https://hostname/?1, not ?n=1. The first origin, index 0, needs none. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	// Reads the screen and changes nothing, but a program is drawing it.
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
 }, run)

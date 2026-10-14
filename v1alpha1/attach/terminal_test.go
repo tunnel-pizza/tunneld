@@ -60,6 +60,33 @@ func TestTerminalSends(t *testing.T) {
 	}
 }
 
+// TestTerminalSeparatesAnEscape pins an Esc step with input after it:
+// the program reads the Esc alone, escapeGap before the rest, so a program
+// that reads Esc and a key together as Alt and that key (tcell, vim) sees
+// the Esc it was sent.
+func TestTerminalSeparatesAnEscape(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	term := Terminal(serveFake(t, target).session)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := term.Send("a", Input{Key: "Esc"}, Input{Text: "/local-path"}, Input{Key: "Enter"})
+		sent <- err
+	}()
+	if got := readIn(t, target, "\x1b"); got != "\x1b" {
+		t.Fatalf("first read %q, want the Esc alone", got)
+	}
+	start := time.Now()
+	if got := readIn(t, target, "/local-path\r"); got != "/local-path\r" {
+		t.Errorf("then read %q, want the rest", got)
+	}
+	if gap := time.Since(start); gap < escapeGap/2 {
+		t.Errorf("the rest came %v after the Esc, want about %v", gap, escapeGap)
+	}
+	if err := <-sent; err != nil {
+		t.Errorf("Send: %v", err)
+	}
+}
+
 // TestTerminalRefusesABadStep pins that a step Send cannot send, anywhere in
 // the input, sends nothing, not even the steps before it.
 func TestTerminalRefusesABadStep(t *testing.T) {
@@ -112,6 +139,9 @@ func TestTerminalScreen(t *testing.T) {
 	}
 	if got.AltScreen {
 		t.Error("AltScreen = true, want the main screen")
+	}
+	if got.Width != defaultCols || got.Height != defaultRows {
+		t.Errorf("size = %dx%d, want %dx%d", got.Width, got.Height, defaultCols, defaultRows)
 	}
 }
 
@@ -185,6 +215,48 @@ func TestTerminalReads(t *testing.T) {
 	}
 	if got := read("a", s.session.out.cursor(0)); got.Text != "banner\n" {
 		t.Errorf("a's read from the start's cursor = %+v, want banner again", got)
+	}
+}
+
+// TestTerminalAnswersAFullScreen pins reads and waits while a full-screen
+// program is up: each answer carries the screen, until matches its rows,
+// and a wait goes quiet once the screen stops changing. On the main screen
+// an answer carries none.
+func TestTerminalAnswersAFullScreen(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	out := &sink{s.session}
+	_, _ = out.Write([]byte("$ top\r\n"))
+	if got, err := term.Read("a", ""); err != nil || got.Screen != nil {
+		t.Errorf("Read on the main screen = %+v, %v; want no screen", got, err)
+	}
+
+	_, _ = out.Write([]byte("\x1b[?1049h\x1b[2J\x1b[HCPU 3%"))
+	got, err := term.Read("a", "")
+	if err != nil || got.Screen == nil || got.Screen.Rows[0] != "CPU 3%" || !got.Screen.AltScreen {
+		t.Fatalf("Read on a full screen = %+v, %v; want the screen, CPU 3%% on top", got, err)
+	}
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = out.Write([]byte("\x1b[HCPU 42%"))
+	}()
+	got, matched, err := term.Wait(t.Context(), "a", "", regexp.MustCompile(`CPU 4\d%`), 0)
+	if err != nil || !matched || got.Screen == nil || got.Screen.Rows[0] != "CPU 42%" {
+		t.Errorf("Wait for CPU 4x%% = %+v, %v, %v; want it matched on the screen", got, matched, err)
+	}
+
+	start := time.Now()
+	go func() {
+		for range 3 {
+			time.Sleep(40 * time.Millisecond)
+			_, _ = out.Write([]byte("\x1b[HCPU 7% "))
+		}
+	}()
+	got, matched, err = term.Wait(t.Context(), "a", "", nil, 100*time.Millisecond)
+	if err != nil || matched || got.Screen == nil || time.Since(start) < 200*time.Millisecond {
+		t.Errorf("Wait for quiet = %+v, %v, %v after %v; want the screen once it stopped changing", got, matched, err, time.Since(start))
 	}
 }
 
