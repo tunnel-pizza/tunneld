@@ -1,14 +1,17 @@
 package attach
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
 // TestBoundTerminal pins which origins have a terminal: a served one does,
@@ -47,7 +50,7 @@ func TestTerminalSends(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := newFakeTarget("api", true, true)
 			term := Terminal(serveFake(t, target).session)
-			if err := term.Send(tc.input...); err != nil {
+			if _, err := term.Send(tc.input...); err != nil {
 				t.Fatalf("Send(%+v): %v", tc.input, err)
 			}
 			if got := readIn(t, target, tc.want); got != tc.want {
@@ -73,7 +76,7 @@ func TestTerminalRefusesABadStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			target := newFakeTarget("api", true, true)
 			term := Terminal(serveFake(t, target).session)
-			err := term.Send(Input{Text: "echo hi"}, tc.bad)
+			_, err := term.Send(Input{Text: "echo hi"}, tc.bad)
 			if !errors.Is(err, tc.is) || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("Send = %v, want %v saying %q", err, tc.is, tc.says)
 			}
@@ -122,7 +125,7 @@ func TestTerminalStartsARepeatableTargetAgain(t *testing.T) {
 	target.awaitOver(t, 1)
 	awaitEnded(t, s)
 
-	if err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	target.awaitRun(t, 2)
@@ -145,4 +148,156 @@ func readIn(t *testing.T, target *fakeTarget, want string) string {
 		}
 	}
 	return read.String()
+}
+
+// TestTerminalReads pins the log through the handle: what the program
+// printed, as text, and Send answering the offset its input was sent at, so
+// what a reply prints is read from there.
+func TestTerminalReads(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "\x1b[1mbanner\x1b[0m\r\n"
+	term := Terminal(serveFake(t, target).session)
+	got := awaitRead(t, term, 0, "banner\n")
+	if got.Next != 7 || got.Dropped {
+		t.Errorf("Read(0) = %+v, want banner up to 7", got)
+	}
+	next, err := term.Send(Input{Text: "x"})
+	if err != nil || next != 7 {
+		t.Errorf("Send = %d, %v; want the offset the input went in at, 7", next, err)
+	}
+}
+
+// TestTerminalWaits pins Wait's three ends: the pattern matching what came
+// after since, the program falling quiet, and the context.
+func TestTerminalWaits(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	target.out = "building\r\n"
+	s := serveFake(t, target)
+	term := Terminal(s.session)
+	awaitRead(t, term, 0, "building\n")
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = s.session.out.Write([]byte("step 1\r\n"))
+		time.Sleep(50 * time.Millisecond)
+		_, _ = s.session.out.Write([]byte("done: 0\r\n"))
+	}()
+	got, matched := term.Wait(t.Context(), 0, regexp.MustCompile(`done: \d`), time.Second)
+	if !matched || got.Text != "building\nstep 1\ndone: 0\n" {
+		t.Errorf("Wait for done = %+v, %v; want everything since 0, matched", got, matched)
+	}
+
+	start := time.Now()
+	got, matched = term.Wait(t.Context(), got.Next, nil, 100*time.Millisecond)
+	if matched || got.Text != "" || time.Since(start) < 100*time.Millisecond {
+		t.Errorf("Wait for quiet = %+v, %v after %v; want nothing, unmatched, after the quiet", got, matched, time.Since(start))
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	got, matched = term.Wait(ctx, got.Next, regexp.MustCompile("never"), 0)
+	if matched || ctx.Err() == nil {
+		t.Errorf("Wait for never = %+v, %v; want unmatched once the context is done", got, matched)
+	}
+}
+
+// TestTerminalLogResetsWithTheScreen pins a run starting again: the last
+// run's output goes with its screen.
+func TestTerminalLogResetsWithTheScreen(t *testing.T) {
+	target := newRerunTarget(true)
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitOver(t, 1)
+	awaitEnded(t, s)
+	if got := s.session.out.read(0); got.Text != "run 1" {
+		t.Fatalf("read(0) = %+v, want the first run's output", got)
+	}
+	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	target.awaitRun(t, 2)
+	if got := awaitRead(t, Terminal(s.session), 0, "run 2"); !got.Dropped || got.Next != 10 {
+		t.Errorf("after a restart, Read(0) = %+v, want run 2 alone up to 10, the first run dropped", got)
+	}
+}
+
+// awaitRead is Read(since) once it reads want.
+func awaitRead(t *testing.T, term Terminal, since int64, want string) Output {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := term.Read(since)
+		if got.Text == want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Read(%d) = %+v, want %q", since, got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestTerminalLeavesTheSizeAlone pins that an agent has no say in the
+// terminal's size: it is no viewer, so typing, reading and waiting send
+// the program nothing on its resize channel and leave the negotiated size
+// as it was.
+func TestTerminalLeavesTheSizeAlone(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	select {
+	case <-target.seenSz: // the run being told its size as it starts
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run was never told its size")
+	}
+	before := s.session.size
+
+	term := Terminal(s.session)
+	if _, err := term.Send(Input{Text: "ls"}, Input{Key: "Enter"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	_ = term.Screen()
+	_ = term.Read(0)
+	_, _ = term.Wait(t.Context(), 0, nil, 50*time.Millisecond)
+
+	select {
+	case size := <-target.seenSz:
+		t.Errorf("the program was sent %+v, want no size from an agent", size)
+	case <-time.After(300 * time.Millisecond):
+	}
+	s.session.mu.Lock()
+	after := s.session.size
+	s.session.mu.Unlock()
+	if after != before {
+		t.Errorf("size = %+v, want it left at %+v", after, before)
+	}
+}
+
+// TestTerminalRestartKeepsThePersonsSize pins the one size an agent's call
+// can lead to: typing into a program that exited runs it again, and the new
+// run is told the size the person's window settled, not one of the
+// agent's, as a tab arriving would.
+func TestTerminalRestartKeepsThePersonsSize(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 2
+	t.Cleanup(target.release)
+	s := serveFake(t, target)
+	target.awaitRun(t, 1)
+	target.awaitOver(t, 1)
+	awaitEnded(t, s)
+
+	settled := remotecommand.TerminalSize{Width: 100 - chromeWidth, Height: 40 - chromeHeight}
+	c := dial(t, s)
+	target.awaitRun(t, 2)
+	readFrame(t, c)
+	writeFrame(t, c, 4, `{"Width":100,"Height":40}`)
+	target.awaitSize(t, settled)
+	target.letOneGo()
+	target.awaitOver(t, 2)
+	awaitEnded(t, s)
+
+	if _, err := Terminal(s.session).Send(Input{Text: "x"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	target.awaitRun(t, 3)
+	target.awaitSize(t, settled)
 }

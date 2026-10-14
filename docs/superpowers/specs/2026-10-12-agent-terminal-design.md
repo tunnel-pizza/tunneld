@@ -206,14 +206,39 @@ size.
 
 ### The output log
 
-`terminal_read` in stream mode needs "everything since I last looked". The
-emulator holds a screen, not a history of bytes. A per-session **output
-log** is added beside it: a ring buffer of the program's output as text,
-with ANSI control sequences stripped, each byte at a monotonic offset. A
-read passes an offset and gets what came after it, plus the next offset.
-When a reader falls behind the ring, it gets what is left and
-`dropped: true`. The ring is 1 MiB, the same bound the native-tab tee
-uses.
+`terminal_read` needs "everything since I last looked". The emulator
+holds a screen, not a history of bytes. A per-session **output log** is
+added beside it: the program's output as text, with control sequences and
+carriage returns dropped, the last 1 MiB at least, each byte at an offset
+that counts up for the life of the session. A run started again clears it;
+offsets keep counting.
+
+**Offsets never reach the agent.** A model carrying a number from call to
+call reuses stale ones, and a tunneld restart starts offsets again, so an
+old one would read the wrong text with nothing saying so. tunneld keeps a
+**read position** per caller and terminal instead:
+
+- **The caller** is the sign-in: `code_jti` in the exchanged token, one per
+  OAuth grant, kept across refreshes, so one per connected app install (see
+  [No sessions](#no-sessions)). A token with no `code_jti` falls back to its
+  `sub` and `act`; the tunnel's secret is "the secret". Every Claude Code
+  session on one machine shares that sign-in, so the sign-in's position is
+  for an agent working alone.
+- **A cursor, for agents that are not.** `terminal_send`, `terminal_read` and
+  `terminal_wait` each answer an opaque `cursor`: the run's identity and the
+  log offset. `terminal_read` and `terminal_wait` take one back, optionally,
+  and read from it instead of the sign-in's position. A cursor from another
+  run (tunneld restarted, the session revived) is a tool error saying the
+  output was reset, never read as an offset into the wrong log. The tool
+  descriptions tell an agent to pass its last `cursor` back when other
+  sessions may share the terminal.
+- `terminal_send` moves the caller's position to the log's end as the
+  input goes in, so what it reads next is the reply.
+- `terminal_read` and `terminal_wait` answer from the caller's position and
+  move it to where they stopped.
+- A caller that fell behind the log gets what is left and `dropped: true`.
+- Positions live in tunneld's memory with the log, and go with the process.
+  One unused for an hour is forgotten.
 
 The screen mode reads the emulator directly: the visible rows as text, the
 cursor, whether the alternate screen is up, and the title.
@@ -243,9 +268,9 @@ is real.
 |---|---|---|---|
 | `terminal_sessions` | none | `scheme` | `{machine, sessions: [v1.Origin]}` |
 | `terminal_screen` | the origin's | `url` | `{rows: string[], cursor: {row, col}, alt_screen, title}` |
-| `terminal_read` | the origin's | `url`, `since?` | `{text, next, dropped}` |
-| `terminal_wait` | the origin's | `url`, `since`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, next, matched, timed_out}` |
-| `terminal_send` | the origin's | `url`, `input: [{text} or {key}]` | `{next}` |
+| `terminal_read` | the origin's | `url`, `cursor?` | `{text, cursor, dropped, truncated}` |
+| `terminal_wait` | the origin's | `url`, `cursor?`, `until?` (regex), `idle_ms?`, `timeout_ms?` | `{text, cursor, dropped, matched, timed_out, truncated}` |
+| `terminal_send` | the origin's | `url`, `input: [{text} or {key}]`, `until?`, `idle_ms?`, `timeout_ms?` | `{text, cursor, dropped, matched, timed_out, truncated}` |
 | `terminal_exec` | the origin's | `url`, `command`, `timeout_ms?` | `{output, exit_code?, ended_by, next, interrupted}` |
 
 - **`url`** is the terminal's address on the tunnel, `https://<host>/` with
@@ -256,6 +281,11 @@ is real.
   which work on any program (bash, k9s, htop) with the agent polling. Then
   the output log with `terminal_read` and `terminal_wait`. `terminal_exec`
   stays a stub until a run can tell a command finished.
+- **`terminal_send` waits for the reply.** It sends `input`, then waits
+  as `terminal_wait` does, from where the input went in, and answers what
+  the program printed. `idle_ms: 0` with no `until` answers at once, with
+  nothing read. So "run this and show me" is one call, and a long build is
+  `terminal_send` then `terminal_wait` until done.
 - **`input`** is steps sent in order, each exactly one of `text` or `key`,
   so a key can come before text (`Esc`, then `:wq`). A step that cannot be
   sent, anywhere in the list, sends nothing.
@@ -403,6 +433,24 @@ the picker in tunnel.pizza#63:
   the result unchanged. A tool error from tunneld stays a tool error.
 - **Rate limits:** `MCP_PER_IP` (120 per minute) covers the relay too.
   Polling loops fit inside it.
+
+### No sessions
+
+MCP 2026-07-28, which Claude Code speaks, is stateless: no `initialize`, no
+`Mcp-Session-Id`, and "state that needs to span multiple requests MUST be
+referenced by an explicit identifier the client passes on each request".
+tunnel.pizza issued sessions on `initialize` for a day (tunnel.pizza#69),
+saw no session ever open for Claude Code, and removed them
+(tunnel.pizza#71).
+
+- **Which app is calling** is the sign-in's grant, `code_jti`, which every
+  access token carries and the exchange keeps: no tunnel.pizza change, no
+  storage.
+- **Every request is recorded** by tunnel.pizza under that sign-in
+  (`mcp/requests/<sub>/<day>/<client>/<code_jti>/`), the whole JSON-RPC
+  body kept 30 days apart under `mcp/messages/`.
+- **Parallel sessions keep apart** by the spec's own answer, an explicit
+  handle: the optional `cursor` in [The output log](#the-output-log).
 
 ### Legal
 

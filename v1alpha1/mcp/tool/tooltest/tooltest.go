@@ -3,14 +3,17 @@
 package tooltest
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -106,33 +109,74 @@ func (b Bound) Terminal(index int) (attach.Terminal, bool) {
 	return t, ok
 }
 
-// Terminal is a terminal that keeps what it was sent and shows Shows. Err,
-// when set, is what Send answers, having kept nothing.
+// Terminal is a terminal that keeps what it was sent, shows Shows, and has
+// printed Prints. Err, when set, is what Send answers, having kept nothing.
 type Terminal struct {
-	Shows attach.Screen
-	Err   error
+	Shows  attach.Screen
+	Prints string
+	Err    error
 
-	mu   sync.Mutex
-	sent []attach.Input
+	mu     sync.Mutex
+	sent   []attach.Input
+	waited Waited
 }
 
-// Send keeps input, in order.
-func (t *Terminal) Send(input ...attach.Input) error {
+// Waited is what the last Wait was asked: the offset, the pattern, the
+// quiet, and how long its context had left.
+type Waited struct {
+	Since int64
+	Until string
+	Idle  time.Duration
+	Left  time.Duration
+}
+
+// Send keeps input, in order, and answers where Prints ends.
+func (t *Terminal) Send(input ...attach.Input) (int64, error) {
 	if t.Err != nil {
-		return t.Err
+		return 0, t.Err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.sent = append(t.sent, input...)
-	return nil
+	return int64(len(t.Prints)), nil
 }
 
 // Screen is Shows.
 func (t *Terminal) Screen() attach.Screen { return t.Shows }
+
+// Read is Prints after since.
+func (t *Terminal) Read(since int64) attach.Output {
+	since = max(0, min(since, int64(len(t.Prints))))
+	return attach.Output{Text: t.Prints[since:], Next: int64(len(t.Prints))}
+}
+
+// Wait keeps what it was asked and answers Read(since) at once, matched
+// when until matches it.
+func (t *Terminal) Wait(ctx context.Context, since int64, until *regexp.Regexp, idle time.Duration) (attach.Output, bool) {
+	w := Waited{Since: since, Idle: idle}
+	if until != nil {
+		w.Until = until.String()
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		w.Left = time.Until(deadline)
+	}
+	t.mu.Lock()
+	t.waited = w
+	t.mu.Unlock()
+	got := t.Read(since)
+	return got, until != nil && until.MatchString(got.Text)
+}
 
 // Sent is every step Send was given, in order.
 func (t *Terminal) Sent() []attach.Input {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]attach.Input(nil), t.sent...)
+}
+
+// LastWait is what the last Wait was asked.
+func (t *Terminal) LastWait() Waited {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.waited
 }

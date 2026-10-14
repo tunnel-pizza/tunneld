@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +125,8 @@ func TestServeAcceptsAForwardedHost(t *testing.T) {
 
 // TestATerminalOverMcp drives a real /bin/sh through the server, as an agent
 // does: terminal_sessions finds it, terminal_send types a command and
-// presses Enter, and terminal_screen shows what it printed.
+// presses Enter, terminal_wait from the offset it answered reads the reply,
+// and terminal_screen shows it.
 func TestATerminalOverMcp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no /bin/sh")
@@ -150,7 +152,18 @@ func TestATerminalOverMcp(t *testing.T) {
 	if listed, _ := json.Marshal(call("terminal_sessions", `{"scheme":"exec"}`).StructuredContent); !strings.Contains(string(listed), `"index":1`) {
 		t.Fatalf("terminal_sessions = %s, want the shell at index 1", listed)
 	}
-	call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}]}`)
+	sent, _ := json.Marshal(call("terminal_send", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}]}`).StructuredContent)
+	var next struct{ Next int64 }
+	_ = json.Unmarshal(sent, &next)
+	waited, _ := json.Marshal(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","since":`+strconv.FormatInt(next.Next, 10)+`,"until":"(?m)^42$","timeout_ms":10000}`).StructuredContent)
+	var reply struct {
+		Text    string
+		Matched bool
+	}
+	_ = json.Unmarshal(waited, &reply)
+	if !reply.Matched || !strings.Contains(reply.Text, "echo $((6*7))\n42\n") {
+		t.Fatalf("terminal_wait = %s, want the command echoed and 42 under it, matched", waited)
+	}
 
 	deadline := time.Now().Add(10 * time.Second)
 	for {

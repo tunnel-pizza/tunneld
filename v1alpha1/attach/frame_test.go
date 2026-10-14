@@ -54,6 +54,7 @@ func newFrameHarness(t *testing.T) *harness {
 		resize:  make(chan remotecommand.TerminalSize, 8),
 		done:    make(chan struct{}),
 		em:      em,
+		out:     newOutput(outputSize),
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 

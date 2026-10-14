@@ -25,7 +25,7 @@ func TestTerminalSendListing(t *testing.T) {
 			t.Errorf("inputSchema %s lacks %q", schema, s)
 		}
 	}
-	if !strings.Contains(listed.Description, "terminal_screen") {
+	if !strings.Contains(listed.Description, "terminal_wait") {
 		t.Errorf("description %q does not say how to read the result", listed.Description)
 	}
 }
@@ -53,7 +53,7 @@ func TestTerminalSend(t *testing.T) {
 		"text, not input":     {exec, `{"url":"https://0tabc.tunneled.pizza/?1","text":"ls"}`, nil, nil, "unexpected additional properties"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			term := &tooltest.Terminal{Err: tc.err}
+			term := &tooltest.Terminal{Prints: "$ \n", Err: tc.err}
 			c := tool.Context{
 				Origins: tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh"),
 				Bound:   tooltest.Bound{Terminals: map[int]attach.Terminal{1: term}},
@@ -64,6 +64,9 @@ func TestTerminalSend(t *testing.T) {
 			}
 			if failed := strings.Contains(body, `"isError":true`); failed != (tc.says != "") || !strings.Contains(body, tc.says) {
 				t.Errorf("terminal_send = %s, want a tool error saying %q: %v", body, tc.says, tc.says != "")
+			}
+			if tc.says == "" && !strings.Contains(body, `"structuredContent":{"next":3}`) {
+				t.Errorf("terminal_send = %s, want the offset the input went in at, 3", body)
 			}
 			if !slices.Equal(term.Sent(), tc.sent) {
 				t.Errorf("sent %q, want %q", term.Sent(), tc.sent)

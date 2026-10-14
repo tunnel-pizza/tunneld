@@ -8,6 +8,7 @@ import (
 	"context"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -96,6 +97,23 @@ func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time
 		return nil, refusal
 	}
 	return term, nil
+}
+
+// MaxText is the most output text a tool hands an agent, so a log dump
+// cannot flood its context.
+const MaxText = 64 << 10
+
+// Capped is text cut to its last MaxText bytes, from a whole character, and
+// whether it was cut.
+func Capped(text string) (string, bool) {
+	if len(text) <= MaxText {
+		return text, false
+	}
+	text = text[len(text)-MaxText:]
+	for len(text) > 0 && !utf8.RuneStart(text[0]) {
+		text = text[1:]
+	}
+	return text, true
 }
 
 // Logged is a call's one log line: the tool, who, the client acting for

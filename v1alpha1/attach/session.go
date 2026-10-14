@@ -117,6 +117,11 @@ type session struct {
 	// output before the emulator sees them. Built by watch, reset by revive.
 	scan *scanner
 
+	// out is the program's output as text, for an agent to read from an
+	// offset. It does its own locking, and is reset by revive with the
+	// screen.
+	out *output
+
 	// titleMu guards the title and subtitle and nothing else. said writes them
 	// from the stream goroutine, a frame's titles() reads them from its own,
 	// and titleMu is deliberately not mu so neither waits behind viewer or
@@ -223,6 +228,7 @@ func newSession(ctx context.Context, target Target, banner string, logs logs.Log
 		sinks:   sinks,
 		resize:  make(chan remotecommand.TerminalSize),
 		em:      em,
+		out:     newOutput(outputSize),
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 
@@ -401,6 +407,7 @@ func (s *session) revive() {
 	s.screen.Unlock()
 	s.resetModes()
 	s.scan.reset()
+	s.out.reset()
 	s.log.Info("running it again", "target", s.Name())
 	s.stream()
 }
@@ -516,6 +523,7 @@ func (w *sink) Write(p []byte) (int, error) {
 	// emulator had the bytes would render the screen as it was, so the wake is
 	// after.
 	_, _ = s.scan.Write(p)
+	_, _ = s.out.Write(p)
 	s.wakeAll()
 	return len(p), nil
 }

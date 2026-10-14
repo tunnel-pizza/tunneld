@@ -1,9 +1,12 @@
 package attach
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -13,10 +16,19 @@ import (
 // not a run, so it outlives a restart.
 type Terminal interface {
 	// Send sends each step of input in order, starting the program again
-	// first if it has exited and can be, as a tab arriving does. A step it
-	// cannot send sends nothing: ErrUnknownKey for a key name it does not
-	// know, ErrBadInput for a step that is not exactly one of text or key.
-	Send(input ...Input) error
+	// first if it has exited and can be, as a tab arriving does, and answers
+	// the output's offset as the input went in: what the program prints in
+	// reply is read from there. A step it cannot send sends nothing:
+	// ErrUnknownKey for a key name it does not know, ErrBadInput for a step
+	// that is not exactly one of text or key.
+	Send(input ...Input) (int64, error)
+	// Read is the program's output after since, as text.
+	Read(since int64) Output
+	// Wait is Read(since) once until matches its text, the program has
+	// printed nothing for idle, or ctx is done, whichever is first, and
+	// whether until matched. A nil until never matches, and an idle of zero
+	// never ends it.
+	Wait(ctx context.Context, since int64, until *regexp.Regexp, idle time.Duration) (Output, bool)
 	// Screen is what the terminal shows now.
 	Screen() Screen
 }
@@ -95,16 +107,16 @@ func keyNamed(name string) (uv.Key, bool) {
 // Send hands each step to the emulator, as a tab's typing goes, which
 // encodes a key for the modes the program has set. Every step is checked
 // before any is sent.
-func (s *session) Send(input ...Input) error {
+func (s *session) Send(input ...Input) (int64, error) {
 	events := make([]uv.KeyEvent, 0, len(input))
 	for i, in := range input {
 		switch {
 		case (in.Text == "") == (in.Key == ""):
-			return fmt.Errorf("%w, not both or neither: step %d", ErrBadInput, i+1)
+			return 0, fmt.Errorf("%w, not both or neither: step %d", ErrBadInput, i+1)
 		case in.Key != "":
 			k, ok := keyNamed(in.Key)
 			if !ok {
-				return fmt.Errorf("%w %q: step %d", ErrUnknownKey, in.Key, i+1)
+				return 0, fmt.Errorf("%w %q: step %d", ErrUnknownKey, in.Key, i+1)
 			}
 			events = append(events, uv.KeyPressEvent(k))
 		default:
@@ -112,6 +124,7 @@ func (s *session) Send(input ...Input) error {
 		}
 	}
 	s.revive()
+	next := s.out.offset()
 	for i, ev := range events {
 		if ev == nil {
 			s.em.SendText(input[i].Text)
@@ -119,7 +132,40 @@ func (s *session) Send(input ...Input) error {
 		}
 		s.em.SendKey(ev)
 	}
-	return nil
+	return next, nil
+}
+
+// Read is the output log's text after since.
+func (s *session) Read(since int64) Output { return s.out.read(since) }
+
+// Wait reads again each time the log changes, until one of its ends. What
+// it answers on quiet or ctx is the last read, its Next where that read
+// stopped, so nothing printed meanwhile is skipped by the next read.
+func (s *session) Wait(ctx context.Context, since int64, until *regexp.Regexp, idle time.Duration) (Output, bool) {
+	var timer *time.Timer
+	var quiet <-chan time.Time
+	if idle > 0 {
+		timer = time.NewTimer(idle)
+		defer timer.Stop()
+		quiet = timer.C
+	}
+	for {
+		changed := s.out.changed()
+		got := s.out.read(since)
+		if until != nil && until.MatchString(got.Text) {
+			return got, true
+		}
+		select {
+		case <-changed:
+			if timer != nil {
+				timer.Reset(idle)
+			}
+		case <-quiet:
+			return got, false
+		case <-ctx.Done():
+			return got, false
+		}
+	}
 }
 
 // Screen reads the live screen under the screen lock, so output arriving

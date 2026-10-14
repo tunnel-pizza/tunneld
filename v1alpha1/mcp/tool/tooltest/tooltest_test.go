@@ -3,9 +3,11 @@ package tooltest
 import (
 	"context"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -79,8 +81,8 @@ func TestBound(t *testing.T) {
 // shows what it was given, and with Err keeps nothing.
 func TestTerminal(t *testing.T) {
 	term := &Terminal{Shows: attach.Screen{Title: "sh"}}
-	_ = term.Send(attach.Input{Text: "ls"}, attach.Input{Key: "Enter"})
-	_ = term.Send(attach.Input{Key: "Ctrl-C"})
+	_, _ = term.Send(attach.Input{Text: "ls"}, attach.Input{Key: "Enter"})
+	_, _ = term.Send(attach.Input{Key: "Ctrl-C"})
 	if want := []attach.Input{{Text: "ls"}, {Key: "Enter"}, {Key: "Ctrl-C"}}; !slices.Equal(term.Sent(), want) {
 		t.Errorf("Sent = %q, want %q", term.Sent(), want)
 	}
@@ -88,7 +90,29 @@ func TestTerminal(t *testing.T) {
 		t.Errorf("Screen = %+v, want the one given", term.Screen())
 	}
 	failing := &Terminal{Err: attach.ErrUnknownKey}
-	if err := failing.Send(attach.Input{Text: "ls"}); !errors.Is(err, attach.ErrUnknownKey) || failing.Sent() != nil {
+	if _, err := failing.Send(attach.Input{Text: "ls"}); !errors.Is(err, attach.ErrUnknownKey) || failing.Sent() != nil {
 		t.Errorf("Send = %v with %q kept, want Err and nothing", err, failing.Sent())
+	}
+}
+
+// TestTerminalPrints pins the fake's log: Send answers where Prints ends,
+// Read is Prints after an offset, and Wait keeps what it was asked and
+// matches until against what it read.
+func TestTerminalPrints(t *testing.T) {
+	term := &Terminal{Prints: "$ ls\ngo.mod\n"}
+	if next, _ := term.Send(attach.Input{Key: "Enter"}); next != 12 {
+		t.Errorf("Send = %d, want 12, where Prints ends", next)
+	}
+	if got := term.Read(5); got.Text != "go.mod\n" || got.Next != 12 {
+		t.Errorf("Read(5) = %+v, want go.mod up to 12", got)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	got, matched := term.Wait(ctx, 0, regexp.MustCompile(`go\.mod`), time.Second)
+	if !matched || got.Text != term.Prints {
+		t.Errorf("Wait = %+v, %v; want Prints, matched", got, matched)
+	}
+	if w := term.LastWait(); w.Until != `go\.mod` || w.Idle != time.Second || w.Left <= 0 || w.Left > time.Minute {
+		t.Errorf("LastWait = %+v, want what Wait was asked", w)
 	}
 }

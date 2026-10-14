@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
@@ -154,5 +155,19 @@ func TestTerminal(t *testing.T) {
 				t.Errorf("log %q, want the refusal", got())
 			}
 		})
+	}
+}
+
+// TestCapped pins the bound on output an agent is handed: text within
+// MaxText is as it is, and longer text keeps its end, from a whole
+// character, and says it was cut.
+func TestCapped(t *testing.T) {
+	if got, cut := Capped("short"); got != "short" || cut {
+		t.Errorf("Capped(short) = %q, %v", got, cut)
+	}
+	long := "✳" + strings.Repeat("x", MaxText-2) + "end"
+	got, cut := Capped(long)
+	if !cut || !strings.HasSuffix(got, "end") || len(got) > MaxText || !utf8.ValidString(got) {
+		t.Errorf("Capped(long) = %d bytes ending %q, %v; want at most %d valid bytes ending end, cut", len(got), got[len(got)-3:], cut, MaxText)
 	}
 }
