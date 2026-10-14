@@ -154,12 +154,12 @@ func (s *session) Read(reader, cursor string) (Output, error) {
 	if err != nil {
 		return Output{}, err
 	}
-	return s.answered(reader, s.out.read(since), s.fullScreen()), nil
+	return s.answered(reader, s.out.take(since), s.fullScreen()), nil
 }
 
-// Wait reads again each time the log changes, until one of its ends. What
-// it answers on quiet or ctx is the last read, its cursor where that read
-// stopped, so nothing printed meanwhile is skipped by the next read. While
+// Wait reads again each time the log changes, until one of its ends, and
+// takes what it answers: what is held is kept, so the next read goes on
+// from after it. While
 // a full-screen program is up, until matches the screen's rows, and every
 // change to the screen is one.
 func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp.Regexp, idle time.Duration) (Output, bool, error) {
@@ -182,7 +182,7 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 			text = strings.Join(screen.Rows, "\n")
 		}
 		if until != nil && until.MatchString(text) {
-			return s.answered(reader, got, screen), true, nil
+			return s.answered(reader, s.out.take(since), screen), true, nil
 		}
 		select {
 		case <-changed:
@@ -190,9 +190,9 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 				timer.Reset(idle)
 			}
 		case <-quiet:
-			return s.answered(reader, got, screen), false, nil
+			return s.answered(reader, s.out.take(since), screen), false, nil
 		case <-ctx.Done():
-			return s.answered(reader, got, screen), false, nil
+			return s.answered(reader, s.out.take(since), screen), false, nil
 		}
 	}
 }
