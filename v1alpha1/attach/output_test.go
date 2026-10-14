@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-// TestOutputStripsTheTerminal pins what the log keeps of a program's
-// output: the text, with newlines and tabs, and none of the control
-// sequences, carriage returns or other controls a terminal acts on, however
-// the stream is cut.
-func TestOutputStripsTheTerminal(t *testing.T) {
+// TestOutputRendersTheTerminal pins what the log keeps of a program's
+// output: each line as the terminal shows it, what a redraw overwrote gone
+// and no control sequence left, the cursor's line last as far as the
+// cursor, however the stream is cut.
+func TestOutputRendersTheTerminal(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		stream string
 		want   string
 	}{
-		{"plain text", "hello\r\nworld\n", "hello\nworld\n"},
+		{"lines", "hello\r\nworld\r\n", "hello\nworld\n"},
 		{"colour", "\x1b[1;31mred\x1b[0m plain", "red plain"},
 		{"a title", "\x1b]0;my title\x07after", "after"},
 		{"a title ended by ST", "\x1b]2;t\x1b\\after", "after"},
@@ -25,8 +25,13 @@ func TestOutputStripsTheTerminal(t *testing.T) {
 		{"a charset", "\x1b(Bok", "ok"},
 		{"a two-byte escape", "\x1b=\x1b>ok", "ok"},
 		{"a DCS", "\x1bP1$r0m\x1b\\ok", "ok"},
-		{"tabs and controls", "a\tb\x07\x08c", "a\tbc"},
+		{"a tab", "a\tb", "a       b"},
 		{"UTF-8", "✳ 末 “quoted”", "✳ 末 “quoted”"},
+		{"a shell redrawing what was typed", "% l\x08ls\r\r\nCLAUDE.md\r\n% ", "% ls\nCLAUDE.md\n% "},
+		{"a carriage return", "50%\r100%\r\n", "100%\n"},
+		{"a line cleared", "abc\r\x1b[Kxy", "xy"},
+		{"zsh's partial-line mark", "%" + strings.Repeat(" ", 79) + "\r \r$ ", "$ "},
+		{"a full-screen program", "$ htop\r\n\x1b[?1049h\x1b[2J\x1b[HCPU 3%\x1b[?1049l$ ", "$ htop\n$ "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Every way of cutting the stream in two reads the same.
@@ -42,32 +47,90 @@ func TestOutputStripsTheTerminal(t *testing.T) {
 	}
 }
 
+// TestOutputRedraws pins lines the log already has that the screen then
+// changes: a clear, and a row rewritten above the cursor. What was logged
+// stays, and every line drawn after is logged, each once.
+func TestOutputRedraws(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{"a clear", []string{"a\r\n\r\nb\r\n", "\x1b[H\x1b[2Jc\r\nd\r\n"}, "a\n\nb\nc\nd\n"},
+		{"a clear, then a line at a time", []string{"a\r\n\r\nb\r\n", "\x1b[H\x1b[2J", "c\r\n", "d\r\n"}, "a\n\nb\nc\nd\n"},
+		{"a row rewritten above the cursor", []string{"one\r\ntwo\r\n", "\x1b[Aowt\r\n"}, "one\ntwo\nowt\n"},
+		{"a scroll after a clear", []string{"a\r\n\r\nb\r\n", "\x1b[H\x1b[2J", strings.Repeat("c\r\n", 30)}, "a\n\nb\n" + strings.Repeat("c\n", 30)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newOutput(1 << 10)
+			for _, w := range tc.writes {
+				_, _ = l.Write([]byte(w))
+			}
+			if got := l.read(0).Text; got != tc.want {
+				t.Errorf("read(0) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOutputScrolls pins lines that scroll off the screen: each kept once,
+// in order, however many go in one write.
+func TestOutputScrolls(t *testing.T) {
+	l := newOutput(1 << 16)
+	var want strings.Builder
+	for i := range 100 {
+		_, _ = l.Write([]byte(strings.Repeat("x", i%7) + "\r\n"))
+		want.WriteString(strings.Repeat("x", i%7) + "\n")
+	}
+	var burst strings.Builder
+	for i := range 60 {
+		burst.WriteString(strings.Repeat("y", i%5) + "\r\n")
+		want.WriteString(strings.Repeat("y", i%5) + "\n")
+	}
+	_, _ = l.Write([]byte(burst.String()))
+	if got := l.read(0).Text; got != want.String() {
+		t.Errorf("read(0) = %q, want %q", got, want.String())
+	}
+}
+
+// TestOutputFollowsTheSize pins resize: a line wraps where the terminal
+// the person sees wraps it.
+func TestOutputFollowsTheSize(t *testing.T) {
+	l := newOutput(1 << 10)
+	l.resize(4, 3)
+	_, _ = l.Write([]byte("abcdef\r\n"))
+	if got := l.read(0).Text; got != "abcd\nef\n" {
+		t.Errorf("read(0) = %q, want abcd and ef, wrapped at 4", got)
+	}
+}
+
 // TestOutputOffsets pins reading from an offset: the text after it and the
 // next offset to read from, with dropped saying a reader fell behind what
-// is kept.
+// is kept. The line the cursor is on is read each time, until the cursor
+// leaves it.
 func TestOutputOffsets(t *testing.T) {
 	l := newOutput(8)
-	_, _ = l.Write([]byte("abcd"))
-	if got := l.read(0); got.Text != "abcd" || got.Next != 4 || got.Dropped {
-		t.Errorf("read(0) = %+v, want abcd up to 4", got)
+	_, _ = l.Write([]byte("a\r\nb\r\n$ "))
+	if got := l.read(0); got.Text != "a\nb\n$ " || got.Next != 4 || got.Dropped {
+		t.Errorf("read(0) = %+v, want a, b and the prompt, up to 4", got)
 	}
-	if got := l.read(2); got.Text != "cd" || got.Next != 4 {
-		t.Errorf("read(2) = %+v, want cd up to 4", got)
+	if got := l.read(2); got.Text != "b\n$ " || got.Next != 4 {
+		t.Errorf("read(2) = %+v, want b and the prompt, up to 4", got)
 	}
-	if got := l.read(4); got.Text != "" || got.Next != 4 {
-		t.Errorf("read(4) = %+v, want nothing new", got)
+	if got := l.read(4); got.Text != "$ " || got.Next != 4 {
+		t.Errorf("read(4) = %+v, want the prompt again", got)
 	}
-	if got := l.read(99); got.Text != "" || got.Next != 4 {
-		t.Errorf("read(99) = %+v, want nothing, from the end", got)
+	if got := l.read(99); got.Text != "$ " || got.Next != 4 {
+		t.Errorf("read(99) = %+v, want the prompt, from the end", got)
 	}
 
-	_, _ = l.Write([]byte(strings.Repeat("x", 20)))
+	_, _ = l.Write([]byte("ls\r\n" + strings.Repeat("x\r\n", 9)))
 	got := l.read(0)
-	if !got.Dropped || got.Next != 24 || len(got.Text) < 8 || strings.Trim(got.Text, "x") != "" {
-		t.Errorf("read(0) after 24 bytes in an 8-byte log = %+v, want dropped, at least the last 8 bytes, up to 24", got)
+	if !got.Dropped || got.Next != 27 || len(got.Text) < 8 || strings.Trim(got.Text, "x\n") != "" {
+		t.Errorf("read(0) after 27 bytes in an 8-byte log = %+v, want dropped, at least the last 8 bytes, up to 27", got)
 	}
-	if got := l.read(20); got.Dropped || got.Text != "xxxx" {
-		t.Errorf("read(20) = %+v, want the last 4, nothing dropped", got)
+	if got := l.read(23); got.Dropped || got.Text != "x\nx\n" {
+		t.Errorf("read(23) = %+v, want the last two lines, nothing dropped", got)
 	}
 }
 
@@ -76,7 +139,7 @@ func TestOutputOffsets(t *testing.T) {
 // and a reader is told it was woken.
 func TestOutputResets(t *testing.T) {
 	l := newOutput(1 << 10)
-	_, _ = l.Write([]byte("run 1\x1b]0;half a ti"))
+	_, _ = l.Write([]byte("run 1\r\n\x1b]0;half a ti"))
 	woken := l.changed()
 	l.reset()
 	select {
@@ -84,14 +147,15 @@ func TestOutputResets(t *testing.T) {
 	default:
 		t.Error("reset woke nobody")
 	}
-	_, _ = l.Write([]byte("run 2"))
-	if got := l.read(0); got.Text != "run 2" || got.Next != 10 || !got.Dropped {
-		t.Errorf("read(0) after a reset = %+v, want run 2 alone up to 10, the first run dropped", got)
+	_, _ = l.Write([]byte("run 2\r\n"))
+	if got := l.read(0); got.Text != "run 2\n" || got.Next != 12 || !got.Dropped {
+		t.Errorf("read(0) after a reset = %+v, want run 2 alone up to 12, the first run dropped", got)
 	}
 }
 
-// TestOutputWakes pins changed: it closes when text arrives, and not for
-// output that leaves no text.
+// TestOutputWakes pins changed: it closes when what a read answers changes,
+// the line the cursor is on included, and not for output that changes
+// nothing.
 func TestOutputWakes(t *testing.T) {
 	l := newOutput(1 << 10)
 	ch := l.changed()

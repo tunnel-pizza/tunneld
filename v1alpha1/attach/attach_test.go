@@ -1282,7 +1282,7 @@ func (r *rerunTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.
 		}
 	}()
 
-	_, _ = fmt.Fprintf(out, "run %d", n)
+	_, _ = fmt.Fprintf(out, "run %d\r\n", n)
 	r.ran <- n
 
 	// Held open only from the run a test wants to interrogate: an earlier one

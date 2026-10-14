@@ -885,6 +885,7 @@ func (s *session) negotiate() remotecommand.TerminalSize {
 		return remotecommand.TerminalSize{} // nothing to apply
 	}
 	s.em.Resize(int(pane.Width), int(pane.Height))
+	s.out.resize(int(pane.Width), int(pane.Height))
 	return pane
 }
 

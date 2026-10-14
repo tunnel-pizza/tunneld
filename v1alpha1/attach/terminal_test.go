@@ -250,15 +250,15 @@ func TestTerminalLogResetsWithTheScreen(t *testing.T) {
 	s := serveFake(t, target)
 	target.awaitOver(t, 1)
 	awaitEnded(t, s)
-	if got := s.session.out.read(0); got.Text != "run 1" {
+	if got := s.session.out.read(0); got.Text != "run 1\n" {
 		t.Fatalf("read(0) = %+v, want the first run's output", got)
 	}
 	if _, err := Terminal(s.session).Send("a", Input{Text: "x"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	target.awaitRun(t, 2)
-	if got := awaitRead(t, Terminal(s.session), s.session.out.cursor(0), "run 2"); !got.Dropped || got.Cursor != s.session.out.cursor(10) {
-		t.Errorf("after a restart, a read from the start = %+v, want run 2 alone up to 10, the first run dropped", got)
+	if got := awaitRead(t, Terminal(s.session), s.session.out.cursor(0), "run 2\n"); !got.Dropped || got.Cursor != s.session.out.cursor(12) {
+		t.Errorf("after a restart, a read from the start = %+v, want run 2 alone up to 12, the first run dropped", got)
 	}
 }
 
@@ -310,6 +310,34 @@ func TestTerminalLeavesTheSizeAlone(t *testing.T) {
 	s.session.mu.Unlock()
 	if after != before {
 		t.Errorf("size = %+v, want it left at %+v", after, before)
+	}
+}
+
+// TestTerminalReadsAtThePersonsSize pins the log following the size the
+// person's window settled: a line wraps where theirs does.
+func TestTerminalReadsAtThePersonsSize(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	s := serveFake(t, target)
+	c := dial(t, s)
+	readFrame(t, c)
+	writeFrame(t, c, 4, `{"Width":50,"Height":20}`)
+	width := 50 - chromeWidth
+	logWidth := func() int {
+		s.session.out.mu.Lock()
+		defer s.session.out.mu.Unlock()
+		return s.session.out.em.Width()
+	}
+	for logWidth() != width {
+		select {
+		case <-target.seenSz:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the log is %d wide, want %d", logWidth(), width)
+		}
+	}
+	_, _ = (&sink{s.session}).Write([]byte(strings.Repeat("x", width+3) + "\r\n"))
+	got, err := Terminal(s.session).Read("a", s.session.out.cursor(0))
+	if want := strings.Repeat("x", width) + "\nxxx\n"; err != nil || got.Text != want {
+		t.Errorf("Read = %q, %v; want %q", got.Text, err, want)
 	}
 }
 

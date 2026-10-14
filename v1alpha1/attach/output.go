@@ -5,9 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/vt"
 )
 
 // outputSize is how much of a program's output a session's log keeps, at
@@ -27,7 +33,7 @@ var ErrStaleCursor = errors.New("attach: a cursor from another terminal, or from
 // Output is a stretch of a program's output as text, the cursor to read
 // from next, and whether some of what came before it was no longer kept.
 type Output struct {
-	Text    string `json:"text" jsonschema:"the program's output, as text: control sequences and carriage returns dropped"`
+	Text    string `json:"text" jsonschema:"the program's output as the terminal shows it, a line per row: the row the cursor is on last, as far as the cursor"`
 	Cursor  string `json:"cursor" jsonschema:"where this read stopped: pass it back to read on from here"`
 	Dropped bool   `json:"dropped" jsonschema:"whether output before text was no longer kept, so some was missed"`
 }
@@ -40,13 +46,23 @@ type chunk struct {
 	Dropped bool
 }
 
-// output is a session's log: the text of everything its program printed,
-// the control sequences a terminal acts on dropped, each byte at an offset
-// that counts up for the life of the session.
+// output is a session's log: every line its program printed as the
+// terminal shows it, each byte at an offset that counts up for the life of
+// the session. A line is in the log once the program is done with it, once
+// it scrolls off the screen or the cursor moves below it; the line the
+// cursor is on is read as far as the cursor, and is not yet at an offset.
 type output struct {
-	mu    sync.Mutex
-	strip stripper
-	size  int
+	mu   sync.Mutex
+	size int
+	// em is the log's own screen, the same size as the one the person sees,
+	// so a line wraps where theirs does. Its scrollback is emptied after
+	// every write: what it held is what left the screen since the last.
+	em *vt.Emulator
+	// logged is the text of the screen's first rows, those already in buf,
+	// as they were when they went in.
+	logged []string
+	// line is the cursor's line, as far as the cursor, when it is not in buf.
+	line string
 	// buf is the kept text, oldest first, ending at offset end. It holds at
 	// least size bytes once that much has arrived, and at most twice that:
 	// compacting to size only once it doubles keeps a busy program's every
@@ -71,7 +87,14 @@ type position struct {
 }
 
 func newOutput(size int) *output {
+	em := vt.NewEmulator(defaultCols, defaultRows)
+	// Room for every line one write can scroll off, emptied after each.
+	em.SetScrollbackSize(size)
+	// What the emulator answers a program goes nowhere: the session's own
+	// screen answers it. Unread, it would block the next write.
+	go func() { _, _ = io.Copy(io.Discard, em) }()
 	o := &output{
+		em:      em,
 		size:    size,
 		wake:    make(chan struct{}),
 		readers: map[string]position{},
@@ -126,20 +149,88 @@ func (o *output) forget() {
 	}
 }
 
-// Write keeps the text in p.
+// Write draws p on the log's screen, and keeps the lines it finished.
 func (o *output) Write(p []byte) (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	before := len(o.buf)
-	o.buf = o.strip.append(o.buf, p)
-	if added := len(o.buf) - before; added > 0 {
+	_, _ = o.em.Write(p)
+	o.settle()
+	return len(p), nil
+}
+
+// resize follows the screen the person sees.
+func (o *output) resize(width, height int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.em.Resize(width, height)
+	o.settle()
+}
+
+// settle moves into buf each line the program is done with, once: those
+// that left the screen without being logged, then those above the cursor.
+// What left the screen went from logged first; a logged row the screen no
+// longer shows, and every row below it, is logged again once the cursor is
+// past it. A full-screen program's screen is its own, and leaves nothing.
+// Called with mu held.
+func (o *output) settle() {
+	before, line := len(o.buf), o.line
+	sb := o.em.Scrollback()
+	left := sb.Lines()
+	gone := min(len(left), len(o.logged))
+	for _, l := range left[gone:] {
+		o.buf = append(append(o.buf, text(len(l), l.At)...), '\n')
+	}
+	o.logged = o.logged[gone:]
+	sb.Clear()
+	o.line = ""
+	if !o.em.IsAltScreen() {
+		for y, was := range o.logged {
+			if o.row(y) != was {
+				o.logged = o.logged[:y]
+				break
+			}
+		}
+		at := o.em.CursorPosition()
+		for y := len(o.logged); y < at.Y; y++ {
+			row := o.row(y)
+			o.buf = append(append(o.buf, row...), '\n')
+			o.logged = append(o.logged, row)
+		}
+		if len(o.logged) == at.Y {
+			o.line = o.row(at.Y)
+			if pad := at.X - ansi.StringWidth(o.line); pad > 0 {
+				o.line += strings.Repeat(" ", pad)
+			}
+		}
+	}
+	if added := len(o.buf) - before; added > 0 || o.line != line {
 		o.end += int64(added)
 		if len(o.buf) > 2*o.size {
 			o.buf = append(o.buf[:0], o.buf[len(o.buf)-o.size:]...)
 		}
 		o.notify()
 	}
-	return len(p), nil
+}
+
+// row is the text on the log's screen at row y.
+func (o *output) row(y int) string {
+	return text(o.em.Width(), func(x int) *uv.Cell { return o.em.CellAt(x, y) })
+}
+
+// text is a row of width cells as text, without the blanks after the last.
+func text(width int, at func(x int) *uv.Cell) string {
+	var b strings.Builder
+	for x := range width {
+		switch c := at(x); {
+		case c == nil:
+			b.WriteByte(' ')
+		case c.Content == "" && c.Width == 0:
+			// The tail of a wide character; the head carried it.
+		default:
+			b.WriteString(c.Content)
+		}
+	}
+	return strings.TrimRight(b.String(), " ")
 }
 
 // read is the text after since, from the oldest kept when since is older,
@@ -160,7 +251,7 @@ func (o *output) read(since int64) chunk {
 			text = text[1:]
 		}
 	}
-	return chunk{Text: string(text), Next: o.end, Dropped: dropped}
+	return chunk{Text: string(text) + o.line, Next: o.end, Dropped: dropped}
 }
 
 // offset is where the next text will start.
@@ -182,8 +273,10 @@ func (o *output) changed() <-chan struct{} {
 func (o *output) reset() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	_, _ = o.em.Write([]byte("\x1bc"))
+	o.em.ClearScrollback()
 	o.buf = o.buf[:0]
-	o.strip = stripper{}
+	o.logged, o.line = nil, ""
 	o.notify()
 }
 
@@ -191,76 +284,4 @@ func (o *output) reset() {
 func (o *output) notify() {
 	close(o.wake)
 	o.wake = make(chan struct{})
-}
-
-// stripper drops what a terminal acts on from a byte stream and keeps the
-// text, across writes: a sequence cut between two of them is still dropped
-// whole. Like scanner, it branches only on 7-bit bytes, so UTF-8 passes
-// through untouched.
-type stripper struct{ state stripState }
-
-type stripState int
-
-const (
-	stripGround    stripState = iota
-	stripEsc                  // after ESC
-	stripEscInter             // after ESC and an intermediate byte
-	stripCSI                  // in ESC [ ... final
-	stripString               // in an OSC, DCS, SOS, PM or APC
-	stripStringEsc            // after ESC inside one, which ST (ESC \) ends
-)
-
-// append appends the text in p to dst.
-func (s *stripper) append(dst, p []byte) []byte {
-	for _, b := range p {
-		switch s.state {
-		case stripGround:
-			switch {
-			case b == 0x1b:
-				s.state = stripEsc
-			case b == '\n' || b == '\t' || (b >= 0x20 && b != 0x7f):
-				dst = append(dst, b)
-			}
-		case stripEsc:
-			s.escape(b)
-		case stripEscInter:
-			if b >= 0x30 && b <= 0x7e {
-				s.state = stripGround
-			}
-		case stripCSI:
-			if (b >= 0x40 && b <= 0x7e) || b == 0x18 || b == 0x1a {
-				s.state = stripGround
-			}
-		case stripString:
-			switch b {
-			case 0x07, 0x18, 0x1a:
-				s.state = stripGround
-			case 0x1b:
-				s.state = stripStringEsc
-			}
-		case stripStringEsc:
-			if b == '\\' {
-				s.state = stripGround
-			} else {
-				s.escape(b)
-			}
-		}
-	}
-	return dst
-}
-
-// escape is the byte after an ESC.
-func (s *stripper) escape(b byte) {
-	switch {
-	case b == '[':
-		s.state = stripCSI
-	case b == ']' || b == 'P' || b == 'X' || b == '^' || b == '_':
-		s.state = stripString
-	case b == 0x1b:
-		s.state = stripEsc
-	case b >= 0x20 && b <= 0x2f:
-		s.state = stripEscInter
-	default:
-		s.state = stripGround
-	}
 }
