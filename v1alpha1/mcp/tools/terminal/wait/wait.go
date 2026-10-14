@@ -9,6 +9,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
 )
 
 // Tool is terminal_wait.
@@ -23,23 +24,23 @@ var Tool = tool.New(sdk.Tool{
 type In struct {
 	URL    string `json:"url" jsonschema:"The terminal's address on the tunnel: https://hostname/. If the tunnel presents multiple origins, add the terminal's index from terminal_sessions as a bare query parameter: https://hostname/?1, not ?n=1. The first origin, index 0, needs none."`
 	Cursor string `json:"cursor,omitempty" jsonschema:"where to read on from: a cursor a terminal tool answered; left out, from where this sign-in last stopped"`
-	tool.WaitFor
+	output.WaitFor
 }
 
 // run waits on the output of the terminal url names, for the caller.
-func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, tool.Reply, error) {
+func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, output.Reply, error) {
 	start := time.Now()
 	if _, err := in.Pattern(); err != nil {
 		c.Logged(ctx, "terminal_wait", "refused", start)
-		return tool.Failed("until is not a regular expression: " + err.Error() + "."), tool.Reply{}, nil
+		return tool.Failed("until is not a regular expression: " + err.Error() + "."), output.Reply{}, nil
 	}
 	term, refusal := c.Terminal(ctx, "terminal_wait", in.URL, start)
 	if refusal != nil {
-		return refusal, tool.Reply{}, nil
+		return refusal, output.Reply{}, nil
 	}
-	reply, refusal := c.Reply(ctx, "terminal_wait", term, c.Caller(ctx), in.Cursor, in.WaitFor, start)
+	reply, refusal := output.Wait(c, ctx, "terminal_wait", term, c.Caller(ctx), in.Cursor, in.WaitFor, start)
 	if refusal != nil {
-		return refusal, tool.Reply{}, nil
+		return refusal, output.Reply{}, nil
 	}
 	c.Logged(ctx, "terminal_wait", "read", start)
 	return nil, reply, nil

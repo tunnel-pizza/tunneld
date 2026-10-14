@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -197,104 +196,5 @@ func TestCaller(t *testing.T) {
 	}
 	if c.Caller(t.Context()) != c.Caller(context.Background()) {
 		t.Error("the secret is one caller")
-	}
-}
-
-// waiting is a terminal that answers Wait with got, matched, err, keeping
-// what it was asked.
-type waiting struct {
-	attach.Terminal // the rest, which Reply never asks of it
-	got             attach.Output
-	matched         bool
-	err             error
-	block           bool
-	asked           struct {
-		reader, cursor, until string
-		idle                  time.Duration
-		left                  time.Duration
-	}
-}
-
-func (w *waiting) Wait(ctx context.Context, reader, cursor string, until *regexp.Regexp, idle time.Duration) (attach.Output, bool, error) {
-	w.asked.reader, w.asked.cursor, w.asked.idle = reader, cursor, idle
-	if until != nil {
-		w.asked.until = until.String()
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		w.asked.left = time.Until(deadline)
-	}
-	if w.block {
-		<-ctx.Done()
-	}
-	return w.got, w.matched, w.err
-}
-
-// TestReply pins how a terminal tool waits: the defaults and the cap on
-// what it is asked, the answer saying how the wait ended, its text capped,
-// and a bad pattern or a cursor not the terminal's a tool error.
-func TestReply(t *testing.T) {
-	ms := func(n int) *int { return &n }
-	for name, tc := range map[string]struct {
-		w      WaitFor
-		term   *waiting
-		idle   time.Duration
-		left   time.Duration
-		until  string
-		reply  Reply
-		failed string
-	}{
-		"defaults":       {WaitFor{}, &waiting{got: attach.Output{Text: "hi", Cursor: "@2"}}, 500 * time.Millisecond, 10 * time.Second, "", Reply{Output: attach.Output{Text: "hi", Cursor: "@2"}}, ""},
-		"a match":        {WaitFor{Until: `done: \d`}, &waiting{matched: true}, 500 * time.Millisecond, 10 * time.Second, `done: \d`, Reply{Matched: true}, ""},
-		"no quiet":       {WaitFor{IdleMs: ms(0), TimeoutMs: 2000}, &waiting{}, 0, 2 * time.Second, "", Reply{}, ""},
-		"past the cap":   {WaitFor{TimeoutMs: 60_000}, &waiting{}, 500 * time.Millisecond, 25 * time.Second, "", Reply{}, ""},
-		"timed out":      {WaitFor{TimeoutMs: 1, IdleMs: ms(0)}, &waiting{block: true}, 0, time.Millisecond, "", Reply{TimedOut: true}, ""},
-		"a bad pattern":  {WaitFor{Until: "("}, &waiting{}, 0, 0, "", Reply{}, "until is not a regular expression"},
-		"a stale cursor": {WaitFor{}, &waiting{err: attach.ErrStaleCursor}, 500 * time.Millisecond, 10 * time.Second, "", Reply{}, "not this terminal's"},
-		"a junk cursor":  {WaitFor{}, &waiting{err: attach.ErrBadCursor}, 500 * time.Millisecond, 10 * time.Second, "", Reply{}, "not a cursor"},
-		"too much text":  {WaitFor{}, &waiting{got: attach.Output{Text: strings.Repeat("x", MaxText+1)}}, 500 * time.Millisecond, 10 * time.Second, "", Reply{}, ""},
-	} {
-		t.Run(name, func(t *testing.T) {
-			c, got := logged(t)
-			reply, refusal := c.Reply(t.Context(), "a_tool", tc.term, "me", "@0", tc.w, time.Now())
-			if tc.failed != "" {
-				if refusal == nil || !strings.Contains(refusal.Content[0].(*sdk.TextContent).Text, tc.failed) || !strings.Contains(got(), "ended=refused") {
-					t.Errorf("refusal = %+v, log %q; want a logged tool error saying %q", refusal, got(), tc.failed)
-				}
-				return
-			}
-			if refusal != nil {
-				t.Fatalf("refusal = %+v, want none", refusal)
-			}
-			if tc.term.asked.reader != "me" || tc.term.asked.cursor != "@0" || tc.term.asked.idle != tc.idle || tc.term.asked.until != tc.until ||
-				tc.term.asked.left > tc.left || tc.term.asked.left < tc.left-time.Second {
-				t.Errorf("asked %+v, want idle %v, about %v left, until %q", tc.term.asked, tc.idle, tc.left, tc.until)
-			}
-			if name == "too much text" {
-				if !reply.Truncated || len(reply.Text) != MaxText {
-					t.Errorf("reply %d bytes, truncated %v; want %d, truncated", len(reply.Text), reply.Truncated, MaxText)
-				}
-				return
-			}
-			if reply != tc.reply {
-				t.Errorf("reply = %+v, want %+v", reply, tc.reply)
-			}
-		})
-	}
-}
-
-// TestUnreadable pins the tool error for a cursor a read cannot use.
-func TestUnreadable(t *testing.T) {
-	c, got := logged(t)
-	for err, says := range map[error]string{
-		attach.ErrStaleCursor: "not this terminal's",
-		attach.ErrBadCursor:   "not a cursor",
-	} {
-		r := c.Unreadable(t.Context(), "a_tool", err, time.Now())
-		if r == nil || !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, says) {
-			t.Errorf("Unreadable(%v) = %+v, want a tool error saying %q", err, r, says)
-		}
-	}
-	if !strings.Contains(got(), "ended=refused") {
-		t.Errorf("log %q, want the refusals", got())
 	}
 }

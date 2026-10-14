@@ -9,6 +9,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
 )
 
 // Tool is terminal_exec.
@@ -23,40 +24,40 @@ var Tool = tool.New(sdk.Tool{
 type In struct {
 	URL   string         `json:"url" jsonschema:"The terminal's address on the tunnel: https://hostname/. If the tunnel presents multiple origins, add the terminal's index from terminal_sessions as a bare query parameter: https://hostname/?1, not ?n=1. The first origin, index 0, needs none."`
 	Input []attach.Input `json:"input" jsonschema:"what to send, in order: each step exactly one of text or key"`
-	tool.WaitFor
+	output.WaitFor
 }
 
 // run types into the terminal url names, then waits for the reply from
 // where the input went in, unless told to answer at once.
-func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, tool.Reply, error) {
+func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, output.Reply, error) {
 	start := time.Now()
 	if len(in.Input) == 0 {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("Nothing to send: input needs at least one step."), tool.Reply{}, nil
+		return tool.Failed("Nothing to send: input needs at least one step."), output.Reply{}, nil
 	}
 	// Checked before anything is typed: a pattern refused after would leave
 	// the input sent and its reply unread.
 	if _, err := in.Pattern(); err != nil {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("until is not a regular expression: " + err.Error() + "."), tool.Reply{}, nil
+		return tool.Failed("until is not a regular expression: " + err.Error() + "."), output.Reply{}, nil
 	}
 	term, refusal := c.Terminal(ctx, "terminal_exec", in.URL, start)
 	if refusal != nil {
-		return refusal, tool.Reply{}, nil
+		return refusal, output.Reply{}, nil
 	}
 	reader := c.Caller(ctx)
 	sent, err := term.Send(reader, in.Input...)
 	if err != nil {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed(err.Error() + "."), tool.Reply{}, nil
+		return tool.Failed(err.Error() + "."), output.Reply{}, nil
 	}
 	if in.Until == "" && in.IdleMs != nil && *in.IdleMs == 0 {
 		c.Logged(ctx, "terminal_exec", "sent", start)
-		return nil, tool.Reply{Output: attach.Output{Cursor: sent}}, nil
+		return nil, output.Reply{Output: attach.Output{Cursor: sent}}, nil
 	}
-	reply, refusal := c.Reply(ctx, "terminal_exec", term, reader, sent, in.WaitFor, start)
+	reply, refusal := output.Wait(c, ctx, "terminal_exec", term, reader, sent, in.WaitFor, start)
 	if refusal != nil {
-		return refusal, tool.Reply{}, nil
+		return refusal, output.Reply{}, nil
 	}
 	c.Logged(ctx, "terminal_exec", "sent", start)
 	return nil, reply, nil

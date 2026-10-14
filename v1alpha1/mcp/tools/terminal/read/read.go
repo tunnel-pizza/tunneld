@@ -10,6 +10,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
 )
 
 // Tool is terminal_read.
@@ -41,7 +42,7 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	}
 	got, err := term.Read(c.Caller(ctx), in.Cursor)
 	if err != nil {
-		return c.Unreadable(ctx, "terminal_read", err, start), Out{}, nil
+		return output.Unreadable(c, ctx, "terminal_read", err, start), Out{}, nil
 	}
 	out := Out{Output: got}
 	out.Text, out.Truncated = tool.Capped(out.Text)
