@@ -40,7 +40,6 @@ var (
 	_ attach.Target     = (*TargetImpl)(nil)
 	_ attach.Targets    = (*TargetsImpl)(nil)
 	_ attach.Repeatable = (*TargetImpl)(nil)
-	_ attach.Spawner    = (*TargetImpl)(nil)
 )
 
 // Resolve answers whether s names a program this machine can run, and with
@@ -107,11 +106,11 @@ func New(opts ...Option) *TargetsImpl {
 	return v1.Apply(&TargetsImpl{open: openPTY, shimless: shimReason}, opts...)
 }
 
-// Verb is v1.ExecScheme and Provider is empty: this provider answers exec://
+// Scheme is v1.ExecScheme and Provider is empty: this provider answers exec://
 // origins with no authority — the empty one being this machine — and no
 // others, which is the whole of how the binder picks it.
-func (*TargetsImpl) Verb() string     { return v1.ExecScheme }
-func (*TargetsImpl) Provider() string { return "" }
+func (*TargetsImpl) Scheme() v1.Scheme     { return v1.ExecScheme }
+func (*TargetsImpl) Provider() v1.Provider { return "" }
 
 // Open resolves ref — a command name, or a path to an executable — against
 // this machine, and asks whether the machine can give it a terminal.
@@ -212,7 +211,7 @@ func (a *TargetImpl) Name() string { return a.ref }
 // query is how they travel and not what a person is shown: the frame's corner
 // names the program, and how it was started is in the cache file, whose key
 // the arguments are part of.
-func (a *TargetImpl) Origin() string { return v1.ExecScheme + "://" + a.path }
+func (a *TargetImpl) Origin() string { return string(v1.ExecScheme) + "://" + a.path }
 
 // TTY is true wherever the machine has pseudo-terminals. A program run here
 // is given one whether or not it would have had one, because the point of the

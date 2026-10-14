@@ -119,6 +119,7 @@ func TestPaneLinesReproduceTheScreen(t *testing.T) {
 func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 	s := &session{
 		em:      vt.NewSafeEmulator(defaultCols, defaultRows),
+		out:     newOutput(1 << 10),
 		viewers: map[*viewer]struct{}{},
 		size:    size(defaultCols, defaultRows),
 	}
@@ -162,6 +163,7 @@ func TestNegotiateTakesTheSmallestWindow(t *testing.T) {
 func TestNegotiateResizesForALateBanner(t *testing.T) {
 	s := &session{
 		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight),
+		out:     newOutput(1 << 10),
 		viewers: map[*viewer]struct{}{},
 		size:    size(80, 24),
 	}
@@ -487,6 +489,7 @@ func TestMotdChangeResizesThePane(t *testing.T) {
 	m := &changingMotd{rows: []string{"WARNING public"}, changed: make(chan struct{})}
 	s := &session{
 		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight-1),
+		out:     newOutput(1 << 10),
 		viewers: map[*viewer]struct{}{},
 		size:    size(80, 24),
 		motd:    m,
@@ -580,6 +583,7 @@ func TestFollowMotdSeesAChangeDuringTheLast(t *testing.T) {
 	}
 	s := &session{
 		em:      vt.NewSafeEmulator(80-chromeWidth, 24-chromeHeight-1),
+		out:     newOutput(1 << 10),
 		viewers: map[*viewer]struct{}{},
 		size:    size(80, 24),
 		motd:    m,

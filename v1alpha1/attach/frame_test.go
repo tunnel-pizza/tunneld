@@ -54,6 +54,7 @@ func newFrameHarness(t *testing.T) *harness {
 		resize:  make(chan remotecommand.TerminalSize, 8),
 		done:    make(chan struct{}),
 		em:      em,
+		out:     newOutput(outputSize),
 		viewers: map[*viewer]struct{}{},
 		size:    remotecommand.TerminalSize{Width: defaultCols, Height: defaultRows},
 
@@ -358,7 +359,7 @@ func TestTheLogsSayWhenThereAreNone(t *testing.T) {
 func TestARestartableTargetIsNotGuarded(t *testing.T) {
 	h := newFrameHarness(t)
 	program := newFakeTarget("prog", true, true)
-	program.origin = v1.ExecScheme + "://" + "/usr/bin/prog"
+	program.origin = string(v1.ExecScheme) + "://" + "/usr/bin/prog"
 	program.repeat = true
 	h.s.Target = program
 
@@ -999,7 +1000,7 @@ func TestTheFrameNamesTheOriginItServes(t *testing.T) {
 		// A program names itself by the path that will run, which is what the
 		// origin carries: "top" says which program only on the machine that
 		// resolved it.
-		{"top", v1.ExecScheme + "://" + "/usr/bin/top", "exec:///usr/bin/top"},
+		{"top", string(v1.ExecScheme) + "://" + "/usr/bin/top", "exec:///usr/bin/top"},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			h := newFrameHarness(t)

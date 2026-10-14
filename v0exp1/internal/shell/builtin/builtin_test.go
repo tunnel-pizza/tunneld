@@ -68,7 +68,7 @@ func TestOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Origin() = %q, not a URL: %v", origin, err)
 	}
-	if u.Scheme != v1.ExecScheme || u.Host != "" || u.Query()[v1.ArgKey][0] != Arg || len(u.Query()[v1.ArgKey]) != 1 {
+	if v1.Scheme(u.Scheme) != v1.ExecScheme || u.Host != "" || u.Query()[v1.ArgKey][0] != Arg || len(u.Query()[v1.ArgKey]) != 1 {
 		t.Errorf("Origin() = %q, want exec:///<this executable>?%s=%s", origin, v1.ArgKey, Arg)
 	}
 	if _, ok := shell.Resolve(u.Path); !ok {

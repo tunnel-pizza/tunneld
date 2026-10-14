@@ -338,7 +338,7 @@ const (
 	// exec://dockerd/api, differing in the word that says what is being done
 	// rather than in the word that says to what. DockerProvider is the only
 	// authority this scheme answers today.
-	AttachScheme = "attach"
+	AttachScheme Scheme = "attach"
 
 	// ExecScheme names something run as an origin instead of an HTTP service:
 	// an exec:///path/to/program origin runs that program and exposes its
@@ -366,7 +366,12 @@ const (
 	// carries the resolved path rather than the word — exec:///usr/bin/htop,
 	// not exec://htop — because a bare name says which program only on the
 	// machine that looked it up.
-	ExecScheme = "exec"
+	ExecScheme Scheme = "exec"
+
+	// HttpScheme names an address the tunnel dials: an http:// origin, and
+	// an https:// one too where a scheme says what kind of origin something
+	// is rather than how it is dialed.
+	HttpScheme Scheme = "http"
 
 	// ArgKey is the query key a program's arguments ride under in an exec://
 	// origin: exec:///usr/bin/claude?arg=--resume&arg=--model runs claude
@@ -382,7 +387,7 @@ const (
 	// — because the container reference is what follows it. It is a separate
 	// word from the scheme because the two are separate axes now: the scheme
 	// says what is being done, and this says by whom.
-	DockerProvider = "dockerd"
+	DockerProvider Provider = "dockerd"
 )
 
 // DefaultMultiview is whether the tunnel's own address answers with a panel
@@ -435,15 +440,56 @@ type Origins interface {
 	// Len is how many origins this run exposes.
 	Len() int
 	// At is the origin at i, which the caller has already bounded by Len.
-	At(i int) *url.URL
-	// URLs is every origin, in order, as a copy — sorting or reordering what
-	// comes back cannot reorder the run.
-	URLs() []*url.URL
+	At(i int) Origin
+	// All is every origin, in order, as a copy: sorting, reordering or
+	// changing what comes back cannot change the run.
+	All() []Origin
+	// From is the origin an address on the tunnel reaches, routed as a
+	// visit is: by the first bare numeric parameter, none meaning the first
+	// (https://<host>/?1 is origin 1). An address that names no origin is
+	// ErrInvalidOrigin. The host is not checked: what is asked for here has
+	// already reached this tunnel.
+	From(url string) (Origin, error)
 	// Key identifies the tunnel these origins are: the working directory they
 	// were settled in and the origins themselves, sorted so the order they
 	// were typed does not make a second tunnel, deduplicated so a repeat does
 	// not either. Stable across runs, and safe as a filename.
 	Key() string
+}
+
+// Scheme is what an origin is: ExecScheme, a program; AttachScheme, a
+// container; HttpScheme, an address. Its own type, so an origin's Scheme is
+// never mistaken for its URI's, which can say https where this says http.
+type Scheme string
+
+// Provider is who a served origin is asked of: DockerProvider, or "" for
+// this machine, the empty authority of exec:///bin/sh.
+type Provider string
+
+// Origin is one origin of a run, worked out once from the URL it was settled
+// as and passed by value after that. Its public address is not here: it is
+// not known when origins are settled, and it can change while the run lasts.
+//
+// Encoded, as an agent is told about it, it is index, scheme, provider and
+// ref: never its URI or its Args, since a program's arguments can hold a
+// secret and the URI carries them.
+type Origin struct {
+	// Index is its place in the run's origins: the n of ?n.
+	Index int `json:"index" jsonschema:"the origin's index among all the run's origins, 0 the first: in a URL a bare ?1 (not ?n=1) picks origin 1, and a single origin needs none"`
+	// URI is the origin as settled: exec:///bin/zsh?arg=-l,
+	// attach://dockerd/web, http://localhost:3000.
+	URI url.URL `json:"-"`
+	// Scheme is what it is: ExecScheme, AttachScheme, or HttpScheme for an
+	// http or https address.
+	Scheme Scheme `json:"scheme" jsonschema:"what the origin is: exec, attach or http"`
+	// Provider is the authority a served origin names, "" for this machine
+	// and for an address.
+	Provider Provider `json:"provider,omitempty" jsonschema:"who it is asked of: dockerd for a container, none for this machine"`
+	// Ref is what is asked for: a program's path (/bin/zsh), a container
+	// (web), or an address's host and port with any path (localhost:3000).
+	Ref string `json:"ref" jsonschema:"an exec origin's program path (never its arguments), an attach origin's container, an http origin's host and port"`
+	// Args is an exec origin's arguments, its ArgKey values, in order.
+	Args []string `json:"-"`
 }
 
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,

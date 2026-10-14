@@ -25,10 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
@@ -101,7 +101,7 @@ func TestRouteALoneOriginIsRouted(t *testing.T) {
 		t.Fatalf("Route: %v", err)
 	}
 	t.Cleanup(r.Cancel)
-	if got.Host == list.At(0).Host {
+	if got.Host == uriAt(list, 0).Host {
 		t.Fatalf("Route() = %v, the origin itself; want the router in front of it", got)
 	}
 	base := strings.TrimSuffix(got.String(), "/")
@@ -723,7 +723,7 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 	down := echo(t, "B")
 	list := listOf(t, echo(t, "A"), down)
 	down.Close()
-	host := list.At(1).Host
+	host := uriAt(list, 1).Host
 	// A loopback origin is named by its port, the way a person starting a
 	// server on it says it.
 	_, port, _ := net.SplitHostPort(host)
@@ -892,7 +892,7 @@ func TestUnanswered(t *testing.T) {
 	gone.Close()
 	alsoGone.Close()
 	served := &url.URL{Scheme: "attach", Host: "dockerd", Path: "/api"}
-	list = origins.New(origins.WithURL(append(list.URLs(), served)...))
+	list = origins.New(origins.WithURL(append(urisOf(list), served)...))
 
 	if got := New().Unanswered(t.Context(), list); !slices.Equal(got, []int{1, 3}) {
 		t.Errorf("Unanswered() = %v, want [1 3]: the two with nothing listening", got)
@@ -1200,7 +1200,7 @@ func TestProxyMarksUncachedResponses(t *testing.T) {
 // TestEveryAnswerIsUnstored pins the rule the router keeps for everything it
 // serves, not only what it proxies: an answer that says nothing about
 // caching goes out "Cache-Control: no-store" — a page in front of the
-// origins (the panel's place), the agent server, a control endpoint — and
+// origins (the panel's place), the MCP server, a control endpoint — and
 // one that does say keeps exactly what it said, once.
 func TestEveryAnswerIsUnstored(t *testing.T) {
 	secret := []byte("s3cr3t")
@@ -1211,14 +1211,14 @@ func TestEveryAnswerIsUnstored(t *testing.T) {
 	})
 	for name, tc := range map[string]struct {
 		front      http.Handler // answers in front of the origins, nil for none
-		mcp        http.Handler // the agent server, nil for none
+		mcp        http.Handler // the MCP server, nil for none
 		path, auth string
 		want       string
 	}{
 		"a page in front, silent": {silent, nil, "/", "", "no-store"},
 		"a page in front, says":   {says, nil, "/", "", "max-age=60"},
-		"the agent server":        {nil, silent, ControlPath + "mcp", tokenOf(secret), "no-store"},
-		"the agent server, says":  {nil, says, ControlPath + "mcp", tokenOf(secret), "max-age=60"},
+		"the MCP server":          {nil, silent, ControlPath + "mcp", tokenOf(secret), "no-store"},
+		"the MCP server, says":    {nil, says, ControlPath + "mcp", tokenOf(secret), "max-age=60"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := []Option{WithOrigins(listOf(t, echo(t, "A"))), WithCache(cacheOf{"x\n", secret, runKey})}
@@ -1562,7 +1562,7 @@ func TestAuthenticateHeader(t *testing.T) {
 	})}
 	written := &mcpOf{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })}
 	for name, tc := range map[string]struct {
-		mcp                v0exp1.Mcp
+		mcp                mcp.Mcp
 		method, path, auth string
 		gate, want         string
 	}{
@@ -1695,13 +1695,13 @@ func TestProviderOrigin(t *testing.T) {
 	}
 }
 
-// mcpOf is a v0exp1.Mcp answering with h.
+// mcpOf is a mcp.Mcp answering with h.
 type mcpOf struct{ h http.Handler }
 
 func (m mcpOf) Handler() http.Handler { return m.h }
 func (mcpOf) Close() error            { return nil }
 
-// TestWithMcp pins the agent server's place: ControlPath+"mcp" on the mux,
+// TestWithMcp pins the MCP server's place: ControlPath+"mcp" on the mux,
 // behind authorize — a bare 401 without the secret, the server's own answer
 // with it — and, like WithCache, asked for on every request, so a server
 // taken away is a 404 rather than a stale answer.
@@ -1814,4 +1814,20 @@ func TestResourceMetadataFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// uriAt is origin i's URI, as a pointer: what URL methods are called on.
+func uriAt(origins v1.Origins, i int) *url.URL {
+	u := origins.At(i).URI
+	return &u
+}
+
+// urisOf is every origin's URI, in order.
+func urisOf(origins v1.Origins) []*url.URL {
+	all := origins.All()
+	out := make([]*url.URL, len(all))
+	for i := range all {
+		out[i] = &all[i].URI
+	}
+	return out
 }

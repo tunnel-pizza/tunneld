@@ -272,22 +272,34 @@ gate. The run writes the owner into the cache file as `TUNNELD_OWNER`, for
 whoever opens it, and drops the line when a mint names nobody; the line is
 never read back, and setting `TUNNELD_OWNER` yourself does nothing.
 
-It offers one tool so far:
+It offers these tools so far:
 
 | Tool | A token needs | Answers |
 |---|---|---|
-| `terminal_sessions` | `tunnel:attach` | the machine and the run's origins, `{machine: {hostname, username, pid, pwd}, sessions: [{n, kind, name}]}`: `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `n` is the origin's index, a bare `?n` in a URL and none for a single origin; `kind` is `exec`, `attach` or `http`; `name` is what `kind` leaves out, an exec origin's program path (never its arguments), an http origin's host and port, an attach origin's container |
+| `terminal_sessions` | none beyond opening the server | the machine and the run's origins of one `scheme`, `{machine: {hostname, username, pid, pwd}, sessions: [{index, scheme, provider, ref}]}`: `scheme` (required) is `exec`, `attach` or `http` (an https origin is `http` too); `machine` is the run's `HOSTNAME`, `USERNAME`, `PID` and `PWD` as its `.env` holds them; `index` is the origin's place among all the run's origins (a bare `?n` in a URL, none for a single origin); `provider` is `dockerd` for a container and left out for this machine; `ref` is an exec origin's program path, an attach origin's container, or an http origin's host and port. Never an origin's arguments or its URI |
+| `terminal_screen` | the scope of the origin's scheme: `tunnel:exec` for a program | what the terminal at `url` shows now, `{rows, cursor: {row, col}, alt_screen, title}`: the visible rows as text with trailing blanks dropped, not the history above them; `url` as for `terminal_exec`; refuses a `url` that names no origin, an origin that is not a terminal, then a token without the scope |
+| `terminal_read` | the scope of the origin's scheme: `tunnel:exec` for a program | what the program at `url` has printed, at once, `{text, cursor, dropped, truncated}`: read on from where this sign-in last stopped, or from `cursor` when given (the first read starts from everything kept, the last 1 MiB at least); `text` is its output as the terminal shows it, a line per row once the cursor leaves it or it scrolls off, then the cursor's row as far as the cursor; a full-screen program draws on a screen of its own and leaves no text, `terminal_screen` shows it; `cursor` is where the read stopped; `dropped` says output was no longer kept, so some was missed; `text` past 64 KiB keeps its end and says `truncated`. A `cursor` from another terminal, or from before tunneld started again, is a tool error |
+| `terminal_wait` | the scope of the origin's scheme: `tunnel:exec` for a program | `terminal_read`, once `until`, an RE2 regular expression, matches the text, the program prints nothing for `idle_ms` (500 when left out, 0 never), or `timeout_ms` passes (10000 when left out, at most 25000), `{text, cursor, dropped, matched, timed_out, truncated}`; neither `matched` nor `timed_out` means it fell quiet. A bad `until` is a tool error |
+| `terminal_exec` | the scope of the origin's scheme: `tunnel:exec` for a program | types into the terminal at `url`, as the person at it would and in their view, then waits for the reply as `terminal_wait` does, from where the input went in, answering as it does; `idle_ms: 0` with no `until` answers at once, reading nothing. `input` is a list of steps sent in order, each exactly one of `{text}`, typed as it is, or `{key}`, one key by name (`Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Space`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `F1` to `F12`, `Ctrl-<letter>`), so `[{"key":"Esc"},{"text":":wq"},{"key":"Enter"}]` leaves vim; a step it cannot send, or a bad `until`, sends nothing. A program that has exited and can run again is started again first, as a tab arriving does. An agent is no viewer: it has no say in the terminal's size |
+
+The terminal tools keep a read position per terminal for each sign-in: a
+token's `code_jti`, one per OAuth sign-in and kept across refreshes, or
+its `sub` and `act` when it has none, or the secret's own. A position
+unused for an hour is forgotten. Every session an app runs under one
+sign-in shares it, so an agent that may share a terminal with another
+passes back the `cursor` each answer gives, which reads from where it says
+whatever the position.
 
 The secret opens every tool. A token opens a tool only with the scope it
-needs: without it, the call answers a tool error naming the scope, so the
+needs, if it needs one: without it, the call answers a tool error naming the scope, so the
 client can ask the provider for it. The MCP server's metadata lists
-`tunnel:attach` in `scopes_supported`. A token can carry `act` (RFC 8693
+`tunnel:exec` in `scopes_supported`, for the tools that act on a program's terminal; listing needs none. A token can carry `act` (RFC 8693
 §4.1), the client acting for the person when a provider made it by token
 exchange. Each call logs one line, with the tool, the token's `sub`, its
 `act`, and how the call ended, and never its arguments or its answer.
 
-The server is an experiment, `v0exp1.Experimental().Mcp()` to a program
-embedding tunneld, and may change in any release.
+The server is `v1alpha1/mcp`, mounted on every run, and like the rest of
+`v1alpha1` may change in any release.
 
 ## Programs
 

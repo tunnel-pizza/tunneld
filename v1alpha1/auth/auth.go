@@ -53,11 +53,12 @@ type Auth interface {
 }
 
 // Access is what an access token Bearer accepted says: who, the client it
-// was issued to, its scopes, and who acts for the subject when a token
-// exchange said so (act.sub, RFC 8693 §4.1).
+// was issued to, its scopes, who acts for the subject when a token exchange
+// said so (act.sub, RFC 8693 §4.1), and the sign-in it came from (code_jti),
+// which tells one connected app from another.
 type Access struct {
-	Sub, ClientID, Actor string
-	Scopes               []string
+	Sub, ClientID, Actor, Grant string
+	Scopes                      []string
 }
 
 // Has is whether the token holds scope.
@@ -413,7 +414,7 @@ func (a *AuthImpl) Bearer(r *http.Request, resource string) (access Access, ok b
 	if err != nil {
 		return Access{}, false, err
 	}
-	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Scopes: strings.Fields(c.Scope)}
+	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Grant: c.Grant, Scopes: strings.Fields(c.Scope)}
 	if !slices.Contains(a.listed(s), access.Sub) {
 		return access, false, ErrNotListed
 	}
@@ -571,7 +572,7 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		resource += v1.ControlPath + "mcp"
 		// What the MCP server's terminal tools need.
-		scopes = append(scopes, "tunnel:attach")
+		scopes = append(scopes, "tunnel:exec")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata{

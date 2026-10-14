@@ -57,13 +57,17 @@ func TestCgroupHeadroom(t *testing.T) {
 }
 
 // TestASessionKeepsTheHistoryMemoryAllows pins the wiring: a session's
-// emulator keeps historyLines of history.
+// emulator keeps the history the memory free as it starts allows.
 func TestASessionKeepsTheHistoryMemoryAllows(t *testing.T) {
+	free := uint64(3 << 30)
+	was := memory
+	memory = func() (uint64, bool) { return free, true }
+	t.Cleanup(func() { memory = was })
 	target := newRerunTarget(true)
 	target.holdFrom = 1
 	t.Cleanup(target.release)
 	s := serveFake(t, target).session
-	if got, want := s.em.Scrollback().MaxLines(), historyLines(); got != want {
+	if got, want := s.em.Scrollback().MaxLines(), linesFor(free, true); got != want {
 		t.Errorf("history keeps %d lines, want %d", got, want)
 	}
 }

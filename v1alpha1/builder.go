@@ -23,12 +23,12 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
@@ -171,7 +171,7 @@ const originsKey = "origins"
 // where a message about a malformed authority component is not. A scheme
 // absent from here is not served, which is what makes the parser and the
 // binder agree on the same list.
-var servedSchemes = map[string]struct {
+var servedSchemes = map[v1.Scheme]struct {
 	noun, example string
 	// resolve, when set, is how an authority with nothing after it is read
 	// before it is read as a provider: exec://htop is the program, because a
@@ -552,17 +552,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	b.runCache = spec
 
-	// The agent server, while the experiment is on: one over every shown
-	// origin, each with its spawner where the bound origin has one, so a tool
-	// that names origin n reaches what ?n reaches. Mounted on the control
-	// path below, behind the tunnel secret, and closed before the bound
-	// origins are, since what it holds are processes on them.
-	var agents []router.Option
-	if m := v0exp1.Experimental().Mcp(v0exp1.McpWithOrigins(mcpOrigins(origins, bound.Spawners())), v0exp1.McpWithCache(spec), v0exp1.McpWithLog(log)); m != nil {
-		defer m.Close()
-		agents = append(agents, router.WithMcp(m))
-	}
-
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
 	// The banner goes out before the tunnel is asked for a URL, not after it
@@ -637,7 +626,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// over and its tunnel has drained. It is stood up here, immediately before
 	// the tunnel it is handed to, so nothing between the two can return and
 	// leave it serving with no tunnel to end it.
-	local, err := b.router.Route(ctx, append([]router.Option{
+	local, err := b.router.Route(ctx,
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
 		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
@@ -649,12 +638,19 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithAuth(b.auth),
 		router.WithAllowOrigin(router.ProviderOrigin(cmp.Or(b.provider, v1.DefaultProvider))),
 		router.WithLog(log),
+		router.WithMcp(mcp.New(
+			mcp.WithContext(ctx),
+			mcp.WithOrigins(origins),
+			mcp.WithBound(bound),
+			mcp.WithCache(spec),
+			mcp.WithLog(log),
+		)),
 		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
 		// request at warn; showing it belongs here in the builder, at a point
 		// where a line cannot land in the middle of a frame, not on the
 		// request's goroutine deep in the router.
-	}, agents...)...)
+	)
 	if err != nil {
 		return err
 	}
@@ -849,8 +845,8 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 // spec is one tunnel's, and nothing that names one is a knob a run settled.
 func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	shown := make([]string, 0, origins.Len())
-	for _, u := range origins.URLs() {
-		shown = append(shown, u.String())
+	for _, origin := range origins.All() {
+		shown = append(shown, origin.URI.String())
 	}
 
 	out := map[string]string{
@@ -1042,7 +1038,7 @@ func isOrigin(word string) bool {
 // arguments reports whether a served origin's query is a program's arguments
 // and nothing else — the one query a served origin is allowed to carry.
 func arguments(u *url.URL) bool {
-	if u.Scheme != v1.ExecScheme {
+	if v1.Scheme(u.Scheme) != v1.ExecScheme {
 		return false
 	}
 	for key := range u.Query() {
@@ -1061,29 +1057,6 @@ func (b *BuilderImpl) cached() Origins {
 		return nil
 	}
 	return b.Origins()
-}
-
-// mcpOrigins is what the agent server is told about each shown origin: how
-// it was shown, what kind it is by its scheme, and its spawner, which the
-// bound origins hand over by index — nil, an address's or a provider's that
-// cannot, stays nil.
-func mcpOrigins(shown Origins, spawners []attach.Spawner) []v0exp1.McpOrigin {
-	urls := shown.URLs()
-	list := make([]v0exp1.McpOrigin, len(urls))
-	for i, u := range urls {
-		o := v0exp1.McpOrigin{Name: u.String(), Kind: v0exp1.McpHTTP}
-		switch u.Scheme {
-		case v1.ExecScheme:
-			o.Kind = v0exp1.McpExec
-		case v1.AttachScheme:
-			o.Kind = v0exp1.McpAttach
-		}
-		if i < len(spawners) && spawners[i] != nil {
-			o.Spawner = spawners[i]
-		}
-		list[i] = o
-	}
-	return list
 }
 
 // fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
@@ -1199,7 +1172,7 @@ func (b *BuilderImpl) Origins() Origins {
 			// is what the other spelling produces. The empty authority is this
 			// machine, which is the whole of what exec:// with no provider says.
 			args, _ := split(s, settled[i+1:])
-			add(word, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, args))
+			add(word, program(&url.URL{Scheme: string(v1.ExecScheme), Path: path}, args))
 			i += len(args)
 			continue
 		}
@@ -1215,7 +1188,7 @@ func (b *BuilderImpl) Origins() Origins {
 		// a comma-separated TUNNELD_ORIGINS.
 		if fs := fields(s); len(fs) > 1 {
 			if path, ok := shell.Resolve(fs[0]); ok {
-				add(word, program(&url.URL{Scheme: v1.ExecScheme, Path: path}, fs[1:]))
+				add(word, program(&url.URL{Scheme: string(v1.ExecScheme), Path: path}, fs[1:]))
 				continue
 			}
 			log.Warn("dropping an origin", "origin", s, "reason", "has spaces but "+fs[0]+" names no program that can be run")
@@ -1235,7 +1208,7 @@ func (b *BuilderImpl) Origins() Origins {
 		// default scheme, a default host, a preserved path — is meaningless
 		// here, so the value is taken exactly as typed and anything extra is
 		// dropped rather than silently ignored.
-		if what, served := servedSchemes[u.Scheme]; served {
+		if what, served := servedSchemes[v1.Scheme(u.Scheme)]; served {
 			// An authority with nothing after it is not a provider being asked
 			// for something — there is nothing to ask for — so where the
 			// scheme allows it, the word is looked up as a program first. It
@@ -1268,7 +1241,7 @@ func (b *BuilderImpl) Origins() Origins {
 				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
 				continue
 			}
-			if u.Scheme == v1.ExecScheme {
+			if v1.Scheme(u.Scheme) == v1.ExecScheme {
 				args, _ := split(s, settled[i+1:])
 				add(word, program(u, args))
 				i += len(args)

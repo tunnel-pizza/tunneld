@@ -1,0 +1,137 @@
+package sessions
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
+)
+
+// TestTerminalSessionsListing pins how terminal_sessions is listed: its
+// title, read-only, idempotent and closed-world, and the schema and
+// description an agent reads to use it.
+func TestTerminalSessionsListing(t *testing.T) {
+	listed := tooltest.Listed(t, Tool)
+	if listed.Title != "Terminal sessions" {
+		t.Errorf("title = %q", listed.Title)
+	}
+	if a := listed.Annotations; a == nil || !a.ReadOnlyHint || !a.IdempotentHint || a.OpenWorldHint == nil || *a.OpenWorldHint {
+		t.Errorf("annotations = %+v, want read-only, idempotent, closed-world", a)
+	}
+	schema, _ := json.Marshal(listed.OutputSchema)
+	for _, s := range []string{"a bare ?1 (not ?n=1)", "never its arguments", `"index"`, `"ref"`, `"scheme"`} {
+		if !strings.Contains(string(schema), s) {
+			t.Errorf("outputSchema %s lacks %q", schema, s)
+		}
+	}
+	for _, s := range []string{"A tunnel with a single origin needs no parameter in a URL", "a bare ?1 (not ?n=1) picks one, and ?0 goes back to the first"} {
+		if !strings.Contains(listed.Description, s) {
+			t.Errorf("description %q lacks %q", listed.Description, s)
+		}
+	}
+}
+
+// TestTerminalSessions pins the tool: the run's origins of the scheme asked
+// for, each by its run-wide ?n, to the secret's holder and to any token the
+// MCP server admits, whatever its scopes: listing is not acting. A scheme
+// that is not one is a tool error, with no origin.
+func TestTerminalSessions(t *testing.T) {
+	origins := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh", "attach://dockerd/web", "exec:///usr/bin/k9s?arg=--readonly")
+	execs := &Out{Sessions: []v1.Origin{
+		{Index: 1, Scheme: v1.ExecScheme, Ref: "/bin/sh"},
+		{Index: 3, Scheme: v1.ExecScheme, Ref: "/usr/bin/k9s"},
+	}}
+	containers := &Out{Sessions: []v1.Origin{{Index: 2, Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"}}}
+	for name, tc := range map[string]struct {
+		access *auth.Access
+		scheme string
+		want   *Out
+		says   string
+	}{
+		"the secret, exec":              {nil, "exec", execs, ""},
+		"any admitted token, exec":      {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "exec", execs, ""},
+		"any admitted token, attach":    {&auth.Access{Sub: "github:1"}, "attach", containers, ""},
+		"no scheme":                     {nil, "", nil, "missing properties"},
+		"a scheme that is none of them": {nil, "ssh", nil, "exec, attach or http"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tracked := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{
+				"HOSTNAME": "box.local", "USERNAME": "christian", "PID": "16653", "PWD": "/Users/christian/cnuss",
+				"SHELL": "/bin/zsh",
+			}))
+			status, body := call(t, tool.Context{Origins: origins, Cache: tracked}, tc.access, tc.scheme)
+			if status != 200 {
+				t.Fatalf("status %d: %s", status, body)
+			}
+			var msg struct {
+				Result struct {
+					IsError           bool `json:"isError"`
+					StructuredContent *Out `json:"structuredContent"`
+					Content           []struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"result"`
+			}
+			data, _ := strings.CutPrefix(strings.TrimSpace(body[strings.Index(body, "data: "):]), "data: ")
+			if err := json.Unmarshal([]byte(data), &msg); err != nil {
+				t.Fatalf("%v: %s", err, body)
+			}
+			r := msg.Result
+			if r.IsError != (tc.want == nil) {
+				t.Errorf("isError = %v: %s", r.IsError, body)
+			}
+			// An origin's arguments and its URI, which carries them, never
+			// leave the machine.
+			if strings.Contains(body, "--readonly") || strings.Contains(body, "exec:///") {
+				t.Errorf("terminal_sessions = %s, want no arguments and no URI", body)
+			}
+			if tc.want != nil && (r.StructuredContent == nil || !reflect.DeepEqual(r.StructuredContent.Sessions, tc.want.Sessions)) {
+				t.Errorf("structuredContent = %+v, want %+v", r.StructuredContent, tc.want)
+			}
+			machine := Machine{Hostname: "box.local", Username: "christian", PID: 16653, PWD: "/Users/christian/cnuss"}
+			if tc.want != nil && r.StructuredContent.Machine != machine {
+				t.Errorf("machine = %+v, want %+v, from the run's .env", r.StructuredContent.Machine, machine)
+			}
+			if tc.says != "" && (len(r.Content) != 1 || !strings.Contains(r.Content[0].Text, tc.says) || strings.Contains(body, "/bin/sh")) {
+				t.Errorf("refusal %s, want %q and no origin", body, tc.says)
+			}
+		})
+	}
+}
+
+// TestTerminalSessionsWithoutTerminals pins a run that serves no program: an
+// empty list, never null, so a client reads "none" rather than "unknown".
+func TestTerminalSessionsWithoutTerminals(t *testing.T) {
+	_, body := call(t, tool.Context{Origins: tooltest.Origins(t, "http://localhost:3000")}, nil, "exec")
+	if !strings.Contains(body, `"sessions":[]`) || strings.Contains(body, "localhost:3000") {
+		t.Errorf("terminal_sessions = %s, want an empty sessions list", body)
+	}
+}
+
+// TestMachineWithoutACache pins a server with no cache, or one that holds no
+// tracking yet: the machine says nothing rather than guessing.
+func TestMachineWithoutACache(t *testing.T) {
+	if got := machine(tool.Context{}); got != (Machine{}) {
+		t.Errorf("machine() = %+v, want nothing", got)
+	}
+	if got := machine(tool.Context{Cache: cache.None{}}); got != (Machine{}) {
+		t.Errorf("machine() from None = %+v, want nothing", got)
+	}
+}
+
+// call calls terminal_sessions for scheme, reading c, as tooltest.Call does;
+// an empty scheme sends none.
+func call(t *testing.T, c tool.Context, access *auth.Access, scheme string) (int, string) {
+	t.Helper()
+	args := `{}`
+	if scheme != "" {
+		args = `{"scheme":"` + scheme + `"}`
+	}
+	return tooltest.Call(t, Tool, c, access, args)
+}

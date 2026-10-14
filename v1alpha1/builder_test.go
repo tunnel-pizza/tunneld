@@ -681,8 +681,9 @@ func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.O
 // fakeBinder stands in for the attach package: it hands the origins back
 // unchanged and closes nothing, so TestRun never stands up a real listener.
 type fakeBinder struct {
-	err    error
-	closed bool
+	attach.Bound // the rest, which a run never asks of it
+	err          error
+	closed       bool
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}
@@ -704,49 +705,6 @@ type fakeBinder struct {
 	showed atomic.Bool
 	// shows counts the frames drawn: a respec keeps the one that is up.
 	shows atomic.Int32
-	// spawners is what Spawners hands back: one slot per origin the run
-	// shows, as the real binder answers.
-	spawners []attach.Spawner
-}
-
-func (f *fakeBinder) Spawners() []attach.Spawner { return f.spawners }
-
-// fakeSpawner is a Spawner that runs nothing: the run only hands it on.
-type fakeSpawner struct{}
-
-func (fakeSpawner) Spawn(context.Context, []string, io.Reader, io.Writer, io.Writer) (int, error) {
-	return 0, nil
-}
-
-// TestMcpOrigins pins what the agent server is told about each shown
-// origin: the origin as shown, its kind by scheme, and the bound origin's
-// spawner at its own index — none where the binder has none, and none past
-// a short list.
-func TestMcpOrigins(t *testing.T) {
-	shown := origins.New(origins.WithURL(
-		&url.URL{Scheme: "http", Host: "localhost:3000"},
-		&url.URL{Scheme: v1.ExecScheme, Path: "/bin/sh"},
-		&url.URL{Scheme: v1.AttachScheme, Host: v1.DockerProvider, Path: "/web"},
-	))
-	sp := fakeSpawner{}
-	got := mcpOrigins(shown, []attach.Spawner{nil, sp})
-	want := []struct {
-		name  string
-		kind  v0exp1.McpKind
-		spawn bool
-	}{
-		{"http://localhost:3000", v0exp1.McpHTTP, false},
-		{"exec:///bin/sh", v0exp1.McpExec, true},
-		{"attach://dockerd/web", v0exp1.McpAttach, false},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("mcpOrigins = %d origins, want %d", len(got), len(want))
-	}
-	for i, w := range want {
-		if got[i].Name != w.name || got[i].Kind != w.kind || (got[i].Spawner != nil) != w.spawn {
-			t.Errorf("origin %d = %+v, want %s %s spawner=%v", i, got[i], w.name, w.kind, w.spawn)
-		}
-	}
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
@@ -1448,7 +1406,7 @@ func TestRun(t *testing.T) {
 		if h.router.ws != 1 {
 			t.Errorf("router was given ws = %d, want 1", h.router.ws)
 		}
-		if got := urlStrings(h.router.dialable.URLs()); got[1] != "http://localhost:5173" {
+		if got := urlStrings(urisOf(h.router.dialable)); got[1] != "http://localhost:5173" {
 			t.Errorf("router was given %q, want the marker off the scheme", got)
 		}
 	})
@@ -1490,7 +1448,6 @@ func TestRun(t *testing.T) {
 	}
 	t.Run("the MCP server is mounted on the control path", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
-		h.binder.spawners = []attach.Spawner{nil, fakeSpawner{}}
 		ctx, cancel := context.WithCancel(t.Context())
 		h.cache.onSave = cancel
 		if err := h.run(t, ctx); err != nil {
@@ -1525,7 +1482,7 @@ func TestRun(t *testing.T) {
 			t.Errorf("POST %smcp = %d %s, want 200", router.ControlPath, resp.StatusCode, b)
 		}
 		// terminal_sessions answers the machine from what the run saved.
-		call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{}}}`
+		call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{"scheme":"exec"}}}`
 		req, _ = http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(call))
 		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
 		req.Header.Set("Content-Type", "application/json")
@@ -1794,7 +1751,7 @@ func TestParseOriginsAccepts(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run(%q) = %v, want ok", tc.in, err)
 			}
-			got := h.router.dialable.URLs()
+			got := urisOf(h.router.dialable)
 			if len(got) != len(tc.want) {
 				t.Fatalf("run(%q) routed %d origins, want %d", tc.in, len(got), len(tc.want))
 			}
@@ -1851,7 +1808,7 @@ func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
 // originStrings renders parsed origins for comparison, so a table can be
 // written the way somebody types origins rather than as *url.URL literals.
 func originStrings(origins Origins) []string {
-	return urlStrings(origins.URLs())
+	return urlStrings(urisOf(origins))
 }
 
 // urlStrings is the same for a plain slice, which is what a case that slices
@@ -1933,7 +1890,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		}
 		return path
 	}
-	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: v1.ExecScheme, Path: path}} }
+	exec := func(path string) []*url.URL { return []*url.URL{{Scheme: string(v1.ExecScheme), Path: path}} }
 	// On Windows there is no built-in shell to fall back to, and with the
 	// experiment turned off there is none anywhere, so the chain ends with
 	// nothing, as it did before there was one.
@@ -2010,7 +1967,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 			// Compared as fields rather than as strings, because a Windows
 			// path is C:\... and url.URL.String escapes every separator in it.
-			got := b.Origins().URLs()
+			got := urisOf(b.Origins())
 			if !slices.EqualFunc(got, want, func(a, b *url.URL) bool {
 				return a.Scheme == b.Scheme && a.Host == b.Host && a.Path == b.Path && a.RawQuery == b.RawQuery
 			}) {
@@ -2105,7 +2062,7 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || got.At(2).Path != want {
+	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || uriAt(got, 2).Path != want {
 		t.Fatalf("Origins() = %q, want the last to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
@@ -2116,15 +2073,15 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// way round. It costs nothing there, because the binder reads the path off
 	// the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
-		again, err := url.Parse(got.At(2).String())
+		again, err := url.Parse(uriAt(got, 2).String())
 		if err != nil {
-			t.Fatalf("%q did not parse back: %v", got.At(2), err)
+			t.Fatalf("%q did not parse back: %v", uriAt(got, 2), err)
 		}
 		if again.Path != want {
-			t.Errorf("%q parsed back to path %q, want %q", got.At(2), again.Path, want)
+			t.Errorf("%q parsed back to path %q, want %q", uriAt(got, 2), again.Path, want)
 		}
 	}
-	if rest := urlStrings(got.URLs()[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
+	if rest := urlStrings(urisOf(got)[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 
@@ -2132,13 +2089,13 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// authority with nothing after it cannot be a provider being asked for
 	// something, so it is looked up as a program first — and lands on the
 	// resolved path, exactly as the bare word does.
-	spelled := New(WithOrigin(v1.ExecScheme + "://" + name)).Origins()
-	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || spelled.At(0).Path != want {
-		t.Fatalf("Origins(%q) = %q, want %s://%s", v1.ExecScheme+"://"+name, originStrings(spelled), v1.ExecScheme, want)
+	spelled := New(WithOrigin(string(v1.ExecScheme) + "://" + name)).Origins()
+	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || uriAt(spelled, 0).Path != want {
+		t.Fatalf("Origins(%q) = %q, want %s://%s", string(v1.ExecScheme)+"://"+name, originStrings(spelled), v1.ExecScheme, want)
 	}
-	if got.At(2).String() != spelled.At(0).String() {
+	if uriAt(got, 2).String() != uriAt(spelled, 0).String() {
 		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
-			name, v1.ExecScheme+"://"+name, got.At(2), spelled.At(0))
+			name, string(v1.ExecScheme)+"://"+name, uriAt(got, 2), uriAt(spelled, 0))
 	}
 }
 
@@ -2164,7 +2121,7 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 	// every comparison: a Windows path has backslashes, which String()
 	// percent-encodes, so a raw `exec://C:\...` neither parses nor matches.
 	program := func(args ...string) string {
-		u := &url.URL{Scheme: v1.ExecScheme, Path: path}
+		u := &url.URL{Scheme: string(v1.ExecScheme), Path: path}
 		if len(args) > 0 {
 			u.RawQuery = url.Values{v1.ArgKey: args}.Encode()
 		}
@@ -2224,7 +2181,7 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 		},
 		{
 			name:    "a program spelled as a URL takes the rest too",
-			origins: []string{v1.ExecScheme + "://" + name, "-d", "5"},
+			origins: []string{string(v1.ExecScheme) + "://" + name, "-d", "5"},
 			want:    []string{program("-d", "5")},
 		},
 		{
@@ -2247,7 +2204,7 @@ func TestOriginsGiveAProgramTheWordsAfterIt(t *testing.T) {
 			// the limitation TestOriginsRunsAProgram already notes. The
 			// program is still found by its bare word there, which the other
 			// cases cover.
-			if runtime.GOOS == "windows" && strings.HasPrefix(tc.origins[0], v1.ExecScheme+"://"+path[:1]) {
+			if runtime.GOOS == "windows" && strings.HasPrefix(tc.origins[0], string(v1.ExecScheme)+"://"+path[:1]) {
 				t.Skip("an absolute Windows path cannot be spelled inside an exec:// URL")
 			}
 			got := originStrings(New(WithOrigin(tc.origins...)).Origins())
@@ -2294,7 +2251,7 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 		t.Fatalf("positional args = %q, want %q", got, want)
 	}
 	got := b.Origins()
-	if got.Len() != 1 || !slices.Equal(got.At(0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
+	if got.Len() != 1 || !slices.Equal(uriAt(got, 0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
 		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
 }
@@ -2435,7 +2392,7 @@ func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
 	}
 	// The router in front of the tunnel was still handed the origin whole;
 	// the arguments are the binder's to read off it.
-	if got := h.router.dialable.URLs(); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
+	if got := urisOf(h.router.dialable); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
 		t.Errorf("router was given %v, want the origin with its arguments", got)
 	}
 }
@@ -2515,7 +2472,7 @@ func TestReportLogsWhatNothingListensOn(t *testing.T) {
 			if h.router.probed == nil {
 				t.Fatal("the run never asked the router what answers")
 			}
-			if got, want := urlStrings(h.router.probed.URLs()), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
+			if got, want := urlStrings(urisOf(h.router.probed)), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
 				t.Errorf("asked about %q, want the origins as typed %q", got, want)
 			}
 			out := h.stderr.String()
@@ -3634,4 +3591,20 @@ func TestTheDefaultAuthReadsTheOwner(t *testing.T) {
 			t.Errorf("owner %q: MCP metadata = %d, want %d", owner, rec.Code, want)
 		}
 	}
+}
+
+// uriAt is origin i's URI, as a pointer: what URL methods are called on.
+func uriAt(origins v1.Origins, i int) *url.URL {
+	u := origins.At(i).URI
+	return &u
+}
+
+// urisOf is every origin's URI, in order.
+func urisOf(origins v1.Origins) []*url.URL {
+	all := origins.All()
+	out := make([]*url.URL, len(all))
+	for i := range all {
+		out[i] = &all[i].URI
+	}
+	return out
 }
