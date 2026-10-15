@@ -167,13 +167,12 @@ func TestExchangeMints(t *testing.T) {
 	}
 }
 
-// TestExchangeScopes pins the minted token's scope: what was asked, in
-// Scopes' order, and tunnel:http when nothing was.
+// TestExchangeScopes pins the minted token's scope as tunnel:http, asked
+// for or not.
 func TestExchangeScopes(t *testing.T) {
 	for asked, want := range map[string]string{
 		"":                        "tunnel:http",
-		"tunnel:exec tunnel:http": "tunnel:http tunnel:exec",
-		"tunnel:attach":           "tunnel:attach",
+		"tunnel:http":             "tunnel:http",
 		"tunnel:http tunnel:http": "tunnel:http",
 	} {
 		form := exchangeForm("subject", "604800")
@@ -228,6 +227,8 @@ func TestExchangeRefuses(t *testing.T) {
 		"provider down":           {base, "github:1", true, 503, "temporarily_unavailable"},
 		"a scope not offered":     {with("scope", "tunnel:http openid"), "github:1", false, 400, "invalid_scope"},
 		"the subject's own scope": {with("scope", "tunnel:token"), "github:1", false, 400, "invalid_scope"},
+		"a terminal's":            {with("scope", "tunnel:http tunnel:exec"), "github:1", false, 400, "invalid_scope"},
+		"an attached terminal's":  {with("scope", "tunnel:attach"), "github:1", false, 400, "invalid_scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o := fakeOidc()

@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"cmp"
 	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/sha256"
@@ -147,9 +146,9 @@ func tokenError(w http.ResponseWriter, status int, code, description string) {
 // token is RFC 8693 token exchange for the owner: the provider's subject
 // token (scope tunnel:token, issued to the provider itself, for this
 // tunnel, naming its owner) traded for a token this tunnel signs, for one
-// of tokenLifetimes, holding the scope asked for (§2.1): one or more of
-// Scopes, tunnel:http when none is asked. Nothing is kept; the subject token
-// is checked offline.
+// of tokenLifetimes, holding tunnel:http alone: the app, for scripts and CI.
+// A scope asked for (§2.1) may only be that. Nothing is kept; the subject
+// token is checked offline.
 func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
@@ -188,13 +187,12 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		tokenError(w, http.StatusBadRequest, "invalid_request", "expires_in must be 604800, 2592000, 5184000, 7776000 or 0")
 		return
 	}
-	scopes := strings.Fields(cmp.Or(f.Get("scope"), Scope(v1.HttpScheme)))
-	if slices.ContainsFunc(scopes, func(s string) bool { return !slices.Contains(Scopes, s) }) {
+	app := Scope(v1.HttpScheme)
+	if slices.ContainsFunc(strings.Fields(f.Get("scope")), func(s string) bool { return s != app }) {
 		reason = "scope"
-		tokenError(w, http.StatusBadRequest, "invalid_scope", "scope may hold only "+strings.Join(Scopes, ", "))
+		tokenError(w, http.StatusBadRequest, "invalid_scope", "scope may hold only "+app)
 		return
 	}
-	scopes = slices.DeleteFunc(slices.Clone(Scopes), func(s string) bool { return !slices.Contains(scopes, s) })
 	key := tokenKey(a.secret())
 	if key == nil {
 		reason = "starting"
@@ -221,14 +219,14 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		tokenError(w, http.StatusBadRequest, "invalid_grant", "not the owner's subject token for this tunnel")
 		return
 	}
-	tok, err := mintToken(key, r.Host, owner, scopes, a.now(), time.Duration(life)*time.Second)
+	tok, err := mintToken(key, r.Host, owner, []string{app}, a.now(), time.Duration(life)*time.Second)
 	if err != nil {
 		reason = "sign"
 		tokenError(w, http.StatusInternalServerError, "server_error", "the token could not be signed")
 		return
 	}
 	ok = true
-	body := map[string]any{"access_token": tok, "issued_token_type": accessTokenType, "token_type": "Bearer", "scope": strings.Join(scopes, " ")}
+	body := map[string]any{"access_token": tok, "issued_token_type": accessTokenType, "token_type": "Bearer", "scope": app}
 	if life > 0 {
 		body["expires_in"] = life
 	}

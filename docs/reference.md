@@ -1270,14 +1270,14 @@ curl -H "Authorization: Bearer $TOKEN" https://<host>/
   `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
   `subject_token`, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`
   and `expires_in`, one of `604800`, `2592000`, `5184000`, `7776000` (7, 30,
-  60, 90 days) or `0` for none, and `scope`, any of the [scopes](#scopes)
-  `tunnel:http`, `tunnel:attach` and `tunnel:exec` (`tunnel:http` when left
-  out; anything else is `invalid_scope`). tunneld checks the subject token against the
+  60, 90 days) or `0` for none. A tunnel token reaches the app alone: its
+  [scope](#scopes) is `tunnel:http`, and a `scope` asking for anything else
+  is `invalid_scope`. tunneld checks the subject token against the
   provider's published keys: issued by the provider, to the provider itself
   (`client_id`), with scope `tunnel:token` (which no OAuth client can ask
   for), for this hostname, naming the owner. The answer is RFC 8693's:
-  `access_token`, `issued_token_type`, `token_type: Bearer`, `scope` and,
-  unless there is none, `expires_in`. A refusal is `400` with an RFC 6749 error; a tunnel
+  `access_token`, `issued_token_type`, `token_type: Bearer`,
+  `scope: tunnel:http` and, unless there is none, `expires_in`. A refusal is `400` with an RFC 6749 error; a tunnel
   with no secret yet a `503` with `Retry-After: 2`; the provider unreachable
   a `503` with `Retry-After: 30`. CORS answers the provider's origin only.
   Nothing is stored, here or at the provider.
