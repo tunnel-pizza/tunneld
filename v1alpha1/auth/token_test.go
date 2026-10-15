@@ -30,7 +30,7 @@ func TestTokenKeyIsItsOwn(t *testing.T) {
 
 func TestMintedTokenShape(t *testing.T) {
 	key := tokenKey([]byte("s3cr3t"))
-	tok, err := mintToken(key, ssoHost, "github:1", tokenNow, 30*24*time.Hour)
+	tok, err := mintToken(key, ssoHost, "github:1", Scopes, tokenNow, 30*24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,17 +44,18 @@ func TestMintedTokenShape(t *testing.T) {
 	var c struct {
 		jwt.Claims
 		ClientID string `json:"client_id"`
+		Scope    string `json:"scope"`
 	}
 	if err := parsed.Claims(key.Public(), &c); err != nil {
 		t.Fatal(err)
 	}
 	host := "https://" + ssoHost
 	if c.Issuer != host || !c.Audience.Contains(host) || c.Subject != "github:1" ||
-		c.ClientID != host+"/_tunneld/client.json" || len(c.ID) < 16 ||
+		c.ClientID != host+"/_tunneld/client.json" || c.Scope != "tunnel:http tunnel:attach tunnel:exec" || len(c.ID) < 16 ||
 		!c.Expiry.Time().Equal(tokenNow.Add(30*24*time.Hour)) || !c.IssuedAt.Time().Equal(tokenNow) {
 		t.Errorf("claims %+v", c)
 	}
-	forever, _ := mintToken(key, ssoHost, "github:1", tokenNow, 0)
+	forever, _ := mintToken(key, ssoHost, "github:1", Scopes, tokenNow, 0)
 	p, _ := jwt.ParseSigned(forever, []jose.SignatureAlgorithm{jose.EdDSA})
 	var f jwt.Claims
 	_ = p.Claims(key.Public(), &f)
@@ -64,22 +65,22 @@ func TestMintedTokenShape(t *testing.T) {
 }
 
 func TestMintRefusesANegativeLifetime(t *testing.T) {
-	if tok, err := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", tokenNow, -time.Hour); err == nil || tok != "" {
+	if tok, err := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", Scopes, tokenNow, -time.Hour); err == nil || tok != "" {
 		t.Errorf("minted %q, %v; want no token and an error", tok, err)
 	}
 }
 
 func TestVerifyToken(t *testing.T) {
 	key := tokenKey([]byte("s3cr3t"))
-	good, _ := mintToken(key, ssoHost, "github:1", tokenNow, 7*24*time.Hour)
-	forever, _ := mintToken(key, ssoHost, "github:1", tokenNow, 0)
-	if err := verifyToken(key, ssoHost, "github:1", good, tokenNow.Add(time.Hour)); err != nil {
+	good, _ := mintToken(key, ssoHost, "github:1", Scopes, tokenNow, 7*24*time.Hour)
+	forever, _ := mintToken(key, ssoHost, "github:1", Scopes, tokenNow, 0)
+	if _, err := verifyToken(key, ssoHost, "github:1", good, tokenNow.Add(time.Hour)); err != nil {
 		t.Errorf("good: %v", err)
 	}
-	if err := verifyToken(key, ssoHost, "github:1", forever, tokenNow.Add(10*365*24*time.Hour)); err != nil {
+	if _, err := verifyToken(key, ssoHost, "github:1", forever, tokenNow.Add(10*365*24*time.Hour)); err != nil {
 		t.Errorf("no expiry, years later: %v", err)
 	}
-	other, _ := mintToken(key, "other.tunneled.pizza", "github:1", tokenNow, time.Hour)
+	other, _ := mintToken(key, "other.tunneled.pizza", "github:1", Scopes, tokenNow, time.Hour)
 	tampered := good[:strings.LastIndex(good, ".")+1] + "AAAA"
 	for name, tc := range map[string]struct {
 		key   []byte
@@ -97,14 +98,14 @@ func TestVerifyToken(t *testing.T) {
 		"no owner":                 {[]byte("s3cr3t"), "", good, tokenNow},
 		"no secret":                {nil, "github:1", good, tokenNow},
 	} {
-		if err := verifyToken(tokenKey(tc.key), ssoHost, tc.owner, tc.tok, tc.at); err == nil {
+		if _, err := verifyToken(tokenKey(tc.key), ssoHost, tc.owner, tc.tok, tc.at); err == nil {
 			t.Errorf("%s: verified", name)
 		}
 	}
 }
 
 func TestSelfIssued(t *testing.T) {
-	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", tokenNow, time.Hour)
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", Scopes, tokenNow, time.Hour)
 	if !selfIssued(tok, ssoHost) {
 		t.Error("own token not recognised")
 	}
@@ -160,8 +161,34 @@ func TestExchangeMints(t *testing.T) {
 		if (life == 0) != (body.ExpiresIn == nil) || (life != 0 && *body.ExpiresIn != life) {
 			t.Errorf("%d: expires_in %v", life, body.ExpiresIn)
 		}
-		if err := verifyToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", body.AccessToken, tokenNow); err != nil {
+		if _, err := verifyToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", body.AccessToken, tokenNow); err != nil {
 			t.Errorf("%d: minted token does not verify: %v", life, err)
+		}
+	}
+}
+
+// TestExchangeScopes pins the minted token's scope: what was asked, in
+// Scopes' order, and tunnel:http when nothing was.
+func TestExchangeScopes(t *testing.T) {
+	for asked, want := range map[string]string{
+		"":                        "tunnel:http",
+		"tunnel:exec tunnel:http": "tunnel:http tunnel:exec",
+		"tunnel:attach":           "tunnel:attach",
+		"tunnel:http tunnel:http": "tunnel:http",
+	} {
+		form := exchangeForm("subject", "604800")
+		if asked != "" {
+			form.Set("scope", asked)
+		}
+		rec := exchange(exchangeAuth(t, fakeOidc(), "github:1"), form)
+		var body struct {
+			AccessToken string `json:"access_token"`
+			Scope       string `json:"scope"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		c, err := verifyToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", body.AccessToken, tokenNow)
+		if rec.Code != 200 || err != nil || c.Scope != want || body.Scope != want {
+			t.Errorf("%q: %d %v, token %q, answer %q; want %q", asked, rec.Code, err, c.Scope, body.Scope, want)
 		}
 	}
 }
@@ -199,6 +226,8 @@ func TestExchangeRefuses(t *testing.T) {
 		"without tunnel:token":    {with("subject_token", "no-scope"), "github:1", false, 400, "invalid_grant"},
 		"someone else's":          {with("subject_token", "subject-other"), "github:1", false, 400, "invalid_grant"},
 		"provider down":           {base, "github:1", true, 503, "temporarily_unavailable"},
+		"a scope not offered":     {with("scope", "tunnel:http openid"), "github:1", false, 400, "invalid_scope"},
+		"the subject's own scope": {with("scope", "tunnel:token"), "github:1", false, 400, "invalid_scope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o := fakeOidc()
@@ -252,7 +281,7 @@ func TestExchangeLogsNoToken(t *testing.T) {
 
 func TestGateTakesItsOwnTokens(t *testing.T) {
 	mintAt := func(secret string, at time.Time) string {
-		tok, _ := mintToken(tokenKey([]byte(secret)), ssoHost, "github:1", at, time.Hour)
+		tok, _ := mintToken(tokenKey([]byte(secret)), ssoHost, "github:1", Scopes, at, time.Hour)
 		return tok
 	}
 	mint := func(secret string) string { return mintAt(secret, time.Now()) }
@@ -291,6 +320,19 @@ func TestGateTakesItsOwnTokens(t *testing.T) {
 			}
 		})
 	}
+	t.Run("its scopes go on with it", func(t *testing.T) {
+		a := owned(ssoAuth(t, fakeOidc()), "github:1")
+		for scopes, want := range map[string]int{"tunnel:attach": 200, "": 403} {
+			tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", strings.Fields(scopes), time.Now(), time.Hour)
+			rec := ask(a, tok)
+			if rec.Code != want || rec.Header().Get("X-Scopes") != map[int]string{200: scopes}[want] {
+				t.Errorf("%q: %d, origin saw scopes %q; want %d", scopes, rec.Code, rec.Header().Get("X-Scopes"), want)
+			}
+			if want == 403 && !strings.Contains(rec.Header().Get("WWW-Authenticate"), `error="insufficient_scope", scope="tunnel:http"`) {
+				t.Errorf("%q: WWW-Authenticate %q", scopes, rec.Header().Get("WWW-Authenticate"))
+			}
+		}
+	})
 	t.Run("a provider token on a Password tunnel is still ignored", func(t *testing.T) {
 		a := owned(pwAuth(t, fakeOidc()), "github:1")
 		r := httptest.NewRequest("GET", "/x", nil)
@@ -327,7 +369,7 @@ func TestCookieHolderTunnelToken(t *testing.T) {
 	a := owned(protected(t), "github:1")
 	h := a.Handler(origin())
 	cookie := mintCookie(cookieKey([]byte("s3cr3t")), "basic", "", value, a.now())
-	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", Scopes, time.Now(), time.Hour)
 	ask := func(bearer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("GET", "/x", nil)
 		req.Host = ssoHost
@@ -372,7 +414,7 @@ func TestExchangeLogsOnlyVerifiedAsks(t *testing.T) {
 // TestTokenNamesNoSubOnPassword pins X-Tunneld-Sub as Single Sign-On's
 // alone: a Password tunnel's origin never gets one, a tunnel token included.
 func TestTokenNamesNoSubOnPassword(t *testing.T) {
-	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", Scopes, time.Now(), time.Hour)
 	for v, want := range map[string]string{value: "", ssoValue: "github:1", value + ", " + ssoValue: "github:1"} {
 		a := New(WithSecret(func() []byte { return []byte("s3cr3t") }), WithOidc(fakeOidc()))
 		if err := a.Set(v); err != nil {
@@ -391,7 +433,7 @@ func TestTokenNamesNoSubOnPassword(t *testing.T) {
 // TestTokenWhileStarting pins a tunnel token before the run has a secret as
 // a retry, as the exchange answers the same state: never a final 401.
 func TestTokenWhileStarting(t *testing.T) {
-	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", time.Now(), time.Hour)
+	tok, _ := mintToken(tokenKey([]byte("s3cr3t")), ssoHost, "github:1", Scopes, time.Now(), time.Hour)
 	a := owned(New(), "github:1")
 	if err := a.Set(value); err != nil {
 		t.Fatal(err)

@@ -93,7 +93,7 @@ func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time
 		c.Logged(ctx, tool, "refused", start)
 		return nil, Failed(url + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals.")
 	}
-	if refusal := c.Refused(ctx, tool, "tunnel:"+string(origin.Scheme), start); refusal != nil {
+	if refusal := c.Refused(ctx, tool, auth.Scope(origin.Scheme), start); refusal != nil {
 		return nil, refusal
 	}
 	return term, nil

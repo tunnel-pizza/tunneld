@@ -115,7 +115,7 @@ func (c Challenge) publicFor(host string) string {
 		if host != "" {
 			params = append(params, `resource_metadata="https://`+quoted.Replace(host)+MetadataPath+`"`)
 		}
-		params = append(params, `scope="openid profile offline_access"`)
+		params = append(params, `scope="openid profile offline_access tunnel:http"`)
 	}
 	if len(params) == 0 {
 		return rule.name

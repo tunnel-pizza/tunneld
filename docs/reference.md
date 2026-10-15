@@ -213,9 +213,11 @@ nothing else does. A `GET` or `HEAD` of `/.well-known/oauth-protected-resource`
 goes to the origin first; only a `404`, or no origin listening, is answered
 with tunneld's metadata: the tunnel's hostname as the `resource`, and the
 provider (`https://tunnel.pizza`, or `--provider`'s) as its authorization
-server. Its `scopes_supported`, like the MCP server's below, are `openid`,
-`profile` and `offline_access`: a client registered for refresh tokens asks
-for one and stays signed in past its access token's hour. Anything else the origin answers, its own metadata or a `401` from
+server. Its `scopes_supported` are `openid`, `profile` and `offline_access`,
+which a client registered for refresh tokens asks for to stay signed in past
+its access token's hour, and the [scopes](#scopes) that reach an origin,
+`tunnel:http`, `tunnel:attach` and `tunnel:exec`; the MCP server's are the
+first three and `tunnel:exec`. Anything else the origin answers, its own metadata or a `401` from
 protection of its own, is what the client gets. Behind a password the origin
 is out of reach, so the gate answers it with tunneld's. A run with
 `--no-cache` saves nothing and so authorizes nothing but `ping`.
@@ -1208,7 +1210,7 @@ TUNNELD_WWW_AUTHENTICATE='Bearer realm="<host>", sub="github:1234567 github:7654
 `<provider>:<id>` (GitHub's numeric user id, which a rename never reassigns),
 at most 100. tunnel.pizza's status page writes it for you. `sub` is never sent
 to a visitor; the public form is
-`Bearer realm="<host>", resource_metadata="https://<host>/.well-known/oauth-protected-resource", scope="openid profile offline_access"`.
+`Bearer realm="<host>", resource_metadata="https://<host>/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`.
 `Basic` and `Bearer` may be set together: either lets a visitor in. The
 tunnel's [owner](#the-owner), when its mint named one, counts as listed
 without being in `sub`.
@@ -1233,18 +1235,19 @@ What a visitor gets:
   `Authorization: Bearer <token>`. tunneld checks it against the provider's
   published keys ([RFC 9068](https://www.rfc-editor.org/rfc/rfc9068)): issued
   by the provider, for this hostname (or for `/_tunneld/mcp`, for the MCP
-  server), unexpired, for someone listed. A good one reaches the app without
-  `Authorization`; a bad one is a `401` with `error="invalid_token"`; someone
-  not listed a `403`, no body; the provider unreachable a `503` with
-  `Retry-After: 30`. MCP clients find all of this on their own from the `401`.
+  server), unexpired, for someone listed, holding a [scope](#scopes) for
+  what it asks. A good one reaches the app without `Authorization`; a bad one
+  is a `401` with `error="invalid_token"`; someone not listed a `403`, no
+  body; one without the scope a `403` with `error="insufficient_scope"`
+  naming it; the provider unreachable a `503` with `Retry-After: 30`. MCP
+  clients find all of this on their own from the `401`.
 - **The app** behind the tunnel gets `X-Tunneld-Sub: github:<id>` on every
   request Single Sign-On let in. tunneld drops any `X-Tunneld-Sub` a visitor
   sends, protected or not, so the app can trust it.
-- A listed person's token opens everything a visitor reaches, the panel
-  (`/`) and every terminal (`/?n=…`) included, and under `/_tunneld/` the MCP
-  server, given a token issued for it. It never opens `/_tunneld/.env`, which
-  takes the tunnel secret (or, for `PATCH`, a grant) as on any tunnel. The
-  tunnel secret still opens all of `/_tunneld/`.
+- A listed person's token opens what its [scopes](#scopes) reach, and under
+  `/_tunneld/` only the MCP server, given a token issued for it. It never
+  opens `/_tunneld/.env`, which takes the tunnel secret (or, for `PATCH`, a
+  grant) as on any tunnel. The tunnel secret still opens all of `/_tunneld/`.
 - Changing the list signs everyone out, as changing a password does.
 
 **An app with its own Bearer auth.** On a tunnel set to Single Sign-On, an
@@ -1267,28 +1270,49 @@ curl -H "Authorization: Bearer $TOKEN" https://<host>/
   `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`,
   `subject_token`, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`
   and `expires_in`, one of `604800`, `2592000`, `5184000`, `7776000` (7, 30,
-  60, 90 days) or `0` for none. tunneld checks the subject token against the
+  60, 90 days) or `0` for none, and `scope`, any of the [scopes](#scopes)
+  `tunnel:http`, `tunnel:attach` and `tunnel:exec` (`tunnel:http` when left
+  out; anything else is `invalid_scope`). tunneld checks the subject token against the
   provider's published keys: issued by the provider, to the provider itself
   (`client_id`), with scope `tunnel:token` (which no OAuth client can ask
   for), for this hostname, naming the owner. The answer is RFC 8693's:
-  `access_token`, `issued_token_type`, `token_type: Bearer` and, unless there
-  is none, `expires_in`. A refusal is `400` with an RFC 6749 error; a tunnel
+  `access_token`, `issued_token_type`, `token_type: Bearer`, `scope` and,
+  unless there is none, `expires_in`. A refusal is `400` with an RFC 6749 error; a tunnel
   with no secret yet a `503` with `Retry-After: 2`; the provider unreachable
   a `503` with `Retry-After: 30`. CORS answers the provider's origin only.
   Nothing is stored, here or at the provider.
 - **The token** is a JWT (`EdDSA`, `typ` `at+jwt`): `iss` and `aud`
-  `https://<host>`, `sub` the owner, `client_id` the tunnel's own, `iat`,
-  `exp` unless it has no expiry, and a random `jti`. It is signed with an
+  `https://<host>`, `sub` the owner, `client_id` the tunnel's own, `scope`,
+  `iat`, `exp` unless it has no expiry, and a random `jti`. It is signed with an
   Ed25519 key derived from the tunnel's secret (HKDF-SHA256, info
   `tunneld token key`).
 - **At the gate**, a Bearer token whose `iss` is the tunnel itself is checked
   with that key: unexpired, for the owner the mint named. A good one reaches
-  the app without `Authorization` (on Single Sign-On, with
-  `X-Tunneld-Sub` naming the owner); a bad one is a `401`; before the run
-  has a secret, a `503` with `Retry-After: 2`.
+  what its [scopes](#scopes) reach, without `Authorization` (on Single
+  Sign-On, with `X-Tunneld-Sub` naming the owner); a bad one is a `401`;
+  before the run has a secret, a `503` with `Retry-After: 2`.
 - **Revoking.** There is no list and no per-token revoke: a new secret
   (tunnel.pizza's Reset Tunnel) changes the key, which ends every token the
   tunnel ever minted, and every sign-in.
+
+### Scopes
+
+A token, the provider's or a [tunnel token](#tunnel-tokens), reaches an
+origin only holding the scope of the origin's scheme:
+
+| Scope | Reaches |
+|---|---|
+| `tunnel:http` | `http://` and `https://` origins: the app |
+| `tunnel:attach` | `attach://` origins: terminals on something already running |
+| `tunnel:exec` | `exec://` origins: programs tunneld runs |
+
+A token holding none of them opens nothing, the panel (`/`) included, and is
+a `403` with
+`WWW-Authenticate: Bearer error="insufficient_scope", scope="tunnel:http", resource_metadata="…"`.
+One routed (`?n`) to an origin whose scope it lacks is the same `403`
+naming that scope. A token with no `scope` claim holds none. The tunnel's
+password, a sign-in's cookie and the tunnel secret are not tokens and reach
+everything they did.
 
 ## Environment
 
