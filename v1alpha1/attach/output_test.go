@@ -172,6 +172,23 @@ func TestOutputLeavesOutAPlaceholder(t *testing.T) {
 	}
 }
 
+// TestOutputKeepsARepaintOnce pins a program repainting the whole screen
+// (clear, then the same rows again, as Claude Code does): what the log
+// has is not logged again, and what is new after it is.
+func TestOutputKeepsARepaintOnce(t *testing.T) {
+	l := newOutput(1 << 10)
+	_, _ = l.Write([]byte("banner\r\n> ask\r\nreply\r\n> "))
+	_ = l.take(0)
+	_, _ = l.Write([]byte("\x1b[H\x1b[2Jbanner\r\n> ask\r\nreply\r\n> "))
+	if got := l.take(0).Text; got != "banner\n> ask\nreply\n> " {
+		t.Errorf("after a repaint, take(0) = %q, want each row once", got)
+	}
+	_, _ = l.Write([]byte("\x1b[H\x1b[2Jbanner\r\n> ask\r\nreply\r\nnew\r\n> "))
+	if got := l.take(0).Text; got != "banner\n> ask\nreply\nnew\n> " {
+		t.Errorf("after a repaint with a new row, take(0) = %q, want the new row once", got)
+	}
+}
+
 // TestOutputHoldsUnreadRows pins rows nobody reads: however long the
 // screen is still, they stay held until a read takes them, so a spinner
 // that changes slowly logs no frame of its own.
