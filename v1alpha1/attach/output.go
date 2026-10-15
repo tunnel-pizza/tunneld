@@ -77,8 +77,10 @@ type output struct {
 	placed     bool
 	placedFrom uv.Position
 	// reached is the lowest row the cursor has been on since the last
-	// settle; erased the rows an ED 2 copied into the scrollback since.
+	// settle; erased the rows an ED 2 copied into the scrollback since, and
+	// cleared whether the screen was erased whole.
 	reached, erased int
+	cleared         bool
 	// buf is the kept text, oldest first, ending at offset end. It holds at
 	// least size bytes once that much has arrived, and at most twice that:
 	// compacting to size only once it doubles keeps a busy program's every
@@ -127,7 +129,8 @@ func newOutput(size int) *output {
 	// A whole-screen erase (ED 2, ED 3) ends what was on the screen: the
 	// rows with text above the lowest the cursor reached since the last
 	// write are kept first (a clear homes the cursor before it erases), and
-	// stay logged, so a program repainting the same rows logs them once. A
+	// whatever is drawn after is new, even the same rows again: a command
+	// printing what it printed before cannot be told from a repaint. A
 	// full-screen program's erase is its own screen's. x/vt's ED 3 blanks the screen as well as the
 	// scrollback.
 	em.RegisterCsiHandler('J', func(p ansi.Params) bool {
@@ -141,6 +144,7 @@ func newOutput(size int) *output {
 				}
 			}
 			o.keepRows(bottom)
+			o.cleared = true
 			// ED 2 copies every row with text into the scrollback as it
 			// clears: those did not scroll off, and are not lines to log.
 			if n == 2 {
@@ -300,14 +304,14 @@ func (o *output) settle() {
 		o.buf = append(o.buf, logged(len(l), l.At)...)
 	}
 	o.logged = o.logged[min(len(left), len(o.logged)):]
+	if o.cleared {
+		o.logged, o.cleared = nil, false
+	}
 	sb.Clear()
 	o.held, o.line = "", ""
 	if !o.em.IsAltScreen() {
-		// A logged row only blanked has not changed: a program
-		// repainting (an erase, then the same rows, over more than one
-		// write) logs nothing, and text drawn there after is a change.
 		for y, was := range o.logged {
-			if row := o.row(y); row != was && row != "\n" {
+			if o.row(y) != was {
 				o.logged = o.logged[:y]
 				break
 			}

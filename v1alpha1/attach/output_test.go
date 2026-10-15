@@ -194,39 +194,17 @@ func TestOutputLogsNoFullScreenScroll(t *testing.T) {
 	}
 }
 
-// TestOutputKeepsARepaintOverWrites pins a repaint that erases in one
-// write and draws in the next: a logged row only blanked has not changed,
-// so drawing it again logs nothing.
-func TestOutputKeepsARepaintOverWrites(t *testing.T) {
+// TestOutputLogsARerunAfterAClear pins a command that clears the screen
+// and prints what it printed before, on the same rows: a clear ends what
+// was on the screen, so what is drawn after is new, and logged again.
+func TestOutputLogsARerunAfterAClear(t *testing.T) {
 	l := newOutput(1 << 10)
-	_, _ = l.Write([]byte("one\r\ntwo\r\n> "))
+	run := "\x1b[H\x1b[2Jembedding.md  reference.md\r\n% "
+	_, _ = l.Write([]byte("% clear && ls docs\r\n" + run))
 	_ = l.take(0)
-	_, _ = l.Write([]byte("\x1b[H\x1b[J"))
-	_, _ = l.Write([]byte("one\r\ntwo\r\n> "))
-	if got := l.take(0).Text; got != "one\ntwo\n> " {
-		t.Errorf("take(0) = %q, want each row once", got)
-	}
-	_, _ = l.Write([]byte("\x1b[H\x1b[J"))
-	_, _ = l.Write([]byte("one\r\nTWO\r\n> "))
-	if got := l.take(0).Text; got != "one\ntwo\nTWO\n> " {
-		t.Errorf("take(0) = %q, want the changed row logged once more", got)
-	}
-}
-
-// TestOutputKeepsARepaintOnce pins a program repainting the whole screen
-// (clear, then the same rows again, as Claude Code does): what the log
-// has is not logged again, and what is new after it is.
-func TestOutputKeepsARepaintOnce(t *testing.T) {
-	l := newOutput(1 << 10)
-	_, _ = l.Write([]byte("banner\r\n> ask\r\nreply\r\n> "))
-	_ = l.take(0)
-	_, _ = l.Write([]byte("\x1b[H\x1b[2Jbanner\r\n> ask\r\nreply\r\n> "))
-	if got := l.take(0).Text; got != "banner\n> ask\nreply\n> " {
-		t.Errorf("after a repaint, take(0) = %q, want each row once", got)
-	}
-	_, _ = l.Write([]byte("\x1b[H\x1b[2Jbanner\r\n> ask\r\nreply\r\nnew\r\n> "))
-	if got := l.take(0).Text; got != "banner\n> ask\nreply\nnew\n> " {
-		t.Errorf("after a repaint with a new row, take(0) = %q, want the new row once", got)
+	_, _ = l.Write([]byte("clear && ls docs\r\n" + run))
+	if got := l.take(0).Text; got != "% clear && ls docs\nembedding.md  reference.md\n% clear && ls docs\nembedding.md  reference.md\n% " {
+		t.Errorf("take(0) = %q, want both runs' output", got)
 	}
 }
 
