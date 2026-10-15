@@ -455,7 +455,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	// The visitor side: the origins, the panel in front of them, and auth in
 	// front of both. The control path sits beside it rather than under it:
 	// it has its own guard (authorize), and the panel answers nothing there.
-	var site http.Handler = redirect(dialable.Len(), proxy(urlsOf(dialable), ws, log))
+	var site http.Handler = redirect(dialable.Len(), proxy(urlsOf(dialable), schemesOf(dialable), ws, log))
 	if front != nil {
 		site = front(site)
 	}
@@ -495,8 +495,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 // encoding the spec's own JSON gives it, so whoever holds the spec holds the
 // token), opens everything; then whatever authMethods asserts for the path
 // and method: a PATCH of .env carrying "Bearer <grant>", and on a tunnel set
-// to Single Sign-On a token the auth's Bearer admits, the MCP server's own
-// for ControlPath+"mcp", anywhere but .env.
+// to Single Sign-On a token the auth's Bearer admits for ControlPath+"mcp".
 //
 // A CORS preflight never reaches it: cors, in front, answers that. A token
 // Bearer refuses is a bare 403 (not listed) or 503 (the issuer down);
@@ -531,11 +530,7 @@ func (r *RouterImpl) authorize(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		methods, ok := authMethods[name]
-		if !ok {
-			methods = authMethods["*"]
-		}
-		for _, m := range methods {
+		for _, m := range authMethods[name] {
 			if !slices.Contains(m.methods, req.Method) {
 				continue
 			}
@@ -654,8 +649,8 @@ var publicMethods = map[string][]string{
 }
 
 // authMethods is every path under the ControlPath a credential other than
-// the secret opens, by its name there, "*" standing for every name not
-// listed: for each set of methods, assert says whether the request carries
+// the secret opens, by its name there; any other name opens to the secret
+// alone. For each set of methods, assert says whether the request carries
 // that credential, given the auth and the cache as handed over, and the
 // request to go on with. A request none admits is the auth's Unauthorized;
 // an error one returns is answered by refused.
@@ -684,17 +679,6 @@ var authMethods = map[string][]struct {
 			if ok {
 				r = r.WithContext(auth.WithAccess(r.Context(), access))
 			}
-			return r, ok, err
-		}},
-	},
-	// Every name not listed above: on a tunnel set to Single Sign-On, a
-	// listed person's token for the tunnel.
-	"*": {
-		{[]string{
-			http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
-			http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace,
-		}, func(a auth.Auth, _ cache.Cache, r *http.Request) (*http.Request, bool, error) {
-			_, ok, err := a.Bearer(r, "https://"+r.Host)
 			return r, ok, err
 		}},
 	},
@@ -849,6 +833,17 @@ func (r *RouterImpl) Cancel() {
 	}
 }
 
+// schemesOf is each origin's scheme, in order: what proxy holds a token's
+// scope against.
+func schemesOf(origins v1.Origins) []v1.Scheme {
+	all := origins.All()
+	out := make([]v1.Scheme, len(all))
+	for i := range all {
+		out[i] = all[i].Scheme
+	}
+	return out
+}
+
 // urlsOf is each origin's URI, in order: what the reverse proxy and its
 // transport dial.
 func urlsOf(origins v1.Origins) []*url.URL {
@@ -884,7 +879,11 @@ func urlsOf(origins v1.Origins) []*url.URL {
 //
 // The inbound Host is kept: an origin may key on it, and the stdlib default
 // would rewrite it to the origin's own host.
-func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
+//
+// A request a token let in (auth.AccessOf) reaches its origin only holding
+// the scope of the origin's scheme, auth.Scope; anything else is
+// auth.InsufficientScope naming it.
+func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) http.Handler {
 	paths := &remembered{origin: map[string]int{}}
 	// index is the origin a request was routed to, found in the list by the
 	// host it was sent to rather than read off the request; -1 for none.
@@ -896,83 +895,91 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 		}
 		return -1
 	}
-	return &httputil.ReverseProxy{
+	// pick is the origin a request goes to, by the rules above, and the
+	// query to forward with the routing segments dropped.
+	pick := func(in *http.Request) routed {
+		if len(origins) == 1 {
+			return routed{query: in.URL.RawQuery}
+		}
+		// A segment Atoi accepts is exactly a bare numeric parameter:
+		// valued ones ("1=foo") carry '=' and fail the parse. The first
+		// wins; every routing segment is dropped from the forward.
+		ix, explicit := 0, false
+		kept := make([]string, 0, 4)
+		for seg := range strings.SplitSeq(in.URL.RawQuery, "&") {
+			if n, err := strconv.Atoi(seg); err == nil {
+				if !explicit {
+					ix, explicit = n, true
+				}
+				continue
+			}
+			if seg != "" {
+				kept = append(kept, seg)
+			}
+		}
+		upgrade := in.Header.Get("Upgrade") != ""
+		// followed is whether the pick came from the request's own
+		// signals — its index, or a Referer that names one, directly
+		// or through a path already routed — which is what a path is
+		// remembered for. A cookie or the default is a guess, and a
+		// guess remembered would outlive being wrong.
+		followed := explicit
+		if !explicit {
+			switch n, ok := refererIndex(in); {
+			case upgrade && ws >= 0:
+				// A handshake carries no Referer and no per-tab signal
+				// of any kind, so the declaration is the only thing
+				// that can route it.
+				ix = ws
+			case ok:
+				ix, followed = n, true
+			default:
+				if n, ok := paths.of(in); ok {
+					ix, followed = n, true
+					break
+				}
+				cookie, err := in.Cookie(Cookie)
+				if err == nil {
+					if n, err := strconv.Atoi(cookie.Value); err == nil {
+						ix = n
+					}
+				}
+				if upgrade && err != nil {
+					// Nothing to route on: no parameter, no
+					// declaration, no cookie. It still goes to origin
+					// 0 — a client explicit enough to be broken by a
+					// refusal is working by luck today — but silence
+					// here is the worst available failure: the page
+					// loads, the socket connects to the wrong origin,
+					// the app half-works, and the tunnel is the last
+					// thing anybody suspects (cnuss/libtunnel#159).
+					log.Warn("websocket could not be routed and fell back to the default origin; mark the origin that owns websockets with the +ws scheme suffix (http+ws://host)",
+						"url", in.URL.String(), "origin", origins[0].Redacted())
+				}
+			}
+		}
+		if ix < 0 || ix >= len(origins) {
+			ix = 0
+		}
+		if followed {
+			paths.keep(in, ix)
+		}
+		return routed{ix: ix, query: strings.Join(kept, "&"), explicit: explicit}
+	}
+	rp := &httputil.ReverseProxy{
 		Transport: transport(origins),
 		Rewrite: func(r *httputil.ProxyRequest) {
-			origin := origins[0]
+			to, _ := r.In.Context().Value(routedKey{}).(routed)
+			origin := origins[to.ix]
+			r.Out.URL.RawQuery = to.query
 			if len(origins) > 1 {
-				// A segment Atoi accepts is exactly a bare numeric parameter:
-				// valued ones ("1=foo") carry '=' and fail the parse. The first
-				// wins; every routing segment is dropped from the forward.
-				ix, explicit := 0, false
-				kept := make([]string, 0, 4)
-				for seg := range strings.SplitSeq(r.In.URL.RawQuery, "&") {
-					if n, err := strconv.Atoi(seg); err == nil {
-						if !explicit {
-							ix, explicit = n, true
-						}
-						continue
-					}
-					if seg != "" {
-						kept = append(kept, seg)
-					}
-				}
-				upgrade := r.In.Header.Get("Upgrade") != ""
-				// followed is whether the pick came from the request's own
-				// signals — its index, or a Referer that names one, directly
-				// or through a path already routed — which is what a path is
-				// remembered for. A cookie or the default is a guess, and a
-				// guess remembered would outlive being wrong.
-				followed := explicit
-				if !explicit {
-					switch n, ok := refererIndex(r.In); {
-					case upgrade && ws >= 0:
-						// A handshake carries no Referer and no per-tab signal
-						// of any kind, so the declaration is the only thing
-						// that can route it.
-						ix = ws
-					case ok:
-						ix, followed = n, true
-					default:
-						if n, ok := paths.of(r.In); ok {
-							ix, followed = n, true
-							break
-						}
-						cookie, err := r.In.Cookie(Cookie)
-						if err == nil {
-							if n, err := strconv.Atoi(cookie.Value); err == nil {
-								ix = n
-							}
-						}
-						if upgrade && err != nil {
-							// Nothing to route on: no parameter, no
-							// declaration, no cookie. It still goes to origin
-							// 0 — a client explicit enough to be broken by a
-							// refusal is working by luck today — but silence
-							// here is the worst available failure: the page
-							// loads, the socket connects to the wrong origin,
-							// the app half-works, and the tunnel is the last
-							// thing anybody suspects (cnuss/libtunnel#159).
-							log.Warn("websocket could not be routed and fell back to the default origin; mark the origin that owns websockets with the +ws scheme suffix (http+ws://host)",
-								"url", r.In.URL.String(), "origin", origins[0].Redacted())
-						}
-					}
-				}
-				if ix < 0 || ix >= len(origins) {
-					ix = 0
-				}
-				if followed {
-					paths.keep(r.In, ix)
-				}
-				origin = origins[ix]
-				r.Out.URL.RawQuery = strings.Join(kept, "&")
-				if explicit && navigation(r.In) {
+				if to.explicit && navigation(r.In) {
 					// ModifyResponse below answers an explicit top-level pick
 					// with the sticky cookie; the outbound context carries the
 					// index over.
-					r.Out = r.Out.WithContext(context.WithValue(r.Out.Context(), stickyKey{}, ix))
+					r.Out = r.Out.WithContext(context.WithValue(r.Out.Context(), stickyKey{}, to.ix))
 				}
-				log.Debug("routing to origin", "ix", ix, "url", r.In.URL.String())
+				log.Debug("routing to origin", "ix", to.ix, "url", r.In.URL.String())
 			}
 			// Scheme and host only: an origin typed with a path is reached at
 			// its root, the way the tunnel engine reached it.
@@ -1099,7 +1106,27 @@ func proxy(origins []*url.URL, ws int, log *slog.Logger) http.Handler {
 		},
 		ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelDebug),
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		to := pick(r)
+		if access, ok := auth.AccessOf(r.Context()); ok {
+			if scope := auth.Scope(schemes[to.ix]); !access.Has(scope) {
+				auth.InsufficientScope(w, r, scope)
+				return
+			}
+		}
+		rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), routedKey{}, to)))
+	})
 }
+
+// routed is where proxy sends a request: the origin's index, the query
+// forwarded, and whether the request named the index itself.
+type routed struct {
+	ix       int
+	query    string
+	explicit bool
+}
+
+type routedKey struct{}
 
 // redirect canonicalizes referer-routed navigations onto an explicit ?n URL,
 // defending referer routing against decay: a GET/HEAD document or iframe

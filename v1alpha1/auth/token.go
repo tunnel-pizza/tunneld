@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"cmp"
 	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/sha256"
@@ -40,13 +41,14 @@ func tokenKey(secret []byte) ed25519.PrivateKey {
 type tokenClaims struct {
 	jwt.Claims
 	ClientID string `json:"client_id"`
+	Scope    string `json:"scope,omitempty"`
 }
 
 var errLifetime = errors.New("auth: a token's lifetime cannot be negative")
 
-// mintToken is an RFC 9068 access token for sub on host, signed with key,
-// for lifetime; 0 has no exp, and a negative one is refused.
-func mintToken(key ed25519.PrivateKey, host, sub string, now time.Time, lifetime time.Duration) (string, error) {
+// mintToken is an RFC 9068 access token for sub on host holding scopes,
+// signed with key, for lifetime; 0 has no exp, and a negative one is refused.
+func mintToken(key ed25519.PrivateKey, host, sub string, scopes []string, now time.Time, lifetime time.Duration) (string, error) {
 	if lifetime < 0 {
 		return "", errLifetime
 	}
@@ -64,6 +66,7 @@ func mintToken(key ed25519.PrivateKey, host, sub string, now time.Time, lifetime
 			ID:       random(16),
 		},
 		ClientID: self + v1.ControlPath + "client.json",
+		Scope:    strings.Join(scopes, " "),
 	}
 	if lifetime > 0 {
 		c.Expiry = jwt.NewNumericDate(now.Add(lifetime))
@@ -71,40 +74,47 @@ func mintToken(key ed25519.PrivateKey, host, sub string, now time.Time, lifetime
 	return jwt.Signed(signer).Claims(c).Serialize()
 }
 
-// verifyToken is nil when token is one key signed for host's owner: EdDSA,
-// at+jwt, iss and aud host, sub owner, iat present and not ahead, exp (when
-// present) not past.
-func verifyToken(key ed25519.PrivateKey, host, owner, token string, now time.Time) error {
+// verifyToken is token's claims when it is one key signed for host's owner:
+// EdDSA, at+jwt, iss and aud host, sub owner, iat present and not ahead, exp
+// (when present) not past.
+func verifyToken(key ed25519.PrivateKey, host, owner, token string, now time.Time) (tokenClaims, error) {
 	if key == nil || owner == "" {
-		return errToken
+		return tokenClaims{}, errToken
 	}
 	tok, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.EdDSA})
 	if err != nil || len(tok.Headers) != 1 {
-		return errToken
+		return tokenClaims{}, errToken
 	}
 	if typ, _ := tok.Headers[0].ExtraHeaders[jose.HeaderType].(string); typ != "at+jwt" {
-		return errToken
+		return tokenClaims{}, errToken
 	}
 	var c tokenClaims
 	if err := tok.Claims(key.Public(), &c); err != nil {
-		return errToken
+		return tokenClaims{}, errToken
 	}
 	self := "https://" + host
 	if c.Subject != owner || c.IssuedAt == nil || c.IssuedAt.Time().After(now.Add(tokenSkew)) {
-		return errToken
+		return tokenClaims{}, errToken
 	}
 	if err := c.ValidateWithLeeway(jwt.Expected{Issuer: self, AnyAudience: jwt.Audience{self}, Time: now}, tokenSkew); err != nil {
-		return errToken
+		return tokenClaims{}, errToken
 	}
-	return nil
+	return c, nil
 }
 
-// ownToken is whether r's Bearer is a token this tunnel minted for its owner
-// and that still verifies: it lets r in, and never reaches the origin.
-func (a *AuthImpl) ownToken(r *http.Request) bool {
+// ownToken is the access of r's Bearer when it is a token this tunnel
+// minted for its owner and still verifies, and whether it is: it lets r in,
+// and never reaches the origin.
+func (a *AuthImpl) ownToken(r *http.Request) (Access, bool) {
 	token, sent := bearerToken(r)
-	return sent && selfIssued(token, r.Host) &&
-		verifyToken(tokenKey(a.secret()), r.Host, a.owner(), token, a.now()) == nil
+	if !sent || !selfIssued(token, r.Host) {
+		return Access{}, false
+	}
+	c, err := verifyToken(tokenKey(a.secret()), r.Host, a.owner(), token, a.now())
+	if err != nil {
+		return Access{}, false
+	}
+	return Access{Sub: c.Subject, ClientID: c.ClientID, Scopes: strings.Fields(c.Scope)}, true
 }
 
 // selfIssued is whether token says, unverified, that host issued it: which
@@ -137,7 +147,9 @@ func tokenError(w http.ResponseWriter, status int, code, description string) {
 // token is RFC 8693 token exchange for the owner: the provider's subject
 // token (scope tunnel:token, issued to the provider itself, for this
 // tunnel, naming its owner) traded for a token this tunnel signs, for one
-// of tokenLifetimes. Nothing is kept; the subject token is checked offline.
+// of tokenLifetimes, holding the scope asked for (§2.1): one or more of
+// Scopes, tunnel:http when none is asked. Nothing is kept; the subject token
+// is checked offline.
 func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.Method != http.MethodPost {
@@ -176,6 +188,13 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		tokenError(w, http.StatusBadRequest, "invalid_request", "expires_in must be 604800, 2592000, 5184000, 7776000 or 0")
 		return
 	}
+	scopes := strings.Fields(cmp.Or(f.Get("scope"), Scope(v1.HttpScheme)))
+	if slices.ContainsFunc(scopes, func(s string) bool { return !slices.Contains(Scopes, s) }) {
+		reason = "scope"
+		tokenError(w, http.StatusBadRequest, "invalid_scope", "scope may hold only "+strings.Join(Scopes, ", "))
+		return
+	}
+	scopes = slices.DeleteFunc(slices.Clone(Scopes), func(s string) bool { return !slices.Contains(scopes, s) })
 	key := tokenKey(a.secret())
 	if key == nil {
 		reason = "starting"
@@ -202,14 +221,14 @@ func (a *AuthImpl) token(w http.ResponseWriter, r *http.Request) {
 		tokenError(w, http.StatusBadRequest, "invalid_grant", "not the owner's subject token for this tunnel")
 		return
 	}
-	tok, err := mintToken(key, r.Host, owner, a.now(), time.Duration(life)*time.Second)
+	tok, err := mintToken(key, r.Host, owner, scopes, a.now(), time.Duration(life)*time.Second)
 	if err != nil {
 		reason = "sign"
 		tokenError(w, http.StatusInternalServerError, "server_error", "the token could not be signed")
 		return
 	}
 	ok = true
-	body := map[string]any{"access_token": tok, "issued_token_type": accessTokenType, "token_type": "Bearer"}
+	body := map[string]any{"access_token": tok, "issued_token_type": accessTokenType, "token_type": "Bearer", "scope": strings.Join(scopes, " ")}
 	if life > 0 {
 		body["expires_in"] = life
 	}

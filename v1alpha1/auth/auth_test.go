@@ -30,6 +30,9 @@ func origin() http.Handler {
 		w.Header().Set("X-Cookie", r.Header.Get("Cookie"))
 		w.Header().Set("X-Authorization", r.Header.Get("Authorization"))
 		w.Header().Set("X-Sub", r.Header.Get(SubHeader))
+		if access, ok := AccessOf(r.Context()); ok {
+			w.Header().Set("X-Scopes", strings.Join(access.Scopes, " "))
+		}
 		io.WriteString(w, "origin")
 	})
 }
@@ -81,9 +84,9 @@ func fakeOidc() *oidcOf {
 	site, mcp := []string{"https://" + ssoHost}, []string{"https://" + ssoHost + "/_tunneld/mcp"}
 	return &oidcOf{
 		tokens: map[string]grantFor{
-			"listed":        {sub: "github:1", aud: site},
-			"also":          {sub: "github:2", aud: append(site, mcp...)},
-			"unlisted":      {sub: "github:9", aud: site},
+			"listed":        {sub: "github:1", aud: site, scope: "tunnel:http"},
+			"also":          {sub: "github:2", aud: append(site, mcp...), scope: "tunnel:http"},
+			"unlisted":      {sub: "github:9", aud: site, scope: "tunnel:http"},
 			"mcp-only":      {sub: "github:1", aud: mcp},
 			"subject":       {sub: "github:1", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
 			"subject-other": {sub: "github:2", aud: site, clientID: fakeIssuer, scope: "tunnel:token"},
@@ -184,7 +187,7 @@ func TestHeader(t *testing.T) {
 	if err := a.Set(ssoValue); err != nil {
 		t.Fatal(err)
 	}
-	want := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access"`
+	want := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
 	if _, v := a.Header(); v != want {
 		t.Errorf("SSO Header() = %q, want %q", v, want)
 	}
@@ -257,7 +260,7 @@ func TestProtectedResource(t *testing.T) {
 			want := map[string]any{
 				"resource":                 "https://h.example",
 				"authorization_servers":    []any{tc.server},
-				"scopes_supported":         []any{"openid", "profile", "offline_access"},
+				"scopes_supported":         []any{"openid", "profile", "offline_access", "tunnel:http", "tunnel:attach", "tunnel:exec"},
 				"bearer_methods_supported": []any{"header"},
 			}
 			if !reflect.DeepEqual(got, want) {
@@ -827,7 +830,7 @@ func TestAccessContext(t *testing.T) {
 func TestBearerGate(t *testing.T) {
 	a := ssoAuth(t, fakeOidc())
 	h := a.Handler(origin())
-	public := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access"`
+	public := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
 	req := func(auth string) *http.Request {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r.Host = ssoHost
@@ -847,6 +850,9 @@ func TestBearerGate(t *testing.T) {
 		if rec.Header().Get("Cloudflare-CDN-Cache-Control") != "no-store" {
 			t.Error("a passed response was not marked for the edge")
 		}
+		if got := rec.Header().Get("X-Scopes"); got != "tunnel:http" {
+			t.Errorf("origin's handler saw scopes %q; want the token's, tunnel:http", got)
+		}
 	})
 	t.Run("the panel and the terminals take it too", func(t *testing.T) {
 		for _, target := range []string{"/", "/?n=1", "/attach?n=1", "/attach/embedded?n=2"} {
@@ -864,6 +870,13 @@ func TestBearerGate(t *testing.T) {
 		r.AddCookie(&http.Cookie{Name: "app", Value: "1"})
 		if rec := serve(h, r); rec.Code != 200 || rec.Header().Get("X-Cookie") != "app=1" {
 			t.Errorf("%d, origin saw cookies %q; want 200 and app=1 alone", rec.Code, rec.Header().Get("X-Cookie"))
+		}
+	})
+	t.Run("a token holding no tunnel scope is insufficient_scope", func(t *testing.T) {
+		rec := serve(h, req("Bearer no-scope"))
+		want := `Bearer error="insufficient_scope", scope="tunnel:http", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource"`
+		if rec.Code != 403 || rec.Body.Len() != 0 || rec.Header().Get("WWW-Authenticate") != want || rec.Header().Get("X-Sub") != "" {
+			t.Errorf("%d, WWW-Authenticate %q; want 403, %q", rec.Code, rec.Header().Get("WWW-Authenticate"), want)
 		}
 	})
 	t.Run("not listed is a bodyless 403", func(t *testing.T) {

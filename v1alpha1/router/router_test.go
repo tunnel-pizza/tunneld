@@ -1317,12 +1317,12 @@ func TestAuthorizeTakesABearer(t *testing.T) {
 		ok        bool
 		err       error
 		wantMcp   int // POST /_tunneld/mcp
-		wantOther int // GET of a control route nothing answers: 404 once through
+		wantOther int // GET of any other control route: the secret's alone
 		retry     string
 	}{
-		"listed":     {true, nil, 200, 404, ""},
-		"not listed": {false, auth.ErrNotListed, 403, 403, ""},
-		"down":       {false, auth.ErrUnavailable, 503, 503, "30"},
+		"listed":     {true, nil, 200, 401, ""},
+		"not listed": {false, auth.ErrNotListed, 403, 401, ""},
+		"down":       {false, auth.ErrUnavailable, 503, 401, "30"},
 		"invalid":    {false, auth.ErrInvalidToken, 401, 401, ""},
 		"no token":   {false, nil, 401, 401, ""},
 	} {
@@ -1338,13 +1338,13 @@ func TestAuthorizeTakesABearer(t *testing.T) {
 			}{{"POST", "mcp", tc.wantMcp}, {"GET", "nope", tc.wantOther}} {
 				resp, body := ask(t, c.method, base+c.path, "Bearer t0ken")
 				retry := tc.retry
-				if c.want == 404 {
+				if c.path != "mcp" {
 					retry = ""
 				}
 				if resp.StatusCode != c.want || resp.Header.Get("Retry-After") != retry {
 					t.Errorf("%s %s = %d, Retry-After %q; want %d, %q", c.method, c.path, resp.StatusCode, resp.Header.Get("Retry-After"), c.want, retry)
 				}
-				if c.want >= 401 && c.want != 404 && body != "" {
+				if c.want >= 401 && body != "" {
 					t.Errorf("%s %s said %q, want no body", c.method, c.path, body)
 				}
 				if c.want == 401 && resp.Header.Get("WWW-Authenticate") != "Fake" {
@@ -1354,8 +1354,8 @@ func TestAuthorizeTakesABearer(t *testing.T) {
 			host := "https://" + strings.TrimPrefix(strings.TrimSuffix(base, "/_tunneld/"), "http://")
 			mu.Lock()
 			defer mu.Unlock()
-			if len(seen) != 2 || seen[0] != host+"/_tunneld/mcp" || seen[1] != host {
-				t.Errorf("Bearer asked about %q, want the MCP server then %q", seen, host)
+			if len(seen) != 1 || seen[0] != host+"/_tunneld/mcp" {
+				t.Errorf("Bearer asked about %q, want the MCP server alone", seen)
 			}
 		})
 	}
@@ -1830,4 +1830,52 @@ func urisOf(origins v1.Origins) []*url.URL {
 		out[i] = &all[i].URI
 	}
 	return out
+}
+
+// TestProxyHoldsTheScope pins a request a token let in to the scope of the
+// scheme of the origin it routes to, refused naming that scope; a request
+// with no token's access behind it, a cookie's or the secret's, goes anywhere.
+func TestProxyHoldsTheScope(t *testing.T) {
+	serve := func(body string) *url.URL {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, body) }))
+		t.Cleanup(s.Close)
+		u, _ := url.Parse(s.URL)
+		return u
+	}
+	app, term := serve("app"), serve("term")
+	both := proxy([]*url.URL{app, term}, []v1.Scheme{v1.HttpScheme, v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
+	alone := proxy([]*url.URL{term}, []v1.Scheme{v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
+	for _, tc := range []struct {
+		h       http.Handler
+		target  string
+		scopes  []string
+		byToken bool
+		want    int
+		body    string
+	}{
+		{both, "/?0", []string{"tunnel:http"}, true, 200, "app"},
+		{both, "/?1", []string{"tunnel:http"}, true, 403, "tunnel:exec"},
+		{both, "/?1", []string{"tunnel:exec"}, true, 200, "term"},
+		{both, "/?0", []string{"tunnel:exec"}, true, 403, "tunnel:http"},
+		{both, "/?1", nil, false, 200, "term"},
+		{alone, "/", []string{"tunnel:http"}, true, 403, "tunnel:exec"},
+		{alone, "/", []string{"tunnel:exec"}, true, 200, "term"},
+	} {
+		r := httptest.NewRequest("GET", tc.target, nil)
+		if tc.byToken {
+			r = r.WithContext(auth.WithAccess(r.Context(), auth.Access{Sub: "github:1", Scopes: tc.scopes}))
+		}
+		rec := httptest.NewRecorder()
+		tc.h.ServeHTTP(rec, r)
+		if rec.Code != tc.want {
+			t.Errorf("%s holding %q: %d, want %d", tc.target, tc.scopes, rec.Code, tc.want)
+			continue
+		}
+		if tc.want == 200 && rec.Body.String() != tc.body {
+			t.Errorf("%s holding %q reached %q, want %q", tc.target, tc.scopes, rec.Body, tc.body)
+		}
+		if tc.want == 403 && !strings.Contains(rec.Header().Get("WWW-Authenticate"), `error="insufficient_scope", scope="`+tc.body+`"`) {
+			t.Errorf("%s holding %q: WWW-Authenticate %q, want insufficient_scope for %s", tc.target, tc.scopes, rec.Header().Get("WWW-Authenticate"), tc.body)
+		}
+	}
 }

@@ -64,6 +64,26 @@ type Access struct {
 // Has is whether the token holds scope.
 func (a Access) Has(scope string) bool { return slices.Contains(a.Scopes, scope) }
 
+// Scope is what a token holds to reach an origin of scheme s: tunnel:http,
+// tunnel:attach or tunnel:exec.
+func Scope(s v1.Scheme) string { return "tunnel:" + string(s) }
+
+// Scopes is every scope that reaches an origin. A token with none of them
+// opens nothing past the gate.
+var Scopes = []string{Scope(v1.HttpScheme), Scope(v1.AttachScheme), Scope(v1.ExecScheme)}
+
+// opens is whether a reaches any origin at all.
+func (a Access) opens() bool { return slices.ContainsFunc(Scopes, a.Has) }
+
+// InsufficientScope answers a token that let its holder in but lacks scope:
+// a bodyless 403 naming the scope to ask for and the resource metadata
+// (RFC 6750 §3.1, RFC 9728 §5.1).
+func InsufficientScope(w http.ResponseWriter, r *http.Request, scope string) {
+	w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+scope+`", resource_metadata="https://`+quoted.Replace(r.Host)+MetadataPath+`"`)
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusForbidden)
+}
+
 type accessKey struct{}
 
 // WithAccess is ctx carrying a, for the handler behind the guard that let
@@ -263,7 +283,9 @@ func (s *state) verifyAny(password string) bool {
 // challenge, a Bearer credential is judged and passes or is refused by what
 // went wrong; with a Basic one, Basic that verifies passes and gets the
 // cookie; anything else is a 303 to the login page for a browser page load,
-// a bodyless 401 for everyone else.
+// a bodyless 401 for everyone else. A token passes only holding one of
+// Scopes, else InsufficientScope for tunnel:http, and carries its Access on
+// to next, which checks the scope of the origin it routes to.
 func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = withoutSub(r)
@@ -285,7 +307,8 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 			// origin; an origin's own Basic or Bearer credential still does.
 			_, pw, basic := r.BasicAuth()
 			consumed := basic && s.basic && a.guard.matches(r.Context(), key, s.value, pw, s.verifyAny)
-			a.pass(w, r, next, consumed || a.ownToken(r), sub)
+			_, own := a.ownToken(r)
+			a.pass(w, r, next, consumed || own, sub)
 			return
 		}
 		// The tunnel's own tokens (tunnel.pizza#58), on any protected tunnel:
@@ -296,13 +319,17 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 				refuse(w, http.StatusServiceUnavailable, "Retry-After", "2")
 				return
 			}
-			if a.ownToken(r) {
+			if access, ok := a.ownToken(r); ok {
+				if !access.opens() {
+					InsufficientScope(w, r, Scope(v1.HttpScheme))
+					return
+				}
 				// X-Tunneld-Sub is Single Sign-On's alone.
 				sub := ""
 				if s.bearer {
 					sub = a.owner()
 				}
-				a.pass(w, r, next, true, sub)
+				a.pass(w, r.WithContext(WithAccess(r.Context(), access)), next, true, sub)
 				return
 			}
 			unauthorized(w, s.challenge(r.Host, "invalid_token"))
@@ -311,8 +338,10 @@ func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 		if _, sent := bearerToken(r); sent && s.bearer {
 			access, ok, err := a.Bearer(r, "https://"+r.Host)
 			switch {
+			case ok && !access.opens():
+				InsufficientScope(w, r, Scope(v1.HttpScheme))
 			case ok:
-				a.pass(w, r, next, true, access.Sub)
+				a.pass(w, r.WithContext(WithAccess(r.Context(), access)), next, true, access.Sub)
 			case errors.Is(err, ErrUnavailable):
 				refuse(w, http.StatusServiceUnavailable, "Retry-After", "30")
 			case errors.Is(err, ErrNotListed):
@@ -563,7 +592,7 @@ type metadata struct {
 // the tunnel then refuses.
 func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 	resource := "https://" + r.Host
-	scopes := []string{"openid", "profile", "offline_access"}
+	scopes := append([]string{"openid", "profile", "offline_access"}, Scopes...)
 	if r.URL.Path == MCPMetadataPath {
 		if !a.byToken(a.state.Load()) {
 			w.Header().Set("Content-Length", "0")
@@ -572,7 +601,7 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 		resource += v1.ControlPath + "mcp"
 		// What the MCP server's terminal tools need.
-		scopes = append(scopes, "tunnel:exec")
+		scopes = []string{"openid", "profile", "offline_access", Scope(v1.ExecScheme)}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata{
