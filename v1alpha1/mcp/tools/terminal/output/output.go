@@ -26,7 +26,7 @@ const (
 // pattern matches what it read, the program falls quiet, or the wait runs
 // out.
 type WaitFor struct {
-	Until     string `json:"until,omitempty" jsonschema:"a regular expression (RE2) that ends the wait once the text read, or a full-screen program's rows, match it"`
+	Until     string `json:"until,omitempty" jsonschema:"a regular expression (RE2) that ends the wait once the text read, or a full-screen program's rows, match it; \\s is ASCII only, \\p{Zs} matches any space"`
 	IdleMs    *int   `json:"idle_ms,omitempty" jsonschema:"end once the program has printed nothing, or a full-screen program's screen has not changed, for this long, in milliseconds: 500 when left out, 0 never"`
 	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"end after this long, in milliseconds: 10000 when left out, at most 25000"`
 }
