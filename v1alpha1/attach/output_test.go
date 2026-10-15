@@ -172,6 +172,42 @@ func TestOutputLeavesOutAPlaceholder(t *testing.T) {
 	}
 }
 
+// TestOutputLogsNoFullScreenScroll pins reading while a full-screen
+// program (less) is up: its screen is its own, so a read or input there
+// keeps none of its rows, and the command that started it is logged
+// before what follows, not after its pages.
+func TestOutputLogsNoFullScreenScroll(t *testing.T) {
+	l := newOutput(1 << 16)
+	l.resize(20, 5)
+	var page strings.Builder
+	for i := 1; i <= 12; i++ {
+		page.WriteString(fmt.Sprintf("%d\r\n", i))
+	}
+	_, _ = l.Write([]byte("% seq | less\r\n\x1b[?1049h\x1b[5;1H" + page.String()))
+	if got := l.take(0).Text; got != "" {
+		t.Errorf("take(0) while less is up = %q, want nothing of its screen", got)
+	}
+	_ = l.offset()
+	_, _ = l.Write([]byte("\x1b[?1049l% "))
+	if got := l.take(0).Text; got != "% seq | less\n% " {
+		t.Errorf("take(0) = %q, want the command, then the prompt", got)
+	}
+}
+
+// TestOutputLogsARerunAfterAClear pins a command that clears the screen
+// and prints what it printed before, on the same rows: a clear ends what
+// was on the screen, so what is drawn after is new, and logged again.
+func TestOutputLogsARerunAfterAClear(t *testing.T) {
+	l := newOutput(1 << 10)
+	run := "\x1b[H\x1b[2Jembedding.md  reference.md\r\n% "
+	_, _ = l.Write([]byte("% clear && ls docs\r\n" + run))
+	_ = l.take(0)
+	_, _ = l.Write([]byte("clear && ls docs\r\n" + run))
+	if got := l.take(0).Text; got != "% clear && ls docs\nembedding.md  reference.md\n% clear && ls docs\nembedding.md  reference.md\n% " {
+		t.Errorf("take(0) = %q, want both runs' output", got)
+	}
+}
+
 // TestOutputHoldsUnreadRows pins rows nobody reads: however long the
 // screen is still, they stay held until a read takes them, so a spinner
 // that changes slowly logs no frame of its own.

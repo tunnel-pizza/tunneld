@@ -76,6 +76,11 @@ type output struct {
 	// move it makes is not a wrap.
 	placed     bool
 	placedFrom uv.Position
+	// reached is the lowest row the cursor has been on since the last
+	// settle; erased the rows an ED 2 copied into the scrollback since, and
+	// cleared whether the screen was erased whole.
+	reached, erased int
+	cleared         bool
 	// buf is the kept text, oldest first, ending at offset end. It holds at
 	// least size bytes once that much has arrived, and at most twice that:
 	// compacting to size only once it doubles keeps a busy program's every
@@ -121,19 +126,34 @@ func newOutput(size int) *output {
 		em.RegisterCsiHandler(cmd, func(ansi.Params) bool { return o.place() })
 	}
 	em.RegisterEscHandler('8', o.place)
-	// A whole-screen erase (ED 2, ED 3) ends what was on the screen: every
-	// row down to the last with text is kept first, wherever the cursor is. x/vt's ED 3 blanks the screen as well as the
+	// A whole-screen erase (ED 2, ED 3) ends what was on the screen: the
+	// rows with text above the lowest the cursor reached since the last
+	// write are kept first (a clear homes the cursor before it erases), and
+	// whatever is drawn after is new, even the same rows again: a command
+	// printing what it printed before cannot be told from a repaint. A
+	// full-screen program's erase is its own screen's. x/vt's ED 3 blanks the screen as well as the
 	// scrollback.
 	em.RegisterCsiHandler('J', func(p ansi.Params) bool {
-		if n, _, _ := p.Param(0, 0); n == 2 || n == 3 {
+		if n, _, _ := p.Param(0, 0); (n == 2 || n == 3) && !o.em.IsAltScreen() {
+			reached := max(o.reached, o.em.CursorPosition().Y)
 			o.settle()
 			bottom := 0
-			for y := range o.em.Height() {
+			for y := range reached {
 				if t, _ := text(o.em.Width(), o.cells(y)); t != "" {
 					bottom = y + 1
 				}
 			}
 			o.keepRows(bottom)
+			o.cleared = true
+			// ED 2 copies every row with text into the scrollback as it
+			// clears: those did not scroll off, and are not lines to log.
+			if n == 2 {
+				for y := range o.em.Height() {
+					if t, _ := text(o.em.Width(), o.cells(y)); t != "" {
+						o.erased++
+					}
+				}
+			}
 		}
 		return false
 	})
@@ -158,6 +178,7 @@ func (o *output) place() bool {
 // of the next row: an autowrap, which no control character does on a
 // screen wider than four columns, and a sequence that does is placed.
 func (o *output) moveCursor(from, to uv.Position) {
+	o.reached = max(o.reached, from.Y, to.Y)
 	if o.placed {
 		o.placed = false
 		if from == o.placedFrom {
@@ -266,6 +287,8 @@ func (o *output) settle() {
 	before, shown := len(o.buf), o.held+o.line
 	sb := o.em.Scrollback()
 	left := sb.Lines()
+	left = left[min(o.erased, len(left)):]
+	o.erased = 0
 	same, j := 0, 0
 	for same < len(left) && j < len(o.logged) {
 		switch l := left[same]; {
@@ -281,6 +304,9 @@ func (o *output) settle() {
 		o.buf = append(o.buf, logged(len(l), l.At)...)
 	}
 	o.logged = o.logged[min(len(left), len(o.logged)):]
+	if o.cleared {
+		o.logged, o.cleared = nil, false
+	}
 	sb.Clear()
 	o.held, o.line = "", ""
 	if !o.em.IsAltScreen() {
@@ -311,6 +337,7 @@ func (o *output) settle() {
 			}
 		}
 	}
+	o.reached = o.em.CursorPosition().Y
 	alt := o.alt
 	o.alt = o.em.IsAltScreen()
 	if added := o.grew(before); added > 0 || o.held+o.line != shown || alt || o.alt {
@@ -323,8 +350,12 @@ func (o *output) settle() {
 func (o *output) keepHeld() { o.keepRows(o.em.CursorPosition().Y) }
 
 // keepRows moves the rows from the last logged one up to row bottom into
-// buf. Called with mu held.
+// buf; none of a full-screen program's, whose screen is its own. Called
+// with mu held.
 func (o *output) keepRows(bottom int) {
+	if o.em.IsAltScreen() {
+		return
+	}
 	before := len(o.buf)
 	for y := len(o.logged); y < bottom; y++ {
 		row := o.row(y)

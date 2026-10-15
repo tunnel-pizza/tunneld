@@ -87,6 +87,33 @@ func TestTerminalSeparatesAnEscape(t *testing.T) {
 	}
 }
 
+// TestTerminalSeparatesAnEnterFromText pins an Enter step right after text
+// in one call: the program reads the text, then the Enter enterGap later,
+// so one that tells a paste by its speed reads a key press, not a newline
+// in a paste.
+func TestTerminalSeparatesAnEnterFromText(t *testing.T) {
+	target := newFakeTarget("api", true, true)
+	term := Terminal(serveFake(t, target).session)
+	sent := make(chan error, 1)
+	go func() {
+		_, err := term.Send("a", Input{Text: "a long prompt"}, Input{Key: "Enter"})
+		sent <- err
+	}()
+	if got := readIn(t, target, "a long prompt"); got != "a long prompt" {
+		t.Fatalf("first read %q, want the text alone", got)
+	}
+	start := time.Now()
+	if got := readIn(t, target, "\r"); got != "\r" {
+		t.Errorf("then read %q, want the Enter", got)
+	}
+	if gap := time.Since(start); gap < enterGap/2 {
+		t.Errorf("the Enter came %v after the text, want about %v", gap, enterGap)
+	}
+	if err := <-sent; err != nil {
+		t.Errorf("Send: %v", err)
+	}
+}
+
 // TestTerminalRefusesABadStep pins that a step Send cannot send, anywhere in
 // the input, sends nothing, not even the steps before it.
 func TestTerminalRefusesABadStep(t *testing.T) {
