@@ -172,6 +172,47 @@ func TestOutputLeavesOutAPlaceholder(t *testing.T) {
 	}
 }
 
+// TestOutputLogsNoFullScreenScroll pins reading while a full-screen
+// program (less) is up: its screen is its own, so a read or input there
+// keeps none of its rows, and the command that started it is logged
+// before what follows, not after its pages.
+func TestOutputLogsNoFullScreenScroll(t *testing.T) {
+	l := newOutput(1 << 16)
+	l.resize(20, 5)
+	var page strings.Builder
+	for i := 1; i <= 12; i++ {
+		page.WriteString(fmt.Sprintf("%d\r\n", i))
+	}
+	_, _ = l.Write([]byte("% seq | less\r\n\x1b[?1049h\x1b[5;1H" + page.String()))
+	if got := l.take(0).Text; got != "" {
+		t.Errorf("take(0) while less is up = %q, want nothing of its screen", got)
+	}
+	_ = l.offset()
+	_, _ = l.Write([]byte("\x1b[?1049l% "))
+	if got := l.take(0).Text; got != "% seq | less\n% " {
+		t.Errorf("take(0) = %q, want the command, then the prompt", got)
+	}
+}
+
+// TestOutputKeepsARepaintOverWrites pins a repaint that erases in one
+// write and draws in the next: a logged row only blanked has not changed,
+// so drawing it again logs nothing.
+func TestOutputKeepsARepaintOverWrites(t *testing.T) {
+	l := newOutput(1 << 10)
+	_, _ = l.Write([]byte("one\r\ntwo\r\n> "))
+	_ = l.take(0)
+	_, _ = l.Write([]byte("\x1b[H\x1b[J"))
+	_, _ = l.Write([]byte("one\r\ntwo\r\n> "))
+	if got := l.take(0).Text; got != "one\ntwo\n> " {
+		t.Errorf("take(0) = %q, want each row once", got)
+	}
+	_, _ = l.Write([]byte("\x1b[H\x1b[J"))
+	_, _ = l.Write([]byte("one\r\nTWO\r\n> "))
+	if got := l.take(0).Text; got != "one\ntwo\nTWO\n> " {
+		t.Errorf("take(0) = %q, want the changed row logged once more", got)
+	}
+}
+
 // TestOutputKeepsARepaintOnce pins a program repainting the whole screen
 // (clear, then the same rows again, as Claude Code does): what the log
 // has is not logged again, and what is new after it is.

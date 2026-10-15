@@ -303,8 +303,11 @@ func (o *output) settle() {
 	sb.Clear()
 	o.held, o.line = "", ""
 	if !o.em.IsAltScreen() {
+		// A logged row only blanked has not changed: a program
+		// repainting (an erase, then the same rows, over more than one
+		// write) logs nothing, and text drawn there after is a change.
 		for y, was := range o.logged {
-			if o.row(y) != was {
+			if row := o.row(y); row != was && row != "\n" {
 				o.logged = o.logged[:y]
 				break
 			}
@@ -343,8 +346,12 @@ func (o *output) settle() {
 func (o *output) keepHeld() { o.keepRows(o.em.CursorPosition().Y) }
 
 // keepRows moves the rows from the last logged one up to row bottom into
-// buf. Called with mu held.
+// buf; none of a full-screen program's, whose screen is its own. Called
+// with mu held.
 func (o *output) keepRows(bottom int) {
+	if o.em.IsAltScreen() {
+		return
+	}
 	before := len(o.buf)
 	for y := len(o.logged); y < bottom; y++ {
 		row := o.row(y)
