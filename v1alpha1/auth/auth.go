@@ -428,8 +428,11 @@ func bearerToken(r *http.Request) (string, bool) {
 }
 
 // Bearer is the subject behind r's access token when the value holds a
-// Bearer challenge or the mint named an owner, the provider says the token is
-// its own for resource (RFC 9068 §4), and its sub is listed or the owner. ok
+// Bearer challenge, the mint named an owner, or the tunnel is unowned and
+// asks nothing of visitors; the provider says the token is its own for
+// resource (RFC 9068 §4); and its sub is listed or the owner, which an
+// unowned public tunnel does not ask: anyone with its hostname reaches its
+// terminals in a browser already. ok
 // is false otherwise: with err nil when there was no token to ask about
 // (neither, or no Bearer credential), and ErrInvalidToken, ErrNotListed (sub
 // then says who it was) or ErrUnavailable when there was.
@@ -444,15 +447,20 @@ func (a *AuthImpl) Bearer(r *http.Request, resource string) (access Access, ok b
 		return Access{}, false, err
 	}
 	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Grant: c.Grant, Scopes: strings.Fields(c.Scope)}
-	if !slices.Contains(a.listed(s), access.Sub) {
+	if !a.unowned(s) && !slices.Contains(a.listed(s), access.Sub) {
 		return access, false, ErrNotListed
 	}
 	return access, true, nil
 }
 
 // byToken is whether a provider token can open anything here: the value
-// holds a Bearer challenge, or the mint named an owner.
-func (a *AuthImpl) byToken(s *state) bool { return s.bearer || a.owner() != "" }
+// holds a Bearer challenge, the mint named an owner, or the tunnel is
+// unowned and public.
+func (a *AuthImpl) byToken(s *state) bool { return s.bearer || a.owner() != "" || a.unowned(s) }
+
+// unowned is a tunnel no mint named an owner for that asks nothing of
+// visitors: anyone signed in at the provider may use its MCP server.
+func (a *AuthImpl) unowned(s *state) bool { return len(s.challenges) == 0 && a.owner() == "" }
 
 // listed is who may sign in: the value's sub, and the owner the mint named.
 func (a *AuthImpl) listed(s *state) []string {

@@ -212,7 +212,8 @@ func TestUnauthorized(t *testing.T) {
 		"the mcp server, else":  {protected(t), "/_tunneld/mcp", "", root},
 		"a bearer that failed":  {New(), "/_tunneld/.env", "Bearer stale-grant", root + `, error="invalid_token"`},
 		"a bearer at mcp, sso":  {ssoAuth(t, fakeOidc()), "/_tunneld/mcp", "bearer x", mcp + `, error="invalid_token"`},
-		"a bearer at mcp":       {New(), "/_tunneld/mcp", "bearer x", root + `, error="invalid_token"`},
+		"a bearer at mcp":       {protected(t), "/_tunneld/mcp", "bearer x", root + `, error="invalid_token"`},
+		"a bearer at mcp, open": {New(), "/_tunneld/mcp", "bearer x", mcp + `, error="invalid_token"`},
 		"the mcp server, owned": {owned(New(), "github:9"), "/_tunneld/mcp", "", mcp},
 		"a token, not bearer":   {New(), "/_tunneld/.env", "token x", root},
 	} {
@@ -269,8 +270,9 @@ func TestProtectedResource(t *testing.T) {
 		})
 	}
 	// The MCP server's metadata only where a token can open it: on a tunnel
-	// set to Single Sign-On. Anywhere else a client would sign in for a
-	// token the tunnel then refuses.
+	// set to Single Sign-On, one the mint named an owner for, or one with
+	// neither an owner nor any protection. Anywhere else a client would sign
+	// in for a token the tunnel then refuses.
 	req := httptest.NewRequest("GET", MCPMetadataPath, nil)
 	req.Host = "h.example"
 	rec := httptest.NewRecorder()
@@ -289,12 +291,17 @@ func TestProtectedResource(t *testing.T) {
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"resource":"https://h.example/_tunneld/mcp"`) {
 		t.Errorf("an owned tunnel's MCP metadata = %d %q, want the MCP server's", rec.Code, rec.Body)
 	}
-	for name, a := range map[string]*AuthImpl{"public": New(), "password": protected(t), "owned by nobody": owned(New(), "")} {
+	for name, a := range map[string]*AuthImpl{"public": New(), "owned by nobody": owned(New(), "")} {
 		rec := httptest.NewRecorder()
 		a.ResourceMetadata(rec, req)
-		if rec.Code != 404 || rec.Body.Len() != 0 {
-			t.Errorf("%s: MCP metadata = %d %q, want a bare 404", name, rec.Code, rec.Body)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"resource":"https://h.example/_tunneld/mcp"`) {
+			t.Errorf("%s: MCP metadata = %d %q, want the MCP server's", name, rec.Code, rec.Body)
 		}
+	}
+	rec = httptest.NewRecorder()
+	protected(t).ResourceMetadata(rec, req)
+	if rec.Code != 404 || rec.Body.Len() != 0 {
+		t.Errorf("password, no owner: MCP metadata = %d %q, want a bare 404", rec.Code, rec.Body)
 	}
 	if _, ok := New().Handlers("/_tunneld/")["/_tunneld/.well-known/oauth-protected-resource"]; ok {
 		t.Error("the metadata is under the control path too; want it at the root alone")
@@ -773,7 +780,10 @@ func TestBearer(t *testing.T) {
 		ok       bool
 		err      error
 	}{
-		"public":           {New(WithOidc(fakeOidc())), "Bearer listed", site, "", false, nil},
+		// Unowned and public: anyone the provider vouches for.
+		"public":           {New(WithOidc(fakeOidc())), "Bearer listed", site, "github:1", true, nil},
+		"public, anyone":   {New(WithOidc(fakeOidc())), "Bearer unlisted", site, "github:9", true, nil},
+		"public, bad":      {New(WithOidc(fakeOidc())), "Bearer g00d", site, "", false, ErrInvalidToken},
 		"basic only":       {protected(t), "Bearer listed", site, "", false, nil},
 		"no credential":    {ssoAuth(t, fakeOidc()), "", site, "", false, nil},
 		"the secret":       {ssoAuth(t, fakeOidc()), "token czNjcjN0", site, "", false, nil},
@@ -788,7 +798,7 @@ func TestBearer(t *testing.T) {
 		"the owner, password": {owned(pwAuth(t, fakeOidc()), "github:2"), "Bearer also", site + "/_tunneld/mcp", "github:2", true, nil},
 		"the owner, sso":      {owned(ssoAuth(t, fakeOidc()), "github:9"), "Bearer unlisted", site, "github:9", true, nil},
 		"not the owner":       {owned(New(WithOidc(fakeOidc())), "github:9"), "Bearer listed", site, "github:1", false, ErrNotListed},
-		"owned by nobody":     {owned(New(WithOidc(fakeOidc())), ""), "Bearer listed", site, "", false, nil},
+		"owned by nobody":     {owned(New(WithOidc(fakeOidc())), ""), "Bearer unlisted", site, "github:9", true, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok, err := ask(tc.a, tc.auth, tc.resource)

@@ -1495,10 +1495,16 @@ func TestMCPResourceMetadata(t *testing.T) {
 	if err := sso.Set(`Bearer realm="h.example", sub="github:1"`); err != nil {
 		t.Fatal(err)
 	}
+	pw := auth.New()
+	if err := pw.Set(`Basic pw="$pbkdf2-sha256$i=100000$dHVubmVsLnBpenphL3YwMg$SwD1pS+RqRBIgMZ4nJP7ZDAi5GjNdYnIu59/gU6LefI"`); err != nil {
+		t.Fatal(err)
+	}
+	// A token opens the MCP server on Single Sign-On, and on a tunnel with
+	// no owner and no protection; a password with no owner keeps it shut.
 	for name, tc := range map[string]struct {
 		a   auth.Auth
 		sso bool
-	}{"single sign-on": {sso, true}, "an auth without it": {auth.New(), false}, "none handed over": {nil, false}} {
+	}{"single sign-on": {sso, true}, "unowned and public": {auth.New(), true}, "none handed over": {nil, true}, "a password": {pw, false}} {
 		a := tc.a
 		t.Run(name, func(t *testing.T) {
 			r := New(WithMcp(&mcpOf{http.NotFoundHandler()}))
@@ -1521,7 +1527,7 @@ func TestMCPResourceMetadata(t *testing.T) {
 				t.Errorf("%d %q; want the MCP server as the resource", resp.StatusCode, body)
 			}
 			if !tc.sso && (resp.StatusCode != 404 || body != "") {
-				t.Errorf("%d %q; want a bare 404 without Single Sign-On", resp.StatusCode, body)
+				t.Errorf("%d %q; want a bare 404 where no token opens it", resp.StatusCode, body)
 			}
 			resp, _ = ask(t, "POST", base+ControlPath+"mcp", "")
 			meta := auth.MetadataPath

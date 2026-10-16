@@ -3580,11 +3580,14 @@ func TestTheDefaultAuthNamesTheProvider(t *testing.T) {
 // TestTheDefaultAuthReadsTheOwner pins the default auth's owner: the one the
 // run's cache last saved, read when asked, so a new tunnel's owner is the one
 // that counts. Seen through the MCP server's metadata, which only a tunnel a
-// token can open publishes.
+// token can open publishes: behind a password, one with an owner.
 func TestTheDefaultAuthReadsTheOwner(t *testing.T) {
 	for owner, want := range map[string]int{"github:7": 200, "": 404} {
 		b := New()
 		b.runCache = &fakeCache{owner: owner}
+		if err := b.auth.Set(`Basic pw="$pbkdf2-sha256$i=100000$dHVubmVsLnBpenphL3YwMg$SwD1pS+RqRBIgMZ4nJP7ZDAi5GjNdYnIu59/gU6LefI"`); err != nil {
+			t.Fatal(err)
+		}
 		rec := httptest.NewRecorder()
 		b.auth.ResourceMetadata(rec, httptest.NewRequest("GET", auth.MCPMetadataPath, nil))
 		if rec.Code != want {
