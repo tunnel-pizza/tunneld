@@ -220,14 +220,18 @@ its access token's hour, and the [scopes](#scopes) that reach an origin,
 first three and `tunnel:exec`. Anything else the origin answers, its own metadata or a `401` from
 protection of its own, is what the client gets. Behind a password the origin
 is out of reach, so the gate answers it with tunneld's. A run with
-`--no-cache` saves nothing and so authorizes nothing but `ping`.
+`--no-cache` saves nothing to disk but keeps its secret in memory, so
+`/_tunneld/` works as on any run.
 
 `/.well-known/oauth-protected-resource/_tunneld/mcp` is the MCP server's own
 metadata, with `https://<host>/_tunneld/mcp` as the `resource`. It names
 tunneld's own server, so tunneld answers it and the origin is never asked.
 It exists only where a token can open the MCP server: a tunnel set to
-[Single Sign-On](#single-sign-on), or one whose mint named an
-[owner](#the-owner). Anywhere else it is a bare `404`, so an MCP client is
+[Single Sign-On](#single-sign-on), one whose mint named an
+[owner](#the-owner), or one with neither an owner nor any protection. That
+last one takes a token from anyone signed in at the provider, whoever they
+are: its terminals are open in a browser to anyone with the hostname
+already. Anywhere else it is a bare `404`, so an MCP client is
 never sent to sign in for a token the tunnel would refuse, and takes the
 secret instead (see [Agents](#agents)).
 
