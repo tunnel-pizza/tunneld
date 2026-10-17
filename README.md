@@ -187,7 +187,6 @@ flag has a `TUNNELD_*` environment variable, and the flag wins.
 | --- | --- | --- |
 | `--no-cache` | `TUNNELD_NO_CACHE` | A fresh address every run. |
 | `--multiview=false` | `TUNNELD_MULTIVIEW` | No panel; each origin keeps only its own `?n` address. |
-| `--shell-fallback=false` | `TUNNELD_SHELL_FALLBACK` | With no origin at all, refuse rather than share `$SHELL`. |
 | `--identity-providers=` | `TUNNELD_IDENTITY_PROVIDERS` | Mint anonymously. |
 | `--qr` | `TUNNELD_QR` | Print your address as a QR code too, and open no tab. Scan it with your phone. |
 | `--log-level debug` | `TUNNELD_LOG` | Log to stderr. Silent by default. |

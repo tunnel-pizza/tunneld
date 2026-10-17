@@ -302,7 +302,6 @@ func New(opts ...Option) *BuilderImpl {
 	b := &BuilderImpl{log: log}
 	b = v1.Apply(b,
 		WithMultiview(v1.DefaultMultiview),
-		WithShellFallback(v1.DefaultShellFallback),
 		WithIdentityProviders(splitList(v1.DefaultIdentityProviders)...),
 		WithIdentity(identity.New(identity.WithProviders(github.New(), anthropic.New()))),
 		WithMotd(board),
@@ -349,12 +348,6 @@ type BuilderImpl struct {
 	// with. Flag-backed like the knobs above; empty is the lookup turned off,
 	// and a run that finds nothing mints anonymously.
 	identityProviders []string
-
-	// shellFallback is whether Origins answers "nothing settled anywhere"
-	// with $SHELL. Flag-backed like the two above, so an embedding program
-	// seeds it, an operator overrides it, and neither has to reach into the
-	// process environment to find out what a run will do.
-	shellFallback bool
 
 	// qr is whether the run prints its address as a QR code on stderr once
 	// the tunnel is up. Flag-backed like the rest; off unless asked for.
