@@ -745,7 +745,7 @@ Then the case this whole change exists for:
 // something else entirely.
 func TestTheFileIsNamedForTheRun(t *testing.T) {
 	t.Setenv(ltv1.SpecEnv, envelope)
-	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneled.pizza")
+	t.Setenv(ltv1.HostnameEnv, "brave-otter.tunneld.domain")
 
 	c, three, path := fixed(t, "http://localhost:3000")
 	c.Save(three, discard())
@@ -1022,7 +1022,7 @@ Then the case, in `v1alpha1/builder_test.go` beside `TestRun`:
 // throw it, and pins that throwing it leaves the builder alone: an embedder
 // that runs a command twice gets its cache back on the second run.
 func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneld.domain/"
 
 	for _, tc := range []struct {
 		name  string

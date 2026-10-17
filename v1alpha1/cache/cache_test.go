@@ -29,7 +29,7 @@ import (
 // envelope is the shape a real spec has: a tagged JSON envelope, so it carries
 // double quotes, braces, commas, a slash and base64 padding. Every one of
 // those is a way a naively written file could fail to survive the round trip.
-const envelope = `{"backend":"cloudflare","spec":{"AccountTag":"a/b+c","TunnelSecret":"c2VjcmV0Cg==","TunnelID":"1c9c","hostname":"brave-otter.tunneled.pizza"}}`
+const envelope = `{"backend":"cloudflare","spec":{"AccountTag":"a/b+c","TunnelSecret":"c2VjcmV0Cg==","TunnelID":"1c9c","hostname":"brave-otter.tunneld.domain"}}`
 
 // ext is what the package names its files, spelled out here rather than
 // imported: it is part of the contract with whoever opens the directory, so a
@@ -510,7 +510,7 @@ func TestLoad(t *testing.T) {
 	t.Run("a file with no spec is nothing", func(t *testing.T) {
 		dir := t.TempDir()
 		o := run(t, "http://localhost:3000")
-		write(t, dir, o, ltv1.HostnameEnv+"='brave-otter.tunneled.pizza'\n")
+		write(t, dir, o, ltv1.HostnameEnv+"='brave-otter.tunneld.domain'\n")
 
 		if got := cache.New(cache.WithDir(dir)).Load(cache.WithOrigins(o), cache.WithLog(discard())); got != "" {
 			t.Errorf("Load() = %q, want nothing", got)
@@ -543,7 +543,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 	// run reads it off the tunnel and hands it in — so it sorts among them
 	// rather than leading with the spec.
 	c.Save(cache.WithOrigins(o), cache.WithSpec(envelope), cache.WithTracking(map[string]string{
-		ltv1.HostnameEnv:             "brave-otter.tunneled.pizza",
+		ltv1.HostnameEnv:             "brave-otter.tunneld.domain",
 		"PWD":                        "/work/project",
 		"TUNNELD_ORIGINS":            "http://localhost:3000",
 		"TUNNELD_LOG":                "debug",
@@ -561,7 +561,7 @@ func TestSaveRecordsWhatTheRunWas(t *testing.T) {
 
 	for _, want := range []string{
 		ltv1.SpecEnv + "='" + envelope + "'",
-		ltv1.HostnameEnv + "='brave-otter.tunneled.pizza'",
+		ltv1.HostnameEnv + "='brave-otter.tunneld.domain'",
 		"PWD='/work/project'",
 		"TUNNELD_ORIGINS='http://localhost:3000'",
 		"TUNNELD_LOG='debug'",
@@ -639,7 +639,7 @@ func mutableCache(t *testing.T) (*cache.CacheImpl, *[]string) {
 func call(c *cache.CacheImpl, method, auth, body string) *httptest.ResponseRecorder {
 	h := c.Handlers("/_tunneld/")["/_tunneld/.env"]
 	req := httptest.NewRequest(method, "/_tunneld/.env", strings.NewReader(body))
-	req.Host = "h.tunneled.pizza"
+	req.Host = "h.tunneld.domain"
 	if auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
@@ -804,7 +804,7 @@ func TestGrantsExpire(t *testing.T) {
 		t.Errorf("an expired grant = %d, want a bodyless 401", rec.Code)
 	}
 	// With no auth handed over, the refusal is still RFC 9728's.
-	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", error="invalid_token"`; got != want {
+	if got, want := rec.Header().Get("WWW-Authenticate"), `Bearer resource_metadata="https://h.tunneld.domain/.well-known/oauth-protected-resource", error="invalid_token"`; got != want {
 		t.Errorf("WWW-Authenticate = %q, want %q", got, want)
 	}
 	// Handed one, the auth answers it.

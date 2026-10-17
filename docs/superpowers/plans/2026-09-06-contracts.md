@@ -1553,9 +1553,9 @@ func TestOpenInBrowser(t *testing.T) {
 		}
 
 		var stderr bytes.Buffer
-		openInBrowser(launch, "https://foo.tunneled.pizza/", &stderr, slog.New(slog.DiscardHandler))
+		openInBrowser(launch, "https://foo.tunneld.domain/", &stderr, slog.New(slog.DiscardHandler))
 
-		if want := "https://foo.tunneled.pizza/"; opened != want {
+		if want := "https://foo.tunneld.domain/"; opened != want {
 			t.Errorf("opened %q, want %q", opened, want)
 		}
 		if pkgbrowser.Stdout != io.Writer(&stderr) {
@@ -1574,7 +1574,7 @@ func TestOpenInBrowser(t *testing.T) {
 		launch := func(string) error { return errors.New("no browser here") }
 
 		var quiet bytes.Buffer
-		openInBrowser(launch, "https://foo.tunneled.pizza/", io.Discard,
+		openInBrowser(launch, "https://foo.tunneld.domain/", io.Discard,
 			slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		if quiet.Len() != 0 {
 			t.Errorf("log = %q, want nothing at warn level", quiet.String())
@@ -1582,7 +1582,7 @@ func TestOpenInBrowser(t *testing.T) {
 
 		var logged bytes.Buffer
 		log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		openInBrowser(launch, "https://foo.tunneled.pizza/", io.Discard, log)
+		openInBrowser(launch, "https://foo.tunneld.domain/", io.Discard, log)
 
 		if !strings.Contains(logged.String(), "could not open a browser") {
 			t.Errorf("log = %q, want the failure in the debug log", logged.String())
@@ -2376,7 +2376,7 @@ func (h *runHarness) run(t *testing.T) error {
 // the code did before it was split, so a case going red is a behaviour
 // change, not a refactor.
 func TestRun(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneld.domain/"
 
 	t.Run("a mint reports, opens the panel, then saves", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
@@ -2528,14 +2528,14 @@ func TestRun(t *testing.T) {
 		tun := live(public)
 		h := newRunHarness(t, tun, ":3000")
 		h.cache.onSave = func() {
-			tun.listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneled.pizza"})
+			tun.listen(libtunnel.Event{Kind: libtunnel.EventGone, Hostname: "foo.tunneld.domain"})
 		}
 
 		err := h.run(t)
 		if !errors.Is(err, v1.ErrTunnelGone) {
 			t.Fatalf("run() = %v, want ErrTunnelGone", err)
 		}
-		if !strings.Contains(err.Error(), "foo.tunneled.pizza") {
+		if !strings.Contains(err.Error(), "foo.tunneld.domain") {
 			t.Errorf("error %q does not name the hostname", err)
 		}
 	})
@@ -2850,7 +2850,7 @@ git worktree remove "$T/main-src"
 for bin in main branch; do
   "$T/$bin" --url :3000 --url :4000 --cache-dir false --no-open 2>"$T/$bin.err" & PID=$!
   sleep 20; kill -INT $PID; wait $PID; echo "$bin exit $?"
-  sed -E 's/[a-z-]+\.tunneled\.pizza/HOST/g; s/tunneld [^ ]+ \(libtunnel [^,]+,/tunneld VERSION (libtunnel VERSION,/' "$T/$bin.err" \
+  sed -E 's/[a-z-]+\.tunneld\.domain/HOST/g; s/tunneld [^ ]+ \(libtunnel [^,]+,/tunneld VERSION (libtunnel VERSION,/' "$T/$bin.err" \
     | grep -v '^time=' > "$T/$bin.norm"
 done
 diff "$T/main.norm" "$T/branch.norm" && echo "report: identical shape"

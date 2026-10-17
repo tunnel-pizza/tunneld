@@ -16,7 +16,7 @@ import (
 // right cell has drawn the code. One row per level a caller draws at: the
 // frame's, and the one a run's --qr prints.
 func TestQRLinesAreTheCode(t *testing.T) {
-	const text = "https://striped-worm.tunneled.pizza/?0"
+	const text = "https://striped-worm.tunneld.domain/?0"
 	for _, tc := range []struct {
 		name  string
 		level qr.Level

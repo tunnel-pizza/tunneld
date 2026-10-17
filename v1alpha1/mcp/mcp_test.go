@@ -165,22 +165,22 @@ func TestATerminalOverMcp(t *testing.T) {
 	}
 	// The shell's prompt first, as an agent waits for it: typed before it,
 	// the input is echoed ahead of the prompt.
-	if prompt := answer(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","until":"\\$ $"}`)); !prompt.Matched {
+	if prompt := answer(call("terminal_wait", `{"url":"https://0tabc.tunneld.domain/?1","until":"\\$ $"}`)); !prompt.Matched {
 		t.Fatalf("terminal_wait for the prompt = %+v, want it matched", prompt)
 	}
 	// terminal_exec waits for the reply itself.
-	first := answer(call("terminal_exec", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
+	first := answer(call("terminal_exec", `{"url":"https://0tabc.tunneld.domain/?1","input":[{"text":"echo $((6*7))"},{"key":"Enter"}],"until":"(?m)^42$"}`))
 	if !first.Matched || !strings.Contains(first.Text, "echo $((6*7))\n42\n") || first.Cursor == "" {
 		t.Fatalf("terminal_exec = %+v, want the command echoed and 42 under it, matched, and a cursor", first)
 	}
 	// Sent without waiting, then read on from where this caller stopped.
-	call("terminal_exec", `{"url":"https://0tabc.tunneled.pizza/?1","input":[{"text":"echo second"},{"key":"Enter"}],"idle_ms":0}`)
-	second := answer(call("terminal_wait", `{"url":"https://0tabc.tunneled.pizza/?1","until":"(?m)^second$"}`))
+	call("terminal_exec", `{"url":"https://0tabc.tunneld.domain/?1","input":[{"text":"echo second"},{"key":"Enter"}],"idle_ms":0}`)
+	second := answer(call("terminal_wait", `{"url":"https://0tabc.tunneld.domain/?1","until":"(?m)^second$"}`))
 	if !second.Matched || !strings.Contains(second.Text, "second\n") || strings.Contains(second.Text, "42") {
 		t.Fatalf("terminal_wait = %+v, want the second reply alone, matched", second)
 	}
 	// A cursor reads from where it says, whatever this caller's position.
-	again := answer(call("terminal_read", `{"url":"https://0tabc.tunneled.pizza/?1","cursor":"`+first.Cursor+`"}`))
+	again := answer(call("terminal_read", `{"url":"https://0tabc.tunneld.domain/?1","cursor":"`+first.Cursor+`"}`))
 	if !strings.Contains(again.Text, "echo second\nsecond\n") {
 		t.Fatalf("terminal_read from the first answer's cursor = %+v, want the second command and its reply", again)
 	}
@@ -188,7 +188,7 @@ func TestATerminalOverMcp(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var screen attach.Screen
-		raw, _ := json.Marshal(call("terminal_screen", `{"url":"https://0tabc.tunneled.pizza/?1"}`).StructuredContent)
+		raw, _ := json.Marshal(call("terminal_screen", `{"url":"https://0tabc.tunneld.domain/?1"}`).StructuredContent)
 		_ = json.Unmarshal(raw, &screen)
 		if slices.Contains(screen.Rows, "42") {
 			return

@@ -23,7 +23,7 @@ import (
 )
 
 // host is the tunnel these tests' tokens are for.
-const host = "h.tunneled.pizza"
+const host = "h.tunneld.domain"
 
 // testKey and otherKey are generated once a run: RSA generation is slow, and
 // no test needs a fresh one.
@@ -227,7 +227,7 @@ func TestVerifyAccess(t *testing.T) {
 		"aud holding mcp, for mcp": {accessToken(t, iss, testKey(), set("aud", []string{site, mcp})), mcp, true},
 		"site aud, for mcp":        {accessToken(t, iss, testKey(), nil), mcp, false},
 		"mcp aud only, for site":   {accessToken(t, iss, testKey(), set("aud", []string{mcp})), site, false},
-		"another host":             {accessToken(t, iss, testKey(), set("aud", "https://other.tunneled.pizza")), site, false},
+		"another host":             {accessToken(t, iss, testKey(), set("aud", "https://other.tunneld.domain")), site, false},
 		"typ application/at+jwt":   {plain("application/at+jwt"), site, true},
 		"typ JWT (an ID token)":    {plain("JWT"), site, false},
 		"no typ":                   {plain(""), site, false},

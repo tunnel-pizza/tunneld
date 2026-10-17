@@ -24,9 +24,9 @@
 
 <pre>
 GET /v1/tunnels                          200  {"tunnels":[{"id":"cruel-donkey","origins":2,"state":"ready"}]}
-GET /v1/tunnels/cruel-donkey             200  {"id":"cruel-donkey","hostname":"cruel-donkey.tunneled.pizza","origins":["http://localhost:3000","http://localhost:4000"]}
+GET /v1/tunnels/cruel-donkey             200  {"id":"cruel-donkey","hostname":"cruel-donkey.tunneld.domain","origins":["http://localhost:3000","http://localhost:4000"]}
 GET /v1/tunnels/cruel-donkey/origins     200  [{"index":0,"local":"http://localhost:3000","route":"/?0"},{"index":1,"local":"http://localhost:4000","route":"/?1"}]
-POST /v1/tunnels                         201  {"id":"amber-forest","hostname":"amber-forest.tunneled.pizza","origins":[],"state":"pending"}
+POST /v1/tunnels                         201  {"id":"amber-forest","hostname":"amber-forest.tunneld.domain","origins":[],"state":"pending"}
 DELETE /v1/tunnels/amber-forest          204
 GET /v1/health                           200  {"edge":"ok","origins":"ok","uptime":"1h04m12s"}
 </pre>

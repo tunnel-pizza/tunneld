@@ -53,7 +53,7 @@ func serve(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 }
 
 const (
-	ssoHost    = "h.tunneled.pizza"
+	ssoHost    = "h.tunneld.domain"
 	ssoValue   = `Bearer realm="` + ssoHost + `", sub="github:1 github:2"`
 	testClient = "https://" + ssoHost + "/_tunneld/client.json"
 	fakeIssuer = "https://issuer.example"
@@ -187,7 +187,7 @@ func TestHeader(t *testing.T) {
 	if err := a.Set(ssoValue); err != nil {
 		t.Fatal(err)
 	}
-	want := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
+	want := `Bearer realm="h.tunneld.domain", resource_metadata="https://h.tunneld.domain/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
 	if _, v := a.Header(); v != want {
 		t.Errorf("SSO Header() = %q, want %q", v, want)
 	}
@@ -368,9 +368,9 @@ func TestHandler(t *testing.T) {
 		b := protected(t)
 		b.Set(`Basic pw="` + vector + `"`)
 		req := httptest.NewRequest("GET", "/x", nil)
-		req.Host = "0t8qsb6pq3.tunneled.pizza"
+		req.Host = "0t8qsb6pq3.tunneld.domain"
 		rec := serve(b.Handler(origin()), req)
-		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="0t8qsb6pq3.tunneled.pizza", charset="UTF-8"` {
+		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="0t8qsb6pq3.tunneld.domain", charset="UTF-8"` {
 			t.Errorf("WWW-Authenticate = %q, want the request's host as the realm", got)
 		}
 	})
@@ -413,7 +413,7 @@ func TestHandler(t *testing.T) {
 	} {
 		t.Run(name+" is a bodyless 401", func(t *testing.T) {
 			req := httptest.NewRequest("GET", "/x", nil)
-			req.Host = "0t8qsb6pq3.tunneled.pizza"
+			req.Host = "0t8qsb6pq3.tunneld.domain"
 			set(req)
 			rec := serve(h, req)
 			if rec.Code != 401 || rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
@@ -455,7 +455,7 @@ func TestLogin(t *testing.T) {
 		form := url.Values{"password": {pw}, "next": {next}}
 		req := httptest.NewRequest("POST", "/_tunneld/login", strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Host = "h.tunneled.pizza"
+		req.Host = "h.tunneld.domain"
 		return serve(mux, req)
 	}
 
@@ -840,7 +840,7 @@ func TestAccessContext(t *testing.T) {
 func TestBearerGate(t *testing.T) {
 	a := ssoAuth(t, fakeOidc())
 	h := a.Handler(origin())
-	public := `Bearer realm="h.tunneled.pizza", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
+	public := `Bearer realm="h.tunneld.domain", resource_metadata="https://h.tunneld.domain/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`
 	req := func(auth string) *http.Request {
 		r := httptest.NewRequest("GET", "/x", nil)
 		r.Host = ssoHost
@@ -884,7 +884,7 @@ func TestBearerGate(t *testing.T) {
 	})
 	t.Run("a token holding no tunnel scope is insufficient_scope", func(t *testing.T) {
 		rec := serve(h, req("Bearer no-scope"))
-		want := `Bearer error="insufficient_scope", scope="tunnel:http", resource_metadata="https://h.tunneled.pizza/.well-known/oauth-protected-resource"`
+		want := `Bearer error="insufficient_scope", scope="tunnel:http", resource_metadata="https://h.tunneld.domain/.well-known/oauth-protected-resource"`
 		if rec.Code != 403 || rec.Body.Len() != 0 || rec.Header().Get("WWW-Authenticate") != want || rec.Header().Get("X-Sub") != "" {
 			t.Errorf("%d, WWW-Authenticate %q; want 403, %q", rec.Code, rec.Header().Get("WWW-Authenticate"), want)
 		}
@@ -929,7 +929,7 @@ func TestBearerGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := serve(b.Handler(origin()), req(""))
-		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="h.tunneled.pizza", charset="UTF-8", `+public {
+		if got := rec.Header().Get("WWW-Authenticate"); got != `Basic realm="h.tunneld.domain", charset="UTF-8", `+public {
 			t.Errorf("WWW-Authenticate = %q", got)
 		}
 	})
@@ -962,7 +962,7 @@ func TestBearerGate(t *testing.T) {
 		r := httptest.NewRequest("GET", MCPMetadataPath, nil)
 		r.Host = ssoHost
 		rec := serve(h, r)
-		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"resource":"https://h.tunneled.pizza/_tunneld/mcp"`) {
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"resource":"https://h.tunneld.domain/_tunneld/mcp"`) {
 			t.Errorf("%d %q", rec.Code, rec.Body)
 		}
 	})
