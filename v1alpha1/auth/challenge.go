@@ -5,7 +5,7 @@
 // The variable is a WWW-Authenticate field value (RFC 9110 §11.6.1) whose
 // challenges carry their own verifiers as private parameters:
 //
-//	Basic realm="0t8qsb6pq3.tunneled.test", pw="$pbkdf2-sha256$i=600000$…$…"
+//	Basic realm="0t8qsb6pq3.tunneld.domain", pw="$pbkdf2-sha256$i=600000$…$…"
 //
 // Parsed generically, then handed to a verifier by scheme: Basic carries a
 // password's hash, Bearer the list of who may sign in through the provider.

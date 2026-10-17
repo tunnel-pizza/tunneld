@@ -456,7 +456,7 @@ func TestViewFitsTheWindow(t *testing.T) {
 func TestViewIsBordered(t *testing.T) {
 	h := newFrameHarness(t)
 	h.window(h.f.width, 8)
-	h.s.announce("https://striped-worm.tunneled.test/?0")
+	h.s.announce("https://striped-worm.tunneld.domain/?0")
 
 	wide, tight := roomFor(h.f)
 	h.window(wide, h.f.height)
@@ -1089,7 +1089,7 @@ func TestTheAddressSurvivesALongOrigin(t *testing.T) {
 	target := newFakeTarget("claude", true, true)
 	target.origin = "exec:///Users/christian/.local/bin/claude"
 	h.s.Target = target
-	const addr = "https://striped-worm.tunneled.test/?0"
+	const addr = "https://striped-worm.tunneld.domain/?0"
 	h.s.announce(addr)
 
 	// Wide enough for both, and the origin is whole.
@@ -1531,7 +1531,7 @@ func TestTheBoxIsThePane(t *testing.T) {
 func TestTheAddressIsAQRCodeAway(t *testing.T) {
 	h := newFrameHarness(t)
 	h.window(100, 40) // room for a code: 21 modules plus the quiet zone is 29 columns, 15 rows
-	h.s.announce("https://striped-worm.tunneled.test/?0")
+	h.s.announce("https://striped-worm.tunneld.domain/?0")
 
 	h.press(t, commandKey)
 	h.press(t, typing('r'))
@@ -1540,7 +1540,7 @@ func TestTheAddressIsAQRCodeAway(t *testing.T) {
 	if !strings.ContainsAny(pane, "█▀▄") {
 		t.Errorf("pane = %q, want a code drawn in half blocks", pane)
 	}
-	if !strings.Contains(pane, "striped-worm.tunneled.test/?0") {
+	if !strings.Contains(pane, "striped-worm.tunneld.domain/?0") {
 		t.Errorf("pane = %q, want the address under the code for whoever would rather type", pane)
 	}
 	if h.f.View().Cursor != nil {
@@ -1570,7 +1570,7 @@ func TestTheAddressIsAQRCodeAway(t *testing.T) {
 func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
 	h := newFrameHarness(t)
 	h.window(60, 10) // 58×8: a code is 29×15 with its quiet zone
-	h.s.announce("https://striped-worm.tunneled.test/?0")
+	h.s.announce("https://striped-worm.tunneld.domain/?0")
 	h.press(t, commandKey)
 	h.press(t, typing('r'))
 
@@ -1578,7 +1578,7 @@ func TestAPaneTooSmallForACodeSaysSo(t *testing.T) {
 	if strings.ContainsAny(pane, "█▀▄") {
 		t.Errorf("pane = %q, want no code on a pane that cannot hold one whole", pane)
 	}
-	if !strings.Contains(pane, "too small") || !strings.Contains(pane, "striped-worm.tunneled.test/?0") {
+	if !strings.Contains(pane, "too small") || !strings.Contains(pane, "striped-worm.tunneld.domain/?0") {
 		t.Errorf("pane = %q, want it saying the pane is too small and giving the address as text", pane)
 	}
 
@@ -2065,10 +2065,10 @@ func TestAnEmbeddedBoxIsTheWindow(t *testing.T) {
 // panel's tab still says where.
 func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 	h := newFrameHarness(t)
-	h.s.announce("https://striped-worm.tunneled.test/?0")
+	h.s.announce("https://striped-worm.tunneld.domain/?0")
 
 	own := h.f.View().Content
-	if !strings.Contains(stripSGR(own), "striped-worm.tunneled.test/?0") {
+	if !strings.Contains(stripSGR(own), "striped-worm.tunneld.domain/?0") {
 		t.Errorf("a viewer of its own does not see the address: %q", stripSGR(strings.Split(own, "\n")[0]))
 	}
 
@@ -2080,7 +2080,7 @@ func TestAnEmbeddedCornerIsAPopout(t *testing.T) {
 	if !strings.Contains(top, "↗") {
 		t.Errorf("an embedded viewer has no popout chip: %q", stripSGR(top))
 	}
-	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneled.test/?0") {
+	if !strings.Contains(top, "\x1b]8;;https://striped-worm.tunneld.domain/?0") {
 		t.Errorf("the chip is not a hyperlink to the address")
 	}
 	// The link's underline is drawn in the chip's own orange (SGR 58), so
@@ -2614,7 +2614,7 @@ func TestAPressAloneRedrawsNothing(t *testing.T) {
 // border elsewhere.
 func TestClickingTheAddressCopiesIt(t *testing.T) {
 	h := consoleHarness(t)
-	const addr = "https://striped-worm.tunneled.test/?0"
+	const addr = "https://striped-worm.tunneld.domain/?0"
 	h.s.announce(addr)
 	click := func(x, y int) tea.Cmd {
 		h.mouse(t, tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})

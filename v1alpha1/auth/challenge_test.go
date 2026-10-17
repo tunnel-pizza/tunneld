@@ -26,8 +26,8 @@ func TestParse(t *testing.T) {
 		"no pw":                    {`Basic realm="h"`, -1, "pw"},
 		"wrong scheme":             {`Bearer realm="h"`, -1, "Bearer"},
 		"wrong scheme twice":       {`Negotiate realm="h", Negotiate realm="i"`, -1, "not a scheme this tunnel can verify"},
-		"bearer":                   {`Bearer realm="h.tunneled.test", sub="github:1 github:2"`, 1, ""},
-		"bearer, lowercase":        {`bearer realm="h.tunneled.test", sub="github:1"`, 1, ""},
+		"bearer":                   {`Bearer realm="h.tunneld.domain", sub="github:1 github:2"`, 1, ""},
+		"bearer, lowercase":        {`bearer realm="h.tunneld.domain", sub="github:1"`, 1, ""},
 		"bearer with a port":       {`Bearer realm="localhost:8080", sub="github:1"`, 1, ""},
 		"basic and bearer":         {`Basic pw="` + vector + `", Bearer realm="h", sub="github:1"`, 2, ""},
 		"bearer, no sub":           {`Bearer realm="h"`, -1, "sub is required"},
@@ -84,11 +84,11 @@ func TestRedacted(t *testing.T) {
 	if got := cs[0].Redacted(); strings.Contains(got, "dHVubmVs") || strings.Contains(got, "UFtjhDQ2") {
 		t.Errorf("Redacted = %q, carries the salt or the hash", got)
 	}
-	cs, err = Parse(`Bearer realm="h.tunneled.test", sub="github:1 github:2"`)
+	cs, err = Parse(`Bearer realm="h.tunneld.domain", sub="github:1 github:2"`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cs[0].Redacted(), `Bearer realm="h.tunneled.test", sub="github:1 github:2"`; got != want {
+	if got, want := cs[0].Redacted(), `Bearer realm="h.tunneld.domain", sub="github:1 github:2"`; got != want {
 		t.Errorf("Redacted = %q, want %q: sub is the secret holder's to read", got, want)
 	}
 }
@@ -101,8 +101,8 @@ func TestPublic(t *testing.T) {
 		"the stored realm": {`basic realm="old.example", pw="` + vector + `", charset="latin1"`, `Basic realm="old.example", charset="UTF-8"`},
 		"no realm stored":  {`Basic pw="` + vector + `"`, `Basic charset="UTF-8"`},
 		"quoted again":     {`Basic realm="a \\ \"b\"", pw="` + vector + `"`, `Basic realm="a \\ \"b\"", charset="UTF-8"`},
-		"bearer": {`Bearer realm="h.tunneled.test", sub="github:1"`,
-			`Bearer realm="h.tunneled.test", resource_metadata="https://h.tunneled.test/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`},
+		"bearer": {`Bearer realm="h.tunneld.domain", sub="github:1"`,
+			`Bearer realm="h.tunneld.domain", resource_metadata="https://h.tunneld.domain/.well-known/oauth-protected-resource", scope="openid profile offline_access tunnel:http"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cs, err := Parse(tc.value)

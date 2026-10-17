@@ -51,22 +51,22 @@ func TestTerminalExec(t *testing.T) {
 		says   string
 		waited tooltest.Waited
 	}{
-		"text, then a key, and the reply": {exec, at("https://0tabc.tunneled.test/?1", ls, ""), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+		"text, then a key, and the reply": {exec, at("https://0tabc.tunneld.domain/?1", ls, ""), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
 			`"structuredContent":{"cursor":"@10","dropped":false,"matched":false,"text":"go.mod\n","timed_out":false,"truncated":false}`,
 			tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Idle: 500 * time.Millisecond}},
-		"until the prompt": {exec, at("https://0tabc.tunneled.test/?1", ls, `,"until":"go\\.mod"`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+		"until the prompt": {exec, at("https://0tabc.tunneld.domain/?1", ls, `,"until":"go\\.mod"`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
 			`"matched":true`, tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Until: `go\.mod`, Idle: 500 * time.Millisecond}},
-		"no wait": {exec, at("https://0tabc.tunneled.test/?1", ls, `,"idle_ms":0`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
+		"no wait": {exec, at("https://0tabc.tunneld.domain/?1", ls, `,"idle_ms":0`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
 			`"structuredContent":{"cursor":"@3","dropped":false,"matched":false,"text":"","timed_out":false,"truncated":false}`, tooltest.Waited{}},
-		"the secret": {nil, at("https://0tabc.tunneled.test/?1", `[{"key":"Esc"},{"text":":wq"}]`, ""), nil, []attach.Input{{Key: "Esc"}, {Text: ":wq"}},
+		"the secret": {nil, at("https://0tabc.tunneld.domain/?1", `[{"key":"Esc"},{"text":":wq"}]`, ""), nil, []attach.Input{{Key: "Esc"}, {Text: ":wq"}},
 			`"text":"go.mod\n"`, tooltest.Waited{Reader: "secret", Cursor: "@3", Idle: 500 * time.Millisecond}},
-		"a bad pattern":       {exec, at("https://0tabc.tunneled.test/?1", ls, `,"until":"("`), nil, nil, "until is not a regular expression", tooltest.Waited{}},
-		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at("https://0tabc.tunneled.test/?1", ls, ""), nil, nil, "needs the tunnel:exec scope", tooltest.Waited{}},
-		"not a terminal":      {exec, at("https://0tabc.tunneled.test/", ls, ""), nil, nil, "is not a terminal", tooltest.Waited{}},
-		"a step it refuses":   {exec, at("https://0tabc.tunneled.test/?1", `[{"key":"Hyper-Q"}]`, ""), attach.ErrUnknownKey, nil, "unknown key", tooltest.Waited{}},
-		"nothing to send":     {exec, at("https://0tabc.tunneled.test/?1", `[]`, ""), nil, nil, "Nothing to send", tooltest.Waited{}},
-		"no input":            {exec, `{"url":"https://0tabc.tunneled.test/?1"}`, nil, nil, "missing properties", tooltest.Waited{}},
-		"text, not input":     {exec, `{"url":"https://0tabc.tunneled.test/?1","text":"ls"}`, nil, nil, "unexpected additional properties", tooltest.Waited{}},
+		"a bad pattern":       {exec, at("https://0tabc.tunneld.domain/?1", ls, `,"until":"("`), nil, nil, "until is not a regular expression", tooltest.Waited{}},
+		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, at("https://0tabc.tunneld.domain/?1", ls, ""), nil, nil, "needs the tunnel:exec scope", tooltest.Waited{}},
+		"not a terminal":      {exec, at("https://0tabc.tunneld.domain/", ls, ""), nil, nil, "is not a terminal", tooltest.Waited{}},
+		"a step it refuses":   {exec, at("https://0tabc.tunneld.domain/?1", `[{"key":"Hyper-Q"}]`, ""), attach.ErrUnknownKey, nil, "unknown key", tooltest.Waited{}},
+		"nothing to send":     {exec, at("https://0tabc.tunneld.domain/?1", `[]`, ""), nil, nil, "Nothing to send", tooltest.Waited{}},
+		"no input":            {exec, `{"url":"https://0tabc.tunneld.domain/?1"}`, nil, nil, "missing properties", tooltest.Waited{}},
+		"text, not input":     {exec, `{"url":"https://0tabc.tunneld.domain/?1","text":"ls"}`, nil, nil, "unexpected additional properties", tooltest.Waited{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			term := &tooltest.Terminal{Prints: "$ \n", Reply: "go.mod\n", Err: tc.err}

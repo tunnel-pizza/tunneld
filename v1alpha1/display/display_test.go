@@ -139,7 +139,7 @@ func TestOpenDecides(t *testing.T) {
 				launched = append(launched, addr)
 				return nil
 			}))
-			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneled.test/")}, tc.when(t)...)...)
+			b.Open(t.Context(), discard, append([]Option{WithAddr("https://foo.tunneld.domain/")}, tc.when(t)...)...)
 			if got := len(launched) > 0; got != tc.want {
 				t.Errorf("launched %q, want a browser: %v", launched, tc.want)
 			}
@@ -202,7 +202,7 @@ func TestIsPanelRequest(t *testing.T) {
 		{name: "an empty query string", target: "/?", want: true},
 		{name: "a frame navigating to the root", target: "/", dest: "iframe", want: false},
 		{name: "a script or fetch for the root", target: "/", dest: "empty", want: false},
-		{name: "a link from a page on this host", target: "/", dest: "document", referer: "https://foo.tunneled.test/?1", want: false},
+		{name: "a link from a page on this host", target: "/", dest: "document", referer: "https://foo.tunneld.domain/?1", want: false},
 		{name: "a link from somewhere else", target: "/", dest: "document", referer: "https://example.test/", want: true},
 		{name: "a websocket handshake to the root", target: "/", upgrade: "websocket", want: false},
 		{name: "a websocket handshake with no query", target: "/?", upgrade: "websocket", want: false},
@@ -211,7 +211,7 @@ func TestIsPanelRequest(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, tc.target, nil)
-			r.Host = "foo.tunneled.test"
+			r.Host = "foo.tunneld.domain"
 			if tc.dest != "" {
 				r.Header.Set("Sec-Fetch-Dest", tc.dest)
 			}
@@ -244,7 +244,7 @@ func TestNoPanel(t *testing.T) {
 		t.Fatalf("origins: %v", err)
 	}
 
-	public, err := url.Parse("https://foo.tunneled.test/")
+	public, err := url.Parse("https://foo.tunneld.domain/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -277,11 +277,11 @@ func TestNoPanel(t *testing.T) {
 // building it leaves the tunnel URL alone — every origin address derives from
 // the same value.
 func TestURL(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.test/")
+	public, err := url.Parse("https://foo.tunneld.domain/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if got, want := New().URL(true, public, framed), "https://foo.tunneled.test/"; got != want {
+	if got, want := New().URL(true, public, framed), "https://foo.tunneld.domain/"; got != want {
 		t.Errorf("URL() = %q, want %q", got, want)
 	}
 	if public.RawQuery != "" {
@@ -300,7 +300,7 @@ func TestServeShell(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Host = "foo.tunneled.test"
+	r.Host = "foo.tunneld.domain"
 
 	pageOf(t, shown).ServeHTTP(rec, r)
 
@@ -313,7 +313,7 @@ func TestServeShell(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, want := range []string{
-		"foo.tunneled.test",
+		"foo.tunneld.domain",
 		`src="/?0"`,
 		`src="/?1"`,
 		`src="/?2"`,
@@ -373,7 +373,7 @@ func TestServeShellCarriesTheMessages(t *testing.T) {
 	render := func(d *DisplayImpl) string {
 		rec := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.Host = "foo.tunneled.test"
+		r.Host = "foo.tunneld.domain"
 		panelOf(t, d, shown, func(http.ResponseWriter, *http.Request) {
 			t.Error("the page request reached an origin")
 		}).ServeHTTP(rec, r)
@@ -449,7 +449,7 @@ func TestLabel(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Host = "foo.tunneled.test"
+	r.Host = "foo.tunneld.domain"
 
 	pageOf(t, origins.New(origins.WithURL(urls...))).ServeHTTP(rec, r)
 
@@ -682,9 +682,9 @@ func TestOpen(t *testing.T) {
 		}))
 
 		var stderr bytes.Buffer
-		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.test/"), WithForced(ptr(true)), WithStderr(&stderr))
+		o.Open(t.Context(), slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneld.domain/"), WithForced(ptr(true)), WithStderr(&stderr))
 
-		if want := "https://striped-worm.tunneled.test/"; opened != want {
+		if want := "https://striped-worm.tunneld.domain/"; opened != want {
 			t.Errorf("opened %q, want %q", opened, want)
 		}
 		if pkgbrowser.Stdout != io.Writer(&stderr) {
@@ -725,7 +725,7 @@ func TestOpen(t *testing.T) {
 			launched = true
 			return nil
 		}))
-		o.Open(ctx, slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneled.test/"), WithForced(ptr(true)), WithStderr(io.Discard))
+		o.Open(ctx, slog.New(slog.DiscardHandler), WithAddr("https://striped-worm.tunneld.domain/"), WithForced(ptr(true)), WithStderr(io.Discard))
 
 		if !launched {
 			t.Error("a cancelled context stopped the launch, want it to open anyway")
@@ -740,7 +740,7 @@ func TestOpen(t *testing.T) {
 		o := New(WithLaunch(func(string) error { return errors.New("no browser here") }))
 		// Forced, so the decision above cannot be what keeps it quiet: the
 		// launch has to be attempted for its failure to be the thing tested.
-		anyway := []Option{WithAddr("https://striped-worm.tunneled.test/"), WithForced(ptr(true))}
+		anyway := []Option{WithAddr("https://striped-worm.tunneld.domain/"), WithForced(ptr(true))}
 
 		var quiet bytes.Buffer
 		o.Open(t.Context(), slog.New(slog.NewTextHandler(&quiet, &slog.HandlerOptions{Level: slog.LevelWarn})), anyway...)
@@ -782,7 +782,7 @@ func TestATerminalTileIsBare(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Host = "foo.tunneled.test"
+	r.Host = "foo.tunneld.domain"
 	pageOf(t, shown).ServeHTTP(rec, r)
 	body := rec.Body.String()
 	if got := strings.Count(body, `class="tile bare"`); got != 1 {

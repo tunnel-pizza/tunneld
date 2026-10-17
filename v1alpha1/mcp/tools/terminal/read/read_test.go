@@ -38,14 +38,14 @@ func TestTerminalRead(t *testing.T) {
 		says   string
 		failed bool
 	}{
-		"from where this sign-in stopped": {exec, "$ ls\ngo.mod\n", `{"url":"https://0tabc.tunneled.test/?1"}`, `"structuredContent":{"cursor":"@12","dropped":false,"text":"$ ls\ngo.mod\n","truncated":false}`, false},
-		"from a cursor":                   {exec, "$ ls\ngo.mod\n", `{"url":"https://0tabc.tunneled.test/?1","cursor":"@5"}`, `"text":"go.mod\n"`, false},
-		"more than the cap":               {nil, long, `{"url":"https://0tabc.tunneled.test/?1"}`, `"truncated":true`, false},
-		"a stale cursor":                  {exec, "", `{"url":"https://0tabc.tunneled.test/?1","cursor":"stale"}`, "not this terminal's", true},
-		"a junk cursor":                   {exec, "", `{"url":"https://0tabc.tunneled.test/?1","cursor":"junk"}`, "not a cursor", true},
-		"since, not cursor":               {exec, "", `{"url":"https://0tabc.tunneled.test/?1","since":5}`, "unexpected additional properties", true},
-		"without tunnel:exec":             {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "", `{"url":"https://0tabc.tunneled.test/?1"}`, "needs the tunnel:exec scope", true},
-		"not a terminal":                  {exec, "", `{"url":"https://0tabc.tunneled.test/"}`, "is not a terminal", true},
+		"from where this sign-in stopped": {exec, "$ ls\ngo.mod\n", `{"url":"https://0tabc.tunneld.domain/?1"}`, `"structuredContent":{"cursor":"@12","dropped":false,"text":"$ ls\ngo.mod\n","truncated":false}`, false},
+		"from a cursor":                   {exec, "$ ls\ngo.mod\n", `{"url":"https://0tabc.tunneld.domain/?1","cursor":"@5"}`, `"text":"go.mod\n"`, false},
+		"more than the cap":               {nil, long, `{"url":"https://0tabc.tunneld.domain/?1"}`, `"truncated":true`, false},
+		"a stale cursor":                  {exec, "", `{"url":"https://0tabc.tunneld.domain/?1","cursor":"stale"}`, "not this terminal's", true},
+		"a junk cursor":                   {exec, "", `{"url":"https://0tabc.tunneld.domain/?1","cursor":"junk"}`, "not a cursor", true},
+		"since, not cursor":               {exec, "", `{"url":"https://0tabc.tunneld.domain/?1","since":5}`, "unexpected additional properties", true},
+		"without tunnel:exec":             {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "", `{"url":"https://0tabc.tunneld.domain/?1"}`, "needs the tunnel:exec scope", true},
+		"not a terminal":                  {exec, "", `{"url":"https://0tabc.tunneld.domain/"}`, "is not a terminal", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := tool.Context{
@@ -71,7 +71,7 @@ func TestTerminalReadsOnFromWhereItStopped(t *testing.T) {
 	}
 	me := &auth.Access{Sub: "github:1", Grant: "g-1", Scopes: []string{"mcp", "tunnel:exec"}}
 	read := func() string {
-		_, body := tooltest.Call(t, Tool, c, me, `{"url":"https://0tabc.tunneled.test/"}`)
+		_, body := tooltest.Call(t, Tool, c, me, `{"url":"https://0tabc.tunneld.domain/"}`)
 		return body
 	}
 	if first := read(); !strings.Contains(first, `"text":"$ ls\n"`) {

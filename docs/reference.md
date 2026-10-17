@@ -103,7 +103,7 @@ tunneld http://localhost:3000 http://localhost:4000
 
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 3f1c0e2a9b7d4c68)
-https://0t8qsb6pq3.tunneled.test/
+https://0t8qsb6pq3.tunneld.domain/
   -> http://localhost:3000
   -> http://localhost:4000
 ```
@@ -114,9 +114,9 @@ own address instead:
 
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 3f1c0e2a9b7d4c68)
-https://0t8qsb6pq3.tunneled.test/?0
+https://0t8qsb6pq3.tunneld.domain/?0
   -> http://localhost:3000
-https://0t8qsb6pq3.tunneled.test/?1
+https://0t8qsb6pq3.tunneld.domain/?1
   -> http://localhost:4000
 ```
 
@@ -491,7 +491,7 @@ along the bottom the keys, the build, the machine serving it, how many people
 are watching, and the size everyone has settled on.
 
 ```
-╭─ attach://dockerd/tunneld-example ────────────────────────────────── https://0t8qsb6pq3.tunneled.test/ ╮
+╭─ attach://dockerd/tunneld-example ───────────────────────────────── https://0t8qsb6pq3.tunneld.domain/ ╮
 │➜  ~ ls                                                                                                 │
 │                                                                                                        │
 ╰─ ^K  commands ── tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5) ── my-laptop (2 viewers) [104×2] ╯
@@ -626,7 +626,7 @@ shell built into tunneld. It is the ordinary program path, so the terminal is
 drawn on your console as well:
 
 ```
-https://0t8qsb6pq3.tunneled.test/
+https://0t8qsb6pq3.tunneld.domain/
   -> exec:///bin/zsh
 ```
 
@@ -692,7 +692,7 @@ Without a terminal to draw — several origins, an `http://` one, or a console
 that is not a terminal — the run says what to press instead:
 
 ```
-https://0t8qsb6pq3.tunneled.test/
+https://0t8qsb6pq3.tunneld.domain/
   -> http://localhost:3000
 Press Ctrl+C to stop the tunnel...
 ```
@@ -771,7 +771,7 @@ tunneld :3000 :4000 :5000
 ```
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 5d2a7e61c0b8f394)
-https://0t8qsb6pq3.tunneled.test/
+https://0t8qsb6pq3.tunneld.domain/
   -> http://localhost:3000
   -> http://localhost:4000
   -> http://localhost:5000
@@ -849,9 +849,9 @@ On a terminal holding both, with `--multiview=false`, that reads as a map:
 
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 3f1c0e2a9b7d4c68)
-https://0t8qsb6pq3.tunneled.test/?0
+https://0t8qsb6pq3.tunneld.domain/?0
   -> http://localhost:3000
-https://0t8qsb6pq3.tunneled.test/?1
+https://0t8qsb6pq3.tunneld.domain/?1
   -> http://localhost:4000
 ```
 
@@ -962,12 +962,12 @@ reaches:
     log  ~/Library/Caches/tunneld/894bb9b319b7b699.log
 
   Your applications (http://localhost:3000, /bin/bash) are now available,
-  tunneled through https://0tc62f7m9b.tunneled.test/, at the following
+  tunneled through https://0tc62f7m9b.tunneld.domain/, at the following
   addresses:
 
-  https://0tc62f7m9b.tunneled.test/    → multiview
-  https://0tc62f7m9b.tunneled.test/?0  → http://localhost:3000
-  https://0tc62f7m9b.tunneled.test/?1  → /bin/bash
+  https://0tc62f7m9b.tunneld.domain/    → multiview
+  https://0tc62f7m9b.tunneld.domain/?0  → http://localhost:3000
+  https://0tc62f7m9b.tunneld.domain/?1  → /bin/bash
 ```
 
 One origin reads "Your application (/bin/bash) is now available, tunneled

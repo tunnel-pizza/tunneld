@@ -34,10 +34,10 @@ func TestTerminalScreen(t *testing.T) {
 		says   string
 		failed bool
 	}{
-		"tunnel:exec":         {exec, "https://0tabc.tunneled.test/?1", `"structuredContent":{"alt_screen":false,"cursor":{"col":0,"row":2},"height":24,"rows":["$ ls","go.mod"],"title":"sh","width":80}`, false},
-		"the secret":          {nil, "https://0tabc.tunneled.test/?1", `"title":"sh"`, false},
-		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "https://0tabc.tunneled.test/?1", "needs the tunnel:exec scope", true},
-		"not a terminal":      {exec, "https://0tabc.tunneled.test/", "is not a terminal", true},
+		"tunnel:exec":         {exec, "https://0tabc.tunneld.domain/?1", `"structuredContent":{"alt_screen":false,"cursor":{"col":0,"row":2},"height":24,"rows":["$ ls","go.mod"],"title":"sh","width":80}`, false},
+		"the secret":          {nil, "https://0tabc.tunneld.domain/?1", `"title":"sh"`, false},
+		"without tunnel:exec": {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "https://0tabc.tunneld.domain/?1", "needs the tunnel:exec scope", true},
+		"not a terminal":      {exec, "https://0tabc.tunneld.domain/", "is not a terminal", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, body := tooltest.Call(t, Tool, c, tc.access, `{"url":"`+tc.url+`"}`)

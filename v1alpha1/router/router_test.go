@@ -530,9 +530,9 @@ func TestForwardingHeaders(t *testing.T) {
 		return srv
 	}
 	sent := map[string]string{
-		"Forwarded":         "for=203.0.113.7;proto=https;host=app.tunneled.test",
+		"Forwarded":         "for=203.0.113.7;proto=https;host=app.tunneld.domain",
 		"X-Forwarded-For":   "203.0.113.7",
-		"X-Forwarded-Host":  "app.tunneled.test",
+		"X-Forwarded-Host":  "app.tunneld.domain",
 		"X-Forwarded-Proto": "https",
 	}
 	for name, list := range map[string]v1.Origins{
@@ -917,8 +917,8 @@ func TestRoutePreservesTheHost(t *testing.T) {
 	}
 	base := route(t, listOf(t, host("A"), host("B")), -1, nil, discard)
 	req, _ := http.NewRequest("GET", base+"/?1", nil)
-	req.Host = "foo.tunneled.test"
-	if _, body := get(t, http.DefaultClient, req); body != "B|foo.tunneled.test" {
+	req.Host = "foo.tunneld.domain"
+	if _, body := get(t, http.DefaultClient, req); body != "B|foo.tunneld.domain" {
 		t.Errorf("body = %q, want the inbound Host at origin 1", body)
 	}
 }

@@ -30,7 +30,7 @@ func TestTerminalWaitListing(t *testing.T) {
 // Context.Terminal or the terminal refuses is a tool error.
 func TestTerminalWait(t *testing.T) {
 	exec := &auth.Access{Sub: "github:1", Grant: "g-1", Scopes: []string{"mcp", "tunnel:exec"}}
-	at := func(rest string) string { return `{"url":"https://0tabc.tunneled.test/?1"` + rest + `}` }
+	at := func(rest string) string { return `{"url":"https://0tabc.tunneld.domain/?1"` + rest + `}` }
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		args   string

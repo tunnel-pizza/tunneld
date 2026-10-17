@@ -259,13 +259,13 @@ func TestFrom(t *testing.T) {
 		index  int
 		failed bool
 	}{
-		{"no parameter is the first", two, "https://0tabc.tunneled.test/", 0, false},
-		{"a bare index", two, "https://0tabc.tunneled.test/?1", 1, false},
-		{"the first bare index wins", two, "https://0tabc.tunneled.test/app?x=1&1&0", 1, false},
-		{"a valued parameter is not an index", two, "https://0tabc.tunneled.test/?1=x", 0, false},
-		{"a single origin needs none", one, "https://0tabc.tunneled.test", 0, false},
-		{"past the list", two, "https://0tabc.tunneled.test/?2", 0, true},
-		{"negative", two, "https://0tabc.tunneled.test/?-1", 0, true},
+		{"no parameter is the first", two, "https://0tabc.tunneld.domain/", 0, false},
+		{"a bare index", two, "https://0tabc.tunneld.domain/?1", 1, false},
+		{"the first bare index wins", two, "https://0tabc.tunneld.domain/app?x=1&1&0", 1, false},
+		{"a valued parameter is not an index", two, "https://0tabc.tunneld.domain/?1=x", 0, false},
+		{"a single origin needs none", one, "https://0tabc.tunneld.domain", 0, false},
+		{"past the list", two, "https://0tabc.tunneld.domain/?2", 0, true},
+		{"negative", two, "https://0tabc.tunneld.domain/?-1", 0, true},
 		{"not a URL", two, "https://%zz", 0, true},
 		{"not an address", two, "exec:///bin/zsh", 0, true},
 	} {
