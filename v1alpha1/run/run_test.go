@@ -25,7 +25,7 @@ import (
 // tunnel URL itself must survive unmodified either way, since every later call
 // derives from it.
 func TestPublicURL(t *testing.T) {
-	public, err := url.Parse("https://foo.tunneled.pizza/")
+	public, err := url.Parse("https://foo.tunneled.test/")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -35,10 +35,10 @@ func TestPublicURL(t *testing.T) {
 		i, n int
 		want string
 	}{
-		{"lone origin is plain", 0, 1, "https://foo.tunneled.pizza/"},
-		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.pizza/?0"},
-		{"second origin", 1, 2, "https://foo.tunneled.pizza/?1"},
-		{"double digits", 12, 13, "https://foo.tunneled.pizza/?12"},
+		{"lone origin is plain", 0, 1, "https://foo.tunneled.test/"},
+		{"default origin is explicit when it can be confused", 0, 2, "https://foo.tunneled.test/?0"},
+		{"second origin", 1, 2, "https://foo.tunneled.test/?1"},
+		{"double digits", 12, 13, "https://foo.tunneled.test/?12"},
 	}
 	for _, tc := range cases {
 		if got := publicURL(public, tc.i, tc.n); got != tc.want {
@@ -54,17 +54,17 @@ func TestPublicURL(t *testing.T) {
 // JSON, however it is spaced or its keys ordered, with numbers compared as
 // written — and anything that is not JSON compared as it is.
 func TestSameSpec(t *testing.T) {
-	const saved = `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0","port":7844}}`
+	const saved = `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0","port":7844}}`
 	for _, tc := range []struct {
 		name string
 		a, b string
 		want bool
 	}{
 		{"byte for byte", saved, saved, true},
-		{"keys reordered", saved, `{"spec":{"port":7844,"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"backend":"cloudflare"}`, true},
-		{"spaced out", saved, "{ \"backend\" : \"cloudflare\",\n \"spec\": {\"hostname\":\"0tk.tunneled.pizza\", \"secret\":\"c2VjcmV0\", \"port\": 7844} }\n", true},
-		{"another secret", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"b3RoZXI=","port":7844}}`, false},
-		{"a key missing", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"}}`, false},
+		{"keys reordered", saved, `{"spec":{"port":7844,"secret":"c2VjcmV0","hostname":"0tk.tunneled.test"},"backend":"cloudflare"}`, true},
+		{"spaced out", saved, "{ \"backend\" : \"cloudflare\",\n \"spec\": {\"hostname\":\"0tk.tunneled.test\", \"secret\":\"c2VjcmV0\", \"port\": 7844} }\n", true},
+		{"another secret", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.test","secret":"b3RoZXI=","port":7844}}`, false},
+		{"a key missing", saved, `{"backend":"cloudflare","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"}}`, false},
 		{"a number as written", `{"n":1}`, `{"n":1.0}`, false},
 		{"numbers past a float's precision", `{"n":9007199254740993}`, `{"n":9007199254740992}`, false},
 		{"empty against a spec", "", saved, false},
@@ -85,19 +85,19 @@ func TestSameSpec(t *testing.T) {
 // run applies live, and what is a new tunnel: every other field is compared
 // as JSON, so a reformatted envelope with the same messages is neither.
 func TestMessagesOnly(t *testing.T) {
-	const saved = `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["warn","tip"]}`
+	const saved = `{"backend":"cloudflare","hostname":"0tk.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["warn","tip"]}`
 	for _, tc := range []struct {
 		name, next string
 		want       bool
 		messages   []string
 	}{
-		{"the warning dropped", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, true, []string{"tip"}},
-		{"all messages gone", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"metadata":{"record_id":"r1"}}`, true, nil},
-		{"reordered, same messages", `{"messages":["warn","tip"],"metadata":{"record_id":"r1"},"spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.pizza"},"hostname":"0tk.tunneled.pizza","backend":"cloudflare"}`, false, nil},
-		{"another secret", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"b3RoZXI="},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
-		{"another record", `{"backend":"cloudflare","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r2"},"messages":["tip"]}`, false, nil},
-		{"another hostname", `{"backend":"cloudflare","hostname":"0tz.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
-		{"another backend", `{"backend":"other","hostname":"0tk.tunneled.pizza","spec":{"hostname":"0tk.tunneled.pizza","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
+		{"the warning dropped", `{"backend":"cloudflare","hostname":"0tk.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, true, []string{"tip"}},
+		{"all messages gone", `{"backend":"cloudflare","hostname":"0tk.tunneled.test","spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.test"},"metadata":{"record_id":"r1"}}`, true, nil},
+		{"reordered, same messages", `{"messages":["warn","tip"],"metadata":{"record_id":"r1"},"spec":{"secret":"c2VjcmV0","hostname":"0tk.tunneled.test"},"hostname":"0tk.tunneled.test","backend":"cloudflare"}`, false, nil},
+		{"another secret", `{"backend":"cloudflare","hostname":"0tk.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"b3RoZXI="},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
+		{"another record", `{"backend":"cloudflare","hostname":"0tk.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"},"metadata":{"record_id":"r2"},"messages":["tip"]}`, false, nil},
+		{"another hostname", `{"backend":"cloudflare","hostname":"0tz.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
+		{"another backend", `{"backend":"other","hostname":"0tk.tunneled.test","spec":{"hostname":"0tk.tunneled.test","secret":"c2VjcmV0"},"metadata":{"record_id":"r1"},"messages":["tip"]}`, false, nil},
 		{"not JSON", "patched", false, nil},
 	} {
 		got, ok := messagesOnly(tc.next, saved)

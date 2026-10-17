@@ -127,13 +127,13 @@ func TestTerminal(t *testing.T) {
 		want attach.Terminal
 		says string
 	}{
-		"the secret":                       {Context{Origins: origins.New(opts...), Bound: run}, t.Context(), "https://0tabc.tunneled.pizza/?1", shell, ""},
-		"the scheme's scope":               {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?1", shell, ""},
-		"another scheme's scope":           {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?2", nil, "a_tool needs the tunnel:attach scope"},
-		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/", nil, "https://0tabc.tunneled.pizza/ is not a terminal: origin 0 is http"},
-		"past the list":                    {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.pizza/?5", nil, "names origin 5"},
-		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneled.pizza/?1", nil, "This run serves no terminal."},
-		"a run with no origins":            {Context{Bound: run}, t.Context(), "https://0tabc.tunneled.pizza/?1", nil, "This run serves no terminal."},
+		"the secret":                       {Context{Origins: origins.New(opts...), Bound: run}, t.Context(), "https://0tabc.tunneled.test/?1", shell, ""},
+		"the scheme's scope":               {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.test/?1", shell, ""},
+		"another scheme's scope":           {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.test/?2", nil, "a_tool needs the tunnel:attach scope"},
+		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.test/", nil, "https://0tabc.tunneled.test/ is not a terminal: origin 0 is http"},
+		"past the list":                    {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneled.test/?5", nil, "names origin 5"},
+		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneled.test/?1", nil, "This run serves no terminal."},
+		"a run with no origins":            {Context{Bound: run}, t.Context(), "https://0tabc.tunneled.test/?1", nil, "This run serves no terminal."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, got := logged(t)

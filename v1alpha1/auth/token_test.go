@@ -80,7 +80,7 @@ func TestVerifyToken(t *testing.T) {
 	if _, err := verifyToken(key, ssoHost, "github:1", forever, tokenNow.Add(10*365*24*time.Hour)); err != nil {
 		t.Errorf("no expiry, years later: %v", err)
 	}
-	other, _ := mintToken(key, "other.tunneled.pizza", "github:1", Scopes, tokenNow, time.Hour)
+	other, _ := mintToken(key, "other.tunneled.test", "github:1", Scopes, tokenNow, time.Hour)
 	tampered := good[:strings.LastIndex(good, ".")+1] + "AAAA"
 	for name, tc := range map[string]struct {
 		key   []byte
@@ -109,7 +109,7 @@ func TestSelfIssued(t *testing.T) {
 	if !selfIssued(tok, ssoHost) {
 		t.Error("own token not recognised")
 	}
-	if selfIssued(tok, "other.tunneled.pizza") || selfIssued("listed", ssoHost) || selfIssued("", ssoHost) {
+	if selfIssued(tok, "other.tunneled.test") || selfIssued("listed", ssoHost) || selfIssued("", ssoHost) {
 		t.Error("recognised something else")
 	}
 }

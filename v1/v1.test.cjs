@@ -60,9 +60,9 @@ test("isOrigin matches the Go parser's", () => {
 });
 
 test("prose says what is shared and where, wrapped to the width it is given", () => {
-  assert.deepEqual(prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash?arg=-l"], 78), [
+  assert.deepEqual(prose("0t09ndffmw.tunneled.test", ["exec:///bin/bash?arg=-l"], 78), [
     "  Your application (/bin/bash -l) is now available, tunneled through",
-    "  https://0t09ndffmw.tunneled.pizza/, at the following address:",
+    "  https://0t09ndffmw.tunneled.test/, at the following address:",
   ]);
   assert.deepEqual(prose("t.example", ["http://localhost:3000", "exec:///bin/bash"], 78), [
     "  Your applications (http://localhost:3000, /bin/bash) are now available,",
@@ -75,7 +75,7 @@ test("prose says what is shared and where, wrapped to the width it is given", ()
     }
   }
   // An address longer than the line gets a line of its own, whole.
-  assert.ok(prose("0t09ndffmw.tunneled.pizza", ["exec:///bin/bash"], 30).includes("  https://0t09ndffmw.tunneled.pizza/,"));
+  assert.ok(prose("0t09ndffmw.tunneled.test", ["exec:///bin/bash"], 30).includes("  https://0t09ndffmw.tunneled.test/,"));
 });
 
 test("quote spells a word that pastes back as itself", { skip: win && "cmd.exe quoting" }, () => {

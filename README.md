@@ -26,7 +26,7 @@ npx tunneld :3000
 
 ```
 tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5, cache 99053a798931fe97)
-https://0t8qsb6pq3.tunneled.pizza/
+https://0t8qsb6pq3.tunneled.test/
   -> http://localhost:3000
 Press Ctrl+C to stop the tunnel...
 ```
@@ -78,7 +78,7 @@ web, so you, your phone, and anyone you send the address to type into one
 session.
 
 ```
-╭─ exec:///usr/local/bin/claude ─────────────────────────────────── https://0t8qsb6pq3.tunneled.pizza/ ╮
+╭─ exec:///usr/local/bin/claude ──────────────────────────────────── https://0t8qsb6pq3.tunneled.test/ ╮
 │ >                                                                                                    │
 │                                                                                                      │
 ╰─ ^K  commands ─ tunneld v0.0.68 (libtunnel v0.1.11, built go1.26.5) ── my-laptop (2 viewers) [102×2] ╯

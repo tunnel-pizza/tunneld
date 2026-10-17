@@ -958,7 +958,7 @@ Then the cases:
 // TestRunCarriesTheIdentityToken pins the whole path: the list the flag
 // settled reaches Identity, and what Identity found reaches the engine.
 func TestRunCarriesTheIdentityToken(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	ident := &fakeIdentity{token: "a-credential"}
 	v1.Apply(h.b, WithIdentity(ident), WithIdentityProviders("github"))
@@ -994,7 +994,7 @@ func TestRunCarriesTheIdentityToken(t *testing.T) {
 // before anything external happens — no tunnel minted, and the message is the
 // one Identity gave.
 func TestRunRefusesAnUnknownIdentityProvider(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	refused := fmt.Errorf("%w: %q, only %s", v1.ErrUnknownIdentity, "gitlab", "github")
 	v1.Apply(h.b, WithIdentity(&fakeIdentity{err: refused}), WithIdentityProviders("gitlab"))
@@ -1025,7 +1025,7 @@ func TestIdentityProvidersSettle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.IdentityProvidersEnv, tc.env)
-			const public = "https://foo.tunneled.pizza/"
+			const public = "https://foo.tunneled.test/"
 			h := newRunHarness(t, live(public), ":3000")
 			ident := &fakeIdentity{}
 			v1.Apply(h.b, WithIdentity(ident))

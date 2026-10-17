@@ -267,7 +267,7 @@ const (
 	// WWWAuthenticateEnv is a tunnel's password protection: a WWW-Authenticate
 	// challenge whose private pw parameter is the password's PBKDF2 hash,
 	//
-	//	Basic realm="0t8qsb6pq3.tunneled.pizza", pw="$pbkdf2-sha256$i=600000$…$…"
+	//	Basic realm="0t8qsb6pq3.tunneled.test", pw="$pbkdf2-sha256$i=600000$…$…"
 	//
 	// and empty for public. Environment only, deliberately: there is no flag,
 	// since a command line is readable by every user through ps and lands in

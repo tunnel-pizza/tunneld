@@ -250,7 +250,7 @@ func TestHelpNamesTheCommand(t *testing.T) {
 // display named, since this suite runs under both conditions and one of them
 // is a signal.
 func TestBrowserOpensWhenSomebodyIsWatching(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	for _, tc := range []struct {
 		name     string
 		open     *bool
@@ -972,7 +972,7 @@ func captureStderr(t *testing.T) func() string {
 // the code did before it was split, so a case going red is a behaviour
 // change, not a refactor.
 func TestRun(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 
 	t.Run("a mint reports, opens the panel, then saves", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000", ":4000")
@@ -1066,7 +1066,7 @@ func TestRun(t *testing.T) {
 	// and drained, the next is minted from the spec, and everything a tunnel
 	// that comes up does happens again.
 	t.Run("a new spec replaces the tunnel, and it is all shown again", func(t *testing.T) {
-		const second = "https://bar.tunneled.pizza/"
+		const second = "https://bar.tunneled.test/"
 		first, next := live(public), live(second)
 		h := newRunHarness(t, first, ":3000")
 		v1.Apply(h.b, WithOpen(true)) // its streams are buffers; say so out loud
@@ -1437,7 +1437,7 @@ func TestRun(t *testing.T) {
 		}
 		// The token the fake tunnel's secret makes: what an operator
 		// holding the run's spec would send.
-		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.test")))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -1469,7 +1469,7 @@ func TestRun(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.test")))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		resp, err := http.DefaultClient.Do(req)
@@ -1484,7 +1484,7 @@ func TestRun(t *testing.T) {
 		// terminal_sessions answers the machine from what the run saved.
 		call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"terminal_sessions","arguments":{"scheme":"exec"}}}`
 		req, _ = http.NewRequest(http.MethodPost, strings.TrimSuffix(local.String(), "/")+router.ControlPath+"mcp", strings.NewReader(call))
-		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.pizza")))
+		req.Header.Set("Authorization", "token "+base64.StdEncoding.EncodeToString([]byte("secret-of-foo.tunneled.test")))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Mcp-Protocol-Version", "2025-06-18")
@@ -1543,7 +1543,7 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if got, want := string(h.cache.secret), "secret-of-foo.tunneled.pizza"; got != want {
+		if got, want := string(h.cache.secret), "secret-of-foo.tunneled.test"; got != want {
 			t.Errorf("the run saved secret %q, want the tunnel's (%q)", got, want)
 		}
 		want := h.cache.String()
@@ -1704,7 +1704,7 @@ func TestRun(t *testing.T) {
 // whole run (the origin parsing has no seam of its own to call directly), so
 // what is pinned is what is actually routed to: the router's list, in order.
 func TestParseOriginsAccepts(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	cases := []struct {
 		name string
 		in   []string
@@ -1840,7 +1840,7 @@ func urlStrings(urls []*url.URL) []string {
 // PersistentPreRunE here. Run calls applyEnv itself so env still beats code,
 // and TUNNELD_PROVIDER reaching the engine is what proves it.
 func TestRunIsTheOtherDoor(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	for _, name := range []string{v1.OriginsEnv, v1.NoCacheEnv, v1.MultiviewEnv} {
 		t.Setenv(name, "")
@@ -2355,7 +2355,7 @@ func TestOriginsNoneLeftIsAnError(t *testing.T) {
 // closer Bind handed back, and this is the arm that listens. It is a clean
 // exit, not a failure: nothing went wrong, somebody chose it.
 func TestAViewerCanEndTheRun(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	h.binder.asked = make(chan struct{})
 
@@ -2376,7 +2376,7 @@ func TestAViewerCanEndTheRun(t *testing.T) {
 // for a program started with arguments: the program. The arguments ride the
 // origin as a query because that is how they travel; the map is for a person.
 func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), "exec:///usr/bin/htop?arg=-d&arg=5")
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
@@ -2413,7 +2413,7 @@ func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
 // TestRun's "mint" case already pins the panel branch, folding in
 // TestReportNamesTheMultiviewPanel's doc.
 func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000", ":4000")
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
@@ -2449,7 +2449,7 @@ func TestReportSplitsTheAddressFromItsOrigin(t *testing.T) {
 // The dial is the router's, and router_test.go dials a loopback listener and a
 // closed port for it; the fake here answers from a list.
 func TestReportLogsWhatNothingListensOn(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	for name, tc := range map[string]struct {
 		unanswered []int
 		args       []string
@@ -2514,7 +2514,7 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 	}
 	t.Cleanup(func() { tty.Close(); ptmx.Close() })
 
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
 	h.binder.mirrors = true
 	// Asked for, so the mirror is the only thing that can be suppressing it —
@@ -2567,7 +2567,7 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 		}
 	}()
 
-	const public, second = "https://foo.tunneled.pizza/", "https://bar.tunneled.pizza/"
+	const public, second = "https://foo.tunneled.test/", "https://bar.tunneled.test/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
 	next := live(second)
 	next.order = &h.order
@@ -2604,10 +2604,10 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 	mu.Lock()
 	drawn := screen.String()
 	mu.Unlock()
-	if !strings.Contains(drawn, "foo.tunneled.pizza") {
+	if !strings.Contains(drawn, "foo.tunneled.test") {
 		t.Errorf("terminal = %q, want the first tunnel's address, printed before the frame", drawn)
 	}
-	if strings.Contains(drawn, "bar.tunneled.pizza") {
+	if strings.Contains(drawn, "bar.tunneled.test") {
 		t.Errorf("terminal = %q, want the second tunnel's address kept off the frame", drawn)
 	}
 	if want := []string{public, second}; !slices.Equal(h.binder.announcedAll, want) {
@@ -2640,7 +2640,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 	t.Cleanup(func() { tty.Close(); ptmx.Close() })
 	t.Setenv("OPEN", "false") // the hammer: see run.openEnv
 
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
 	h.binder.mirrors = true
 	v1.Apply(h.b, WithOpen(true))
@@ -2672,7 +2672,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 // and this is the branch under test. The mirrored branch says the same thing
 // on its way out of the frame, which needs a pty and is covered by hand.
 func TestStopHintTellsAWaitingConsoleWhatToPress(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
@@ -2706,7 +2706,7 @@ func TestStopHintTellsAWaitingConsoleWhatToPress(t *testing.T) {
 // RunE; captureStderr guards the process stream so a leak there is a
 // failure rather than invisible.
 func TestLogger(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	cases := []struct {
 		name    string
 		level   string
@@ -2990,7 +2990,7 @@ func TestEnvLogLevelIsStrict(t *testing.T) {
 // settled reaches Identity, and what Identity found reaches the engine — and
 // the credential reaches neither stream on the way.
 func TestRunCarriesTheIdentityToken(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	ident := &fakeIdentity{token: "a-credential"}
 	v1.Apply(h.b, WithIdentity(ident), WithIdentityProviders("github"))
@@ -3027,7 +3027,7 @@ func TestRunCarriesTheIdentityToken(t *testing.T) {
 // before anything external happens — no tunnel asked for, and the message is
 // the one Identity gave.
 func TestRunRefusesAnUnknownIdentityProvider(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000")
 	refused := fmt.Errorf("%w: %q, only %s", v1.ErrUnknownIdentity, "gitlab", "github")
 	v1.Apply(h.b, WithIdentity(&fakeIdentity{err: refused}), WithIdentityProviders("gitlab"))
@@ -3058,7 +3058,7 @@ func TestIdentityProvidersSettle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(v1.IdentityProvidersEnv, tc.env)
-			const public = "https://foo.tunneled.pizza/"
+			const public = "https://foo.tunneled.test/"
 			h := newRunHarness(t, live(public), ":3000")
 			ident := &fakeIdentity{}
 			v1.Apply(h.b, WithIdentity(ident))
@@ -3092,7 +3092,7 @@ func TestTheDefaultProvidersAreRegistered(t *testing.T) {
 // throw it, and pins that throwing it leaves the builder alone: an embedder
 // that runs a command twice gets its cache back on the second run.
 func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 
 	for _, tc := range []struct {
 		name  string
@@ -3140,7 +3140,7 @@ func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
 // every knob goes in beside the spec — settled, not read back out of the
 // environment, since a run configured by flags sets none of these variables.
 func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	h := newRunHarness(t, live(public), ":3000", "http://localhost:4000")
 	ctx, cancel := context.WithCancel(t.Context())
 	h.cache.onSave = cancel
@@ -3193,7 +3193,7 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 			t.Errorf("tracking[HOSTNAME] = %q, want %q", got, host)
 		}
 	}
-	if got := h.cache.tracking[ltv1.HostnameEnv]; got != "foo.tunneled.pizza" {
+	if got := h.cache.tracking[ltv1.HostnameEnv]; got != "foo.tunneled.test" {
 		t.Errorf("tracking[%s] = %q, want the tunnel's hostname", ltv1.HostnameEnv, got)
 	}
 	// The one value that must never be here: the mint token is the account's
@@ -3252,7 +3252,7 @@ func TestFieldsSplitLikeAShell(t *testing.T) {
 // if it has one, set on auth before anything is routed, and recorded for the
 // file. An invalid value stops the run, naming the variable.
 func TestRunSettlesThePassword(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
 
 	runTo := func(t *testing.T, h *runHarness) {
@@ -3357,9 +3357,9 @@ func TestWWWAuthenticateIsEnvironmentOnly(t *testing.T) {
 // password): learned and saved in place, with no stop and no mint, and the
 // save's own echo through the spec channel passed over quietly.
 func TestRunLearnsAMessagesOnlySpec(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
-	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
-	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["tip"]}`
+	const public = "https://foo.tunneled.test/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.test","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
+	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.test","secret":"c2VjcmV0"},"messages":["tip"]}`
 	tun := live(public)
 	tun.serialized = env
 	h := newRunHarness(t, tun, ":3000")
@@ -3405,10 +3405,10 @@ func TestRunLearnsAMessagesOnlySpec(t *testing.T) {
 // is taking a messages-only spec: it was answered 200, so it is the run's to
 // apply. The messages-only save must not take its place on the channel.
 func TestAMessagesOnlySaveKeepsAWaitingSpec(t *testing.T) {
-	const public, second = "https://foo.tunneled.pizza/", "https://bar.tunneled.pizza/"
-	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
-	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"},"messages":["tip"]}`
-	const respec = `{"backend":"cloudflare","spec":{"hostname":"bar.tunneled.pizza","secret":"b3RoZXI="}}`
+	const public, second = "https://foo.tunneled.test/", "https://bar.tunneled.test/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.test","secret":"c2VjcmV0"},"messages":["warn","tip"]}`
+	const quieter = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.test","secret":"c2VjcmV0"},"messages":["tip"]}`
+	const respec = `{"backend":"cloudflare","spec":{"hostname":"bar.tunneled.test","secret":"b3RoZXI="}}`
 	tun := live(public)
 	tun.serialized = env
 	h := newRunHarness(t, tun, ":3000")
@@ -3447,8 +3447,8 @@ func TestAMessagesOnlySaveKeepsAWaitingSpec(t *testing.T) {
 // has: the run keeps its tunnel, and saves, so the cache stops refusing spec
 // PATCHes as though one were still being applied.
 func TestAReSentSpecSettlesTheCache(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
-	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.pizza","secret":"c2VjcmV0"}}`
+	const public = "https://foo.tunneled.test/"
+	const env = `{"backend":"cloudflare","spec":{"hostname":"foo.tunneled.test","secret":"c2VjcmV0"}}`
 	tun := live(public)
 	tun.serialized = env
 	h := newRunHarness(t, tun, ":3000")
@@ -3485,7 +3485,7 @@ func TestAReSentSpecSettlesTheCache(t *testing.T) {
 // tunnel is protected, and an empty value when it is public, which a
 // provider reads as public just as it read no header before.
 func TestEveryMintSaysTheVisibility(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
 	for name, tc := range map[string]struct {
 		env  string // "" leaves the variable unset
@@ -3522,7 +3522,7 @@ func TestEveryMintSaysTheVisibility(t *testing.T) {
 // served, it says the challenge with pw's salt and hash redacted, so nobody
 // reading it (tunnel.pizza included) receives what would crack the password.
 func TestDotenvServesNoHash(t *testing.T) {
-	const public = "https://foo.tunneled.pizza/"
+	const public = "https://foo.tunneled.test/"
 	const pw = `Basic pw="$pbkdf2-sha256$i=600000$dHVubmVsLnBpenphL3YwMQ$UFtjhDQ2L2Fb/DQXWXQx19Nx2YTuaTLDIhGHp3Vdn24"`
 	h := newRunHarness(t, live(public), ":3000")
 	t.Setenv(v1.WWWAuthenticateEnv, pw)
@@ -3542,7 +3542,7 @@ func TestDotenvServesNoHash(t *testing.T) {
 // PATCH whose grant is gone is refused through the auth the builder holds,
 // not one the cache made for itself.
 func TestARefusedGrantIsTheRunsAuth(t *testing.T) {
-	h := newRunHarness(t, live("https://foo.tunneled.pizza/"), ":3000")
+	h := newRunHarness(t, live("https://foo.tunneled.test/"), ":3000")
 	ctx, cancel := context.WithCancel(t.Context())
 	v1.Apply(h.b, WithPid(&fakePid{order: &h.order, onRegister: cancel}))
 	_ = h.run(t, ctx, "--no-cache", ":3000")

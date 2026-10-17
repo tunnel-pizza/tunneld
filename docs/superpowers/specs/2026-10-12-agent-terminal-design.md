@@ -379,7 +379,7 @@ the picker in tunnel.pizza#63:
 "authorization_details": [{
   "type": "https://tunnel.pizza/tunnel",
   "actions": ["attach", "exec"],
-  "locations": ["https://0tabc1234de.tunneled.pizza"]
+  "locations": ["https://0tabc1234de.tunneled.test"]
 }]
 ```
 
