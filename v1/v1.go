@@ -231,16 +231,6 @@ const (
 	// origin; every origin stays reachable on its own index either way.
 	MultiviewEnv = "TUNNELD_MULTIVIEW"
 
-	// ShellFallbackEnv names whether a run given no origin anywhere falls back
-	// to $SHELL — the mirror of --shell-fallback, which beats it. Any value
-	// strconv.ParseBool accepts works.
-	//
-	// Turning it off restores ErrNoOrigin for a run with nothing to expose,
-	// which is what a script wants: a caller that meant to pass an origin and
-	// did not should be told so, not handed a public terminal onto the machine
-	// it is running on.
-	ShellFallbackEnv = "TUNNELD_SHELL_FALLBACK"
-
 	// QREnv names whether a run prints its address as a QR code on stderr
 	// once the tunnel is up — the mirror of --qr, which beats it. Any value
 	// strconv.ParseBool accepts works. stdout is untouched either way: it
@@ -414,21 +404,6 @@ const DefaultMultiview = true
 // a test in v1alpha1 asserts that what this names is what New registers.
 const DefaultIdentityProviders = "github,anthropic"
 
-// DefaultShellFallback is whether a run with no origin from any source — no
-// argument, no ShellFallbackEnv sibling, no WithOrigin seed — exposes $SHELL
-// rather than failing with ErrNoOrigin. On, because a bare tunneld having
-// something to do is worth more than the refusal it replaces, and a shell is
-// the one origin every machine has: it needs no port to be listening and
-// tunneld already knows how to serve a program.
-//
-// It is a knob because it is not always worth more. An embedding program that
-// mounts tunneld under its own verb inherits this default, and a user who
-// typed that verb meaning to name an origin gets a public terminal onto their
-// machine instead of being told they forgot one. That program turns it off
-// with WithShellFallback(false); an operator does the same with
-// --shell-fallback=false or ShellFallbackEnv.
-const DefaultShellFallback = true
-
 // Origins is the local origins a run exposes, in order: the first is the
 // default and each later one answers on a bare ?n routing parameter.
 //
@@ -537,6 +512,10 @@ type Builder interface {
 	// The list is a value with an identity: Key names the tunnel these origins
 	// are, which is what the spec cache files it under.
 	Origins() Origins
+	// AutoDetect is what Origins answers when no origin is given anywhere (no
+	// argument, no OriginsEnv, no seed): this machine's shell. Empty when
+	// there is none, which Run refuses with ErrNoOrigin.
+	AutoDetect() Origins
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string

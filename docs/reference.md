@@ -654,13 +654,6 @@ and these only fill what is missing. Each is tunneld's own executable again,
 under the command's name, from a temporary directory that is removed when the
 shell exits.
 
-`--shell-fallback=false` turns it off, and so do `TUNNELD_SHELL_FALLBACK` and
-`WithShellFallback(false)`. A bare run then fails with `ErrNoOrigin` the way it
-did before. That is the setting for a script, and for a program that embeds
-tunneld under its own verb: it inherits the default along with everything else,
-and somebody who typed that verb meaning to name an origin should be told they
-forgot one rather than handed a public terminal onto the machine.
-
 ## The console you started it from
 
 With exactly one `attach://` or `exec://` origin, the terminal is drawn on
@@ -913,7 +906,6 @@ default.**
 | `--provider` | `TUNNELD_PROVIDER` | Quick-tunnel provider host to mint against. Default `tunnel.pizza`. |
 | `--log-level` | `TUNNELD_LOG` | `debug`\|`info`\|`warn`\|`error` on stderr. Default silent. The run's log file and the terminal's log view keep info and above regardless, and debug too when this asks for it; see [Logs](#logs). |
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
-| `--shell-fallback` | `TUNNELD_SHELL_FALLBACK` | With no origin from any source, expose `$SHELL` rather than refusing to start. **Default on.** Turn it off to get `ErrNoOrigin` back — what a script wants, and what an embedding program mounting tunneld under its own verb usually wants, since a user who meant to name an origin should be told they forgot rather than handed a public terminal. |
 | `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `r` is the code. **Default off.** |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
@@ -1332,7 +1324,6 @@ after construction still lands.
 | `TUNNELD_PROVIDER` | `--provider` | Quick-tunnel provider host. |
 | `TUNNELD_LOG` | `--log-level` | Level of the tunnel's stderr logger. Unset, it is silent. The name predates the flag, which is why it is not `TUNNELD_LOG_LEVEL`. |
 | `TUNNELD_MULTIVIEW` | `--multiview` | Whether to serve the multiview panel. Any value `strconv.ParseBool` accepts. |
-| `TUNNELD_SHELL_FALLBACK` | `--shell-fallback` | Whether a run given no origin anywhere exposes `$SHELL`. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
@@ -1368,6 +1359,9 @@ configured with:
 docker run --rm -e TUNNELD_ORIGINS=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
+
+The image sets `TUNNELD_LOG=info`, so a container logs to stderr where a bare
+run is silent; `-e TUNNELD_LOG=<level>` or `--log-level` changes it.
 
 An `attach://dockerd/` origin needs the daemon socket, which is root-equivalent on the
 host — a container holding it can start a privileged container and own the

@@ -122,17 +122,13 @@ func TestCommandIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestOriginRequiredWhenUnseeded pins that a bare command refuses to run
-// rather than minting a tunnel with nothing behind it, and that its message
-// names both ways of supplying one — that is the choice an operator makes to
-// fix it.
-func TestOriginRequiredWhenUnseeded(t *testing.T) {
-	// $SHELL is the last origin tried, and a developer's shell has one — so
-	// without turning the fallback off the case does not assert a refusal, it
-	// mints a tunnel and blocks on it. Said with the option rather than by
-	// unsetting the variable, so what the case means is on the line that
-	// means it.
-	_, _, err := execute(t, New(WithShellFallback(false)))
+// TestOriginRequiredWhenNoneUsable pins that a run whose every origin was
+// dropped refuses to run rather than minting a tunnel with nothing behind
+// it, and that its message names both ways of supplying one — that is the
+// choice an operator makes to fix it.
+func TestOriginRequiredWhenNoneUsable(t *testing.T) {
+	// An argument, so AutoDetect is not asked; empty, so it is dropped.
+	_, _, err := execute(t, New(), "")
 	if !errors.Is(err, v1.ErrNoOrigin) {
 		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
 	}
@@ -1873,8 +1869,7 @@ func TestRunIsTheOtherDoor(t *testing.T) {
 // an address — so an unrunnable $SHELL has to be passed over, not become a
 // proxy to localhost.
 //
-// A seed or an argument outranks all of it, and declining the fallback
-// declines every step, the built-in shell included.
+// A seed or an argument outranks all of it.
 func TestOriginsFallsBackToTheShell(t *testing.T) {
 	// A $PATH of fake shells, so which one is chosen is this case's to
 	// decide and not the machine's. Windows finds a program by its
@@ -1904,27 +1899,20 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name     string
-		onPath   []string // fake shells on $PATH
-		shell    string   // $SHELL: a fake's name, a path that is not there, or ""
-		fallback bool
-		args     []string
-		want     string // the fake chosen, "builtin", ":3000", or "" for none
-		mention  string
+		name    string
+		onPath  []string // fake shells on $PATH
+		shell   string   // $SHELL: a fake's name, a path that is not there, or ""
+		args    []string
+		want    string // the fake chosen, "builtin", ":3000", or "" for none
+		mention string
 	}{
-		{"a runnable $SHELL is the origin", []string{"zsh", "bash", "sh"}, "zsh", true, nil, "zsh", ""},
-		{"an unrunnable $SHELL is passed over for bash", []string{"bash", "sh"}, "missing", true, nil, "bash", "not exposing $SHELL"},
-		{"no $SHELL is bash", []string{"bash", "sh"}, "", true, nil, "bash", ""},
-		{"no bash is sh", []string{"sh"}, "", true, nil, "sh", ""},
-		{"no shell at all is the built-in one", nil, "", true, nil, "builtin", ""},
-		{"an unrunnable $SHELL and nothing else is the built-in one", nil, "missing", true, nil, "builtin", "not exposing $SHELL"},
-		{"an argument outranks it", []string{"bash"}, "", true, []string{":3000"}, ":3000", ""},
-		// The knob is asked before anything is looked for, so a shell that is
-		// there, or the built-in one, is still not an origin when nobody
-		// wanted one.
-		{"the option declines a shell", []string{"bash"}, "", false, nil, "", ""},
-		{"the option declines the built-in one", nil, "", false, nil, "", ""},
-		{"declining does not touch an argument", nil, "", false, []string{":3000"}, ":3000", ""},
+		{"a runnable $SHELL is the origin", []string{"zsh", "bash", "sh"}, "zsh", nil, "zsh", ""},
+		{"an unrunnable $SHELL is passed over for bash", []string{"bash", "sh"}, "missing", nil, "bash", "not exposing $SHELL"},
+		{"no $SHELL is bash", []string{"bash", "sh"}, "", nil, "bash", ""},
+		{"no bash is sh", []string{"sh"}, "", nil, "sh", ""},
+		{"no shell at all is the built-in one", nil, "", nil, "builtin", ""},
+		{"an unrunnable $SHELL and nothing else is the built-in one", nil, "missing", nil, "builtin", "not exposing $SHELL"},
+		{"an argument outranks it", []string{"bash"}, "", []string{":3000"}, ":3000", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -1944,7 +1932,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			b := New(WithLogLevel("warn"), WithStderr(&stderr), WithShellFallback(tc.fallback))
+			b := New(WithLogLevel("warn"), WithStderr(&stderr))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
@@ -3163,7 +3151,6 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		v1.ProviderEnv:          "example.test",
 		v1.LogEnv:               "debug",
 		v1.MultiviewEnv:         "false",
-		v1.ShellFallbackEnv:     "true",
 		v1.NoCacheEnv:           "false",
 		v1.IdentityProvidersEnv: strings.Join(splitList(v1.DefaultIdentityProviders), ","),
 		v1.QREnv:                "false",

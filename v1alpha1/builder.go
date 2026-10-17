@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -98,23 +99,6 @@ func WithOpen(open bool) Option {
 // behaviour is v1.DefaultMultiview.
 func WithMultiview(multiview bool) Option {
 	return func(b *BuilderImpl) { b.multiview = multiview }
-}
-
-// WithShellFallback sets whether a run with no origin from any source — no
-// argument, no TUNNELD_ORIGINS, no WithOrigin seed — exposes $SHELL rather
-// than failing with v1.ErrNoOrigin. Unset, the behaviour is
-// v1.DefaultShellFallback.
-//
-// An embedding program is the caller this exists for. It inherits the default
-// along with everything else, and a user who typed its verb meaning to name an
-// origin would get a public terminal onto the machine instead of being told
-// they forgot one. WithShellFallback(false) restores the refusal.
-//
-// It is also how a test says "nothing to expose" and means it, without
-// reaching into the process environment to unset a variable the run reads
-// behind its back.
-func WithShellFallback(fallback bool) Option {
-	return func(b *BuilderImpl) { b.shellFallback = fallback }
 }
 
 // WithQR seeds whether a run prints its address as a QR code on stderr once
@@ -207,8 +191,6 @@ var flagEnv = map[string]string{
 	"log-level": v1.LogEnv,
 	"multiview": v1.MultiviewEnv,
 
-	"shell-fallback": v1.ShellFallbackEnv,
-
 	"identity-providers": v1.IdentityProvidersEnv,
 
 	"qr": v1.QREnv,
@@ -284,12 +266,10 @@ a port, a program, or a container. No account.
 		// What a bare run exposes. An embedder that seeded origins made them
 		// this command's default, so help says which — otherwise the one
 		// thing a seeded build does differently from a bare one is the one
-		// thing --help does not mention. Unseeded, it is the shell, unless
-		// the embedder turned that off.
-		switch {
-		case len(b.origins) > 0:
+		// thing --help does not mention. Unseeded, it is AutoDetect's.
+		if len(b.origins) > 0 {
 			long += "\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ") + "\n"
-		case b.shellFallback:
+		} else {
 			long += "\nWith no arguments at all, it shares your $SHELL (or bash, sh, or a shell built in).\n"
 		}
 
@@ -361,8 +341,6 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 			"tunnel log level on stderr: debug, info, warn, error (default: silent) [$"+v1.LogEnv+"]")
 		cmd.Flags().BoolVar(&b.multiview, "multiview", b.multiview,
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
-		cmd.Flags().BoolVar(&b.shellFallback, "shell-fallback", b.shellFallback,
-			"with no origin given anywhere, expose $SHELL rather than refusing to start [$"+v1.ShellFallbackEnv+"]")
 		cmd.Flags().BoolVar(&b.qr, "qr", b.qr,
 			"print the address as a QR code on stderr once the tunnel is up [$"+v1.QREnv+"]")
 
@@ -854,7 +832,6 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 		v1.ProviderEnv:          b.provider,
 		v1.LogEnv:               b.logLevel,
 		v1.MultiviewEnv:         strconv.FormatBool(b.multiview),
-		v1.ShellFallbackEnv:     strconv.FormatBool(b.shellFallback),
 		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
 		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
 		v1.QREnv:                strconv.FormatBool(b.qr),
@@ -1059,7 +1036,7 @@ func (b *BuilderImpl) cached() Origins {
 	return b.Origins()
 }
 
-// fallbackShell is the shell a run with nothing else to expose exposes: $SHELL,
+// shell is the shell a run with nothing else to expose exposes: $SHELL,
 // else bash on $PATH, else sh on $PATH, else the one built into tunneld
 // (v0exp1.Experimental().Builtin().Origin), so a run with no origin always has
 // one — a container image that sets no $SHELL, a scrubbed CI environment, a
@@ -1071,34 +1048,38 @@ func (b *BuilderImpl) cached() Origins {
 // is: a shell nobody named is the one choice here somebody will want
 // explained. A $SHELL that names nothing runnable warns, since it was set and
 // is wrong; bash and sh missing is ordinary, and debug.
-func fallbackShell(log v1.Logger) (string, bool) {
+//
+// Each is parsed like any origin, but only once resolved: parse reads a word
+// it cannot resolve as an address, which would make a $SHELL naming nothing
+// runnable a proxy to http://localhost/bin/nope. Empty when there is none.
+func (b *BuilderImpl) shell(log v1.Logger) Origins {
 	if sh := os.Getenv("SHELL"); sh == "" {
 		log.Debug("$SHELL is not set; looking for another shell")
 	} else if path, ok := shell.Resolve(sh); ok {
 		log.Info("no origin given; exposing this machine's shell", "shell", path)
-		return path, true
+		return b.parse(log, []string{path})
 	} else {
 		log.Warn("not exposing $SHELL", "shell", sh, "reason", "it names no program that can be run; looking for another shell")
 	}
 	for _, name := range []string{"bash", "sh"} {
 		if path, ok := shell.Resolve(name); ok {
 			log.Info("no origin given; exposing this machine's shell", "shell", path)
-			return path, true
+			return b.parse(log, []string{path})
 		}
 		log.Debug("no shell of that name on $PATH", "shell", name)
 	}
 	builtin := v0exp1.Experimental().Builtin()
 	if builtin == nil {
 		log.Warn("not exposing a shell", "reason", "there is none on this machine, and the built-in one is turned off")
-		return "", false
+		return origins.New()
 	}
 	origin, err := builtin.Origin()
 	if err != nil {
 		log.Warn("not exposing a shell", "reason", err)
-		return "", false
+		return origins.New()
 	}
 	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin)
-	return origin, true
+	return b.parse(log, []string{origin})
 }
 
 func (b *BuilderImpl) Origins() Origins {
@@ -1114,30 +1095,16 @@ func (b *BuilderImpl) Origins() Origins {
 		settled = args
 	}
 
-	// Nothing to expose is still a question with an answer: the shell of the
-	// person who typed it. It is the one origin every machine has, it needs no
-	// port to be listening, and tunneld already knows how to serve a program.
-	//
-	// Behind a knob, because the answer is only right when a person typed it.
-	// An embedding program mounting tunneld under its own verb inherits this,
-	// and somebody who meant to name an origin and did not should be told so
-	// rather than handed a public terminal onto their own machine —
-	// WithShellFallback(false), --shell-fallback=false, or ShellFallbackEnv.
-	// It is also what lets a caller ask what a run will do without reading a
-	// variable the run reads behind its back.
-	//
-	// Resolved here rather than left for the loop below, because the loop's
-	// fallback for a word it cannot resolve is to read it as an address —
-	// which turns a $SHELL naming a program that is not there into a proxy to
-	// http://localhost/bin/nope, a tunnel to nothing that reports no problem.
-	// Dropping it instead leaves the count at zero, and zero has a message
-	// that names the lever.
-	if len(settled) == 0 && b.shellFallback {
-		if origin, ok := fallbackShell(log); ok {
-			settled = append(settled, origin)
-		}
+	if len(settled) == 0 {
+		return b.AutoDetect()
 	}
+	return b.parse(log, settled)
+}
 
+// parse is settled read as origins: each word a program on this machine, a
+// program with its arguments, or an address. A word it cannot use is dropped
+// with a warning rather than failing the run.
+func (b *BuilderImpl) parse(log v1.Logger, settled []string) Origins {
 	urls := make([]*url.URL, 0, len(settled))
 	// One line per origin at the moment it is settled, because how the words
 	// were read is the thing the report cannot show: a program's arguments
@@ -1305,6 +1272,28 @@ func (b *BuilderImpl) Origins() Origins {
 		add(word, u)
 	}
 	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
+}
+
+// AutoDetect is what a run exposes when no origin is given anywhere (no
+// argument, no TUNNELD_ORIGINS, no WithOrigin seed): this machine's shell, as
+// shell finds one. Empty when there is none, which Run refuses with
+// v1.ErrNoOrigin.
+func (b *BuilderImpl) AutoDetect() Origins {
+	// A refused --log-level is the run's error to report; here it means the
+	// lines below go nowhere.
+	log, _ := b.logger()
+	log.Info("autodetect: init", "env", func() []string {
+		names := make([]string, 0, len(os.Environ()))
+		for _, kv := range os.Environ() {
+			name, _, _ := strings.Cut(kv, "=")
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return names
+	}())
+
+	log.Info("autodetect: shell")
+	return b.shell(log)
 }
 
 // stopHint is what a console with nothing left to draw is told. The addresses

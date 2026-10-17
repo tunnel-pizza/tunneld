@@ -33,12 +33,6 @@ Every option's value is a *default*, not a fixed setting: the command's flags
 bind over the same fields, so an argv value wins. Seeding an origin therefore
 lets the command run with no arguments at all.
 
-A program mounting tunneld under its own verb usually wants
-`WithShellFallback(false)` as well. It inherits the default along with
-everything else, and somebody who typed that verb meaning to name an origin
-should be told they forgot one rather than handed a public terminal onto the
-machine.
-
 ## A tunnel without a CLI
 
 `Run` is the command's body, so executing the command and calling this do the
@@ -47,7 +41,6 @@ same work:
 ```go
 b := v1alpha1.New(
 	v1alpha1.WithOrigin("http://localhost:3000"),
-	v1alpha1.WithShellFallback(false),
 )
 if err := b.Run(ctx); err != nil { ... }
 ```
@@ -94,7 +87,6 @@ func WithLogLevel(level string) Option             // debug|info|warn|error on s
 func WithIdentityProviders(names ...string) Option // where to look for a mint credential; default github
 func WithOpen(open bool) Option                    // force the browser decision; unset means derived
 func WithMultiview(multiview bool) Option          // frame the origins together; default true
-func WithShellFallback(fallback bool) Option       // no origin at all means $SHELL; default true
 func WithQR(qr bool) Option                        // the address as a QR code on stderr; default false
 func WithStdout(w io.Writer) Option                // help text, the version command, public addresses
 func WithStderr(w io.Writer) Option                // banner, the origin each address reaches, logs
@@ -136,7 +128,8 @@ func Apply[T any](t T, opts ...Option[T]) T
 // configured it.
 type Builder interface {
     Command() *cobra.Command       // terminal: assembles and returns
-    Origins() Origins              // the origins exposed: argv > env > seed
+    Origins() Origins              // the origins exposed: argv > env > seed, else AutoDetect
+    AutoDetect() Origins           // what a run with no origin anywhere exposes: the shell
     Name() string                  // configured command name
     Run(ctx context.Context) error // the command's body, without the command
 }
@@ -179,12 +172,10 @@ const OriginsEnv           = "TUNNELD_ORIGINS"
 const ProviderEnv          = "TUNNELD_PROVIDER"
 const NoCacheEnv           = "TUNNELD_NO_CACHE"
 const MultiviewEnv         = "TUNNELD_MULTIVIEW"
-const ShellFallbackEnv     = "TUNNELD_SHELL_FALLBACK"
 const IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
 const CommandName          = "tunneld"
 const DefaultProvider      = "tunnel.pizza"
 const DefaultMultiview     = true
-const DefaultShellFallback = true
 const DefaultIdentityProviders = "github"
 const AttachScheme   = "attach"  // attach://dockerd/<container>
 const ExecScheme     = "exec"    // exec:///<path>

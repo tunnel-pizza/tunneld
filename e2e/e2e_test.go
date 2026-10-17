@@ -46,10 +46,7 @@ func build(t *testing.T) string {
 // interactive shell behind it, and a case asserting a clean refusal would hang
 // until the suite's timeout with a public shell open the whole time.
 //
-// Stripped rather than turned off with --shell-fallback, because that flag is
-// itself under test and a case proving it works has to start from a run that
-// would otherwise fall back. Cases set SHELL back through runEnv when they
-// want one.
+// Cases set SHELL back through runEnv when they want one.
 //
 // The identity variables the github provider reads — GITHUB_TOKEN, GH_TOKEN,
 // GITHUB_PERSONAL_ACCESS_TOKEN — and LIBTUNNEL_TOKEN, which CI sets from the
@@ -135,7 +132,7 @@ func TestSucceedingInvocations(t *testing.T) {
 		wants []string
 	}{
 		{"version names both builds", []string{"version"}, []string{"tunneld ", "libtunnel "}},
-		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--shell-fallback", "--qr", "tunneld [flags] [origin ...]", "tunneld :3000"}},
+		{"help documents every flag", []string{"--help"}, []string{"--provider", "--log-level", "--multiview", "--qr", "tunneld [flags] [origin ...]", "tunneld :3000"}},
 	}
 
 	for _, tc := range cases {
@@ -169,11 +166,9 @@ func TestRefusedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		// With nothing settled anywhere and the shell fallback off, there is
-		// nothing to expose. With it on, a bare run always has an origin —
-		// the chain ends at the shell built into tunneld — so no arguments
-		// alone is a valid invocation that opens a tunnel, never a refusal.
-		{"no origin at all", []string{"--shell-fallback=false"}, "TUNNELD_ORIGINS"},
+		// A bare run always has an origin (the chain ends at the shell built
+		// into tunneld), so no arguments alone opens a tunnel, never a
+		// refusal.
 		// An unusable origin is dropped rather than refused, so a run whose
 		// only origin was unusable is refused for having none — the same
 		// failure as passing nothing at all, and the same lever.
@@ -280,25 +275,6 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			name: "TUNNELD_MULTIVIEW is validated",
 			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_MULTIVIEW": "nonsense"},
 			want: "TUNNELD_MULTIVIEW=\"nonsense\": invalid environment value",
-		},
-		{
-			// A shell is present and runnable, so the run has an origin and
-			// would start. The flag is the whole difference between that and
-			// the refusal, which is what makes this the case that proves it.
-			name: "--shell-fallback=false refuses a run with only a shell",
-			env:  map[string]string{"SHELL": "/bin/sh"},
-			args: []string{"--shell-fallback=false"},
-			want: "no origin",
-		},
-		{
-			name: "TUNNELD_SHELL_FALLBACK says the same thing",
-			env:  map[string]string{"SHELL": "/bin/sh", "TUNNELD_SHELL_FALLBACK": "false"},
-			want: "no origin",
-		},
-		{
-			name: "TUNNELD_SHELL_FALLBACK is validated",
-			env:  map[string]string{"TUNNELD_ORIGINS": "http://localhost:3000", "TUNNELD_SHELL_FALLBACK": "nonsense"},
-			want: "TUNNELD_SHELL_FALLBACK=\"nonsense\": invalid environment value",
 		},
 		{
 			name: "TUNNELD_MULTIVIEW accepts a boolean",
