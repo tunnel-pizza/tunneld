@@ -2850,7 +2850,7 @@ git worktree remove "$T/main-src"
 for bin in main branch; do
   "$T/$bin" --url :3000 --url :4000 --cache-dir false --no-open 2>"$T/$bin.err" & PID=$!
   sleep 20; kill -INT $PID; wait $PID; echo "$bin exit $?"
-  sed -E 's/[a-z-]+\.tunneled\.pizza/HOST/g; s/tunneld [^ ]+ \(libtunnel [^,]+,/tunneld VERSION (libtunnel VERSION,/' "$T/$bin.err" \
+  sed -E 's/[a-z-]+\.tunneled\.test/HOST/g; s/tunneld [^ ]+ \(libtunnel [^,]+,/tunneld VERSION (libtunnel VERSION,/' "$T/$bin.err" \
     | grep -v '^time=' > "$T/$bin.norm"
 done
 diff "$T/main.norm" "$T/branch.norm" && echo "report: identical shape"
