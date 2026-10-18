@@ -1377,7 +1377,7 @@ mirrored here.
 
 `ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
 root. Docker Hub has the same image, same digest and tags, as `tunneld/tunneld` and
-`tunneld/t`. Every flag has an environment mirror, which is what a container is
+`tunneld/debug`. Every flag has an environment mirror, which is what a container is
 configured with:
 
 ```sh
