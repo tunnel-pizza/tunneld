@@ -410,7 +410,7 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 				// run's error to report, not this one's — printing a version
 				// is not the place to refuse.
 				_ = b.applyEnv(b.command)
-				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.cached()))
+				fmt.Fprintln(cmd.OutOrStdout(), VersionLine(b.cached(b.Origins)))
 			},
 		})
 
@@ -547,7 +547,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// — no version, no sign the program had run. Everything above this line
 	// is configuration, so a bad flag or an origin that cannot be reached
 	// still fails without one.
-	fmt.Fprintln(stderr, VersionLine(b.cached()))
+	fmt.Fprintln(stderr, VersionLine(b.cached(func() Origins { return origins })))
 
 	// The provider travels by environment. From builds its own backend, so
 	// there is no handle to set it on, and it is the same knob either way:
@@ -1035,14 +1035,15 @@ func arguments(u *url.URL) bool {
 	return true
 }
 
-// cached is the origins when this run would cache them, and nil when it would
+// cached is origins when this run would cache them, and nil when it would
 // not — what the build banner names, so it never reports a key for a file
-// nothing will write.
-func (b *BuilderImpl) cached() Origins {
+// nothing will write. Asked of origins only then, and Run hands over the ones
+// it settled: settling a bare run's again would probe the machine again.
+func (b *BuilderImpl) cached(origins func() Origins) Origins {
 	if b.noCache || b.cache == nil {
 		return nil
 	}
-	return b.Origins()
+	return origins()
 }
 
 func (b *BuilderImpl) Origins() Origins {

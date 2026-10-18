@@ -3213,6 +3213,25 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 // through: whitespace separates, either quote keeps a run whole, a backslash
 // keeps the next character, an empty quoted string is a word, and an unclosed
 // quote runs to the end rather than failing.
+// TestRunDetectsOnce pins that a bare run settles its origins once: the
+// build banner names the cache key from the origins Run settled rather than
+// settling them again, which would probe the machine twice.
+func TestRunDetectsOnce(t *testing.T) {
+	const public = "https://foo.tunneld.domain/"
+	h := newRunHarness(t, live(public))
+	t.Setenv("SHELL", "/bin/sh")
+	t.Setenv(v1.OriginsEnv, "")
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+	if err := h.run(t, ctx, "--log-level", "info"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if n := strings.Count(h.stderr.String(), "autodetect: starting"); n != 1 {
+		t.Errorf("autodetect ran %d times, want once: %s", n, h.stderr.String())
+	}
+}
+
 func TestFuncName(t *testing.T) {
 	b := New()
 	for want, fn := range map[string]any{"pod": b.pod, "shell": b.shell, "splitList": splitList} {
