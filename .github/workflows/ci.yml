@@ -590,12 +590,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # The image was built and signed per architecture before the tag
       # existed; this gives those digests their names. imagetools create
       # writes a manifest list pointing at the two manifests already in the
       # registry — nothing is rebuilt or re-pushed — under the release tag and
       # latest. The list gets a digest of its own, signed here the same way,
       # so verifying by tag lands on a signed index whose members are signed.
+      #
+      # Every image the metadata names gets the same list under the same
+      # tags: imagetools copies what it references across from ghcr, so the
+      # list's digest is the same in each. A signature is stored beside what
+      # it signs, so each is signed in its own registry, and recursively
+      # outside ghcr: the per-architecture digests the cells signed there are
+      # not themselves copied. Adding an image is a line in images: and a
+      # login for its registry.
+      #
       # The names, and the annotations the manifest list itself carries, from
       # the same metadata action the cells used for their labels: the release
       # tag and latest, plus the OCI source/revision/version/created set at the
@@ -606,7 +621,9 @@ jobs:
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: index
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: |
+            ghcr.io/${{ github.repository }}
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/tunneld
           tags: |
             type=raw,value=${{ needs.prepare.outputs.tag }}
             type=raw,value=latest
@@ -618,17 +635,23 @@ jobs:
           ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
         run: |
           set -euo pipefail
-          tag="${{ needs.prepare.outputs.tag }}"
-          image="ghcr.io/${GITHUB_REPOSITORY}"
+          source="ghcr.io/${GITHUB_REPOSITORY}"
           args=()
           while IFS= read -r t; do [ -n "$t" ] && args+=(-t "$t"); done <<<"$TAGS"
           while IFS= read -r a; do [ -n "$a" ] && args+=(--annotation "$a"); done <<<"$ANNOTATIONS"
-          for d in digests/*; do args+=("${image}@$(cat "$d")"); done
+          for d in digests/*; do args+=("${source}@$(cat "$d")"); done
           docker buildx imagetools create "${args[@]}"
           # The json form: the bare field prints the whole default view on
           # some buildx versions, checked against v0.32.
-          digest=$(docker buildx imagetools inspect "${image}:${tag}" --format '{{json .Manifest.Digest}}' | tr -d '"')
-          cosign sign --yes "${image}@${digest}"
+          digest=$(docker buildx imagetools inspect "$(head -n1 <<<"$TAGS")" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          # Each image the metadata names, once: a tag less its :tag.
+          sed -n 's/:[^:/]*$//p' <<<"$TAGS" | sort -u | while IFS= read -r image; do
+            if [ "$image" = "$source" ]; then
+              cosign sign --yes "${image}@${digest}"
+            else
+              cosign sign --yes --recursive "${image}@${digest}"
+            fi
+          done
 
       - name: warm proxy.golang.org
         run: |

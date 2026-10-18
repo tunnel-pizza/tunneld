@@ -1376,7 +1376,7 @@ mirrored here.
 ## Running in a container
 
 `ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
-root. Every flag has an environment mirror, which is what a container is
+root. Docker Hub has the same image, same digest and tags, as `tunneld/tunneld`. Every flag has an environment mirror, which is what a container is
 configured with:
 
 ```sh
@@ -1393,7 +1393,8 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   -e TUNNELD_ORIGINS=attach://dockerd/my-container ghcr.io/tunnel-pizza/tunneld
 ```
 
-Images are signed by digest, so a moved tag cannot inherit a signature:
+Images are signed by digest, so a moved tag cannot inherit a signature, in
+both registries (`tunneld/tunneld:<tag>` verifies the same way):
 
 ```sh
 cosign verify ghcr.io/tunnel-pizza/tunneld:<tag> \
