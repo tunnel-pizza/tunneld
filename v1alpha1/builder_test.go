@@ -513,7 +513,12 @@ type fakeCache struct {
 	// mutable is what the fake's file says; recorded is what SetMutable kept.
 	mutable  map[string]string
 	recorded map[string]string
+	// path is what Path answers: where the fake's file would be.
+	path string
 }
+
+// Path is where the fake's file would be, "" for none.
+func (f *fakeCache) Path(v1.Origins) string { return f.path }
 
 // Mutable is what the fake's file says about name.
 func (f *fakeCache) Mutable(name string) (string, bool) { v, ok := f.mutable[name]; return v, ok }
@@ -687,6 +692,9 @@ type fakeBinder struct {
 	// address it was handed, in order.
 	announced    []string
 	announcedAll []string
+	// env is TUNNELD_ENV as Bind found it: what every program a bound
+	// origin starts inherits.
+	env string
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -704,6 +712,7 @@ type fakeBinder struct {
 }
 
 func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
+	f.env = os.Getenv(v1.SpecPathEnv)
 	// Carrying Mirror is how the real binder says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
 	// binder itself: a fake that always carried it would mirror every case
@@ -2759,6 +2768,34 @@ func TestAttachedSettlesBetweenStreams(t *testing.T) {
 	}
 	if switches < 4 {
 		t.Errorf("%d turns between the streams, want each address between its spinner or origin lines", switches)
+	}
+}
+
+// TestProgramsLearnTheSpecFile pins TUNNELD_ENV: set to where the run's
+// spec is kept before anything is bound, since a program an exec origin runs
+// starts at Bind, and unset when the run keeps no file, so a run inside
+// another run's shell does not pass on its parent's.
+func TestProgramsLearnTheSpecFile(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, want string
+	}{
+		{"a cached run", "/cache/tunneld/abc.env", "/cache/tunneld/abc.env"},
+		{"no file", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(v1.SpecPathEnv, "/parent/tunneld/def.env")
+			h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000")
+			h.cache.path = tc.path
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if h.binder.env != tc.want {
+				t.Errorf("%s at Bind = %q, want %q", v1.SpecPathEnv, h.binder.env, tc.want)
+			}
+		})
 	}
 }
 

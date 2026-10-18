@@ -323,6 +323,13 @@ tunneld exec:///usr/bin/htop
 The empty authority is this machine — that is the whole of what `exec://` with
 no provider says, and why the path is absolute.
 
+The program starts with `TUNNELD_ENV` naming the run's spec file, set before
+the tunnel exists. The file appears once the tunnel is up, and holds the
+hostname as `LIBTUNNEL_HOSTNAME` among the run's other lines; a program that
+wants its own public address reads it from there. With no file (`--no-cache`,
+or no cache directory) the variable is unset, never inherited from a run this
+one was started under.
+
 A bare argument that names a program on `$PATH` is that origin written short,
 since a word that resolves to a program is not a hostname anybody meant:
 

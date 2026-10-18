@@ -271,6 +271,13 @@ const (
 	// the file, not from the environment.
 	OwnerEnv = "TUNNELD_OWNER"
 
+	// SpecPathEnv is where the run's spec file is, in the environment of
+	// every program it starts: known before the tunnel is, so a program can
+	// read the file once the run has written it, for its hostname among the
+	// rest. Unset when the run keeps no file. Written for the run's programs,
+	// never read.
+	SpecPathEnv = "TUNNELD_ENV"
+
 	// UserAgentHeader names which tunneld is asking, on every mint request.
 	UserAgentHeader = "User-Agent"
 
