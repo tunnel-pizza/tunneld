@@ -694,3 +694,18 @@ jobs:
           tag="${{ needs.prepare.outputs.tag }}"
           npm version "${tag#v}" --no-git-tag-version
           npm publish --ignore-scripts --tag "${{ inputs.dist_tag || 'latest' }}" --provenance
+
+      # Docker Hub's description and overview, from the repository: the
+      # README, its relative links made absolute so they resolve from Hub.
+      # Last, so Hub's API never gates a release. The token needs Read,
+      # Write, Delete: Hub refuses a description update from a narrower one.
+      # Hub's short description is capped at 100 characters.
+      - name: Docker Hub description
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/tunneld
+          short-description: "Slice and share your machine on a public URL: a port, a shell, a coding agent, a container."
+          readme-filepath: ./README.md
+          enable-url-completion: true
