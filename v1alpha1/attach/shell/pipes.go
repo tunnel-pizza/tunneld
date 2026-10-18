@@ -27,13 +27,6 @@ import (
 // container's page names the docker flag it was started without.
 const pipesNotice = "no terminal on this machine — no line editing, no resize, no full-screen programs"
 
-// shells are programs that read a terminal-less stdin as a script unless told
-// otherwise. Run with no arguments over pipes, each is given -i: it prompts,
-// and it takes the interrupt meant for what it is running as the prompt
-// coming back rather than dying of it, which is what it would have done on a
-// terminal.
-var shells = []string{"ash", "bash", "dash", "ksh", "mksh", "sh", "zsh"}
-
 // pipeArgs is what a program is run with over pipes: its own arguments, or -i
 // for a shell that was given none.
 //
@@ -43,7 +36,7 @@ var shells = []string{"ash", "bash", "dash", "ksh", "mksh", "sh", "zsh"}
 // the program the path resolves to, since sh is bash on many systems; and
 // only of bash, since dash and ash refuse the option.
 func pipeArgs(path string, args []string) []string {
-	if len(args) > 0 || !slices.Contains(shells, baseName(path)) {
+	if len(args) > 0 || !slices.Contains(Shells, baseName(path)) {
 		return args
 	}
 	resolved := path
@@ -226,20 +219,6 @@ func (c *cooked) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
-}
-
-// settle hands a line typed without Enter to a program that has since gone
-// raw, as a terminal does the moment ICANON goes, without waiting for a
-// further key to carry it; and drops one an input flush took.
-func (c *cooked) settle() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.dropFlushed()
-	if len(c.line) == 0 || c.mode == nil || c.mode().lflag&lICANON != 0 {
-		return
-	}
-	_, _ = c.stdin.Write(c.line)
-	c.line, c.esc, c.cr = c.line[:0], 0, false
 }
 
 // dropFlushed forgets the line being edited if the program has asked for an

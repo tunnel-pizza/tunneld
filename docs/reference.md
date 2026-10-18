@@ -427,7 +427,7 @@ Over pipes (those programs, and Windows):
   Enter sends the line, and Backspace and `Ctrl-U` edit it.
 - **Ctrl-C** interrupts what is running (not on Windows). `Ctrl-D` on an empty
   line ends the program's input.
-- **Shells:** a shell run with no arguments (`sh`, `bash`, `zsh`, …) is started
+- **Shells:** a shell run with no arguments (`sh`, `bash`, `zsh`, `fish`, …) is started
   with `-i`, so it prompts and survives `Ctrl-C`. bash, including an `sh` that
   is a link to it, also gets `--noediting`, so it does not echo each line a
   second time.
@@ -621,8 +621,10 @@ tunneld
 ```
 
 exposes a shell — the one origin every run can have, needing no port to be
-listening: `$SHELL`, else `bash` on `$PATH`, else `sh` on `$PATH`, else the
-shell built into tunneld. It is the ordinary program path, so the terminal is
+listening: `$SHELL`, else the first of `zsh`, `fish`, `bash`, `ksh`, `mksh`,
+`dash`, `ash` and `sh` on `$PATH`, else the shell built into tunneld. The most
+a person can do at a prompt comes first, so an image with both `bash` and
+`dash` (Debian, Ubuntu) gives `bash`. It is the ordinary program path, so the terminal is
 drawn on your console as well:
 
 ```
@@ -636,7 +638,7 @@ naming it, rather than read as an address: a tunnel to nothing is never the
 answer.
 
 The built-in shell is [Elvish](https://elv.sh), for a machine with no shell of
-its own — a container image with no `bash` or `sh`, a scrubbed environment. It
+its own — a container image with none of those shells, a scrubbed environment. It
 is tunneld's own executable run again as the shell, so it is served like any
 program, on a pseudo-terminal where Ctrl-C ends what is running and not the
 shell. It has its own line editor (history, completion, the arrow keys) and its

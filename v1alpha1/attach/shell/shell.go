@@ -42,6 +42,15 @@ var (
 	_ attach.Repeatable = (*TargetImpl)(nil)
 )
 
+// Shells are the shells tunneld knows by name, in the order a run with no
+// origin looks for one on $PATH: the most a person can do at a prompt first,
+// so a Debian or Ubuntu image, which has both, gives bash and not dash. Each
+// reads a terminal-less stdin as a script unless told otherwise: run with no
+// arguments over pipes, each is given -i, so it prompts, and it takes the
+// interrupt meant for what it is running as the prompt coming back rather than
+// dying of it, which is what it would have done on a terminal.
+var Shells = []string{"zsh", "fish", "bash", "ksh", "mksh", "dash", "ash", "sh"}
+
 // Resolve answers whether s names a program this machine can run, and with
 // what: the absolute path of the thing that would actually run.
 //

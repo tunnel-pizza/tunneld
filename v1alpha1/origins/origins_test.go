@@ -280,3 +280,23 @@ func TestFrom(t *testing.T) {
 		})
 	}
 }
+
+// TestAdd pins that what Add appends lands after what is there, each renumbered
+// to its place, and that the caller's copy is left as it was.
+func TestAdd(t *testing.T) {
+	o := New(WithURL(must(t, "http://localhost:3000")))
+	shell := New(WithURL(must(t, "exec:///bin/sh"))).All()
+	o.Add(shell)
+	all := o.All()
+	if len(all) != 2 || all[1].URI.String() != "exec:///bin/sh" || all[1].Index != 1 || all[1].Scheme != v1.ExecScheme {
+		t.Fatalf("All() = %+v, want :3000 then /bin/sh at index 1", all)
+	}
+	if shell[0].Index != 0 {
+		t.Errorf("Add renumbered the caller's origin: index %d", shell[0].Index)
+	}
+	empty := New()
+	empty.Add(shell)
+	if empty.Len() != 1 || empty.At(0).Index != 0 {
+		t.Errorf("Add to an empty list = %+v, want /bin/sh at index 0", empty.All())
+	}
+}
