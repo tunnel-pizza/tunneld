@@ -637,6 +637,23 @@ it. A `$SHELL` naming a program that is not there is passed over, with a warning
 naming it, rather than read as an address: a tunnel to nothing is never the
 answer.
 
+**In a Kubernetes pod** (`KUBERNETES_SERVICE_HOST` and `KUBERNETES_SERVICE_PORT`
+set), a bare run first looks for the pod's own apps: TCP sockets already
+listening in the pod's network that no process it can see holds, which is what
+a `kubectl debug` container or a sidecar finds. Each port counts once, one only
+on loopback stays private, and only those that speak HTTP or HTTPS are kept:
+each is heard out for 100 ms (a banner rules it out), then offered a TLS
+handshake, then asked `HEAD /` with tunneld's `User-Agent`, at most a second
+each. Those become the run's first origins, `http://localhost:<port>` or
+`https://localhost:<port>`, and the shell comes after them. So
+
+```sh
+kubectl debug <pod> -it --image ghcr.io/tunnel-pizza/tunneld
+```
+
+beside nginx puts nginx on the tunnel's bare address and a shell on `?1`. With
+nothing found that speaks HTTP, it is the shell alone.
+
 The built-in shell is [Elvish](https://elv.sh), for a machine with no shell of
 its own — a container image with none of those shells, a scrubbed environment. It
 is tunneld's own executable run again as the shell, so it is served like any

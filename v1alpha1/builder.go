@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/user"
@@ -1348,11 +1347,17 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	// The listeners this container shares the pod's network with but cannot
 	// see the processes of: TCP sockets already listening that no process here
 	// holds, as an ephemeral container (kubectl debug) or a sidecar finds them.
-	// None without /proc, which is anywhere but Linux.
-	shares := func() []netip.AddrPort {
-		foreign := netutil.ForeignListeners(os.DirFS("/"))
-		log.Debug("autodetect: foreign listeners", "addrs", foreign)
-		return foreign
+	// Each port once, none only on loopback, which stay private, and only
+	// those that speak HTTP or HTTPS, as the URL to reach each. None without
+	// /proc, which is anywhere but Linux.
+	shares := func() []*url.URL {
+		listeners := netutil.ForeignListeners(os.DirFS("/"))
+		log.Debug("autodetect: foreign listeners", "addrs", listeners)
+		reachable := netutil.ReachableListeners(listeners)
+		log.Debug("autodetect: reachable listeners", "addrs", reachable)
+		attachable := netutil.AttachableListeners(reachable, UserAgent())
+		log.Debug("autodetect: attachable listeners", "urls", attachable)
+		return attachable
 	}
 
 	if !is_pod() {
@@ -1364,11 +1369,16 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	// API), and what service links (enableServiceLinks) do.
 	log.Info("autodetect: pod", "service_account", has_sa(), "service_links", is_linked())
 
-	if listeners := shares(); len(listeners) > 0 {
+	if shared := shares(); len(shared) > 0 {
+		// The pod's apps first, so the bare address is one of them.
+		for _, u := range shared {
+			log.Debug("autodetect: adding a pod listener", "origin", u)
+			origins.Add(b.parse(log, []string{u.String()}).All()...)
+		}
+
 		log.Debug("autodetect: adding a shell")
-		// TODO: add the shared listeners as http origins
 		if shell := b.shell(log); shell != nil {
-			origins.Add(shell.All())
+			origins.Add(shell.All()...)
 		}
 	}
 
