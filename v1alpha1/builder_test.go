@@ -3213,6 +3213,15 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 // through: whitespace separates, either quote keeps a run whole, a backslash
 // keeps the next character, an empty quoted string is a word, and an unclosed
 // quote runs to the end rather than failing.
+func TestFuncName(t *testing.T) {
+	b := New()
+	for want, fn := range map[string]any{"pod": b.pod, "shell": b.shell, "splitList": splitList} {
+		if got := funcName(fn); got != want {
+			t.Errorf("funcName = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestFieldsSplitLikeAShell(t *testing.T) {
 	for _, tc := range []struct {
 		in   string

@@ -29,7 +29,7 @@ const keyWidth = 16
 type Option = v1.Option[*OriginsImpl]
 
 // OriginsImpl is the default Origins: a list, and the directory it was settled
-// in. Both are fixed once New returns.
+// in. Both are fixed once New returns, but for what Add appends.
 type OriginsImpl struct {
 	// dir is the working directory this run's identity is scoped to, so two
 	// projects serving :3000 are two tunnels rather than one.
@@ -104,6 +104,17 @@ func WithWebSocket(i int) Option {
 // the directory it runs in is not the one it is serving for.
 func WithDir(dir string) Option {
 	return func(o *OriginsImpl) { o.dir = dir }
+}
+
+// Add appends origins, in order, each renumbered to the place it lands, so a
+// list assembled from more than one source keeps every Index its ?n. A repeat
+// costs nothing: Key deduplicates.
+func (o *OriginsImpl) Add(origins []v1.Origin) {
+	for _, origin := range origins {
+		origin = clone(origin)
+		origin.Index = len(o.origins)
+		o.origins = append(o.origins, origin)
+	}
 }
 
 // Len implements v1.Origins.

@@ -8,10 +8,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/user"
-	"slices"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/util/netutil"
 )
 
 // WithName sets the built command's name — the verb in usage strings and
@@ -171,6 +174,13 @@ var servedSchemes = map[v1.Scheme]struct {
 	v1.ExecScheme:   {noun: "program", example: "exec:///usr/bin/htop", resolve: shell.Resolve},
 }
 
+// funcName is fn's name without its package or receiver, "pod" for b.pod: a
+// method value's runtime name ends in "-fm".
+func funcName(fn any) string {
+	name := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
+	return strings.TrimSuffix(name[strings.LastIndex(name, ".")+1:], "-fm")
+}
+
 // splitList parses a list-valued variable: comma-separated, surrounding space
 // trimmed, empty entries dropped so a trailing comma is not an origin. Comma
 // is the separator the tunnel engine uses for its own list variables, and the
@@ -270,7 +280,7 @@ a port, a program, or a container. No account.
 		if len(b.origins) > 0 {
 			long += "\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ") + "\n"
 		} else {
-			long += "\nWith no arguments at all, it shares your $SHELL (or bash, sh, or a shell built in).\n"
+			long += "\nWith no arguments at all, it shares your $SHELL, or another shell it finds.\n"
 		}
 
 		long += `
@@ -1036,52 +1046,6 @@ func (b *BuilderImpl) cached() Origins {
 	return b.Origins()
 }
 
-// shell is the shell a run with nothing else to expose exposes: $SHELL,
-// else bash on $PATH, else sh on $PATH, else the one built into tunneld
-// (v0exp1.Experimental().Builtin().Origin), so a run with no origin always has
-// one — a container image that sets no $SHELL, a scrubbed CI environment, a
-// $SHELL inherited from a host that names a shell the image does not have.
-// The built-in one is an experiment, and a nil Builtin is that experiment
-// turned off: the chain then ends at sh, as it did before there was one.
-//
-// Each shell passed over says why on the log, and the one chosen says which it
-// is: a shell nobody named is the one choice here somebody will want
-// explained. A $SHELL that names nothing runnable warns, since it was set and
-// is wrong; bash and sh missing is ordinary, and debug.
-//
-// Each is parsed like any origin, but only once resolved: parse reads a word
-// it cannot resolve as an address, which would make a $SHELL naming nothing
-// runnable a proxy to http://localhost/bin/nope. Empty when there is none.
-func (b *BuilderImpl) shell(log v1.Logger) Origins {
-	if sh := os.Getenv("SHELL"); sh == "" {
-		log.Debug("$SHELL is not set; looking for another shell")
-	} else if path, ok := shell.Resolve(sh); ok {
-		log.Info("no origin given; exposing this machine's shell", "shell", path)
-		return b.parse(log, []string{path})
-	} else {
-		log.Warn("not exposing $SHELL", "shell", sh, "reason", "it names no program that can be run; looking for another shell")
-	}
-	for _, name := range []string{"bash", "sh"} {
-		if path, ok := shell.Resolve(name); ok {
-			log.Info("no origin given; exposing this machine's shell", "shell", path)
-			return b.parse(log, []string{path})
-		}
-		log.Debug("no shell of that name on $PATH", "shell", name)
-	}
-	builtin := v0exp1.Experimental().Builtin()
-	if builtin == nil {
-		log.Warn("not exposing a shell", "reason", "there is none on this machine, and the built-in one is turned off")
-		return origins.New()
-	}
-	origin, err := builtin.Origin()
-	if err != nil {
-		log.Warn("not exposing a shell", "reason", err)
-		return origins.New()
-	}
-	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin)
-	return b.parse(log, []string{origin})
-}
-
 func (b *BuilderImpl) Origins() Origins {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
@@ -1282,18 +1246,137 @@ func (b *BuilderImpl) AutoDetect() Origins {
 	// A refused --log-level is the run's error to report; here it means the
 	// lines below go nowhere.
 	log, _ := b.logger()
-	log.Info("autodetect: init", "env", func() []string {
-		names := make([]string, 0, len(os.Environ()))
-		for _, kv := range os.Environ() {
-			name, _, _ := strings.Cut(kv, "=")
-			names = append(names, name)
-		}
-		slices.Sort(names)
-		return names
-	}())
+	log.Info("autodetect: starting")
 
-	log.Info("autodetect: shell")
-	return b.shell(log)
+	detect := func(funcs ...func(v1.Logger) Origins) Origins {
+		for _, fn := range funcs {
+			log.Debug("autodetect", "fn", funcName(fn))
+			if origins := fn(log); origins != nil {
+				return origins
+			}
+		}
+		return nil
+	}
+
+	detected := detect(b.pod, b.shell)
+	if detected == nil {
+		log.Warn("autodetect: no origins detected")
+		// Empty, not nil: Run asks Len and refuses with ErrNoOrigin.
+		return origins.New()
+	}
+	return detected
+}
+
+// shell is the shell a run with nothing else to expose exposes: $SHELL,
+// else the first of shell.Shells on $PATH, else the one built into tunneld
+// (v0exp1.Experimental().Builtin().Origin), so a run with no origin always has
+// one — a container image that sets no $SHELL, a scrubbed CI environment, a
+// $SHELL inherited from a host that names a shell the image does not have.
+// The built-in one is an experiment, and a nil Builtin is that experiment
+// turned off: the chain then ends at sh.
+//
+// Each shell passed over says why on the log, and the one chosen says which it
+// is: a shell nobody named is the one choice here somebody will want
+// explained. A $SHELL that names nothing runnable warns, since it was set and
+// is wrong; one of those names missing from $PATH is ordinary, and debug.
+//
+// Each is parsed like any origin, but only once resolved: parse reads a word
+// it cannot resolve as an address, which would make a $SHELL naming nothing
+// runnable a proxy to http://localhost/bin/nope. Empty when there is none.
+func (b *BuilderImpl) shell(log v1.Logger) Origins {
+	if sh := os.Getenv("SHELL"); sh == "" {
+		log.Debug("$SHELL is not set; looking for another shell")
+	} else if path, ok := shell.Resolve(sh); ok {
+		log.Info("no origin given; exposing this machine's shell", "shell", path)
+		return b.parse(log, []string{path})
+	} else {
+		log.Warn("not exposing $SHELL", "shell", sh, "reason", "it names no program that can be run; looking for another shell")
+	}
+	for _, name := range shell.Shells {
+		if path, ok := shell.Resolve(name); ok {
+			log.Info("no origin given; exposing this machine's shell", "shell", path)
+			return b.parse(log, []string{path})
+		}
+		log.Debug("no shell of that name on $PATH", "shell", name)
+	}
+	builtin := v0exp1.Experimental().Builtin()
+	if builtin == nil {
+		log.Warn("not exposing a shell", "reason", "there is none on this machine, and the built-in one is turned off")
+		return nil
+	}
+	origin, err := builtin.Origin()
+	if err != nil {
+		log.Warn("not exposing a shell", "reason", err)
+		return nil
+	}
+	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin)
+	return b.parse(log, []string{origin})
+}
+
+func (b *BuilderImpl) pod(log v1.Logger) Origins {
+	origins := origins.New()
+
+	is_pod := func() bool {
+		envs := []string{"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"}
+		for _, env := range envs {
+			if os.Getenv(env) == "" {
+				return false
+			}
+		}
+		return true
+	}
+
+	is_linked := func() bool {
+		envs := []string{"KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT"}
+		for _, env := range envs {
+			if os.Getenv(env) == "" {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Where the kubelet mounts a pod's service account token, unless the pod
+	// opts out (automountServiceAccountToken: false). An ephemeral container
+	// (kubectl debug) never gets it. Asked of the file and never read: it is a
+	// credential. No environment variable says it: Kubernetes sets none.
+	has_sa := func() bool {
+		info, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/token")
+		return err == nil && !info.IsDir()
+	}
+
+	// The listeners this container shares the pod's network with but cannot
+	// see the processes of: TCP sockets already listening that no process here
+	// holds, as an ephemeral container (kubectl debug) or a sidecar finds them.
+	// None without /proc, which is anywhere but Linux.
+	shares := func() []netip.AddrPort {
+		foreign := netutil.ForeignListeners(os.DirFS("/"))
+		log.Debug("autodetect: foreign listeners", "addrs", foreign)
+		return foreign
+	}
+
+	if !is_pod() {
+		log.Debug("autodetect: not a pod")
+		return nil
+	}
+
+	// TODO: decide what a token changes (a sidecar's shell, the Kubernetes
+	// API), and what service links (enableServiceLinks) do.
+	log.Info("autodetect: pod", "service_account", has_sa(), "service_links", is_linked())
+
+	if listeners := shares(); len(listeners) > 0 {
+		log.Debug("autodetect: adding a shell")
+		// TODO: add the shared listeners as http origins
+		if shell := b.shell(log); shell != nil {
+			origins.Add(shell.All())
+		}
+	}
+
+	// Nil, not empty, so detect goes on to the next way.
+	if origins.Len() == 0 {
+		return nil
+	}
+	return origins
 }
 
 // stopHint is what a console with nothing left to draw is told. The addresses

@@ -288,7 +288,7 @@ tunneld is a thin layer over other people's work. Thank you to:
   on your console and in a tab.
 - **[Elvish](https://elv.sh)** (`src.elv.sh`): the shell built into tunneld,
   the one a run with no origin serves when this machine has no `$SHELL`,
-  `bash` or `sh` of its own.
+  `zsh`, `fish`, `bash`, `ksh`, `mksh`, `dash`, `ash` or `sh` of its own.
 - **[u-root](https://github.com/u-root/u-root)** (`github.com/u-root/u-root`):
   the commands that shell brings for a machine that has none of its own —
   every one of u-root's that builds there, from `ls`, `cat` and `grep` to

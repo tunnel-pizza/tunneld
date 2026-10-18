@@ -282,6 +282,20 @@ var keySignals = [...]syscall.Signal{sigInterrupt: syscall.SIGINT, sigQuit: sysc
 // before the program went raw.
 const ackTick = 10 * time.Millisecond
 
+// settle hands a line typed without Enter to a program that has since gone
+// raw, as a terminal does the moment ICANON goes, without waiting for a
+// further key to carry it; and drops one an input flush took.
+func (c *cooked) settle() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dropFlushed()
+	if len(c.line) == 0 || c.mode == nil || c.mode().lflag&lICANON != 0 {
+		return
+	}
+	_, _ = c.stdin.Write(c.line)
+	c.line, c.esc, c.cr = c.line[:0], 0, false
+}
+
 // copyShim copies the program's output to out until the socket ends, as
 // CopyOutput does, acknowledging each drain the shim asks for once every
 // byte read before it has been through out: the shim changes output

@@ -798,7 +798,7 @@ func TestExamples(t *testing.T) {
 		{"shell", "exposes: zsh", nil, nil},
 		// Nothing seeded: it clears $SHELL and $PATH and takes the fallback,
 		// so its help says what a run with no origin does.
-		{"noshell", "With no arguments at all, it shares your $SHELL (or bash, sh, or a shell built in).", nil, nil},
+		{"noshell", "With no arguments at all, it shares your $SHELL, or another shell it finds.", nil, nil},
 		{"workspace", "exposes: uvx streamlit hello --server.headless true, http+ws://localhost:8501, claude", nil, nil},
 	}
 	for _, tc := range cases {
