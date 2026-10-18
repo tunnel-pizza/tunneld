@@ -854,7 +854,11 @@ type runHarness struct {
 	// instead of the buffers: a real terminal, which is what mirrorable asks
 	// about and what a bytes.Buffer can never be.
 	console *os.File
-	b       *BuilderImpl
+	// stdin, when set and console is not, is the command's stdin in place of
+	// an empty buffer: a pipe, which is what kubectl debug -i hands a
+	// container.
+	stdin io.Reader
+	b     *BuilderImpl
 }
 
 func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
@@ -918,6 +922,9 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 		cmd.SetOut(h.console)
 	} else {
 		cmd.SetIn(&bytes.Buffer{})
+		if h.stdin != nil {
+			cmd.SetIn(h.stdin)
+		}
 		cmd.SetOut(&h.stdout)
 	}
 	cmd.SetErr(&h.stderr)
@@ -2603,6 +2610,81 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 	}
 	if n := h.binder.shows.Load(); n != 1 {
 		t.Errorf("frames drawn = %d, want 1: the respec keeps the one that is up", n)
+	}
+}
+
+// TestSpinnerOverKubectlDebug pins the spinner for kubectl debug -i: no
+// stream is a terminal, but a pod's container with a pipe on stdin is one
+// somebody attached to, and kubectl copies its stderr onto their terminal. A
+// pipe outside a pod is a pipeline, and a pod with nothing on stdin is a
+// debug container nobody attached to; neither spins.
+func TestSpinnerOverKubectlDebug(t *testing.T) {
+	const spinner = "Creating tunnel..."
+	for _, tc := range []struct {
+		name       string
+		pod, piped bool
+		want       bool
+	}{
+		{"kubectl debug -i", true, true, true},
+		{"a pipeline", false, true, false},
+		{"kubectl debug", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := ""
+			if tc.pod {
+				host = "10.96.0.1"
+			}
+			t.Setenv("KUBERNETES_SERVICE_HOST", host)
+			t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+
+			h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000")
+			if tc.piped {
+				r, w, err := os.Pipe()
+				if err != nil {
+					t.Fatalf("os.Pipe: %v", err)
+				}
+				t.Cleanup(func() { r.Close(); w.Close() })
+				h.stdin = r
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+
+			if err := h.run(t, ctx); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if got := strings.Contains(h.stderr.String(), spinner); got != tc.want {
+				t.Errorf("spinner drawn = %v, want %v; stderr = %q", got, tc.want, h.stderr.String())
+			}
+		})
+	}
+}
+
+// TestEnterStopsKubectlDebug pins how a kubectl debug -i run is stopped:
+// Ctrl+C there ends kubectl and never reaches the container, so the hint says
+// Enter, and a line on stdin ends the run as a signal would.
+func TestEnterStopsKubectlDebug(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+
+	h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000")
+	h.stdin = r
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	h.cache.onSave = func() { _, _ = io.WriteString(w, "\n") }
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("run ended by the test's timeout, want by the line on stdin")
+	}
+	if got := h.stderr.String(); !strings.Contains(got, detachHint) || strings.Contains(got, stopHint) {
+		t.Errorf("stderr = %q, want the Enter hint and not the Ctrl+C one", got)
 	}
 }
 

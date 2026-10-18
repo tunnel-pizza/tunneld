@@ -85,11 +85,13 @@ type RunImpl struct {
 
 	// qr prints the address as a code; open is a caller's decision about a
 	// tab, nil for none; spinner allows the one shown while the tunnel comes
-	// up; hint is what a console with nothing to draw is told.
-	qr      bool
-	open    *bool
-	spinner bool
-	hint    string
+	// up; attached is somebody watching though no stream is a terminal; hint
+	// is what a console with nothing to draw is told.
+	qr       bool
+	open     *bool
+	spinner  bool
+	attached bool
+	hint     string
 
 	// screen is the console a frame was drawn on for an earlier tunnel of
 	// this call, nil when none was: that frame is still up, showing the same
@@ -180,6 +182,10 @@ func WithOpen(open *bool) Option { return func(r *RunImpl) { r.open = open } }
 // WithSpinner allows the spinner shown while the tunnel comes up; a run with
 // its logger on gets the lines instead.
 func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
+
+// WithAttached says somebody is watching though none of the command's streams
+// is a terminal: a client relaying them onto one, as kubectl debug -i does.
+func WithAttached(on bool) Option { return func(r *RunImpl) { r.attached = on } }
 
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
@@ -332,7 +338,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	//
 	// Not while a frame an earlier tunnel drew is up: the console is the
 	// frame's, and a spinner there animates over it.
-	if display.IsInteractive(cmd) && r.spinner && r.screen == nil {
+	if (display.IsInteractive(cmd) || r.attached) && r.spinner && r.screen == nil {
 		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
 	}
 

@@ -654,6 +654,11 @@ kubectl debug <pod> -it --image ghcr.io/tunnel-pizza/tunneld
 beside nginx puts nginx on the tunnel's bare address and a shell on `?1`. With
 nothing found that speaks HTTP, it is the shell alone.
 
+With `-i` and no `-t`, stdin is a pipe and none of the streams is a terminal,
+but kubectl relays them onto yours: the spinner still turns while the tunnel
+comes up, and since Ctrl+C there ends kubectl and leaves the tunnel running,
+the run is stopped with Enter instead, which the hint says.
+
 The built-in shell is [Elvish](https://elv.sh), for a machine with no shell of
 its own — a container image with none of those shells, a scrubbed environment. It
 is tunneld's own executable run again as the shell, so it is served like any
@@ -1378,9 +1383,6 @@ configured with:
 docker run --rm -e TUNNELD_ORIGINS=http://host.docker.internal:8080 \
   ghcr.io/tunnel-pizza/tunneld
 ```
-
-The image sets `TUNNELD_LOG=info`, so a container logs to stderr where a bare
-run is silent; `-e TUNNELD_LOG=<level>` or `--log-level` changes it.
 
 An `attach://dockerd/` origin needs the daemon socket, which is root-equivalent on the
 host — a container holding it can start a privileged container and own the

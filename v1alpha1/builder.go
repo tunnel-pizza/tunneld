@@ -642,6 +642,21 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return err
 	}
 
+	// kubectl debug -i: Ctrl+C ends kubectl and never reaches this process, so
+	// a line on stdin is what stops the run, as a signal would.
+	attached := isPod() && isPipe(cmd.InOrStdin())
+	hint := stopHint
+	if attached {
+		var stop context.CancelFunc
+		ctx, stop = context.WithCancel(ctx)
+		defer stop()
+		go func() {
+			_, _ = cmd.InOrStdin().Read(make([]byte, 1))
+			stop()
+		}()
+		hint = detachHint
+	}
+
 	// A spec becomes a tunnel, the tunnel comes up and is shown, and the run
 	// waits on it — the run's, start to end. What was settled above is handed
 	// over with it, and so is everything a tunnel is shown through.
@@ -669,7 +684,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// A log line lands on top of a spinner, so a run with its logger on
 		// gets the lines instead.
 		run.WithSpinner(b.logLevel == ""),
-		run.WithHint(stopHint),
+		run.WithAttached(attached),
+		run.WithHint(hint),
 		run.WithAuth(b.auth),
 	)
 }
@@ -1316,16 +1332,6 @@ func (b *BuilderImpl) shell(log v1.Logger) Origins {
 func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	origins := origins.New()
 
-	is_pod := func() bool {
-		envs := []string{"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"}
-		for _, env := range envs {
-			if os.Getenv(env) == "" {
-				return false
-			}
-		}
-		return true
-	}
-
 	is_linked := func() bool {
 		envs := []string{"KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT"}
 		for _, env := range envs {
@@ -1361,7 +1367,7 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 		return attachable
 	}
 
-	if !is_pod() {
+	if !isPod() {
 		log.Debug("autodetect: not a pod")
 		return nil
 	}
@@ -1390,8 +1396,37 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	return origins
 }
 
+// isPod is whether this process runs in a Kubernetes pod's container, which
+// the kubelet says in the environment of every one, ephemeral or not.
+func isPod() bool {
+	envs := []string{"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"}
+	for _, env := range envs {
+		if os.Getenv(env) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// isPipe is whether stdin is a pipe. In a pod's container that is kubectl
+// debug -i (or a container's stdin: true): without it stdin is /dev/null, and
+// with -t it is a terminal.
+func isPipe(stdin io.Reader) bool {
+	f, ok := stdin.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeNamedPipe != 0
+}
+
 // stopHint is what a console with nothing left to draw is told. The addresses
 // are printed, the tunnel is up, and from here the run is a block on a signal
 // — which is worth saying out loud, because a terminal sitting at no prompt
 // with no cursor looks the same whether it is waiting or wedged.
 const stopHint = "Press Ctrl+C to stop the tunnel..."
+
+// detachHint is stopHint for a run kubectl debug -i is attached to: Ctrl+C
+// there ends kubectl and never reaches this process, and a line on stdin is
+// what does.
+const detachHint = "Ctrl+C detaches and leaves the tunnel running.\nPress Enter to stop the tunnel..."
