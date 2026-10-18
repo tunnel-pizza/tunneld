@@ -49,7 +49,8 @@ its own to share your shell.
 - **A binary:** every [release](https://github.com/tunnel-pizza/tunneld/releases)
   carries a signed one per platform, and [SECURITY.md](./SECURITY.md) has the
   recipe to verify it.
-- **A container:** `ghcr.io/tunnel-pizza/tunneld`. See
+- **A container:** `ghcr.io/tunnel-pizza/tunneld`, or `tunneld/tunneld` on
+  Docker Hub. See
   [Running in a container](./docs/reference.md#running-in-a-container).
 
 </details>

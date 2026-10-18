@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cnuss/libtunnel"
 	ltv1 "github.com/cnuss/libtunnel/v1"
@@ -182,6 +183,10 @@ func WithOpen(open *bool) Option { return func(r *RunImpl) { r.open = open } }
 // WithSpinner allows the spinner shown while the tunnel comes up; a run with
 // its logger on gets the lines instead.
 func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
+
+// streamSettle is how long an attached run waits when it turns from one of
+// its streams to the other, for the relay to deliver what it wrote before.
+const streamSettle = 100 * time.Millisecond
 
 // WithAttached says somebody is watching though none of the command's streams
 // is a terminal: a client relaying them onto one, as kubectl debug -i does.
@@ -398,16 +403,34 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// on a console that is both streams, so no script is reading these; the
 	// lines would land on the frame, and the frame has the new addresses
 	// already — Announce told it, above.
+	//
+	// A run something relays without a terminal (kubectl debug -i) has its
+	// two streams carried independently, so a write to one can overtake an
+	// earlier write to the other: the address lands on the spinner's line
+	// before its erase, or the origins above their address. It pauses for
+	// streamSettle wherever it turns from one stream to the other.
+	onStdout := false
+	say := func(toStdout bool, line string) {
+		if r.attached && toStdout != onStdout {
+			time.Sleep(streamSettle)
+		}
+		onStdout = toStdout
+		w := stderr
+		if toStdout {
+			w = stdout
+		}
+		fmt.Fprintln(w, line)
+	}
 	if r.screen == nil {
 		if view != "" {
-			fmt.Fprintf(stdout, "%s\n", view)
+			say(true, view)
 			for _, origin := range origins.All() {
-				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
+				say(false, "  -> "+label(origin))
 			}
 		} else {
 			for i, origin := range origins.All() {
-				fmt.Fprintf(stdout, "%s\n", publicURL(public, i, origins.Len()))
-				fmt.Fprintf(stderr, "  -> %s\n", label(origin))
+				say(true, publicURL(public, i, origins.Len()))
+				say(false, "  -> "+label(origin))
 			}
 		}
 	}

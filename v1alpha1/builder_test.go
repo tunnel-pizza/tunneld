@@ -858,8 +858,38 @@ type runHarness struct {
 	// an empty buffer: a pipe, which is what kubectl debug -i hands a
 	// container.
 	stdin io.Reader
-	b     *BuilderImpl
+	// timeline, when set, is given the command's stdout and stderr in place
+	// of the buffers, and keeps when each write landed on which.
+	timeline *timeline
+	b        *BuilderImpl
 }
+
+// timeline records writes to two streams in the order and at the time they
+// were made.
+type timeline struct {
+	mu     sync.Mutex
+	writes []timedWrite
+}
+
+type timedWrite struct {
+	stream string
+	at     time.Time
+	text   string
+}
+
+// stream is a writer that adds each write to t under name.
+func (t *timeline) stream(name string) io.Writer {
+	return writerFunc(func(p []byte) (int, error) {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.writes = append(t.writes, timedWrite{name, time.Now(), string(p)})
+		return len(p), nil
+	})
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Helper()
@@ -928,6 +958,10 @@ func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) erro
 		cmd.SetOut(&h.stdout)
 	}
 	cmd.SetErr(&h.stderr)
+	if h.timeline != nil {
+		cmd.SetOut(h.timeline.stream("stdout"))
+		cmd.SetErr(h.timeline.stream("stderr"))
+	}
 	cmd.SetArgs(args)
 	return cmd.ExecuteContext(ctx)
 }
@@ -2685,6 +2719,46 @@ func TestEnterStopsKubectlDebug(t *testing.T) {
 	}
 	if got := h.stderr.String(); !strings.Contains(got, detachHint) || strings.Contains(got, stopHint) {
 		t.Errorf("stderr = %q, want the Enter hint and not the Ctrl+C one", got)
+	}
+}
+
+// TestAttachedSettlesBetweenStreams pins the pause a kubectl debug -i run
+// takes wherever it turns from one stream to the other: kubectl relays stdout
+// and stderr independently, and without it the address overtakes the
+// spinner's erase and lands on its line, or the origins overtake the address.
+func TestAttachedSettlesBetweenStreams(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { r.Close(); w.Close() })
+
+	h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000", "http://localhost:4000")
+	h.stdin = r
+	h.timeline = &timeline{}
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx, "--multiview=false"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	h.timeline.mu.Lock()
+	defer h.timeline.mu.Unlock()
+	switches := 0
+	for i := 1; i < len(h.timeline.writes); i++ {
+		prev, cur := h.timeline.writes[i-1], h.timeline.writes[i]
+		if prev.stream == cur.stream {
+			continue
+		}
+		switches++
+		if gap := cur.at.Sub(prev.at); gap < 50*time.Millisecond {
+			t.Errorf("%s %q then %s %q %v apart, want at least 50ms", prev.stream, prev.text, cur.stream, cur.text, gap)
+		}
+	}
+	if switches < 4 {
+		t.Errorf("%d turns between the streams, want each address between its spinner or origin lines", switches)
 	}
 }
 
