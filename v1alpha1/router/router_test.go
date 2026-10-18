@@ -263,6 +263,7 @@ func (cacheOf) Spec() <-chan string           { return nil }
 func (cacheOf) Mutable(string) (string, bool) { return "", false }
 func (cacheOf) SetMutable(string, string)     {}
 func (c cacheOf) Key() string                 { return c.key }
+func (cacheOf) Path(v1.Origins) string        { return "" }
 
 // runKey is the key cacheOf names its run by in these tests.
 const runKey = "0123456789abcdef"

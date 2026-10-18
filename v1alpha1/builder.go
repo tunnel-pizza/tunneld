@@ -512,16 +512,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// A container is not an HTTP service, so tunneld serves one on
-	// its behalf and hands the tunnel the loopback address instead.
-	// origins stays what the operator typed — it is what the
-	// reported map and the panel show.
-	dialable, bound, err := b.binder.Bind(ctx, origins, log)
-	if err != nil {
-		return err
-	}
-	defer bound.Close()
-
 	// The cache this run reads and writes through. Off is a cache that finds
 	// nothing and keeps nothing rather than a nil to test for, so the load
 	// and the save below are one line each. A local rather than the field,
@@ -538,6 +528,26 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		spec = cache.New(cache.WithDir(""))
 	}
 	b.runCache = spec
+
+	// Every program the run starts learns where its spec file is, before
+	// Bind, since an exec origin's program starts there. Unset when there is
+	// no file, so one inherited from a run this one was started under is not
+	// passed on as this run's.
+	if path := spec.Path(origins); path != "" {
+		_ = os.Setenv(v1.SpecPathEnv, path)
+	} else {
+		_ = os.Unsetenv(v1.SpecPathEnv)
+	}
+
+	// A container is not an HTTP service, so tunneld serves one on
+	// its behalf and hands the tunnel the loopback address instead.
+	// origins stays what the operator typed — it is what the
+	// reported map and the panel show.
+	dialable, bound, err := b.binder.Bind(ctx, origins, log)
+	if err != nil {
+		return err
+	}
+	defer bound.Close()
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 

@@ -95,6 +95,7 @@ type Cache interface {
 	Mutable(name string) (string, bool)
 	SetMutable(name, value string)
 	Get(name string) string
+	Path(origins v1.Origins) string
 }
 
 // Option configures a CacheImpl, at construction or when Load or Save is
@@ -332,6 +333,7 @@ func (None) Mutable(string) (string, bool)              { return "", false }
 func (None) Owner() string                              { return "" }
 func (None) SetMutable(string, string)                  {}
 func (None) Get(string) string                          { return "" }
+func (None) Path(v1.Origins) string                     { return "" }
 
 // Spec is never a new spec: a run with caching off keeps its tunnel.
 func (None) Spec() <-chan string { return nil }
@@ -464,6 +466,8 @@ func (c *CacheImpl) Spec() <-chan string { return c.specs }
 // This package hashes nothing and decides nothing about identity. Whether two
 // runs are the same tunnel is the origins' answer; this joins it to a
 // directory and adds an extension.
+func (c *CacheImpl) Path(origins v1.Origins) string { return c.path(origins) }
+
 func (c *CacheImpl) path(origins v1.Origins) string {
 	if c.dir == "" || origins == nil {
 		return ""
