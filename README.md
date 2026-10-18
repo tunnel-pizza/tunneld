@@ -50,7 +50,7 @@ its own to share your shell.
   carries a signed one per platform, and [SECURITY.md](./SECURITY.md) has the
   recipe to verify it.
 - **A container:** `ghcr.io/tunnel-pizza/tunneld`, or `tunneld/tunneld` on
-  Docker Hub. See
+  Docker Hub (`tunneld/t` for short). See
   [Running in a container](./docs/reference.md#running-in-a-container).
 
 </details>

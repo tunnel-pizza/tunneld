@@ -624,6 +624,7 @@ jobs:
           images: |
             ghcr.io/${{ github.repository }}
             docker.io/${{ vars.DOCKERHUB_USERNAME }}/tunneld
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/t
           tags: |
             type=raw,value=${{ needs.prepare.outputs.tag }}
             type=raw,value=latest
@@ -706,6 +707,16 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ vars.DOCKERHUB_USERNAME }}/tunneld
+          short-description: "Slice and share your machine on a public URL: a port, a shell, a coding agent, a container."
+          readme-filepath: ./README.md
+          enable-url-completion: true
+
+      - name: Docker Hub description (short name)
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/t
           short-description: "Slice and share your machine on a public URL: a port, a shell, a coding agent, a container."
           readme-filepath: ./README.md
           enable-url-completion: true
