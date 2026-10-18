@@ -109,7 +109,7 @@ func WithDir(dir string) Option {
 // Add appends origins, in order, each renumbered to the place it lands, so a
 // list assembled from more than one source keeps every Index its ?n. A repeat
 // costs nothing: Key deduplicates.
-func (o *OriginsImpl) Add(origins []v1.Origin) {
+func (o *OriginsImpl) Add(origins ...v1.Origin) {
 	for _, origin := range origins {
 		origin = clone(origin)
 		origin.Index = len(o.origins)

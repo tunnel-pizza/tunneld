@@ -1,11 +1,19 @@
 package netutil
 
 import (
+	"io"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // TestForeignListeners pins what a debug container sees of its pod: the rows
@@ -56,4 +64,115 @@ func TestProcAddr(t *testing.T) {
 			t.Errorf("procAddr(%q) = %v, want refused", bad, got)
 		}
 	}
+}
+
+// TestReachableListeners pins one address per port: every interface wins
+// over a specific address, a specific address over loopback, of equals the
+// first, and a port on loopback alone is left out, all sorted by port.
+func TestReachableListeners(t *testing.T) {
+	ap := netip.MustParseAddrPort
+	got := ReachableListeners([]netip.AddrPort{
+		ap("[::]:80"), ap("0.0.0.0:80"),
+		ap("127.0.0.1:40217"),
+		ap("10.1.0.7:8080"), ap("127.0.0.1:8080"),
+		ap("[::1]:9090"), ap("127.0.0.1:9090"),
+		ap("127.0.0.1:443"), ap("0.0.0.0:443"),
+	})
+	want := []netip.AddrPort{ap("[::]:80"), ap("0.0.0.0:443"), ap("10.1.0.7:8080")}
+	if !slices.Equal(got, want) {
+		t.Errorf("ReachableListeners = %v, want %v", got, want)
+	}
+	if got := ReachableListeners(nil); len(got) != 0 {
+		t.Errorf("ReachableListeners(nil) = %v, want none", got)
+	}
+}
+
+// TestAttachableListeners pins what is kept: an HTTPS server as https (asked
+// first, though it answers plain text with an HTTP 400 too), an HTTP server
+// as http, asked once with HEAD / and the User-Agent, and neither a server
+// that speaks first with a banner, which is never written to, nor one that
+// says nothing, which costs the probe its timeout.
+func TestAttachableListeners(t *testing.T) {
+	var mu sync.Mutex
+	var asked []string
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, r.Method+" "+r.URL.Path+" "+r.UserAgent())
+	}))
+	t.Cleanup(plain.Close)
+	secure := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(secure.Close)
+	var written atomic.Int32
+	banner := listen(t, func(c net.Conn) {
+		_, _ = io.WriteString(c, "SSH-2.0-OpenSSH_9.6\r\n")
+		_ = c.SetReadDeadline(time.Now().Add(2 * bannerWait))
+		if n, _ := c.Read(make([]byte, 1)); n > 0 {
+			written.Add(1)
+		}
+	})
+	silent := listen(t, func(c net.Conn) { time.Sleep(3 * probeTimeout) })
+
+	addr := func(a string) netip.AddrPort { return netip.MustParseAddrPort(a) }
+	got := AttachableListeners([]netip.AddrPort{
+		addr(plain.Listener.Addr().String()),
+		addr(banner),
+		addr(secure.Listener.Addr().String()),
+		addr(silent),
+	}, "tunneld/test")
+	want := []string{
+		"http://" + plain.Listener.Addr().String(),
+		"https://" + secure.Listener.Addr().String(),
+	}
+	var urls []string
+	for _, u := range got {
+		urls = append(urls, u.String())
+	}
+	if !slices.Equal(urls, want) {
+		t.Errorf("AttachableListeners = %v, want %v", urls, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"HEAD / tunneld/test"}; !slices.Equal(asked, want) {
+		t.Errorf("the HTTP server was asked %q, want %q", asked, want)
+	}
+	if n := written.Load(); n != 0 {
+		t.Errorf("the banner server was written to %d times, want none", n)
+	}
+}
+
+// TestAttachableNamesUnspecifiedLocalhost pins that a listener on every
+// interface is reached at loopback and named localhost.
+func TestAttachableNamesUnspecifiedLocalhost(t *testing.T) {
+	plain := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(plain.Close)
+	port := netip.MustParseAddrPort(plain.Listener.Addr().String()).Port()
+	got := AttachableListeners([]netip.AddrPort{netip.AddrPortFrom(netip.IPv4Unspecified(), port)}, "tunneld/test")
+	if len(got) != 1 || got[0].Scheme != "http" || got[0].Hostname() != "localhost" || got[0].Port() != strconv.Itoa(int(port)) {
+		t.Errorf("AttachableListeners(0.0.0.0:%d) = %v, want http://localhost:%d", port, got, port)
+	}
+}
+
+// listen is a loopback TCP listener that hands each connection to serve, as
+// the address it listens on.
+func listen(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				serve(c)
+			}()
+		}
+	}()
+	return l.Addr().String()
 }
