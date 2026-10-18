@@ -50,7 +50,7 @@ its own to share your shell.
   carries a signed one per platform, and [SECURITY.md](./SECURITY.md) has the
   recipe to verify it.
 - **A container:** `ghcr.io/tunnel-pizza/tunneld`, or `tunneld/tunneld` on
-  Docker Hub (`tunneld/t` for short). See
+  Docker Hub (`tunneld/debug` for `kubectl debug`). See
   [Running in a container](./docs/reference.md#running-in-a-container).
 
 </details>
@@ -70,6 +70,21 @@ its own to share your shell.
 Anything that runs in a terminal works: htop, a REPL, Codex, Gemini CLI,
 OpenCode. The words after a program are the program's own, up to the next
 `:port` or URL.
+
+### Kubernetes
+
+`kubectl debug` starts tunneld beside whatever you are debugging, with nothing
+installed in the cluster beforehand. In a pod, a bare run finds the pod's own
+web apps and puts them on the address beside a shell. Press Enter to stop the
+tunnel; Ctrl+C only detaches you and leaves it running.
+
+| | Command | What you get |
+| --- | --- | --- |
+| 📦 | `kubectl debug <pod> --image tunneld/debug -i` | The pod's web apps and a shell on one URL, without touching the pod's own containers. |
+| ☸️ | `kubectl debug node/<node> --image tunneld/debug --profile=sysadmin -i` | A root shell on the node. `chroot /host` is the node's own filesystem. |
+
+That address is root on the node: send it only to someone you would hand the
+node to.
 
 ## What you see
 
