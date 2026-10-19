@@ -94,7 +94,7 @@ $(NPM_PACKAGES): dist/npm/%:
 	cp LICENSE.md dist/THIRD_PARTY_LICENSES $@/
 	jq --arg name '@tunnel-pizza/tunneld-$*' --arg version '$(VERSION:v%=%)' \
 	  --arg os '$(word 1,$(subst -, ,$*))' --arg cpu '$(word 2,$(subst -, ,$*))' \
-	  'del(.bin, .scripts, .files, .directories, .engines, .type, .optionalDependencies) | .name = $$name | .version = $$version | .description = "The tunneld binary for \($$os) \($$cpu), installed by the tunneld package." | .os = [$$os] | .cpu = [$$cpu]' \
+	  'del(.bin, .exports, .scripts, .files, .directories, .engines, .type, .optionalDependencies, .peerDependencies, .peerDependenciesMeta) | .name = $$name | .version = $$version | .description = "The tunneld binary for \($$os) \($$cpu), installed by the tunneld package." | .os = [$$os] | .cpu = [$$cpu]' \
 	  package.json > $@/package.json
 $(BINARIES): dist/tunneld-%:
 	GOOS=$(subst win32,windows,$(word 1,$(subst -, ,$(basename $*)))) \

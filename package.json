@@ -41,12 +41,26 @@
     "doc": "docs",
     "example": "examples"
   },
+  "exports": {
+    ".": "./opencode-plugin/index.ts"
+  },
   "files": [
     "v1/v1.cjs",
+    "opencode-plugin/index.ts",
+    "claude-plugin/.claude-plugin/plugin.json",
+    "claude-plugin/mcp.json",
     "npm-shrinkwrap.json"
   ],
   "scripts": {
     "dev": "make -s host && node v1/v1.cjs",
     "prepublishOnly": "node -e \"console.error(\\\"tunneld is published by the release workflow, with its platform packages; see ci.yml.\\\"); process.exit(1)\""
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.0.32"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
   }
 }

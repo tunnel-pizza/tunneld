@@ -47,6 +47,7 @@ Deep-link by filename; line numbers will drift.
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
 | Claude Code plugin: its manifest (own version, bumped by hand) and MCP servers | [`claude-plugin/`](./claude-plugin)       |
 | The repo's plugin marketplace, the same as tunnel.pizza's | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) |
+| OpenCode plugin: the npm package's export, the Claude Code plugin's servers in OpenCode's shape (`opencode plugin add tunneld`) | [`opencode-plugin/index.ts`](./opencode-plugin/index.ts) |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
 | OpenSSF Scorecard scan                         | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml) |
