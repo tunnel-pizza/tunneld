@@ -16,23 +16,23 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_sessions",
 	Title:       "Terminal sessions",
-	Description: "The machine the run is on, and the run's origins of one scheme, each with its index and ref.",
+	Description: "This machine, and its origins of one scheme, each with its index and ref.",
 	// Answered from the run itself: the same each time, reaching nothing.
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_sessions takes.
 type In struct {
-	Scheme v1.Scheme `json:"scheme" jsonschema:"which origins: exec, attach or http"`
+	Scheme v1.Scheme `json:"scheme" jsonschema:"which of this machine's origins: exec, attach or http"`
 }
 
 // Machine is the run's own process, as its .env holds it (HOSTNAME,
 // USERNAME, PID and PWD); a line the file does not hold is left out.
 type Machine struct {
-	Hostname string `json:"hostname,omitempty" jsonschema:"the machine's hostname"`
-	Username string `json:"username,omitempty" jsonschema:"the user tunneld runs as"`
-	PID      int    `json:"pid,omitempty" jsonschema:"tunneld's process id"`
-	PWD      string `json:"pwd,omitempty" jsonschema:"the directory tunneld was started in"`
+	Hostname string `json:"hostname,omitempty" jsonschema:"this machine's hostname"`
+	Username string `json:"username,omitempty" jsonschema:"the user tunneld runs as on this machine"`
+	PID      int    `json:"pid,omitempty" jsonschema:"tunneld's process id on this machine"`
+	PWD      string `json:"pwd,omitempty" jsonschema:"the directory tunneld was started in on this machine"`
 }
 
 // Out is terminal_sessions' answer.

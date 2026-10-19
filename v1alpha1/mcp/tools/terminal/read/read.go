@@ -17,13 +17,13 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_read",
 	Title:       "Read a terminal's output",
-	Description: "What the program in the terminal at url has printed since this sign-in last read, or since cursor, answered at once. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "What the program in a terminal on this machine, at url, has printed since this sign-in last read, or since cursor, answered at once. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_read takes.
 type In struct {
-	URL    string `json:"url" jsonschema:"the terminal's address: https://hostname/, or https://hostname/?n for the origin at index n"`
+	URL    string `json:"url" jsonschema:"the address of a terminal on this machine: https://hostname/, or https://hostname/?n for the origin at index n"`
 	Cursor string `json:"cursor,omitempty" jsonschema:"where to read on from: a cursor a terminal tool answered; left out, from where this sign-in last stopped"`
 }
 

@@ -16,13 +16,13 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_exec",
 	Title:       "Run in a terminal",
-	Description: "Types input into the terminal at url, then waits for the reply as terminal_wait does. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "Types input into a terminal on this machine, at url, then waits for the reply as terminal_wait does. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	Annotations: &sdk.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_exec takes.
 type In struct {
-	URL   string         `json:"url" jsonschema:"the terminal's address: https://hostname/, or https://hostname/?n for the origin at index n"`
+	URL   string         `json:"url" jsonschema:"the address of a terminal on this machine: https://hostname/, or https://hostname/?n for the origin at index n"`
 	Input []attach.Input `json:"input" jsonschema:"what to send, in order: each step exactly one of text or key"`
 	output.WaitFor
 }
