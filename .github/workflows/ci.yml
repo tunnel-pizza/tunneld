@@ -349,10 +349,11 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The Claude Code plugin the npm package carries (.claude-plugin/), held to
-  # Claude Code's own validator, which exits non-zero on an invalid manifest.
-  # release waits on it: tunnel.pizza's marketplace installs whatever npm's
-  # latest names. Pinned, so a validator release cannot fail a run by itself.
+  # The Claude Code plugin (claude-plugin/) and the repo's marketplace
+  # (.claude-plugin/), held to Claude Code's own validator, which exits
+  # non-zero on an invalid manifest. Both marketplaces, the repo's and
+  # tunnel.pizza's, install the plugin from main. Pinned, so a validator
+  # release cannot fail a run by itself.
   plugin:
     runs-on: ubuntu-latest
     steps:
@@ -363,7 +364,9 @@ jobs:
           node-version: 24
 
       - name: claude plugin validate
-        run: npx -y @anthropic-ai/claude-code@2.1.303 plugin validate .
+        run: |
+          npx -y @anthropic-ai/claude-code@2.1.303 plugin validate .
+          npx -y @anthropic-ai/claude-code@2.1.303 plugin validate claude-plugin
 
   # One image per architecture, pushed by digest only — no tag, not even a
   # temporary one — and signed by that digest, all before any release tag

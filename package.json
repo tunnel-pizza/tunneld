@@ -43,7 +43,6 @@
   },
   "files": [
     "v1/v1.cjs",
-    ".claude-plugin/*",
     "npm-shrinkwrap.json"
   ],
   "scripts": {
