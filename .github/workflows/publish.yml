@@ -53,7 +53,7 @@ jobs:
           echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
           echo "$tag: $platforms"
 
-      # The release's own package.json, launcher and plugin, not main's.
+      # The release's own package.json and launcher, not main's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.release.outputs.tag }}

@@ -12,5 +12,5 @@
   "repository": "https://github.com/tunnel-pizza/tunneld",
   "license": "FSL-1.1-MIT",
   "privacyPolicyUrl": "https://tunnel.pizza/privacy/",
-  "mcpServers": "./.claude-plugin/.mcp.json"
+  "mcpServers": "./mcp.json"
 }

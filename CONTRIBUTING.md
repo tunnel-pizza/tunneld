@@ -45,6 +45,8 @@ Deep-link by filename; line numbers will drift.
 | How a run is found and handed back: `<key>.pid` for `npx tunneld -k`, and `-d`'s signal | [`v1alpha1/pid/pid.go`](./v1alpha1/pid/pid.go) |
 | The launcher's tests, under `node --test` (part of `make test`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
+| Claude Code plugin: its manifest (own version, bumped by hand) and MCP servers | [`claude-plugin/`](./claude-plugin)       |
+| The repo's plugin marketplace, the same as tunnel.pizza's | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
 | OpenSSF Scorecard scan                         | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml) |
