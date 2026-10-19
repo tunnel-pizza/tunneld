@@ -90,11 +90,12 @@ node to.
 
 The tunneld plugin puts your tunnels in front of Claude as MCP tools: it
 lists them, runs commands in a tunnel's terminal, and reads its screen. Add
-tunnel.pizza's marketplace once, then install it:
+tunnel.pizza's marketplace once, install it, then sign in to tunnel.pizza:
 
-```
-/plugin marketplace add https://tunnel.pizza
-/plugin install tunneld@tunnel-pizza
+```sh
+claude plugin marketplace add https://tunnel.pizza
+claude plugin install tunneld@tunnel-pizza
+claude mcp login plugin:tunneld:tunnel-pizza
 ```
 
 To get new releases automatically, open `/plugin`, choose the tunnel-pizza
