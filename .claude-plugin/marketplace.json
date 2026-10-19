@@ -38,7 +38,7 @@
       "category": "development",
       "source": {
         "source": "git-subdir",
-        "url": "tunnel-pizza/tunneld",
+        "url": "https://github.com/tunnel-pizza/tunneld.git",
         "path": ".claude-plugin"
       },
       "homepage": "https://tunnel.pizza",
