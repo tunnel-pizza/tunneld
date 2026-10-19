@@ -1092,18 +1092,26 @@ Patch releases are automatic. Every push to `main` runs the jobs in
   digests already in the registry under the release tag and `latest` (nothing
   is rebuilt), and signs the list's own digest; warms `proxy.golang.org` so
   [pkg.go.dev](https://pkg.go.dev/github.com/tunnel-pizza/tunneld) surfaces
-  the version; and publishes `tunneld` to npm with provenance, through npm's
-  trusted publisher binding for this repo and workflow (no token).
-  `--ignore-scripts` keeps `prepublishOnly` from rebuilding `dist/`, so the
-  package packs the same bytes the cells signed; `package.json` is rewritten
-  to the tag for that publish only. By then `dist/` also holds the cosign
-  bundles, `checksums.txt` and the source archives, so `files` names the
-  binaries and the notices and excludes the bundles rather than globbing the
-  directory — npm ships the six binaries, `THIRD_PARTY_LICENSES` and the
-  launcher, nothing else. A release publishes
-  to `latest`. For a `beta` instead, merge with `[skip release]`, then run the
-  CI workflow by hand from `main` with the dist-tag input set to `beta`; that
-  cuts the release and publishes it there. Promote later without rebuilding:
+  the version; and publishes the six platform packages,
+  `@tunnel-pizza/tunneld-<platform>`, to npm with provenance, through npm's
+  trusted publisher binding for this repo and workflow (no token). `make
+  npm-packages` makes each from `dist/`: the binary the launcher resolves,
+  the notices, and `package.json` made over with the platform's name, `os`
+  and `cpu`, so npm installs only the host's.
+
+  `tunneld` itself is published by hand, from the Actions tab: run the
+  **publish** workflow (`publish.yml`), with the release's tag or none for the
+  latest release, once npm serves the six, which takes minutes and sometimes
+  tens of minutes. It preflights (npm serves every platform package at that
+  version, and no `tunneld` yet), then rewrites `package.json` to the tag, the
+  repository's description and the six as `optionalDependencies`, stamps
+  `.claude-plugin/plugin.json` the same way, writes `npm-shrinkwrap.json`
+  pinning them (the lockfile Claude Code installs a plugin's binary from),
+  and publishes with provenance. `--ignore-scripts` throughout:
+  `prepublishOnly` refuses a hand-run `npm publish`. Both publish to `latest`.
+  For a `beta` instead, merge with `[skip release]`, run the CI workflow by
+  hand from `main` with the dist-tag input set to `beta`, then **publish** with
+  `beta`. Promote later without rebuilding:
   `npm dist-tag add tunneld@<version> latest`.
 
 Source archives, binaries and the image are all signed with cosign in keyless
