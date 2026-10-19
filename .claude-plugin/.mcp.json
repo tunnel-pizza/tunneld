@@ -1,8 +1,12 @@
 {
   "mcpServers": {
-    "tunneld": {
+    "tunnel-pizza": {
       "type": "http",
       "url": "https://tunnel.pizza"
+    },
+    "tunneld": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/v1/v1.cjs"]
     }
   }
 }
