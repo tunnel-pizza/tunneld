@@ -687,79 +687,37 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Auth is npm trusted publishing (OIDC through id-token: write above),
-      # configured on the package's npmjs.com settings for this repo and this
+      # configured on each package's npmjs.com settings for this repo and this
       # workflow file; no token secret. That also produces the provenance
       # attestation.
       #
-      # The committed package.json says 0.0.0 the way the Go module carries no
-      # version: the tag is the release. npm version rewrites it in place for
-      # this publish and nothing is committed. The package is also the Claude
-      # Code plugin tunnel.pizza's marketplace installs, so its
-      # .claude-plugin/plugin.json gets the same version the same way. Both
-      # take the GitHub repository's description too, which is where it is
-      # edited; the marketplace reads it back from the published manifest.
-      #
       # The binaries ship as one package per platform, made by `make
       # npm-packages` from the bytes the binaries job built and this job
-      # signed, each declaring os and cpu so npm installs only the host's.
-      # They are published first and tunneld last, with them as
-      # optionalDependencies at this version, so tunneld never names a version
-      # that is not there; one already published (a re-run) is left as it is.
+      # signed, each declaring os and cpu so npm installs only the host's. One
+      # already published (a re-run) is left as it is.
       #
-      # tunneld carries an npm-shrinkwrap.json pinning them. Claude Code
-      # installs a plugin's dependencies only from a lockfile in the package,
-      # and npm leaves package-lock.json out of what it publishes, so the
-      # shrinkwrap is what puts a binary beside the plugin. npm writes it from
-      # the registry, which serves a new version a few minutes after it is
-      # published, so the six are waited for first.
+      # tunneld itself is not published here: it pins these in its shrinkwrap,
+      # which npm writes from the registry, and npm serves a new version
+      # minutes, sometimes tens of minutes, after it is published. publish.yml
+      # publishes it, run by hand once npm serves all six.
       #
-      # --ignore-scripts throughout: prepublishOnly refuses a publish run by
-      # hand, which would ship tunneld without its platform packages.
-      #
-      # A release publishes to latest. A manual run of this workflow from main
-      # can choose beta instead (the dist_tag input); a push carries no input
-      # and the fallback applies. Promote a beta without a rebuild:
-      #   npm dist-tag add tunneld@<version> latest
-      - name: publish to npm
-        env:
-          DESCRIPTION: ${{ github.event.repository.description }}
+      # --ignore-scripts, so nothing in package.json runs. A release publishes
+      # to latest; a manual run of this workflow from main can choose beta
+      # instead (the dist_tag input).
+      - name: publish the platform packages to npm
         run: |
           set -euo pipefail
           tag="${{ needs.prepare.outputs.tag }}"
           v="${tag#v}"
-          dist_tag="${{ inputs.dist_tag || 'latest' }}"
-
           make npm-packages VERSION="$tag"
           for d in dist/npm/*/; do
             name="$(jq -r .name "$d/package.json")"
             if npm view "$name@$v" version >/dev/null 2>&1; then
               echo "$name@$v is already published"
             else
-              npm publish "$d" --ignore-scripts --tag "$dist_tag" --access public --provenance
+              npm publish "$d" --ignore-scripts --tag "${{ inputs.dist_tag || 'latest' }}" --access public --provenance
             fi
           done
-
-          npm version "$v" --no-git-tag-version
-          npm pkg set description="$DESCRIPTION"
-          for d in dist/npm/*/; do
-            npm pkg set "optionalDependencies.$(jq -r .name "$d/package.json")=$v"
-          done
-          jq --arg v "$v" --arg d "$DESCRIPTION" '.version = $v | .description = $d' .claude-plugin/plugin.json > plugin.json.tmp
-          mv plugin.json.tmp .claude-plugin/plugin.json
-
-          for d in dist/npm/*/; do
-            name="$(jq -r .name "$d/package.json")"
-            for _ in $(seq 60); do
-              npm view "$name@$v" dist.integrity >/dev/null 2>&1 && break
-              sleep 10
-            done
-            npm view "$name@$v" dist.integrity >/dev/null
-          done
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-          npm shrinkwrap
-          test "$(jq '[.packages | keys[] | select(startswith("node_modules/@tunnel-pizza/tunneld-"))] | length' npm-shrinkwrap.json)" -eq 6
-
-          npm publish --ignore-scripts --tag "$dist_tag" --provenance
 
       # Docker Hub's description and overview, from the repository: the
       # README, its relative links made absolute so they resolve from Hub.

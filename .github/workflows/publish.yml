@@ -1,0 +1,121 @@
+name: publish
+
+# tunneld to npm, for a release whose platform packages npm already serves.
+# ci.yml's release publishes those six; npm serves a new version minutes,
+# sometimes tens of minutes, later, and tunneld's shrinkwrap can only be
+# written once it does. So this runs by hand, from the Actions tab, after it
+# has: Run workflow, with the release's tag, or none for the latest release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (vX.Y.Z); empty for the latest release
+        type: string
+        required: false
+      dist_tag:
+        description: npm dist-tag
+        type: choice
+        options: [latest, beta]
+        default: latest
+
+# id-token is npm trusted publishing's (OIDC) and the provenance attestation's.
+permissions:
+  contents: read
+  id-token: write
+
+# One publish at a time, and none cancelled halfway.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      # The tag must be a release: its assets are the binaries the platform
+      # packages were made from, and name the platforms.
+      - name: resolve the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)}"
+          platforms="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' \
+            | sed -nE 's/^tunneld-([a-z0-9]+-[a-z0-9]+)(\.exe)?$/\1/p' | sort -u | tr '\n' ' ')"
+          test -n "$platforms"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+          echo "$tag: $platforms"
+
+      # The release's own package.json, launcher and plugin, not main's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Nothing is published unless npm serves every platform package at this
+      # version, and has no tunneld at it yet. Each miss is named.
+      - name: preflight
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PLATFORMS: ${{ steps.release.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          ok=true
+          if npm view "tunneld@$v" version >/dev/null 2>&1; then
+            echo "::error::tunneld@$v is already published"
+            ok=false
+          fi
+          for p in $PLATFORMS; do
+            name="@tunnel-pizza/tunneld-$p"
+            if ! npm view "$name@$v" dist.integrity >/dev/null 2>&1; then
+              echo "::error::npm does not serve $name@$v yet"
+              ok=false
+            fi
+          done
+          $ok
+
+      # The committed package.json says 0.0.0 the way the Go module carries no
+      # version: the tag is the release. Rewritten in place and never
+      # committed: the version, the GitHub repository's description (where it
+      # is edited; tunnel.pizza's marketplace reads it back from npm), the
+      # platform packages as optionalDependencies at this version, and the
+      # same version and description in .claude-plugin/plugin.json, since the
+      # package is the Claude Code plugin that marketplace installs.
+      #
+      # npm-shrinkwrap.json pins the platform packages. Claude Code installs a
+      # plugin's dependencies only from a lockfile in the package, and npm
+      # leaves package-lock.json out of what it publishes, so the shrinkwrap
+      # is what puts a binary beside the plugin.
+      #
+      # --ignore-scripts: prepublishOnly refuses a publish run by hand.
+      # Promote a beta without a rebuild:
+      #   npm dist-tag add tunneld@<version> latest
+      - name: publish tunneld
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PLATFORMS: ${{ steps.release.outputs.platforms }}
+          DESCRIPTION: ${{ github.event.repository.description }}
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          npm version "$v" --no-git-tag-version
+          npm pkg set description="$DESCRIPTION"
+          n=0
+          for p in $PLATFORMS; do
+            npm pkg set "optionalDependencies.@tunnel-pizza/tunneld-$p=$v"
+            n=$((n + 1))
+          done
+          jq --arg v "$v" --arg d "$DESCRIPTION" '.version = $v | .description = $d' .claude-plugin/plugin.json > plugin.json.tmp
+          mv plugin.json.tmp .claude-plugin/plugin.json
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          npm shrinkwrap
+          test "$(jq '[.packages | keys[] | select(startswith("node_modules/@tunnel-pizza/tunneld-"))] | length' npm-shrinkwrap.json)" -eq "$n"
+          npm publish --ignore-scripts --tag "${{ inputs.dist_tag }}" --provenance
