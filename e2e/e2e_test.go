@@ -237,14 +237,6 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			want: "invalid log level",
 		},
 		{
-			// The variable is parsed the way arguments are: the value it
-			// carries is dropped by name, and the run is refused for having
-			// no origin left.
-			name: "TUNNELD_ORIGINS is parsed like the arguments",
-			env:  map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21", "TUNNELD_LOG": "warn"},
-			want: "ftp://localhost:21",
-		},
-		{
 			name: "TUNNELD_LOG is strict",
 			env:  map[string]string{"TUNNELD_LOG": "loud"},
 			args: []string{"http://localhost:3000"},
@@ -303,6 +295,22 @@ func TestVersionIgnoresABadEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "tunneld ") {
 		t.Errorf("stdout %q does not carry the build banner", stdout)
+	}
+}
+
+// TestEnvironmentOriginsAreParsedLikeArguments pins that TUNNELD_ORIGINS is
+// parsed the way arguments are: an unusable value is dropped by name. Asked
+// through version, which settles the origins and warns without opening a
+// tunnel, since a run left with no origin now opens one.
+func TestEnvironmentOriginsAreParsedLikeArguments(t *testing.T) {
+	bin := build(t)
+
+	_, stderr, code := runEnv(t, bin, map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21", "TUNNELD_LOG": "warn"}, "version")
+	if code != 0 {
+		t.Errorf("exited %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "ftp://localhost:21") {
+		t.Errorf("stderr %q does not name the dropped origin", stderr)
 	}
 }
 
