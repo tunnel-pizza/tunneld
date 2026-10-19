@@ -79,7 +79,11 @@ host: dist/tunneld-$(HOST)$(if $(findstring win32,$(HOST)),.exe)
 # The release publishes these, then tunneld with them as optionalDependencies
 # at the same version; see v1/v1.cjs. Node's names are npm's os and cpu, so a
 # platform splits on its dash. VERSION is the tag; npm's version drops the v.
-NPM_PACKAGES := $(PLATFORMS:%=dist/npm/%)
+# TODO: win32 is left off npm while npm takes tens of minutes to validate a
+# Windows executable; the binaries still ship on the GitHub release.
+# NPM_PLATFORMS := $(PLATFORMS)
+NPM_PLATFORMS := $(filter-out win32-%,$(PLATFORMS))
+NPM_PACKAGES := $(NPM_PLATFORMS:%=dist/npm/%)
 
 npm-packages: $(NPM_PACKAGES)
 

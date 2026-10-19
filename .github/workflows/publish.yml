@@ -34,6 +34,9 @@ jobs:
     steps:
       # The tag must be a release: its assets are the binaries the platform
       # packages were made from, and name the platforms.
+      #
+      # TODO: win32 is left off npm (see NPM_PLATFORMS in the Makefile); drop
+      # the grep -v when it is back.
       - name: resolve the release
         id: release
         env:
@@ -43,7 +46,8 @@ jobs:
           set -euo pipefail
           tag="${TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)}"
           platforms="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' \
-            | sed -nE 's/^tunneld-([a-z0-9]+-[a-z0-9]+)(\.exe)?$/\1/p' | sort -u | tr '\n' ' ')"
+            | sed -nE 's/^tunneld-([a-z0-9]+-[a-z0-9]+)(\.exe)?$/\1/p' | sort -u \
+            | grep -v '^win32-' | tr '\n' ' ')"
           test -n "$platforms"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
@@ -60,27 +64,38 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Nothing is published unless npm serves every platform package at this
-      # version, and has no tunneld at it yet. Each miss is named.
+      # version, and has no tunneld at it yet. A tunneld already there fails at
+      # once; the platform packages are waited for, since npm serves a version
+      # minutes, sometimes tens of minutes, after release published it. Each
+      # still missing at the timeout is named.
       - name: preflight
         env:
           TAG: ${{ steps.release.outputs.tag }}
           PLATFORMS: ${{ steps.release.outputs.platforms }}
+        timeout-minutes: 90
         run: |
           set -euo pipefail
           v="${TAG#v}"
-          ok=true
           if npm view "tunneld@$v" version >/dev/null 2>&1; then
             echo "::error::tunneld@$v is already published"
-            ok=false
+            exit 1
           fi
-          for p in $PLATFORMS; do
-            name="@tunnel-pizza/tunneld-$p"
-            if ! npm view "$name@$v" dist.integrity >/dev/null 2>&1; then
-              echo "::error::npm does not serve $name@$v yet"
-              ok=false
+          start=$(date +%s)
+          while :; do
+            missing=()
+            for p in $PLATFORMS; do
+              name="@tunnel-pizza/tunneld-$p"
+              npm view "$name@$v" dist.integrity >/dev/null 2>&1 || missing+=("$name@$v")
+            done
+            [ ${#missing[@]} -eq 0 ] && break
+            if [ $(( $(date +%s) - start )) -ge 5100 ]; then
+              printf '::error::npm does not serve %s yet\n' "${missing[@]}"
+              exit 1
             fi
+            echo "waiting for npm: ${missing[*]}"
+            sleep 30
           done
-          $ok
+          echo "npm serves every platform package at $v after $(( ($(date +%s) - start) / 60 )) min"
 
       # The committed package.json says 0.0.0 the way the Go module carries no
       # version: the tag is the release. Rewritten in place and never
