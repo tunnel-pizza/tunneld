@@ -34,20 +34,20 @@
   "license": "FSL-1.1-MIT",
   "author": "Scaffoldly <legal@scaffold.ly> (https://github.com/scaffoldly)",
   "type": "commonjs",
-  "bin": "v1/v1.cjs",
+  "bin": {
+    "tunneld": "v1/v1.cjs"
+  },
   "directories": {
     "doc": "docs",
     "example": "examples"
   },
   "files": [
     "v1/v1.cjs",
-    "dist/tunneld-*",
-    "dist/THIRD_PARTY_LICENSES",
-    "!dist/*.sigstore",
-    ".claude-plugin/*"
+    ".claude-plugin/*",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "dev": "make -s host && node v1/v1.cjs",
-    "prepublishOnly": "make binaries licenses"
+    "prepublishOnly": "node -e \"console.error(\\\"tunneld is published by the release workflow, with its platform packages; see ci.yml.\\\"); process.exit(1)\""
   }
 }

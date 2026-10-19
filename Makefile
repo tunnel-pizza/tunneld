@@ -1,4 +1,4 @@
-.PHONY: all check clean fmt fmt-check vet build binary binaries host licenses image windows test race e2e run ttyshim ttyshim-check shim-test
+.PHONY: all check clean fmt fmt-check vet build binary binaries host npm-packages licenses image windows test race e2e run ttyshim ttyshim-check shim-test
 
 # tunneld and its dependencies are pure Go. Forcing CGO off keeps every build
 # identical across hosts, produces a dependency-free binary that runs on a
@@ -68,6 +68,30 @@ HOST := $(subst windows,win32,$(shell go env GOOS))-$(subst amd64,x64,$(shell go
 host: dist/tunneld-$(HOST)$(if $(findstring win32,$(HOST)),.exe)
 
 .PHONY: $(BINARIES)
+
+# One npm package per platform, @tunnel-pizza/tunneld-<platform>, from what
+# `make binaries licenses` left in dist/: the binary under the name the
+# launcher looks for (tunneld, or tunneld.exe on win32), the licences, and
+# tunneld's own package.json made over for the platform: its name, version,
+# description, os and cpu, the os and cpu having npm install it on its own
+# host only, and without what only the launcher package has (its bin,
+# scripts, files and dependencies).
+# The release publishes these, then tunneld with them as optionalDependencies
+# at the same version; see v1/v1.cjs. Node's names are npm's os and cpu, so a
+# platform splits on its dash. VERSION is the tag; npm's version drops the v.
+NPM_PACKAGES := $(PLATFORMS:%=dist/npm/%)
+
+npm-packages: $(NPM_PACKAGES)
+
+.PHONY: $(NPM_PACKAGES)
+$(NPM_PACKAGES): dist/npm/%:
+	rm -rf $@ && mkdir -p $@
+	cp dist/tunneld-$*$(if $(findstring win32,$*),.exe) $@/tunneld$(if $(findstring win32,$*),.exe)
+	cp LICENSE.md dist/THIRD_PARTY_LICENSES $@/
+	jq --arg name '@tunnel-pizza/tunneld-$*' --arg version '$(VERSION:v%=%)' \
+	  --arg os '$(word 1,$(subst -, ,$*))' --arg cpu '$(word 2,$(subst -, ,$*))' \
+	  'del(.bin, .scripts, .files, .directories, .engines, .type, .optionalDependencies) | .name = $$name | .version = $$version | .description = "The tunneld binary for \($$os) \($$cpu), installed by the tunneld package." | .os = [$$os] | .cpu = [$$cpu]' \
+	  package.json > $@/package.json
 $(BINARIES): dist/tunneld-%:
 	GOOS=$(subst win32,windows,$(word 1,$(subst -, ,$(basename $*)))) \
 	GOARCH=$(subst x64,amd64,$(word 2,$(subst -, ,$(basename $*)))) \
