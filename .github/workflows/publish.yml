@@ -101,14 +101,11 @@ jobs:
       # version: the tag is the release. Rewritten in place and never
       # committed: the version, the GitHub repository's description (where it
       # is edited; tunnel.pizza's marketplace reads it back from npm), the
-      # platform packages as optionalDependencies at this version, and the
-      # same version and description in .claude-plugin/plugin.json, since the
-      # package is the Claude Code plugin that marketplace installs.
+      # platform packages as optionalDependencies at this version.
       #
-      # npm-shrinkwrap.json pins the platform packages. Claude Code installs a
-      # plugin's dependencies only from a lockfile in the package, and npm
-      # leaves package-lock.json out of what it publishes, so the shrinkwrap
-      # is what puts a binary beside the plugin.
+      # npm-shrinkwrap.json pins the platform packages: npm leaves
+      # package-lock.json out of what it publishes, and the shrinkwrap is the
+      # lockfile that travels with the package.
       #
       # --ignore-scripts: prepublishOnly refuses a publish run by hand.
       # Promote a beta without a rebuild:
@@ -128,8 +125,6 @@ jobs:
             npm pkg set "optionalDependencies.@tunnel-pizza/tunneld-$p=$v"
             n=$((n + 1))
           done
-          jq --arg v "$v" --arg d "$DESCRIPTION" '.version = $v | .description = $d' .claude-plugin/plugin.json > plugin.json.tmp
-          mv plugin.json.tmp .claude-plugin/plugin.json
           npm install --package-lock-only --ignore-scripts --no-audit --no-fund
           npm shrinkwrap
           test "$(jq '[.packages | keys[] | select(startswith("node_modules/@tunnel-pizza/tunneld-"))] | length' npm-shrinkwrap.json)" -eq "$n"
