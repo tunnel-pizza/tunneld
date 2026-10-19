@@ -882,6 +882,9 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Helper()
 	t.Setenv(v1.LogEnv, "")     // a developer's shell must not turn the log on
 	t.Setenv(v1.NoCacheEnv, "") // nor turn the cache off under a case that is about it
+	for _, env := range pluginEnv {
+		t.Setenv(env, "") // nor, run from inside Claude Code, make every case a plugin run
+	}
 	// The provider travels by environment and the run sets it; blanked so a
 	// case can read back exactly what this run set.
 	t.Setenv(ltv1.CloudflareProviderEnv, "")
