@@ -1428,19 +1428,22 @@ func (b *BuilderImpl) plugin(log v1.Logger) Origins {
 	return origins
 }
 
+// pluginEnv is the environment Claude Code gives what it starts: any one of
+// them set makes a run a plugin run.
+var pluginEnv = []string{
+	"AI_AGENT",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_MESSAGING_SOCKET",
+	"CLAUDE_CODE_MESSAGING_TOKEN",
+	"CLAUDE_PROJECT_DIR",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDECODE",
+	"CLAUDE_PLUGIN_ROOT",
+	"CLAUDE_PLUGIN_DATA",
+}
+
 func isPlugin() bool {
-	envs := []string{
-		"AI_AGENT",
-		"CLAUDE_CODE_ENTRYPOINT",
-		"CLAUDE_CODE_MESSAGING_SOCKET",
-		"CLAUDE_CODE_MESSAGING_TOKEN",
-		"CLAUDE_PROJECT_DIR",
-		"CLAUDE_CODE_SESSION_ID",
-		"CLAUDECODE",
-		"CLAUDE_PLUGIN_ROOT",
-		"CLAUDE_PLUGIN_DATA",
-	}
-	for _, env := range envs {
+	for _, env := range pluginEnv {
 		if os.Getenv(env) != "" {
 			return true
 		}

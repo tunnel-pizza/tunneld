@@ -43,11 +43,11 @@ func TestTerminalSessionsListing(t *testing.T) {
 // that is not one is a tool error, with no origin.
 func TestTerminalSessions(t *testing.T) {
 	origins := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh", "attach://dockerd/web", "exec:///usr/bin/k9s?arg=--readonly")
-	execs := &Out{Sessions: []v1.Origin{
-		{Index: 1, Scheme: v1.ExecScheme, Ref: "/bin/sh"},
-		{Index: 3, Scheme: v1.ExecScheme, Ref: "/usr/bin/k9s"},
+	execs := &Out{Sessions: []Session{
+		{Origin: v1.Origin{Index: 1, Scheme: v1.ExecScheme, Ref: "/bin/sh"}},
+		{Origin: v1.Origin{Index: 3, Scheme: v1.ExecScheme, Ref: "/usr/bin/k9s"}},
 	}}
-	containers := &Out{Sessions: []v1.Origin{{Index: 2, Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"}}}
+	containers := &Out{Sessions: []Session{{Origin: v1.Origin{Index: 2, Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"}}}}
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		scheme string
@@ -100,6 +100,47 @@ func TestTerminalSessions(t *testing.T) {
 			}
 			if tc.says != "" && (len(r.Content) != 1 || !strings.Contains(r.Content[0].Text, tc.says) || strings.Contains(body, "/bin/sh")) {
 				t.Errorf("refusal %s, want %q and no origin", body, tc.says)
+			}
+		})
+	}
+}
+
+// TestTerminalSessionsAddresses pins the tunnel's hostname, as the run's .env
+// holds it, and each session's address from it: the bare address for a run
+// of one origin, ?n for a run of more, as the run prints them.
+func TestTerminalSessionsAddresses(t *testing.T) {
+	tracked := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{"LIBTUNNEL_HOSTNAME": "0tabc.tunneld.domain"}))
+	for name, tc := range map[string]struct {
+		origins []string
+		want    []string
+	}{
+		"one origin": {[]string{"exec:///bin/sh"}, []string{"https://0tabc.tunneld.domain/"}},
+		"several":    {[]string{"http://localhost:3000", "exec:///bin/sh", "exec:///usr/bin/k9s"}, []string{"https://0tabc.tunneld.domain/?1", "https://0tabc.tunneld.domain/?2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, body := call(t, tool.Context{Origins: tooltest.Origins(t, tc.origins...), Cache: tracked}, nil, "exec")
+			if status != 200 {
+				t.Fatalf("status %d: %s", status, body)
+			}
+			var msg struct {
+				Result struct {
+					StructuredContent *Out `json:"structuredContent"`
+				} `json:"result"`
+			}
+			data, _ := strings.CutPrefix(strings.TrimSpace(body[strings.Index(body, "data: "):]), "data: ")
+			if err := json.Unmarshal([]byte(data), &msg); err != nil || msg.Result.StructuredContent == nil {
+				t.Fatalf("%v: %s", err, body)
+			}
+			out := msg.Result.StructuredContent
+			if out.Machine.Tunnel != "0tabc.tunneld.domain" {
+				t.Errorf("machine.tunnel = %q, want 0tabc.tunneld.domain", out.Machine.Tunnel)
+			}
+			var got []string
+			for _, s := range out.Sessions {
+				got = append(got, s.Address)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("addresses = %q, want %q", got, tc.want)
 			}
 		})
 	}
