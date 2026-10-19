@@ -86,6 +86,20 @@ tunnel; Ctrl+C only detaches you and leaves it running.
 That address is root on the node: send it only to someone you would hand the
 node to.
 
+### Claude Code
+
+The tunneld plugin puts your tunnels in front of Claude as MCP tools: it
+lists them, runs commands in a tunnel's terminal, and reads its screen. Add
+tunnel.pizza's marketplace once, then install it:
+
+```
+/plugin marketplace add https://tunnel.pizza
+/plugin install tunneld@tunnel-pizza
+```
+
+To get new releases automatically, open `/plugin`, choose the tunnel-pizza
+marketplace, and turn on auto-update.
+
 ## What you see
 
 **One program** (`npx tunneld claude`): the address is printed, then the

@@ -1,7 +1,7 @@
 {
   "name": "tunneld",
   "version": "0.0.0",
-  "description": "Put what's running on your machine on a public URL: a port, a shell, a coding agent, a container. One command, no account.",
+  "description": "Slice and share your machine on a public URL: a port, a shell, a coding agent, a container, or your whole workspace. One command, no account.",
   "engines": {
     "node": ">=20"
   },
@@ -32,7 +32,7 @@
     "url": "git+https://github.com/tunnel-pizza/tunneld.git"
   },
   "license": "FSL-1.1-MIT",
-  "author": "tunnel.pizza <help@tunnel.pizza> (https://tunnel.pizza/)",
+  "author": "Scaffoldly <legal@scaffold.ly> (https://github.com/scaffoldly)",
   "type": "commonjs",
   "bin": "v1/v1.cjs",
   "directories": {
@@ -43,7 +43,8 @@
     "v1/v1.cjs",
     "dist/tunneld-*",
     "dist/THIRD_PARTY_LICENSES",
-    "!dist/*.sigstore"
+    "!dist/*.sigstore",
+    ".claude-plugin/*"
   ],
   "scripts": {
     "dev": "make -s host && node v1/v1.cjs",

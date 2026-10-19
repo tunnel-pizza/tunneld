@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tunneld": {
+      "type": "http",
+      "url": "https://tunnel.pizza"
+    }
+  }
+}
