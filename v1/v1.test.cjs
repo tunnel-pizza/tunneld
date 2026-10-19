@@ -404,6 +404,30 @@ test("-k signals only a process holding its file", posixOnly, (t) => {
   process.kill(process.pid, 0);
 });
 
+test("-k signals the run, not a child of it holding its file", posixOnly, (t) => {
+  const { bin, launch, root } = pkg(t);
+  // A child forked with the file still open: what a run's child is between
+  // fork and exec, held open here so the case does not depend on timing.
+  const child = path.join(root, "child");
+  fs.writeFileSync(bin, STAND_IN.replace("while :;", `sleep 30 & echo $! > "${child}"; while :;`), { mode: 0o755 });
+  const up = launch("-d", ":3000");
+  assert.equal(up.status, 0, up.stderr);
+  const pid = Number(up.stderr.match(/^    pid  (\d+)$/m)[1]);
+  const kid = Number(fs.readFileSync(child, "utf8"));
+  t.after(() => {
+    for (const p of [pid, kid]) {
+      try {
+        process.kill(p, "SIGKILL");
+      } catch {}
+    }
+  });
+
+  const down = launch("-k");
+  assert.equal(down.status, 0, down.stderr);
+  assert.equal(down.stderr, `tunneld: stopped pid ${pid} (_3000)\n`);
+  process.kill(kid, 0);
+});
+
 test("an ambiguous line is refused before the binary runs", posixOnly, (t) => {
   const { launch, env } = pkg(t);
   const bin = tempDir(t);

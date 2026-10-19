@@ -547,18 +547,22 @@ function summary(pid) {
   return lines.join("\n") + "\n";
 }
 
-// holders is every process holding file open. A run keeps its <key>.pid open
+// holders is every run holding file open. A run keeps its <key>.pid open
 // for as long as it runs, and the kernel closes it however the process ends,
 // so this is the live runs registered there and nothing else — not a process
 // that has since been given a dead run's pid. Two runs of the same thing at
-// once share the file, so it can be more than one. Linux answers from /proc,
-// where only this user's processes can be read, which are the only ones this
-// could signal anyway; everywhere else lsof does, which macOS always has.
+// once share the file, so it can be more than one.
+//
+// A child the run forks holds the file too, from the fork until its exec
+// closes it. That child is not a run, and its parent is one: a holder whose
+// parent also holds the file is left out. Linux answers from /proc, where
+// only this user's processes can be read, which are the only ones this could
+// signal anyway; everywhere else lsof does, which macOS always has.
 function holders(file) {
+  const found = new Map(); // pid -> parent pid
   try {
     if (process.platform === "linux") {
       const target = fs.realpathSync(file);
-      const found = [];
       for (const pid of fs.readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {
         let fds;
         try {
@@ -569,24 +573,37 @@ function holders(file) {
         for (const fd of fds) {
           try {
             if (fs.readlinkSync(`/proc/${pid}/fd/${fd}`) === target) {
-              found.push(Number(pid));
+              // stat is "pid (comm) state ppid ...", and comm may hold spaces
+              // or parentheses of its own.
+              const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+              found.set(Number(pid), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
               break;
             }
           } catch {
-            // Closed while being looked at.
+            // Closed or gone while being looked at.
           }
         }
       }
-      return found;
+    } else {
+      // -F pR: a p line per process, then its R line, the parent pid.
+      const out = execFileSync("lsof", ["-F", "pR", "--", file], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      let pid;
+      for (const line of out.split("\n")) {
+        if (line.startsWith("p")) {
+          pid = Number(line.slice(1));
+          found.set(pid, 0);
+        } else if (line.startsWith("R") && pid !== undefined) {
+          found.set(pid, Number(line.slice(1)));
+        }
+      }
     }
-    const out = execFileSync("lsof", ["-t", "--", file], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.split("\n").filter(Boolean).map(Number);
   } catch {
     return [];
   }
+  return [...found].filter(([, parent]) => !found.has(parent)).map(([pid]) => pid);
 }
 
 function alive(pid) {
