@@ -445,8 +445,9 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	route := *r
 	v1.Apply(&route, opts...)
 	dialable, ws, front, log := route.dialable, route.ws, route.wrap, route.log
-	if dialable == nil || dialable.Len() == 0 {
-		return nil, errors.New("router: no origins to route to")
+	n := 0
+	if dialable != nil {
+		n = dialable.Len()
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -455,9 +456,18 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	// The visitor side: the origins, the panel in front of them, and auth in
 	// front of both. The control path sits beside it rather than under it:
 	// it has its own guard (authorize), and the panel answers nothing there.
-	var site http.Handler = redirect(dialable.Len(), proxy(urlsOf(dialable), schemesOf(dialable), ws, log))
-	if front != nil {
-		site = front(site)
+	//
+	// With no origins the tunnel still comes up and the control path still
+	// answers; every other request is a 404 until there is something to reach.
+	// The proxy, the redirect and the panel each assume at least one origin.
+	var site http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "tunneld: nothing is exposed here yet", http.StatusNotFound)
+	})
+	if n > 0 {
+		site = redirect(n, proxy(urlsOf(dialable), schemesOf(dialable), ws, log))
+		if front != nil {
+			site = front(site)
+		}
 	}
 	route.env.mu.Lock()
 	gate := route.env.auth
@@ -484,7 +494,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 	go func() { _ = srv.Serve(l) }()
 
 	local := &url.URL{Scheme: "http", Host: l.Addr().String()}
-	log.Info("routing origins", "listen", local.Host, "origins", dialable.Len())
+	log.Info("routing origins", "listen", local.Host, "origins", n)
 	return local, nil
 }
 
