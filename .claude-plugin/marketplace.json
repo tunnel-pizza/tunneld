@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "tunnel-pizza",
+  "description": "Slice and share your machine: a port, a shell, or your whole workspace.",
+  "owner": {
+    "name": "Scaffoldly",
+    "email": "legal@scaffold.ly",
+    "url": "https://github.com/scaffoldly"
+  },
+  "plugins": [
+    {
+      "name": "tunneld",
+      "description": "Slice and share your machine on a public URL: a port, a shell, a coding agent, a container, or your whole workspace. One command, no account.",
+      "license": "FSL-1.1-MIT",
+      "keywords": [
+        "tunnel",
+        "localhost",
+        "expose",
+        "share",
+        "public-url",
+        "cloudflare-tunnel",
+        "web-terminal",
+        "terminal",
+        "shell",
+        "tty",
+        "docker",
+        "coding-agent",
+        "claude-code",
+        "dev-server",
+        "tunnel-pizza",
+        "tunneld"
+      ],
+      "author": {
+        "name": "Scaffoldly",
+        "email": "legal@scaffold.ly",
+        "url": "https://github.com/scaffoldly"
+      },
+      "category": "development",
+      "source": {
+        "source": "npm",
+        "package": "tunneld"
+      },
+      "homepage": "https://tunnel.pizza",
+      "repository": "https://github.com/tunnel-pizza/tunneld"
+    }
+  ]
+}
