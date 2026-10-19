@@ -442,6 +442,11 @@ func TestTerminalSendAnswersFromTheReadersPosition(t *testing.T) {
 // program is part way through redrawing a row: the answer is the row once
 // the redraw has finished, not torn.
 func TestTerminalWaitLetsARedrawFinish(t *testing.T) {
+	// The erase lands 20ms after the match, give or take a loaded runner's
+	// scheduling: quiet wide enough that it cannot miss it.
+	quiet, most := redrawQuiet, redrawMost
+	redrawQuiet, redrawMost = time.Second, 5*time.Second
+	t.Cleanup(func() { redrawQuiet, redrawMost = quiet, most })
 	target := newFakeTarget("api", true, true)
 	s := serveFake(t, target)
 	out := &sink{s.session}

@@ -212,7 +212,7 @@ func (s *session) Wait(ctx context.Context, reader, cursor string, until *regexp
 // write that erases what is left of the old text: a wait that matches holds
 // its answer until the screen has been unchanged for redrawQuiet, for at
 // most redrawMost.
-const (
+var (
 	redrawQuiet = 50 * time.Millisecond
 	redrawMost  = 250 * time.Millisecond
 )
