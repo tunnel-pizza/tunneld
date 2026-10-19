@@ -119,3 +119,19 @@ jobs:
           npm shrinkwrap
           test "$(jq '[.packages | keys[] | select(startswith("node_modules/@tunnel-pizza/tunneld-"))] | length' npm-shrinkwrap.json)" -eq "$n"
           npm publish --ignore-scripts --tag "${{ inputs.dist_tag }}" --provenance
+
+      # npm accepts a publish minutes, sometimes tens of minutes, before it
+      # serves it. The run ends green only once tunneld at this version can be
+      # installed, which is when the marketplace and npx see it.
+      - name: wait for npm to serve tunneld
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          v="${TAG#v}"
+          start=$(date +%s)
+          until npm view "tunneld@$v" dist.integrity >/dev/null 2>&1; do
+            sleep 30
+          done
+          echo "npm serves tunneld@$v after $(( ($(date +%s) - start) / 60 )) min"

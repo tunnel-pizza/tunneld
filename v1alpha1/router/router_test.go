@@ -113,14 +113,33 @@ func TestRouteALoneOriginIsRouted(t *testing.T) {
 	}
 }
 
-// TestRouteNothingIsAnError pins that an empty list is refused rather than
-// served, and so is no list at all: there is nothing a request could reach.
-func TestRouteNothingIsAnError(t *testing.T) {
-	if _, err := New().Route(t.Context(), WithOrigins(origins.New())); err == nil {
-		t.Error("Route() over no origins succeeded, want an error")
-	}
-	if _, err := New().Route(t.Context()); err == nil {
-		t.Error("Route() with no WithOrigins succeeded, want an error")
+// TestRouteNothingStillServes pins that an empty list, and no list at all,
+// are served: the control path answers, and anything else is a 404 until
+// there is an origin to reach.
+func TestRouteNothingStillServes(t *testing.T) {
+	for name, opts := range map[string][]Option{
+		"empty list": {WithOrigins(origins.New())},
+		"no list":    nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := New().Route(t.Context(), opts...)
+			if err != nil {
+				t.Fatalf("Route() = %v, want the router up with no origins", err)
+			}
+			base := strings.TrimSuffix(got.String(), "/")
+			req, _ := http.NewRequest(http.MethodGet, base+"/_tunneld/ping", nil)
+			if _, body := get(t, http.DefaultClient, req); body != "pong" {
+				t.Errorf("GET /_tunneld/ping = %q, want pong", body)
+			}
+			res, err := http.Get(base + "/")
+			if err != nil {
+				t.Fatalf("GET /: %v", err)
+			}
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusNotFound {
+				t.Errorf("GET / = %d, want 404", res.StatusCode)
+			}
+		})
 	}
 }
 

@@ -100,15 +100,6 @@ func Apply[T any](t T, opts ...Option[T]) T {
 // to fall back to the code value deliberately.
 var ErrInvalidEnv = errors.New("invalid environment value")
 
-// ErrNoOrigin reports a command built and run with nothing to expose: no
-// origin argument, no OriginsEnv, and no WithOrigin seed — or every origin it
-// was given dropped as unusable, which arrives at the same place. A tunnel
-// with no origin would come up pointing at a loopback socket nobody serves on
-// — a public hostname that answers only errors — so this fails before the mint
-// instead. The lever is an argument, OriginsEnv, or WithOrigin when
-// embedding.
-var ErrNoOrigin = errors.New("no origin")
-
 // ErrInvalidOrigin reports a container origin that named something tunneld
 // could not serve: a container the daemon has never heard of, one that is not
 // running, or one whose inspect comes back with no configuration to read. A
@@ -513,16 +504,11 @@ type Builder interface {
 	// none of http, https, AttachScheme or ExecScheme, a served origin naming
 	// no reference, a served origin carrying more than one — is dropped with a
 	// warning on the tunnel's own log rather than failing the run, so this is
-	// what the tunnel was given and not what it was asked for. A run left
-	// with no origins at all fails with ErrNoOrigin.
+	// what the tunnel was given and not what it was asked for.
 	//
 	// The list is a value with an identity: Key names the tunnel these origins
 	// are, which is what the spec cache files it under.
 	Origins() Origins
-	// AutoDetect is what Origins answers when no origin is given anywhere (no
-	// argument, no OriginsEnv, no seed): this machine's shell. Empty when
-	// there is none, which Run refuses with ErrNoOrigin.
-	AutoDetect() Origins
 	// Name returns the configured command name (CommandName if WithName was
 	// never given).
 	Name() string
@@ -541,8 +527,7 @@ type Builder interface {
 	// origins are what the environment and the seeds settle on; see Origins.
 	// The environment is bound either way, so env still beats code.
 	//
-	// A run with no origins at all fails with ErrNoOrigin. A tunnel that fails
-	// on its own returns the cause, and a canceled ctx is a clean stop rather
-	// than an error.
+	// A tunnel that fails on its own returns the cause, and a canceled ctx is
+	// a clean stop rather than an error.
 	Run(ctx context.Context) error
 }

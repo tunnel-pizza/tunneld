@@ -16,13 +16,13 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_wait",
 	Title:       "Wait for a terminal's output",
-	Description: "terminal_read, once until matches, the program falls quiet for idle_ms, or timeout_ms passes. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "terminal_read on this machine, once until matches, the program falls quiet for idle_ms, or timeout_ms passes. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_wait takes.
 type In struct {
-	URL    string `json:"url" jsonschema:"the terminal's address: https://hostname/, or https://hostname/?n for the origin at index n"`
+	URL    string `json:"url" jsonschema:"the address of a terminal on this machine: https://hostname/, or https://hostname/?n for the origin at index n"`
 	Cursor string `json:"cursor,omitempty" jsonschema:"where to read on from: a cursor a terminal tool answered; left out, from where this sign-in last stopped"`
 	output.WaitFor
 }

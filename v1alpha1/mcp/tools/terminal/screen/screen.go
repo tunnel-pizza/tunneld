@@ -15,14 +15,14 @@ import (
 var Tool = tool.New(sdk.Tool{
 	Name:        "terminal_screen",
 	Title:       "Read a terminal's screen",
-	Description: "What the terminal at url shows now: its size, visible rows, cursor and title, and whether a full-screen program is up. Needs the scope of the origin's scheme: tunnel:exec for a program.",
+	Description: "What a terminal on this machine, at url, shows now: its size, visible rows, cursor and title, and whether a full-screen program is up. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	// Reads the screen and changes nothing, but a program is drawing it.
 	Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(false)},
 }, run)
 
 // In is what terminal_screen takes.
 type In struct {
-	URL string `json:"url" jsonschema:"the terminal's address: https://hostname/, or https://hostname/?n for the origin at index n"`
+	URL string `json:"url" jsonschema:"the address of a terminal on this machine: https://hostname/, or https://hostname/?n for the origin at index n"`
 }
 
 // run reads the screen of the terminal url names.

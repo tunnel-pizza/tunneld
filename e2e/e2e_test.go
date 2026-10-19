@@ -166,21 +166,11 @@ func TestRefusedInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		// A bare run always has an origin (the chain ends at the shell built
-		// into tunneld), so no arguments alone opens a tunnel, never a
-		// refusal.
-		// An unusable origin is dropped rather than refused, so a run whose
-		// only origin was unusable is refused for having none — the same
-		// failure as passing nothing at all, and the same lever.
-		{"unproxyable scheme", []string{"ftp://localhost:21"}, "no origin"},
-		{"origin with no host", []string{"http://"}, "no origin"},
+		// An unusable origin is dropped rather than refused, and a run left
+		// with none still opens a tunnel, so neither is a refusal.
 		// Flags before origins, docker's rule: after an origin a word is
 		// positional, so a refusal has to come from a flag that precedes one.
 		{"unknown log level", []string{"--log-level", "loud", "http://localhost:3000"}, "log-level"},
-		// A second argument is a second origin: the warning names the second
-		// one, which proves every argument is parsed and not just the first.
-		// Both are unusable, so the run is still refused.
-		{"a later origin is still parsed", []string{"--log-level", "warn", "ftp://localhost:21", "ftp://nope"}, "ftp://nope"},
 		{"unknown flag", []string{"--nope", "http://localhost:3000"}, "nope"},
 		{"unparsable boolean flag", []string{"--multiview=nonsense", "http://localhost:3000"}, "multiview"},
 	}
@@ -247,14 +237,6 @@ func TestEnvironmentDrivesTheCommand(t *testing.T) {
 			want: "invalid log level",
 		},
 		{
-			// The variable is parsed the way arguments are: the value it
-			// carries is dropped by name, and the run is refused for having
-			// no origin left.
-			name: "TUNNELD_ORIGINS is parsed like the arguments",
-			env:  map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21", "TUNNELD_LOG": "warn"},
-			want: "ftp://localhost:21",
-		},
-		{
 			name: "TUNNELD_LOG is strict",
 			env:  map[string]string{"TUNNELD_LOG": "loud"},
 			args: []string{"http://localhost:3000"},
@@ -313,6 +295,22 @@ func TestVersionIgnoresABadEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "tunneld ") {
 		t.Errorf("stdout %q does not carry the build banner", stdout)
+	}
+}
+
+// TestEnvironmentOriginsAreParsedLikeArguments pins that TUNNELD_ORIGINS is
+// parsed the way arguments are: an unusable value is dropped by name. Asked
+// through version, which settles the origins and warns without opening a
+// tunnel, since a run left with no origin now opens one.
+func TestEnvironmentOriginsAreParsedLikeArguments(t *testing.T) {
+	bin := build(t)
+
+	_, stderr, code := runEnv(t, bin, map[string]string{"TUNNELD_ORIGINS": "ftp://localhost:21", "TUNNELD_LOG": "warn"}, "version")
+	if code != 0 {
+		t.Errorf("exited %d, want 0", code)
+	}
+	if !strings.Contains(stderr, "ftp://localhost:21") {
+		t.Errorf("stderr %q does not name the dropped origin", stderr)
 	}
 }
 

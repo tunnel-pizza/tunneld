@@ -128,8 +128,7 @@ func Apply[T any](t T, opts ...Option[T]) T
 // configured it.
 type Builder interface {
     Command() *cobra.Command       // terminal: assembles and returns
-    Origins() Origins              // the origins exposed: argv > env > seed, else AutoDetect
-    AutoDetect() Origins           // what a run with no origin anywhere exposes: the shell
+    Origins() Origins              // the origins exposed: argv > env > seed, else detected
     Name() string                  // configured command name
     Run(ctx context.Context) error // the command's body, without the command
 }
@@ -159,7 +158,6 @@ type Provider string // DockerProvider
 
 // match with errors.Is
 var ErrInvalidEnv      = errors.New("invalid environment value")
-var ErrNoOrigin        = errors.New("no origin")
 var ErrInvalidOrigin   = errors.New("invalid origin")
 var ErrInvalidLogLevel = errors.New("invalid log level")
 var ErrNotReady        = errors.New("tunnel did not become ready")

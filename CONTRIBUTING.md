@@ -665,7 +665,7 @@ Two things there will bite if you change them without knowing why:
   which time this is, is not knowable from here. The arming lets go after
   `armGrace`, and the tick carries the arming it belongs to so a spent one
   cannot disarm the next.
-- **Zero origins means `AutoDetect`: `$SHELL`, resolved before it is
+- **Zero origins means `auto`: `$SHELL`, resolved before it is
   adopted.** There is no knob: a bare run always has an origin, the chain
   ending at the shell built into tunneld. `e2e` strips `SHELL` in
   `strippedEnv` so a case does not inherit a developer's. The parse
