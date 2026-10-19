@@ -1104,10 +1104,8 @@ Patch releases are automatic. Every push to `main` runs the jobs in
   latest release, once npm serves the six, which takes minutes and sometimes
   tens of minutes. It preflights (npm serves every platform package at that
   version, and no `tunneld` yet), then rewrites `package.json` to the tag, the
-  repository's description and the six as `optionalDependencies`, stamps
-  `.claude-plugin/plugin.json` the same way, writes `npm-shrinkwrap.json`
-  pinning them (the lockfile Claude Code installs a plugin's binary from),
-  and publishes with provenance. `--ignore-scripts` throughout:
+  repository's description and the six as `optionalDependencies`, writes
+  `npm-shrinkwrap.json` pinning them, and publishes with provenance. `--ignore-scripts` throughout:
   `prepublishOnly` refuses a hand-run `npm publish`. Both publish to `latest`.
   For a `beta` instead, merge with `[skip release]`, run the CI workflow by
   hand from `main` with the dist-tag input set to `beta`, then **publish** with
