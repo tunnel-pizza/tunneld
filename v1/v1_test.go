@@ -39,7 +39,6 @@ func TestEnvNamesAreStable(t *testing.T) {
 func TestSentinelsAreDistinct(t *testing.T) {
 	sentinels := map[string]error{
 		"ErrInvalidEnv":      v1.ErrInvalidEnv,
-		"ErrNoOrigin":        v1.ErrNoOrigin,
 		"ErrInvalidOrigin":   v1.ErrInvalidOrigin,
 		"ErrInvalidLogLevel": v1.ErrInvalidLogLevel,
 		"ErrNotReady":        v1.ErrNotReady,

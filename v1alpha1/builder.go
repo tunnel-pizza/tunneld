@@ -275,7 +275,7 @@ a port, a program, or a container. No account.
 		// What a bare run exposes. An embedder that seeded origins made them
 		// this command's default, so help says which — otherwise the one
 		// thing a seeded build does differently from a bare one is the one
-		// thing --help does not mention. Unseeded, it is AutoDetect's.
+		// thing --help does not mention. Unseeded, it is auto's.
 		if len(b.origins) > 0 {
 			long += "\nWith no origin arguments, this command exposes: " + strings.Join(b.origins, ", ") + "\n"
 		} else {
@@ -450,6 +450,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	stderr := cmd.ErrOrStderr()
 
+	// A plugin run's stdin and stdout are its MCP client's (mcp.WithStdio), so
+	// what the run would print there goes to stderr.
+	if isPlugin() {
+		cmd.SetOut(stderr)
+	}
+
 	// The logger: resolve the tunnel's log sink from the level the
 	// command settled on — the --log-level flag, or v1.LogEnv bound
 	// onto it by PersistentPreRunE. An unrecognized level is an
@@ -468,15 +474,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// The origins this run exposes, settled argv > environment >
 	// seed and parsed. Anything unusable was dropped with a
 	// warning rather than failing the run, so what is left is what
-	// the tunnel gets — but nothing left at all is still an error,
-	// since a tunnel with no origin is a public hostname that
-	// answers only errors. The message names both ways of
-	// supplying one, because that is the choice an operator makes
-	// to fix it.
+	// the tunnel gets.
 	origins := b.Origins()
-	if origins.Len() == 0 {
-		return fmt.Errorf("%w: pass a local service URL as an argument (e.g. %s http://localhost:3000), or set $%s", v1.ErrNoOrigin, b.Name(), v1.OriginsEnv)
-	}
 
 	// The run's log file, as soon as the run has a key to name it by: what
 	// was logged settling the origins is written in first, and everything
@@ -641,6 +640,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			mcp.WithBound(bound),
 			mcp.WithCache(spec),
 			mcp.WithLog(log),
+			mcp.WithStdio(isPlugin()),
 		)),
 		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
@@ -654,7 +654,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	// kubectl debug -i: Ctrl+C ends kubectl and never reaches this process, so
 	// a line on stdin is what stops the run, as a signal would.
-	attached := isPod() && isPipe(cmd.InOrStdin())
+	//
+	// TODO: lock stdio for a plugin run at the fd level, before anything
+	// writes: dup(1) a private stdout for the MCP transport, dup2(2, 1) so
+	// os.Stdout, libraries and inherited children land on stderr, and hand
+	// mcp.WithStdio that reader and writer over the SDK's IOTransport instead
+	// of StdioTransport. SetStdHandle on Windows. Until then only cmd's stdout
+	// is redirected, at the top of Run.
+	attached := isPod() && isPipe(cmd.InOrStdin()) && !isPlugin()
 	hint := stopHint
 	if attached {
 		var stop context.CancelFunc
@@ -1086,7 +1093,7 @@ func (b *BuilderImpl) Origins() Origins {
 	}
 
 	if len(settled) == 0 {
-		return b.AutoDetect()
+		return b.auto()
 	}
 	return b.parse(log, settled)
 }
@@ -1264,11 +1271,10 @@ func (b *BuilderImpl) parse(log v1.Logger, settled []string) Origins {
 	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
 }
 
-// AutoDetect is what a run exposes when no origin is given anywhere (no
+// auto is what a run exposes when no origin is given anywhere (no
 // argument, no TUNNELD_ORIGINS, no WithOrigin seed): this machine's shell, as
-// shell finds one. Empty when there is none, which Run refuses with
-// v1.ErrNoOrigin.
-func (b *BuilderImpl) AutoDetect() Origins {
+// shell finds one. Empty when there is none.
+func (b *BuilderImpl) auto() Origins {
 	// A refused --log-level is the run's error to report; here it means the
 	// lines below go nowhere.
 	log, _ := b.logger()
@@ -1284,10 +1290,10 @@ func (b *BuilderImpl) AutoDetect() Origins {
 		return nil
 	}
 
-	detected := detect(b.pod, b.shell)
+	detected := detect(b.plugin, b.pod, b.shell)
 	if detected == nil {
 		log.Warn("autodetect: no origins detected")
-		// Empty, not nil: Run asks Len and refuses with ErrNoOrigin.
+		// Empty, not nil.
 		return origins.New()
 	}
 	return detected
@@ -1404,6 +1410,42 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 		return nil
 	}
 	return origins
+}
+
+func (b *BuilderImpl) plugin(log v1.Logger) Origins {
+	if !isPlugin() {
+		log.Debug("autodetect: not a plugin")
+		return nil
+	}
+
+	// TEMP: while we're developing plugin support, return a shell so we can easily debug
+	// FUTURE: we will allow origins to be dynamically added and removed using mcp commands
+	origins := origins.New()
+	log.Debug("autodetect: adding a shell")
+	if shell := b.shell(log); shell != nil {
+		origins.Add(shell.All()...)
+	}
+	return origins
+}
+
+func isPlugin() bool {
+	envs := []string{
+		"AI_AGENT",
+		"CLAUDE_CODE_ENTRYPOINT",
+		"CLAUDE_CODE_MESSAGING_SOCKET",
+		"CLAUDE_CODE_MESSAGING_TOKEN",
+		"CLAUDE_PROJECT_DIR",
+		"CLAUDE_CODE_SESSION_ID",
+		"CLAUDECODE",
+		"CLAUDE_PLUGIN_ROOT",
+		"CLAUDE_PLUGIN_DATA",
+	}
+	for _, env := range envs {
+		if os.Getenv(env) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isPod is whether this process runs in a Kubernetes pod's container, which

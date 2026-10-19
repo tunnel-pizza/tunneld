@@ -122,21 +122,6 @@ func TestCommandIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestOriginRequiredWhenNoneUsable pins that a run whose every origin was
-// dropped refuses to run rather than minting a tunnel with nothing behind
-// it, and that its message names both ways of supplying one — that is the
-// choice an operator makes to fix it.
-func TestOriginRequiredWhenNoneUsable(t *testing.T) {
-	// An argument, so AutoDetect is not asked; empty, so it is dropped.
-	_, _, err := execute(t, New(), "")
-	if !errors.Is(err, v1.ErrNoOrigin) {
-		t.Fatalf("running with no origin = %v, want ErrNoOrigin", err)
-	}
-	if !strings.Contains(err.Error(), v1.OriginsEnv) {
-		t.Errorf("error %q does not name %s", err, v1.OriginsEnv)
-	}
-}
-
 // TestOriginOptionalWhenSeeded pins the embedding case: an origin supplied
 // through WithOrigin lets the command run with no arguments at all. It gets
 // past the nothing-to-expose check and fails on the deliberately bad log
@@ -168,19 +153,12 @@ func TestArgumentReplacesSeededOrigins(t *testing.T) {
 // TestRejectsUnusableFlags pins that the validation failures reach the caller
 // as their v1 sentinels, so a program embedding tunneld can branch on the
 // class rather than on message text.
-//
-// An unusable origin is dropped rather than refused, so a run whose only
-// origin was unusable arrives at the same place as one given none at all:
-// ErrNoOrigin, before the mint. What it never becomes is a tunnel.
 func TestRejectsUnusableFlags(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
 		want error
 	}{
-		{"unproxyable scheme", []string{"ftp://localhost:21"}, v1.ErrNoOrigin},
-		{"no host", []string{"http://"}, v1.ErrNoOrigin},
-		{"empty origin", []string{"  "}, v1.ErrNoOrigin},
 		{"unknown log level", []string{"--log-level", "loud", "http://localhost:3000"}, v1.ErrInvalidLogLevel},
 	}
 
@@ -2372,16 +2350,40 @@ func TestOriginsWarnsAtTheTunnelsLevel(t *testing.T) {
 	}
 }
 
-// TestOriginsNoneLeftIsAnError pins the one failure that survives the drop: a
-// run with nothing left to expose refuses rather than minting a hostname that
-// answers only errors, and its message names both ways of supplying an origin.
-func TestOriginsNoneLeftIsAnError(t *testing.T) {
-	_, _, err := execute(t, New(WithOrigin("ftp://localhost:21")))
-	if !errors.Is(err, v1.ErrNoOrigin) {
-		t.Fatalf("running with only an unusable origin = %v, want ErrNoOrigin", err)
+// TestUnusableOriginsLeaveNone pins that an origin tunneld cannot expose is
+// dropped rather than refused, so a run given only unusable ones has none.
+// The flags are parsed rather than executed, which keeps the case offline.
+func TestUnusableOriginsLeaveNone(t *testing.T) {
+	for name, args := range map[string][]string{
+		"unproxyable scheme": {"ftp://localhost:21"},
+		"no host":            {"http://"},
+		"empty origin":       {"  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := New()
+			if err := b.Command().ParseFlags(args); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			if n := b.Origins().Len(); n != 0 {
+				t.Errorf("Origins().Len() = %d, want 0", n)
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), v1.OriginsEnv) {
-		t.Errorf("error %q does not name %s", err, v1.OriginsEnv)
+}
+
+// TestRunComesUpWithNoOrigins pins that a run with nothing to expose still
+// brings its tunnel up: origins can arrive later, and the tunnel is already
+// there to carry them.
+func TestRunComesUpWithNoOrigins(t *testing.T) {
+	h := newRunHarness(t, live("https://foo.tunneld.domain/"))
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx); err != nil {
+		t.Fatalf("run() = %v, want the tunnel up with no origins", err)
+	}
+	if !h.cache.saved {
+		t.Error("the tunnel never came up: nothing was saved")
 	}
 }
 
