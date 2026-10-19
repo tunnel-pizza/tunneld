@@ -45,3 +45,6 @@ go.work.sum
 # Subagent-driven development scratch: ledgers, briefs, review packages.
 # Regenerated per plan; the git history is the durable record.
 .superpowers/
+
+node_modules/
+package-lock.json
