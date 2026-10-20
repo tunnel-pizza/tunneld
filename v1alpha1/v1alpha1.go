@@ -353,6 +353,10 @@ type BuilderImpl struct {
 	// the tunnel is up. Flag-backed like the rest; off unless asked for.
 	qr bool
 
+	// mcp is whether the run serves MCP on its stdin and stdout, for the MCP
+	// client that started it. Flag-backed like the rest; off unless asked for.
+	mcp bool
+
 	// pid is how the run is found and handed back from outside it, for the
 	// npm launcher; nil, the default, is neither. See WithPid.
 	pid Pid

@@ -312,6 +312,14 @@ Easy to get wrong from the diff alone:
   to carry a list, and viper does not split one for you. Argv does not split at
   all, which is the mirror's one limitation: an origin carrying a literal comma
   has to arrive as an argument.
+- **`TUNNELD_DEBUG` is internal.** It is not a flag, not in `flagEnv`, not
+  in the cache file's tracked settings, and not in the reference: it exists
+  for developing the plugins. Set to `true`, it changes one thing: a run that
+  an agent started (any variable in `agentEnv` set) with no origins given
+  detects the shell, as a bare run outside an agent would, instead of
+  nothing. That shares the machine's shell on a public address the moment
+  the agent's MCP client starts the run, so it never ships in a plugin's
+  `mcp.json`.
 - **Flag variables are applied in `PersistentPreRunE`, not `RunE`.** Cobra runs
   that hook *before* `ValidateRequiredFlags`, which is the only reason a
   variable alone can satisfy a required flag. Marking `f.Changed` there is the

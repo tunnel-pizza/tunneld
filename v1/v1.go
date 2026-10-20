@@ -228,6 +228,12 @@ const (
 	// carries the addresses and nothing else.
 	QREnv = "TUNNELD_QR"
 
+	// MCPEnv names whether a run serves MCP on its stdin and stdout — the
+	// mirror of --mcp, which beats it. Any value strconv.ParseBool accepts
+	// works. On, stdout carries JSON-RPC and nothing else, so what a run
+	// would print there goes to stderr.
+	MCPEnv = "TUNNELD_MCP"
+
 	// IdentityProvidersEnv names the identity providers to look for a mint
 	// credential with, comma-separated and in order — the mirror of
 	// --identity-providers, which beats it. Empty turns the lookup off.

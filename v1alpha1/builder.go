@@ -110,6 +110,13 @@ func WithQR(show bool) Option {
 	return func(b *BuilderImpl) { b.qr = show }
 }
 
+// WithMCP seeds whether a run serves MCP on its stdin and stdout, for an MCP
+// client that starts it as a stdio server. --mcp and v1.MCPEnv both beat it.
+// Unset, it serves none there.
+func WithMCP(serve bool) Option {
+	return func(b *BuilderImpl) { b.mcp = serve }
+}
+
 // WithStdout redirects the help text and the version banner. Command passes
 // it to the command's SetOut, so calling SetOut on the built command
 // overrides this. Unset, output goes to the process's stdout.
@@ -202,7 +209,8 @@ var flagEnv = map[string]string{
 
 	"identity-providers": v1.IdentityProvidersEnv,
 
-	"qr": v1.QREnv,
+	"qr":  v1.QREnv,
+	"mcp": v1.MCPEnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -352,6 +360,8 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 			"answer the tunnel's own URL with a panel framing every origin [$"+v1.MultiviewEnv+"]")
 		cmd.Flags().BoolVar(&b.qr, "qr", b.qr,
 			"print the address as a QR code on stderr once the tunnel is up [$"+v1.QREnv+"]")
+		cmd.Flags().BoolVar(&b.mcp, "mcp", b.mcp,
+			"serve MCP on stdin and stdout, for the MCP client that started this run [$"+v1.MCPEnv+"]")
 
 		// Docker's rule: options before the image. Flag parsing stops at the
 		// first origin, and every word after it is positional — so the words
@@ -450,9 +460,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	stderr := cmd.ErrOrStderr()
 
-	// A plugin run's stdin and stdout are its MCP client's (mcp.WithStdio), so
-	// what the run would print there goes to stderr.
-	if isPlugin() {
+	// An MCP run's stdin and stdout are its client's (mcp.WithStdio), so what
+	// the run would print there goes to stderr.
+	if b.mcp {
 		cmd.SetOut(stderr)
 	}
 
@@ -640,7 +650,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			mcp.WithBound(bound),
 			mcp.WithCache(spec),
 			mcp.WithLog(log),
-			mcp.WithStdio(isPlugin()),
+			mcp.WithStdio(b.mcp),
 		)),
 		// TODO(#209): tell the operator when a visitor finds an origin that
 		// is not listening, once per outage. The router logs every such
@@ -655,13 +665,13 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// kubectl debug -i: Ctrl+C ends kubectl and never reaches this process, so
 	// a line on stdin is what stops the run, as a signal would.
 	//
-	// TODO: lock stdio for a plugin run at the fd level, before anything
+	// TODO: lock stdio for an MCP run at the fd level, before anything
 	// writes: dup(1) a private stdout for the MCP transport, dup2(2, 1) so
 	// os.Stdout, libraries and inherited children land on stderr, and hand
 	// mcp.WithStdio that reader and writer over the SDK's IOTransport instead
 	// of StdioTransport. SetStdHandle on Windows. Until then only cmd's stdout
 	// is redirected, at the top of Run.
-	attached := isPod() && isPipe(cmd.InOrStdin()) && !isPlugin()
+	attached := isPod() && isPipe(cmd.InOrStdin()) && !b.mcp
 	hint := stopHint
 	if attached {
 		var stop context.CancelFunc
@@ -877,6 +887,7 @@ func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 		v1.NoCacheEnv:           strconv.FormatBool(b.noCache),
 		v1.IdentityProvidersEnv: strings.Join(b.identityProviders, ","),
 		v1.QREnv:                strconv.FormatBool(b.qr),
+		v1.MCPEnv:               strconv.FormatBool(b.mcp),
 	}
 	// Facts about the run rather than knobs, so they carry no v1 constant and
 	// nothing reads them back: which build wrote the file, and where it was
@@ -1290,7 +1301,7 @@ func (b *BuilderImpl) auto() Origins {
 		return nil
 	}
 
-	detected := detect(b.plugin, b.pod, b.shell)
+	detected := detect(b.agent, b.pod, b.shell)
 	if detected == nil {
 		log.Warn("autodetect: no origins detected")
 		// Empty, not nil.
@@ -1412,25 +1423,32 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	return origins
 }
 
-func (b *BuilderImpl) plugin(log v1.Logger) Origins {
-	if !isPlugin() {
-		log.Debug("autodetect: not a plugin")
+func (b *BuilderImpl) agent(log v1.Logger) Origins {
+	if !isAgent() {
+		log.Debug("autodetect: not an agent")
 		return nil
 	}
 
-	// TEMP: while we're developing plugin support, return a shell so we can easily debug
-	// FUTURE: we will allow origins to be dynamically added and removed using mcp commands
+	// FUTURE: we will allow agents to dynamically add and remove origins using MCP commands.
 	origins := origins.New()
-	log.Debug("autodetect: adding a shell")
-	if shell := b.shell(log); shell != nil {
-		origins.Add(shell.All()...)
+
+	if os.Getenv(debugEnv) == "true" {
+		log.Debug("autodetect: debug mode enabled for agents, adding a shell")
+		if shell := b.shell(log); shell != nil {
+			origins.Add(shell.All()...)
+		}
 	}
+
 	return origins
 }
 
-// pluginEnv is the environment Claude Code gives what it starts: any one of
-// them set makes a run a plugin run.
-var pluginEnv = []string{
+// debugEnv is internal and unpublished: "true" gives an agent's run a shell.
+// CONTRIBUTING lists what it changes.
+const debugEnv = "TUNNELD_DEBUG"
+
+// agentEnv is the environment an agent host gives what it starts: any one of
+// them set makes a run an agent's.
+var agentEnv = []string{
 	"AI_AGENT",
 	"CLAUDE_CODE_ENTRYPOINT",
 	"CLAUDE_CODE_MESSAGING_SOCKET",
@@ -1442,8 +1460,8 @@ var pluginEnv = []string{
 	"CLAUDE_PLUGIN_DATA",
 }
 
-func isPlugin() bool {
-	for _, env := range pluginEnv {
+func isAgent() bool {
+	for _, env := range agentEnv {
 		if os.Getenv(env) != "" {
 			return true
 		}
