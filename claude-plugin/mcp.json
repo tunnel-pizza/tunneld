@@ -6,10 +6,7 @@
     },
     "tunneld": {
       "command": "npx",
-      "args": ["tunneld", "--mcp"],
-      "env": {
-        "TUNNELD_DEBUG": "false"
-      }
+      "args": ["tunneld", "--mcp"]
     }
   }
 }
