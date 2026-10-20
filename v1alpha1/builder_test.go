@@ -878,13 +878,35 @@ type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
+// TestMain runs the package's cases outside any agent and outside MCP: from
+// inside one, where the shell carries some of agentEnv, a bare case would
+// detect no origins, and a developer's TUNNELD_MCP or debugEnv would reach
+// every run.
+func TestMain(m *testing.M) {
+	for _, env := range append(slices.Clone(agentEnv), v1.MCPEnv, debugEnv) {
+		os.Unsetenv(env)
+	}
+	os.Exit(m.Run())
+}
+
+// mcpStdin hands an --mcp run's stdio transport a stdin that is already at
+// its end, for the rest of the case, rather than the test process's own.
+func mcpStdin(t *testing.T) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	w.Close()
+	was := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = was; r.Close() })
+}
+
 func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	t.Helper()
 	t.Setenv(v1.LogEnv, "")     // a developer's shell must not turn the log on
 	t.Setenv(v1.NoCacheEnv, "") // nor turn the cache off under a case that is about it
-	for _, env := range pluginEnv {
-		t.Setenv(env, "") // nor, run from inside Claude Code, make every case a plugin run
-	}
 	// The provider travels by environment and the run sets it; blanked so a
 	// case can read back exactly what this run set.
 	t.Setenv(ltv1.CloudflareProviderEnv, "")
@@ -930,7 +952,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 // Command's RunE.
 func (h *runHarness) run(t *testing.T, ctx context.Context, args ...string) error {
 	t.Helper()
-	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.LogEnv, v1.MultiviewEnv, v1.QREnv} {
+	for _, name := range []string{v1.OriginsEnv, v1.ProviderEnv, v1.LogEnv, v1.MultiviewEnv, v1.QREnv, v1.MCPEnv} {
 		t.Setenv(name, "")
 	}
 	cmd := h.b.Command()
@@ -2374,6 +2396,36 @@ func TestUnusableOriginsLeaveNone(t *testing.T) {
 	}
 }
 
+// TestAgentRunDetectsNoOrigins pins what a bare run started by an agent
+// detects: nothing, so an agent never shares this machine by accident, unless
+// debugEnv asks for the shell.
+func TestAgentRunDetectsNoOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name, debug string
+		shell       bool
+	}{
+		{"an agent's run", "", false},
+		{"an agent's run with debugEnv", "true", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.shell && runtime.GOOS == "windows" {
+				t.Skip("no $SHELL to fall back to on Windows")
+			}
+			t.Setenv("CLAUDECODE", "1")
+			t.Setenv(debugEnv, tc.debug)
+			t.Setenv(v1.OriginsEnv, "")
+			t.Setenv("SHELL", "/bin/sh")
+			b := New()
+			if err := b.Command().ParseFlags(nil); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			if got := b.Origins().Len() > 0; got != tc.shell {
+				t.Errorf("origins detected = %v, want %v", got, tc.shell)
+			}
+		})
+	}
+}
+
 // TestRunComesUpWithNoOrigins pins that a run with nothing to expose still
 // brings its tunnel up: origins can arrive later, and the tunnel is already
 // there to carry them.
@@ -2664,18 +2716,21 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 // TestSpinnerOverKubectlDebug pins the spinner for kubectl debug -i: no
 // stream is a terminal, but a pod's container with a pipe on stdin is one
 // somebody attached to, and kubectl copies its stderr onto their terminal. A
-// pipe outside a pod is a pipeline, and a pod with nothing on stdin is a
-// debug container nobody attached to; neither spins.
+// pipe outside a pod is a pipeline, a pod with nothing on stdin is a debug
+// container nobody attached to, and a pipe under --mcp is the MCP client's;
+// none of them spins.
 func TestSpinnerOverKubectlDebug(t *testing.T) {
 	const spinner = "Creating tunnel..."
 	for _, tc := range []struct {
 		name       string
 		pod, piped bool
+		args       []string
 		want       bool
 	}{
-		{"kubectl debug -i", true, true, true},
-		{"a pipeline", false, true, false},
-		{"kubectl debug", true, false, false},
+		{"kubectl debug -i", true, true, nil, true},
+		{"a pipeline", false, true, nil, false},
+		{"kubectl debug", true, false, nil, false},
+		{"an MCP client in a pod", true, true, []string{"--mcp"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host := ""
@@ -2694,16 +2749,40 @@ func TestSpinnerOverKubectlDebug(t *testing.T) {
 				t.Cleanup(func() { r.Close(); w.Close() })
 				h.stdin = r
 			}
+			if len(tc.args) > 0 {
+				mcpStdin(t)
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			h.cache.onSave = cancel
 
-			if err := h.run(t, ctx); err != nil {
+			if err := h.run(t, ctx, tc.args...); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
 			if got := strings.Contains(h.stderr.String(), spinner); got != tc.want {
 				t.Errorf("spinner drawn = %v, want %v; stderr = %q", got, tc.want, h.stderr.String())
 			}
 		})
+	}
+}
+
+// TestMCPRunKeepsStdoutForItsClient pins --mcp: stdout carries the MCP
+// client's JSON-RPC and nothing else, so the address a run prints there goes
+// to stderr instead.
+func TestMCPRunKeepsStdoutForItsClient(t *testing.T) {
+	const public = "https://foo.tunneld.domain/"
+	mcpStdin(t)
+	h := newRunHarness(t, live(public), "http://localhost:3000")
+	ctx, cancel := context.WithCancel(t.Context())
+	h.cache.onSave = cancel
+
+	if err := h.run(t, ctx, "--mcp"); err != nil {
+		t.Fatalf("run() = %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing: it is the MCP client's", h.stdout.String())
+	}
+	if !strings.Contains(h.stderr.String(), public) {
+		t.Errorf("stderr = %q, want the address %q", h.stderr.String(), public)
 	}
 }
 
@@ -3352,6 +3431,7 @@ func TestTheCacheIsToldWhatTheRunSettledOn(t *testing.T) {
 		v1.NoCacheEnv:           "false",
 		v1.IdentityProvidersEnv: strings.Join(splitList(v1.DefaultIdentityProviders), ","),
 		v1.QREnv:                "false",
+		v1.MCPEnv:               "false",
 	} {
 		if got := h.cache.tracking[name]; got != want {
 			t.Errorf("tracking[%s] = %q, want %q", name, got, want)
