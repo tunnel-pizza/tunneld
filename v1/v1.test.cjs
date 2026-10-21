@@ -162,7 +162,10 @@ test("ambiguous names both readings, ready to paste", { skip: win && "cmd.exe qu
 // Ctrl-C: it takes a moment, as a real teardown does, leaves a mark in
 // $MARKER so a test can tell a teardown from a kill, and exits 0. Coming up
 // and going down are appended to $EVENTS. A first argument of fail makes it
-// fail before any of it, with the second as its status.
+// fail before any of it, with the second as its status. It also exits, without
+// a teardown, once its tree is gone or $RUNNER (the test process) is: a
+// detached one is in a session of its own, which an interrupted or failed run
+// never reaches.
 const STAND_IN = `#!/bin/sh
 echo "argv: $*" >&2
 if [ "$1" = fail ]; then echo "no origin" >&2; exit "$2"; fi
@@ -186,7 +189,10 @@ if [ -n "$TUNNELD_NOTIFY_PID" ] && [ "$TUNNELD_NOTIFY_PID" = "$PPID" ]; then
 else
   echo "Press Ctrl+C to stop the tunnel..." >&2
 fi
-while :; do sleep 0.05 9>&-; done
+while :; do
+  { [ -d "$CACHE" ] && kill -0 "$RUNNER"; } 2>/dev/null || exit 0
+  sleep 0.05 9>&-
+done
 `;
 
 // pkg lays out a package the way npx sees one: package.json, v1/v1.cjs, and
@@ -210,6 +216,7 @@ function pkg(t) {
     MARKER: path.join(root, "marker"),
     EVENTS: path.join(root, "events"),
     ORIGINS: "exec:///bin/bash?arg=-l",
+    RUNNER: String(process.pid),
   };
   delete env.TUNNELD_NOTIFY_PID;
   env.CACHE =
