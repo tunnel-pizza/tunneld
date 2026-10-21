@@ -49,6 +49,7 @@ Deep-link by filename; line numbers will drift.
 | The repo's plugin marketplace, the same as tunnel.pizza's | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) |
 | OpenCode plugin: the npm package's export, the Claude Code plugin's servers in OpenCode's shape (`opencode plugin add tunneld`) | [`opencode-plugin/index.ts`](./opencode-plugin/index.ts) |
 | Release + skip release regex                   | [`.github/workflows/ci.yml`](./.github/workflows/ci.yml)         |
+| The light check for a PR stacked on another branch | [`.github/workflows/pr.yml`](./.github/workflows/pr.yml)     |
 | CodeQL scan                                    | [`.github/workflows/codeql.yml`](./.github/workflows/codeql.yml) |
 | OpenSSF Scorecard scan                         | [`.github/workflows/scorecard.yml`](./.github/workflows/scorecard.yml) |
 | Dependabot config                              | [`.github/dependabot.yml`](./.github/dependabot.yml)             |
@@ -986,8 +987,8 @@ are easy to forget:
 ## Branch / PR flow
 
 **Every change starts with an issue** — no exceptions, including retroactive
-cleanups. The PR body always carries a `Closes #<n>` line so the merge
-auto-closes the tracking issue and leaves a paper trail.
+cleanups. The PR body carries a `Closes #<n>` line for each issue it settles,
+so the merge auto-closes them and leaves a paper trail.
 
 ```sh
 gh issue create --title "…" --body "…"                    # 1. issue first
@@ -998,6 +999,44 @@ gh pr create --title "<type>: …" --body "Closes #<n>. …"  # 3. PR refs the i
 # CI green ⇒
 gh pr merge <pr#> --squash --delete-branch
 ```
+
+**A PR may close several issues** when they land together or touch the same
+place. Name the branch for what they share (`feat/mcp-stdio`), make a commit
+per issue so each reads on its own in review (the squash flattens them), and
+give every issue its own line:
+
+```text
+Closes #370
+Closes #342
+```
+
+`Closes #370, #342` closes only #370: GitHub reads a keyword per issue. Every
+merge to `main` is a release, so a theme that lands as one PR is one release
+rather than several.
+
+**PRs may be stacked**, though nothing requires it. A PR whose base is another
+PR's branch carries the next step while the first is in review:
+
+- It gets [`pr.yml`](./.github/workflows/pr.yml), not `ci.yml`: gofmt, vet and
+  the unit tests on one Linux runner, a few minutes rather than the matrix,
+  the builds and the signing. `ci.yml` runs only for PRs into `main`.
+- Merge bottom-up, into `main` only — never into another PR's branch. When
+  the bottom one squash-merges, its branch is deleted and GitHub retargets the
+  next onto `main`.
+- The squash rewrote the commits the next PR was built on, so rebase it off
+  them and push. That push runs `ci.yml` in full, which is what its merge
+  needs:
+
+  ```sh
+  git fetch origin
+  git rebase --onto origin/main <old-base-tip> <next-branch>
+  git push --force-with-lease
+  ```
+
+  `<old-base-tip>` is the last commit of the branch that merged. Locally,
+  `git rebase --update-refs` keeps a stack's branches moving together.
+- `pr.yml`'s check is not a required one: branch protection guards `main`
+  alone, so there is nothing to add to its required contexts.
 
 `main` is protected (the `build-test` matrix and `race` required; no force-push). Don't push directly to it
 for routine work — PR flow gives CI + auto-release a clean audit trail. Pushing
@@ -1017,7 +1056,8 @@ directory, along with the compose example's volume and the local image.
 
 ## Pull requests
 
-- Keep PRs focused. One feature or fix per PR.
+- Keep PRs focused: one theme per PR, which may be one issue or several that
+  land together (see [Branch / PR flow](#branch--pr-flow)).
 - Include test coverage for behavior changes — unit tests beside the code
   (`something.go` → `something_test.go`) for library changes, e2e tests
   (`e2e/e2e_test.go`) for anything visible at the command line.
