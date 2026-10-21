@@ -163,9 +163,7 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 		go func() { _, _ = io.Copy(keys, in) }()
 	}
 
-	if wait := cmd.Wait(); wait != nil {
-		a.log.Debug("program ended", "program", a.ref, "error", wait)
-	}
+	a.wait(cmd)
 	return nil
 }
 

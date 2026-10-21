@@ -323,12 +323,21 @@ tunneld exec:///usr/bin/htop
 The empty authority is this machine — that is the whole of what `exec://` with
 no provider says, and why the path is absolute.
 
-The program starts with `TUNNELD_ENV` naming the run's spec file, set before
-the tunnel exists. The file appears once the tunnel is up, and holds the
-hostname as `LIBTUNNEL_HOSTNAME` among the run's other lines; a program that
-wants its own public address reads it from there. With no file (`--no-cache`,
-or no cache directory) the variable is unset, never inherited from a run this
-one was started under.
+The program starts with `HTTP_ORIGIN` set to the tunnel's origin,
+`https://<hostname>`, the address its first origin answers on. A cached run
+knows its hostname from the spec it resumes and starts the program at once; an
+uncached one starts it once the tunnel is up and its spec is saved, so the
+program never starts without it. If the tunnel comes up on another hostname
+than the cache named (the cached spec was refused and a new one minted, or a
+new spec arrived mid-run), the run logs a warning and the program keeps the
+old value until it is restarted (`Ctrl+K` then `q`, `r`). A signal would not
+do: a running program's environment cannot be changed from outside it.
+
+It also starts with `TUNNELD_ENV` naming the run's spec file, which exists by
+then and holds the hostname as `LIBTUNNEL_HOSTNAME` among the run's other
+lines. With no file (`--no-cache`, or no cache directory) `TUNNELD_ENV` is
+unset. Neither variable is ever inherited from a run this one was started
+under.
 
 A bare argument that names a program on `$PATH` is that origin written short,
 since a word that resolves to a program is not a hostname anybody meant:
@@ -386,14 +395,24 @@ somewhere else, and an explicit scheme always wins. A word that resolves only
 through the working directory is left alone: a file that happens to sit where
 you started tunneld does not become a public origin because you typed its name.
 
-The program starts when the first viewer opens the page and ends with the
-session. It gets a real pseudo-terminal, so a full-screen program draws,
+The program starts with the run, once the run knows the tunnel's origin (see
+`HTTP_ORIGIN` above), not when the first viewer opens the page, so what it
+printed before anybody looked is on the screen when they do. It gets a real
+pseudo-terminal, so a full-screen program draws,
 keystrokes reach it, and resizing the browser resizes it. Nothing replays when
 the page opens — unlike a container, it has not been running since before you
 looked.
 
-**A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
-key the program quits on, or simply finishing — the origin stays up, the page
+**A run ends when its programs do.** Once every program the run started has
+exited on its own (a restart does not count), the run ends: cleanly, exit status
+0, when they all exited 0. When one failed, the run ends with that program's
+status (128 plus the signal for one a signal ended) if nobody is at a terminal,
+as in CI, so `tunneld :3001 'node scripts/test.mjs'` passes or fails with the
+script; with somebody at a terminal it stays up, so the program can be fixed
+and started again. A run with containers and addresses beside its programs ends
+the same way: they are not programs the run started.
+
+**A program that ends can be started again**, while the run stays up. The page
 offers a **restart** where a container's offers only a reconnect, and the next
 visit runs it once more on a clean screen. That is a new program and not a
 resumed one: nothing it had open before is still open. A container cannot be
@@ -888,8 +907,31 @@ Splitting each address from the origin it reaches is not that duplication: the
 map still says which origin an address serves, and a script still gets the
 addresses without a parser.
 
-The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
-fails first.
+**Compose output.** With no frame drawn on the console (several origins,
+`--multiview=false` with more than one, or no terminal at all, as in CI), and
+not for an `--mcp` run, every origin's lines reach stderr too, behind a prefix
+naming it, the way `docker compose up` shows its services:
+
+```
+[next] ▲ Next.js 16.4.2
+[next] - Local:  http://localhost:3000
+[:3000] GET / 200 41ms
+[:3000] GET /_next/static/chunks/main.js 200 3ms
+```
+
+- A program's or container's output, a line at a time, named by its base
+  name, while the same output is still served at its address. It is what the
+  terminal draws, so a line-oriented program (a dev server, a test suite)
+  reads well and a full-screen one (`htop`, `k9s`) does not.
+- A line per request to an address the tunnel dials, named by its port for
+  one on this machine (`:3000`) and its host otherwise: method, path, status,
+  and how long it took.
+- In a color per origin when stderr is a terminal. Keystrokes in that
+  terminal go nowhere, as with `docker compose up`.
+
+The process runs until `SIGINT`/`SIGTERM`, or until every program it started
+has exited (see [Programs](#programs)), and exits non-zero if the tunnel fails
+first, or with a failed program's status when nobody is at a terminal.
 
 ## The browser
 
@@ -1359,6 +1401,7 @@ after construction still lands.
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MCP` | `--mcp` | Whether to serve MCP on stdin and stdout. Any value `strconv.ParseBool` accepts. |
+| `HTTP_ORIGIN` | *(no flag)* | Written, never read: set for the programs a run starts to the tunnel's origin, `https://<hostname>`; see [Programs](#programs). |
 | `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
 | `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
 

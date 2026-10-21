@@ -541,6 +541,20 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		cache.WithLog(log),
 	)
 
+	// The programs the run starts, which waited for this: a cached run
+	// started them already, with the hostname its file named, and one that
+	// came up elsewhere leaves them holding the old origin until restarted.
+	// After the save, so the file TUNNELD_ENV names is there when they start.
+	origin := public.Scheme + "://" + public.Host
+	if was := os.Getenv(v1.HTTPOriginEnv); was != origin {
+		if was != "" {
+			log.Warn("the tunnel's origin changed; programs already running keep the old "+v1.HTTPOriginEnv+" until restarted",
+				"was", was, "now", origin)
+		}
+		_ = os.Setenv(v1.HTTPOriginEnv, origin)
+	}
+	bound.Start()
+
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C
 	// there will not reach this run, so it gets no hint saying so.
@@ -619,6 +633,28 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 		case <-bound.Done():
 			log.Info("a viewer asked this run to end; stopping")
 			return "", false, nil
+		case codes := <-bound.Exited():
+			// Every program the run started has exited. All of them
+			// succeeding ends the run cleanly. A failure ends it with that
+			// program's status, unless somebody is at a terminal to restart
+			// the program, in which case the run waits for them.
+			code := 0
+			for _, c := range codes {
+				if c != 0 {
+					code = c
+					break
+				}
+			}
+			if code == 0 {
+				log.Info("every program the run started has exited; stopping")
+				return "", false, nil
+			}
+			if display.IsInteractive(r.cmd) || r.attached {
+				log.Warn("a program the run started has exited; staying up so it can be restarted", "status", code)
+				continue
+			}
+			log.Info("every program the run started has exited; stopping", "status", code)
+			return "", false, v1.ExitError{Code: code}
 		}
 	}
 

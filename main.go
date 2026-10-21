@@ -17,11 +17,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
+	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 )
@@ -38,6 +40,10 @@ func main() {
 	// embeds the builder: it is how npx tunneld -k and -d reach a run.
 	if err := v1alpha1.New(v1alpha1.WithPid(pid.New())).Command().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
+		// A run its programs ended exits with their status.
+		if exit := (v1.ExitError{}); errors.As(err, &exit) {
+			os.Exit(exit.Code)
+		}
 		os.Exit(1)
 	}
 }

@@ -38,6 +38,7 @@ package v1
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 
@@ -157,6 +158,15 @@ var ErrNoDocker = errors.New("docker daemon unreachable")
 // anything; the message names the first one's pid.
 var ErrRunning = errors.New("already running")
 
+// ExitError ends a run that its programs ended: every program it started has
+// exited, and Code is the status the process exits with, the first non-zero
+// one among theirs. A run whose programs all exited 0 ends with no error.
+type ExitError struct{ Code int }
+
+func (e ExitError) Error() string {
+	return fmt.Sprintf("a program the run started exited with status %d", e.Code)
+}
+
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator
 // reconfigures a deployed binary without a rebuild. Each variable is read
@@ -274,6 +284,14 @@ const (
 	// rest. Unset when the run keeps no file. Written for the run's programs,
 	// never read.
 	SpecPathEnv = "TUNNELD_ENV"
+
+	// HTTPOriginEnv is what every program a run starts is told the tunnel's
+	// origin by: https://<hostname>, the address its first origin answers
+	// on. A cached run knows it before it starts its programs; an uncached
+	// one starts them once the tunnel is up, so a program never starts
+	// without it. Written, never read: one inherited from the environment a
+	// run was started in is not passed on as this run's.
+	HTTPOriginEnv = "HTTP_ORIGIN"
 
 	// UserAgentHeader names which tunneld is asking, on every mint request.
 	UserAgentHeader = "User-Agent"

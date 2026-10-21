@@ -1145,6 +1145,121 @@ func (s *stubTargets) Open(_ context.Context, ref string, args []string, _ *slog
 	return target, nil
 }
 
+// exitTargets answers exec:// on this machine with programs that end, each
+// with the status codes names for its reference, once the case closes its
+// channel in end.
+type exitTargets struct {
+	codes map[string]int
+	end   map[string]chan struct{}
+}
+
+func (e *exitTargets) Scheme() v1.Scheme     { return v1.ExecScheme }
+func (e *exitTargets) Provider() v1.Provider { return "" }
+func (e *exitTargets) Open(_ context.Context, ref string, _ []string, _ *slog.Logger) (Target, error) {
+	return &exitTarget{stubTarget: &stubTarget{name: ref}, code: e.codes[ref], end: e.end[ref]}, nil
+}
+
+// exitTarget is a program that runs until end closes, then exits with code.
+type exitTarget struct {
+	*stubTarget
+	code int
+	end  chan struct{}
+}
+
+func (e *exitTarget) Repeatable() bool { return true }
+func (e *exitTarget) ExitCode() int    { return e.code }
+func (e *exitTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.Reader, _, _ io.WriteCloser, _ bool, _ <-chan remotecommand.TerminalSize) error {
+	select {
+	case <-e.end:
+	case <-ctx.Done():
+	}
+	return nil
+}
+
+// TestExitedWhenEveryProgramHas pins Bound.Exited: the programs a Bind starts
+// are reported, with their statuses in origin order, once every one of them
+// has ended, and not before. A container is not a program and is not waited
+// for.
+func TestExitedWhenEveryProgramHas(t *testing.T) {
+	programs := &exitTargets{
+		codes: map[string]int{"/bin/ok": 0, "/bin/fails": 3},
+		end:   map[string]chan struct{}{"/bin/ok": make(chan struct{}), "/bin/fails": make(chan struct{})},
+	}
+	display := shown(t, "exec:///bin/ok", "attach://dockerd/db", "exec:///bin/fails")
+	_, closer, err := New(WithTargets(programs, &stubTargets{}), WithHold()).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+	closer.Start()
+
+	close(programs.end["/bin/ok"])
+	select {
+	case codes := <-closer.Exited():
+		t.Fatalf("Exited = %v with a program still running", codes)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(programs.end["/bin/fails"])
+	select {
+	case codes := <-closer.Exited():
+		if want := []int{0, 3}; !slices.Equal(codes, want) {
+			t.Errorf("Exited = %v, want %v", codes, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Exited never reported the programs ending")
+	}
+}
+
+// oneTarget is a provider that answers exec:// on this machine with target.
+type oneTarget struct{ target Target }
+
+func (o oneTarget) Scheme() v1.Scheme     { return v1.ExecScheme }
+func (o oneTarget) Provider() v1.Provider { return "" }
+func (o oneTarget) Open(context.Context, string, []string, *slog.Logger) (Target, error) {
+	return o.target, nil
+}
+
+// exitingRerun is a rerunTarget whose program exits 0, the way next dev does
+// when told to end.
+type exitingRerun struct{ *rerunTarget }
+
+func (exitingRerun) ExitCode() int { return 0 }
+
+// TestARestartIsNotAnExit pins that ending a program to run it again is not
+// the program ending: a dev server that exits 0 when told to end must not end
+// the run on a restart. Its own exit afterwards still is.
+func TestARestartIsNotAnExit(t *testing.T) {
+	target := newRerunTarget(true)
+	target.holdFrom = 1
+	t.Cleanup(target.release)
+	display := shown(t, "exec:///usr/bin/prog")
+	_, closer, err := New(WithTargets(oneTarget{exitingRerun{target}}), WithHold()).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer func() { _ = closer.Close() }()
+	closer.Start()
+	<-target.ran
+
+	closer.(sole).origins[0].srv.session.restart()
+	<-target.ran
+	select {
+	case codes := <-closer.Exited():
+		t.Fatalf("Exited = %v for a restart", codes)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	target.letOneGo()
+	select {
+	case codes := <-closer.Exited():
+		if want := []int{0}; !slices.Equal(codes, want) {
+			t.Errorf("Exited = %v, want %v", codes, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Exited never reported the program ending on its own")
+	}
+}
+
 // TestBindPicksTheProviderByScheme pins the dispatch: each provider answers
 // one verb://provider pair, the binder chooses on that alone, and an origin no
 // pair claims never silently becomes an address the tunnel tries to dial.
@@ -1359,6 +1474,37 @@ func (r *rerunTarget) awaitRun(t *testing.T, want int) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("run %d never started", want)
 		}
+	}
+}
+
+// TestAHeldProgramWaitsForStart pins WithHold: a program a Bind starts does
+// not run until Start, so it can start knowing the tunnel's origin, and Start
+// runs it once however often it is called.
+func TestAHeldProgramWaitsForStart(t *testing.T) {
+	target := newRerunTarget(true)
+	t.Cleanup(target.release)
+	s, err := serve(t.Context(), target, testBanner, testLogs{}, nil, nil, newAsk(), true, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started before Start", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.Start()
+	s.Start()
+	select {
+	case <-target.ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the program never started")
+	}
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started: Start ran the program twice", n)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

@@ -166,11 +166,15 @@ var ErrNoDocker        = errors.New("docker daemon unreachable")
 var ErrRunning         = errors.New("already running")
 var ErrUnknownIdentity = errors.New("unknown identity provider")
 
+// match with errors.As: a run its programs ended, Code its exit status
+type ExitError struct{ Code int }
+
 const LogEnv               = "TUNNELD_LOG"
 const OriginsEnv           = "TUNNELD_ORIGINS"
 const ProviderEnv          = "TUNNELD_PROVIDER"
 const NoCacheEnv           = "TUNNELD_NO_CACHE"
 const MultiviewEnv         = "TUNNELD_MULTIVIEW"
+const HTTPOriginEnv        = "HTTP_ORIGIN" // set for the programs a run starts
 const IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
 const CommandName          = "tunneld"
 const DefaultProvider      = "tunnel.pizza"

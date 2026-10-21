@@ -140,7 +140,9 @@ type RouterImpl struct {
 	// scrub, which answer or reshape a request before any origin is chosen.
 	// Nil is nothing in front.
 	wrap func(http.Handler) http.Handler
-	log  v1.Logger
+	// requests is the request log, nil for none: see WithRequestLog.
+	requests *requests
+	log      v1.Logger
 	// mux answers the ControlPath: the router's own endpoints, registered on
 	// the mux New makes. Shared by every route, since no route registers on
 	// it.
@@ -464,7 +466,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 		http.Error(w, "tunneld: nothing is exposed here yet", http.StatusNotFound)
 	})
 	if n > 0 {
-		site = redirect(n, proxy(urlsOf(dialable), schemesOf(dialable), ws, log))
+		site = redirect(n, logged(route.requests, proxy(urlsOf(dialable), schemesOf(dialable), ws, log)))
 		if front != nil {
 			site = front(site)
 		}
@@ -1118,6 +1120,9 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		to := pick(r)
+		if picked, ok := r.Context().Value(pickedKey{}).(*int); ok {
+			*picked = to.ix
+		}
 		if access, ok := auth.AccessOf(r.Context()); ok {
 			if scope := auth.Scope(schemes[to.ix]); !access.Has(scope) {
 				auth.InsufficientScope(w, r, scope)
