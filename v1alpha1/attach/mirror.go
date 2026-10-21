@@ -21,6 +21,11 @@ type mirror struct {
 	line   []byte
 }
 
+// mirrorLine is the longest line a mirror holds: a program that writes on and
+// on without a newline (a progress bar) gets its output written in pieces of
+// this length rather than held without end.
+const mirrorLine = 64 << 10
+
 func (m *mirror) Write(p []byte) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -28,6 +33,12 @@ func (m *mirror) Write(p []byte) (int, error) {
 	for {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
+			for len(m.line)+len(p) > mirrorLine {
+				take := mirrorLine - len(m.line)
+				m.line = append(m.line, p[:take]...)
+				m.emit()
+				p = p[take:]
+			}
 			m.line = append(m.line, p...)
 			return n, nil
 		}
@@ -48,9 +59,10 @@ func (m *mirror) flush() {
 
 // emit writes the line held, behind the prefix. The caller holds mu.
 func (m *mirror) emit() {
-	line := bytes.TrimRight(m.line, "\r")
-	out := make([]byte, 0, len(m.prefix)+len(line)+1)
-	out = append(append(append(out, m.prefix...), line...), '\n')
-	_, _ = m.w.Write(out)
+	var out bytes.Buffer
+	out.WriteString(m.prefix)
+	out.Write(bytes.TrimRight(m.line, "\r"))
+	out.WriteByte('\n')
+	_, _ = m.w.Write(out.Bytes())
 	m.line = m.line[:0]
 }
