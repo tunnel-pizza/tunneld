@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -107,6 +108,9 @@ type session struct {
 	// Both guarded by mu.
 	onEnd  func()
 	ending chan struct{}
+	// mirror is where the program's lines are copied for a run's own
+	// terminal, nil for none.
+	mirror atomic.Pointer[mirror]
 
 	// em is the screen. It does its own locking, so it is deliberately not
 	// under mu: writing to it can block until its replies are drained, and a
@@ -338,6 +342,9 @@ func (s *session) stream() {
 		// Last, once done is closed: a run that ended on its own, rather
 		// than for a restart, is reported.
 		defer func() {
+			if m := s.mirror.Load(); m != nil {
+				m.flush()
+			}
 			s.mu.Lock()
 			report := s.ending != done && s.ctx.Err() == nil
 			onEnd := s.onEnd
@@ -592,6 +599,9 @@ type screens struct{ s *session }
 func (w screens) Write(p []byte) (int, error) {
 	_, _ = lockedScreen(w).Write(p)
 	_, _ = w.s.out.Write(p)
+	if m := w.s.mirror.Load(); m != nil {
+		_, _ = m.Write(p)
+	}
 	return len(p), nil
 }
 

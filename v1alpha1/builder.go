@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -631,6 +632,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		spec.SetMutable(v1.WWWAuthenticateEnv, value)
 	}
 
+	// Compose output: with no frame to be drawn on the console, every origin's
+	// lines reach stderr behind a prefix naming it — a program's or
+	// container's output, a line per request for an address — as docker
+	// compose up shows its services. Not for an MCP run, whose client reads
+	// stderr as a log. Set before any program starts, so nothing is missed.
+	var requested []string
+	if !b.mcp && b.console.For(bound, cmd) == nil {
+		served, dialed := composePrefixes(origins, console.IsTerminal(stderr))
+		bound.Mirror(stderr, served)
+		requested = dialed
+	}
+
 	// A cached run knows its hostname from the spec it resumes, so the
 	// programs it starts can start now, told the origin, rather than wait for
 	// the tunnel. An uncached one leaves them to the run, which starts them
@@ -651,6 +664,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithOrigins(dialable),
 		router.WithWebSockets(ws),
 		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
+		router.WithRequestLog(stderr, requested),
 		// The run's cached spec on the control path: the cache keeps the
 		// origins it was loaded under, above, and saved under once the
 		// tunnel is up. The tunnel secret guards it, and a grant the cache
@@ -1455,6 +1469,42 @@ func (b *BuilderImpl) agent(log v1.Logger) Origins {
 	}
 
 	return origins
+}
+
+// composePrefixes is each origin's prefix for compose output, by index:
+// served for the origins whose output is copied (programs and containers),
+// dialed for the addresses whose requests are logged, "" in the other list.
+// A program or container is named by its base name, an address on this
+// machine by its port (":3000"), any other by its host; in a color of its own
+// when color, cycling through six.
+func composePrefixes(origins Origins, color bool) (served, dialed []string) {
+	colors := []string{"36", "35", "33", "32", "34", "31"}
+	served, dialed = make([]string, origins.Len()), make([]string, origins.Len())
+	for _, o := range origins.All() {
+		if o.Index < 0 || o.Index >= origins.Len() {
+			continue
+		}
+		name := o.URI.Host
+		switch o.Scheme {
+		case v1.ExecScheme, v1.AttachScheme:
+			name = path.Base(o.Ref)
+		default:
+			host, port := o.URI.Hostname(), o.URI.Port()
+			if ip := net.ParseIP(host); port != "" && (host == "localhost" || ip != nil && ip.IsLoopback()) {
+				name = ":" + port
+			}
+		}
+		prefix := "[" + name + "] "
+		if color {
+			prefix = "\x1b[" + colors[o.Index%len(colors)] + "m[" + name + "]\x1b[0m "
+		}
+		if o.Scheme == v1.HttpScheme {
+			dialed[o.Index] = prefix
+		} else {
+			served[o.Index] = prefix
+		}
+	}
+	return served, dialed
 }
 
 // debugEnv is internal and unpublished: "true" gives an agent's run a shell.

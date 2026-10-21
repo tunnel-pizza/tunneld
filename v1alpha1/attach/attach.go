@@ -439,6 +439,11 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 type Bound interface {
 	io.Closer
 	Announce(public []string)
+	// Mirror copies every served origin's output to w a line at a time,
+	// behind prefixes[index] (an origin with no prefix is not copied): the
+	// run's own terminal, when no frame is drawn on it. Called before Start,
+	// so nothing a program prints is missed.
+	Mirror(w io.Writer, prefixes []string)
 	// Exited delivers the exit statuses, in origin order, each time every
 	// program these servers started has ended on its own (not for a restart).
 	// Never, when they started none.
@@ -577,6 +582,16 @@ func (b bound) Close() error {
 		}
 	}
 	return err
+}
+
+// Mirror copies each server's output to w behind the prefix for its index.
+func (b bound) Mirror(w io.Writer, prefixes []string) {
+	mu := &sync.Mutex{}
+	for _, o := range b.origins {
+		if o.at < len(prefixes) && prefixes[o.at] != "" {
+			o.srv.session.mirror.Store(&mirror{mu: mu, w: w, prefix: prefixes[o.at]})
+		}
+	}
 }
 
 // Start runs every program a server here was holding for it.

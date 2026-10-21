@@ -679,6 +679,9 @@ type fakeBinder struct {
 	// exited is what Exited hands the run: a case sends every program's
 	// status on it to say they have all ended.
 	exited chan []int
+	// mirrored is the prefixes Mirror was handed, nil when compose output
+	// was not turned on.
+	mirrored []string
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -721,6 +724,9 @@ func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) er
 }
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
+
+// Mirror is where compose output would copy the served origins' lines.
+func (f *fakeBinder) Mirror(_ io.Writer, prefixes []string) { f.mirrored = prefixes }
 
 // Exited is when every program has ended, as a case sends it.
 func (f *fakeBinder) Exited() <-chan []int { return f.exited }
@@ -2864,6 +2870,57 @@ func TestAttachedSettlesBetweenStreams(t *testing.T) {
 	}
 	if switches < 4 {
 		t.Errorf("%d turns between the streams, want each address between its spinner or origin lines", switches)
+	}
+}
+
+// TestComposePrefixes pins how compose output names each origin: a program or
+// container by its base name, copied; an address on this machine by its port
+// and any other by its host, logged per request; in a color per origin when
+// stderr is a terminal.
+func TestComposePrefixes(t *testing.T) {
+	b := New()
+	if err := b.Command().ParseFlags([]string{"http://localhost:3000", "exec:///bin/sh", "https://api.example.com", "attach://dockerd/db"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	origins := b.Origins()
+	served, dialed := composePrefixes(origins, false)
+	if want := []string{"", "[sh] ", "", "[db] "}; !slices.Equal(served, want) {
+		t.Errorf("served = %q, want %q", served, want)
+	}
+	if want := []string{"[:3000] ", "", "[api.example.com] ", ""}; !slices.Equal(dialed, want) {
+		t.Errorf("dialed = %q, want %q", dialed, want)
+	}
+	if _, dialed := composePrefixes(origins, true); dialed[0] != "\x1b[36m[:3000]\x1b[0m " {
+		t.Errorf("colored = %q, want the first color around the name", dialed[0])
+	}
+}
+
+// TestComposeOutputWhenNoFrame pins when compose output is on: whenever no
+// frame will be drawn on the console, as with several origins or no terminal,
+// and never for an MCP run.
+func TestComposeOutputWhenNoFrame(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"no frame", nil, true},
+		{"an MCP run", []string{"--mcp"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.args) > 0 {
+				mcpStdin(t)
+			}
+			h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000", "http://localhost:4000")
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+			if err := h.run(t, ctx, tc.args...); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if got := h.binder.mirrored != nil; got != tc.want {
+				t.Errorf("compose output on = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -907,8 +907,31 @@ Splitting each address from the origin it reaches is not that duplication: the
 map still says which origin an address serves, and a script still gets the
 addresses without a parser.
 
-The process runs until `SIGINT`/`SIGTERM`, and exits non-zero if the tunnel
-fails first.
+**Compose output.** With no frame drawn on the console (several origins,
+`--multiview=false` with more than one, or no terminal at all, as in CI), and
+not for an `--mcp` run, every origin's lines reach stderr too, behind a prefix
+naming it, the way `docker compose up` shows its services:
+
+```
+[next] ▲ Next.js 16.4.2
+[next] - Local:  http://localhost:3000
+[:3000] GET / 200 41ms
+[:3000] GET /_next/static/chunks/main.js 200 3ms
+```
+
+- A program's or container's output, a line at a time, named by its base
+  name, while the same output is still served at its address. It is what the
+  terminal draws, so a line-oriented program (a dev server, a test suite)
+  reads well and a full-screen one (`htop`, `k9s`) does not.
+- A line per request to an address the tunnel dials, named by its port for
+  one on this machine (`:3000`) and its host otherwise: method, path, status,
+  and how long it took.
+- In a color per origin when stderr is a terminal. Keystrokes in that
+  terminal go nowhere, as with `docker compose up`.
+
+The process runs until `SIGINT`/`SIGTERM`, or until every program it started
+has exited (see [Programs](#programs)), and exits non-zero if the tunnel fails
+first, or with a failed program's status when nobody is at a terminal.
 
 ## The browser
 
