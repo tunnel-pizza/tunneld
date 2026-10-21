@@ -51,8 +51,9 @@ agent-specific framing.
   the builder in `v1alpha1`, so tunneld embeds as another program's subcommand.
   A feature that only works when tunneld is `os.Args[0]` is in the wrong
   package.
-- **Every change starts with an issue**, then a branch + PR with `Closes #<n>`.
-  Don't push to `main`. Full flow in
+- **Every change starts with an issue**, then a branch + PR with a `Closes #<n>`
+  line per issue: a PR may close several that land together, and PRs may be
+  stacked. Don't push to `main`. Full flow in
   [CONTRIBUTING.md → Branch / PR flow](./CONTRIBUTING.md#branch--pr-flow).
 - Don't commit secrets. [`.gitignore`](./.gitignore) covers `.env*`, `.claude/`
   and `*.local`. The cached tunnel spec is credentials and needs no entry: it
