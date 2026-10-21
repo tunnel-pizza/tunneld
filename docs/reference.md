@@ -323,12 +323,21 @@ tunneld exec:///usr/bin/htop
 The empty authority is this machine — that is the whole of what `exec://` with
 no provider says, and why the path is absolute.
 
-The program starts with `TUNNELD_ENV` naming the run's spec file, set before
-the tunnel exists. The file appears once the tunnel is up, and holds the
-hostname as `LIBTUNNEL_HOSTNAME` among the run's other lines; a program that
-wants its own public address reads it from there. With no file (`--no-cache`,
-or no cache directory) the variable is unset, never inherited from a run this
-one was started under.
+The program starts with `HTTP_ORIGIN` set to the tunnel's origin,
+`https://<hostname>`, the address its first origin answers on. A cached run
+knows its hostname from the spec it resumes and starts the program at once; an
+uncached one starts it once the tunnel is up and its spec is saved, so the
+program never starts without it. If the tunnel comes up on another hostname
+than the cache named (the cached spec was refused and a new one minted, or a
+new spec arrived mid-run), the run logs a warning and the program keeps the
+old value until it is restarted (`Ctrl+K` then `q`, `r`). A signal would not
+do: a running program's environment cannot be changed from outside it.
+
+It also starts with `TUNNELD_ENV` naming the run's spec file, which exists by
+then and holds the hostname as `LIBTUNNEL_HOSTNAME` among the run's other
+lines. With no file (`--no-cache`, or no cache directory) `TUNNELD_ENV` is
+unset. Neither variable is ever inherited from a run this one was started
+under.
 
 A bare argument that names a program on `$PATH` is that origin written short,
 since a word that resolves to a program is not a hostname anybody meant:
@@ -1359,6 +1368,7 @@ after construction still lands.
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MCP` | `--mcp` | Whether to serve MCP on stdin and stdout. Any value `strconv.ParseBool` accepts. |
+| `HTTP_ORIGIN` | *(no flag)* | Written, never read: set for the programs a run starts to the tunnel's origin, `https://<hostname>`; see [Programs](#programs). |
 | `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
 | `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
 

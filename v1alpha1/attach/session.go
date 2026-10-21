@@ -99,6 +99,9 @@ type session struct {
 	// cannot hold the lock.
 	resize chan remotecommand.TerminalSize
 	done   chan struct{}
+	// pending is a program the run starts that has not been started: it
+	// waits for start, and until then stdin and done are nil. Guarded by mu.
+	pending bool
 
 	// em is the screen. It does its own locking, so it is deliberately not
 	// under mu: writing to it can block until its replies are drained, and a
@@ -213,7 +216,7 @@ func (s *session) watch() {
 // returns as soon as the stream is running; a target that fails is reported
 // through the log, because by this point the tunnel is already up and a dead
 // terminal origin is not worth taking it down.
-func newSession(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, quit func(), log *slog.Logger) *session {
+func newSession(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, hold bool, quit func(), log *slog.Logger) *session {
 	em := vt.NewSafeEmulator(defaultCols, defaultRows)
 	em.SetScrollbackSize(historyLines())
 
@@ -243,10 +246,28 @@ func newSession(ctx context.Context, target Target, banner string, logs logs.Log
 		go s.followMotd(ctx, motd)
 	}
 
+	// Held, a program the run starts waits for start, so it starts with the
+	// tunnel's origin in its environment; a container is attached at once.
 	s.mu.Lock()
-	s.stream()
+	if again, ok := target.(Repeatable); hold && ok && again.Repeatable() {
+		s.pending = true
+	} else {
+		s.stream()
+	}
 	s.mu.Unlock()
 	return s
+}
+
+// start runs a program the session was holding. Nothing for a container, a
+// program already started, or a session going away.
+func (s *session) start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pending || s.ctx.Err() != nil {
+		return
+	}
+	s.pending = false
+	s.stream()
 }
 
 // stream opens one attach and starts feeding the emulator from it. The caller
@@ -480,6 +501,9 @@ func (s *session) restartInFlight() <-chan struct{} {
 func (s *session) close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stdin == nil {
+		return nil // a program that never started
+	}
 	return s.stdin.Close()
 }
 

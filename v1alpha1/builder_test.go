@@ -673,6 +673,9 @@ type fakeBinder struct {
 	// env is TUNNELD_ENV as Bind found it: what every program a bound
 	// origin starts inherits.
 	env string
+	// origins is HTTP_ORIGIN as each Start found it, in order: what the
+	// programs a bound origin starts would inherit.
+	origins []string
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -715,6 +718,9 @@ func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) er
 }
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
+
+// Start is what a run starts its programs through.
+func (f *fakeBinder) Start() { f.origins = append(f.origins, os.Getenv(v1.HTTPOriginEnv)) }
 
 func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
 
@@ -2852,6 +2858,43 @@ func TestAttachedSettlesBetweenStreams(t *testing.T) {
 	}
 	if switches < 4 {
 		t.Errorf("%d turns between the streams, want each address between its spinner or origin lines", switches)
+	}
+}
+
+// TestProgramsLearnTheOrigin pins HTTP_ORIGIN, as Start finds it each time
+// the programs a run starts are started. A cached run starts them before the
+// tunnel is up, with the hostname its spec names, and the run starts them
+// again (a no-op) once it is; an uncached one leaves them to the run. A cached
+// hostname the tunnel did not come up on is replaced, with a warning. One
+// inherited from the environment the run started in is never passed on.
+func TestProgramsLearnTheOrigin(t *testing.T) {
+	const public = "https://foo.tunneld.domain/"
+	for _, tc := range []struct {
+		name, cached string
+		want         []string
+		warned       bool
+	}{
+		{"uncached", "", []string{"https://foo.tunneld.domain"}, false},
+		{"cached", `{"hostname":"foo.tunneld.domain"}`, []string{"https://foo.tunneld.domain", "https://foo.tunneld.domain"}, false},
+		{"cached, then minted elsewhere", `{"hostname":"bar.tunneld.domain"}`, []string{"https://bar.tunneld.domain", "https://foo.tunneld.domain"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRunHarness(t, live(public), "http://localhost:3000")
+			t.Setenv(v1.HTTPOriginEnv, "https://inherited.example")
+			h.cache.cached = tc.cached
+			ctx, cancel := context.WithCancel(t.Context())
+			h.cache.onSave = cancel
+
+			if err := h.run(t, ctx, "--log-level", "warn"); err != nil {
+				t.Fatalf("run() = %v", err)
+			}
+			if !slices.Equal(h.binder.origins, tc.want) {
+				t.Errorf("%s at each Start = %q, want %q", v1.HTTPOriginEnv, h.binder.origins, tc.want)
+			}
+			if got := strings.Contains(h.stderr.String(), "the tunnel's origin changed"); got != tc.warned {
+				t.Errorf("warned = %v, want %v; stderr = %q", got, tc.warned, h.stderr.String())
+			}
+		})
 	}
 }
 

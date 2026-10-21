@@ -1362,6 +1362,37 @@ func (r *rerunTarget) awaitRun(t *testing.T, want int) {
 	}
 }
 
+// TestAHeldProgramWaitsForStart pins WithHold: a program a Bind starts does
+// not run until Start, so it can start knowing the tunnel's origin, and Start
+// runs it once however often it is called.
+func TestAHeldProgramWaitsForStart(t *testing.T) {
+	target := newRerunTarget(true)
+	t.Cleanup(target.release)
+	s, err := serve(t.Context(), target, testBanner, testLogs{}, nil, nil, newAsk(), true, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started before Start", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+	s.Start()
+	s.Start()
+	select {
+	case <-target.ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the program never started")
+	}
+	select {
+	case n := <-target.ran:
+		t.Fatalf("run %d started: Start ran the program twice", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // TestAViewerStartsARepeatableTargetAgain pins the answer to a program origin
 // outliving its program.
 //

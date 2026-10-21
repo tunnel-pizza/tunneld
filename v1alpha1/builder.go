@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -539,7 +540,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	b.runCache = spec
 
 	// Every program the run starts learns where its spec file is, before
-	// Bind, since an exec origin's program starts there. Unset when there is
+	// Bind, which is where a program not held for Start starts. Unset when there is
 	// no file, so one inherited from a run this one was started under is not
 	// passed on as this run's.
 	if path := spec.Path(origins); path != "" {
@@ -547,6 +548,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	} else {
 		_ = os.Unsetenv(v1.SpecPathEnv)
 	}
+	// Set below or by the run, once this run knows its origin.
+	_ = os.Unsetenv(v1.HTTPOriginEnv)
 
 	// A container is not an HTTP service, so tunneld serves one on
 	// its behalf and hands the tunnel the loopback address instead.
@@ -626,6 +629,18 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 			return fmt.Errorf("%s: %w", v1.WWWAuthenticateEnv, err)
 		}
 		spec.SetMutable(v1.WWWAuthenticateEnv, value)
+	}
+
+	// A cached run knows its hostname from the spec it resumes, so the
+	// programs it starts can start now, told the origin, rather than wait for
+	// the tunnel. An uncached one leaves them to the run, which starts them
+	// once the tunnel is up. After the password is unset, so none inherits it.
+	var cached struct {
+		Hostname string `json:"hostname"`
+	}
+	if json.Unmarshal([]byte(loaded), &cached) == nil && cached.Hostname != "" {
+		_ = os.Setenv(v1.HTTPOriginEnv, "https://"+cached.Hostname)
+		bound.Start()
 	}
 
 	// The router lasts the run, not one tunnel: the run cancels it once it is

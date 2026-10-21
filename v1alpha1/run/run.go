@@ -541,6 +541,20 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		cache.WithLog(log),
 	)
 
+	// The programs the run starts, which waited for this: a cached run
+	// started them already, with the hostname its file named, and one that
+	// came up elsewhere leaves them holding the old origin until restarted.
+	// After the save, so the file TUNNELD_ENV names is there when they start.
+	origin := public.Scheme + "://" + public.Host
+	if was := os.Getenv(v1.HTTPOriginEnv); was != origin {
+		if was != "" {
+			log.Warn("the tunnel's origin changed; programs already running keep the old "+v1.HTTPOriginEnv+" until restarted",
+				"was", was, "now", origin)
+		}
+		_ = os.Setenv(v1.HTTPOriginEnv, origin)
+	}
+	bound.Start()
+
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C
 	// there will not reach this run, so it gets no hint saying so.

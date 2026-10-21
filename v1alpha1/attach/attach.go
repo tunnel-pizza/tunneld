@@ -255,6 +255,8 @@ type BinderImpl struct {
 	logs    logs.Log
 	motd    motd.Motd
 	sinks   []Sink
+	// hold is whether a program a Bind starts waits for Bound.Start.
+	hold bool
 }
 
 // New returns a BinderImpl, configured by opts. It carries no Targets until
@@ -317,6 +319,13 @@ func WithSinks(sinks ...Sink) Option {
 	return func(b *BinderImpl) { b.sinks = append(b.sinks, sinks...) }
 }
 
+// WithHold has every program a Bind starts (an exec:// origin) wait for
+// Bound.Start rather than start at Bind, so that it starts once the run
+// knows the tunnel's origin. A container is attached at Bind either way.
+func WithHold() Option {
+	return func(b *BinderImpl) { b.hold = true }
+}
+
 // answered is every verb://provider pair this binder has a provider for, in
 // order, for the message a caller gets when their origin names none of them.
 // Sorted, so the list reads the same twice: the registry is a map.
@@ -362,7 +371,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			_ = servers.Close()
 			return nil, nil, err
 		}
-		server, err := Serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, asked, log)
+		server, err := serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, asked, b.hold, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
@@ -413,6 +422,11 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 type Bound interface {
 	io.Closer
 	Announce(public []string)
+	// Start runs the programs these servers start (exec:// origins), which
+	// wait for it so that they start knowing the tunnel's origin. Nothing
+	// for a container, attached from the start, or a program already
+	// running; safe to call more than once.
+	Start()
 	Done() <-chan struct{}
 	// Terminal is the session serving origin index, false for an origin
 	// this run dials rather than serves, or an index past the run.
@@ -493,6 +507,13 @@ func (b bound) Close() error {
 		}
 	}
 	return err
+}
+
+// Start runs every program a server here was holding for it.
+func (b bound) Start() {
+	for _, o := range b.origins {
+		o.srv.Start()
+	}
 }
 
 // Announce gives each server the public address it answers on, taken from
@@ -579,6 +600,11 @@ func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 //
 // The Server takes ownership of target: Close closes both.
 func Serve(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, asked *ask, log *slog.Logger) (*Server, error) {
+	return serve(ctx, target, banner, logs, motd, sinks, asked, false, log)
+}
+
+// serve is Serve, with hold for a program that waits for Start.
+func serve(ctx context.Context, target Target, banner string, logs logs.Log, motd motd.Motd, sinks []Sink, asked *ask, hold bool, log *slog.Logger) (*Server, error) {
 	// This points klog at the tunnel's own logger, once per process.
 	//
 	// ServeAttach's machinery — cri-streaming and the wsstream underneath it —
@@ -633,7 +659,7 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 	// The frame offers an exit, and this is what it reaches: closing the ask
 	// says a viewer asked, and nothing here acts on it — ending the run is the
 	// command's to do, and it is watching.
-	s.session = newSession(sctx, target, banner, logs, motd, sinks, func() {
+	s.session = newSession(sctx, target, banner, logs, motd, sinks, hold, func() {
 		log.Info("a viewer asked the run to end", "target", target.Name())
 		s.asked.close()
 	}, log)
@@ -811,6 +837,9 @@ func Serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 // Announce tells the terminal the public address it answers on, which is what
 // its frame shows in the corner. Before this it shows nothing there.
 func (s *Server) Announce(public string) { s.session.announce(public) }
+
+// Start runs the program this server starts, if it was holding it.
+func (s *Server) Start() { s.session.start() }
 
 // URL is the loopback address the tunnel proxies to.
 func (s *Server) URL() *url.URL {

@@ -275,6 +275,14 @@ const (
 	// never read.
 	SpecPathEnv = "TUNNELD_ENV"
 
+	// HTTPOriginEnv is what every program a run starts is told the tunnel's
+	// origin by: https://<hostname>, the address its first origin answers
+	// on. A cached run knows it before it starts its programs; an uncached
+	// one starts them once the tunnel is up, so a program never starts
+	// without it. Written, never read: one inherited from the environment a
+	// run was started in is not passed on as this run's.
+	HTTPOriginEnv = "HTTP_ORIGIN"
+
 	// UserAgentHeader names which tunneld is asking, on every mint request.
 	UserAgentHeader = "User-Agent"
 
