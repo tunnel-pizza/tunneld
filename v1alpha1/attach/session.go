@@ -102,6 +102,11 @@ type session struct {
 	// pending is a program the run starts that has not been started: it
 	// waits for start, and until then stdin and done are nil. Guarded by mu.
 	pending bool
+	// onEnd is told each time a run ends on its own, not for a restart.
+	// ending is the done of the run a restart is ending, which is not one.
+	// Both guarded by mu.
+	onEnd  func()
+	ending chan struct{}
 
 	// em is the screen. It does its own locking, so it is deliberately not
 	// under mu: writing to it can block until its replies are drained, and a
@@ -258,6 +263,35 @@ func newSession(ctx context.Context, target Target, banner string, logs logs.Log
 	return s
 }
 
+// setEnded sets what is told each time a run ends on its own.
+func (s *session) setEnded(onEnd func()) {
+	s.mu.Lock()
+	s.onEnd = onEnd
+	s.mu.Unlock()
+}
+
+// status is how the program this session runs stands: program is false for
+// a target that is not one (a container), over is whether its current run
+// has ended, and code how.
+func (s *session) status() (code int, program, over bool) {
+	exiter, ok := s.Target.(Exiter)
+	if !ok {
+		return 0, false, false
+	}
+	s.mu.Lock()
+	done := s.done
+	s.mu.Unlock()
+	if done == nil {
+		return 0, true, false
+	}
+	select {
+	case <-done:
+		return exiter.ExitCode(), true, true
+	default:
+		return 0, true, false
+	}
+}
+
 // start runs a program the session was holding. Nothing for a container, a
 // program already started, or a session going away.
 func (s *session) start() {
@@ -301,6 +335,17 @@ func (s *session) stream() {
 	}()
 
 	go func() {
+		// Last, once done is closed: a run that ended on its own, rather
+		// than for a restart, is reported.
+		defer func() {
+			s.mu.Lock()
+			report := s.ending != done && s.ctx.Err() == nil
+			onEnd := s.onEnd
+			s.mu.Unlock()
+			if report && onEnd != nil {
+				onEnd()
+			}
+		}()
 		defer close(done)
 		defer s.wakeAll()
 		defer func() { _ = pr.Close() }()
@@ -462,6 +507,7 @@ func (s *session) restart() {
 	over := make(chan struct{})
 	s.restarting = over
 	done := s.done
+	s.ending = done
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()

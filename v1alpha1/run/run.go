@@ -633,6 +633,28 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 		case <-bound.Done():
 			log.Info("a viewer asked this run to end; stopping")
 			return "", false, nil
+		case codes := <-bound.Exited():
+			// Every program the run started has exited. All of them
+			// succeeding ends the run cleanly. A failure ends it with that
+			// program's status, unless somebody is at a terminal to restart
+			// the program, in which case the run waits for them.
+			code := 0
+			for _, c := range codes {
+				if c != 0 {
+					code = c
+					break
+				}
+			}
+			if code == 0 {
+				log.Info("every program the run started has exited; stopping")
+				return "", false, nil
+			}
+			if display.IsInteractive(r.cmd) || r.attached {
+				log.Warn("a program the run started has exited; staying up so it can be restarted", "status", code)
+				continue
+			}
+			log.Info("every program the run started has exited; stopping", "status", code)
+			return "", false, v1.ExitError{Code: code}
 		}
 	}
 

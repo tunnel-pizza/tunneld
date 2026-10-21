@@ -16,6 +16,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -206,6 +208,8 @@ type TargetImpl struct {
 	// exited closes when the current run's program has exited, for End to
 	// wait on. Replaced per run, under mu, beside cmd and term.
 	exited chan struct{}
+	// code is how the last run's program ended, under mu: see ExitCode.
+	code int
 }
 
 // Name is the reference the operator typed, not the resolved path: it is what
@@ -485,8 +489,37 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	// The program's own exit status is not tunneld's failure — a program that
 	// ends with an error has still done exactly what it was asked to — so it
 	// is reported where somebody debugging would look and nowhere else.
-	if wait := cmd.Wait(); wait != nil {
-		a.log.Debug("program ended", "program", a.ref, "error", wait)
-	}
+	a.wait(cmd)
 	return err
+}
+
+// wait waits for the program and keeps how it ended for ExitCode. Its status
+// is not tunneld's failure, so it is logged at debug and returned nowhere.
+func (a *TargetImpl) wait(cmd *exec.Cmd) {
+	err := cmd.Wait()
+	if err != nil {
+		a.log.Debug("program ended", "program", a.ref, "error", err)
+	}
+	code := 0
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		code = exit.ExitCode()
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			code = 128 + int(status.Signal())
+		}
+	case err != nil:
+		code = 1
+	}
+	a.mu.Lock()
+	a.code = code
+	a.mu.Unlock()
+}
+
+// ExitCode is how the last run's program ended: its status, 128 plus the
+// signal that ended it, or 1 when it could not be waited for.
+func (a *TargetImpl) ExitCode() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.code
 }

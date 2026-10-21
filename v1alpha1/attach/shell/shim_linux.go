@@ -251,9 +251,7 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 
 	waited := make(chan struct{})
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			a.log.Debug("program ended", "program", a.ref, "error", err)
-		}
+		a.wait(cmd)
 		close(waited)
 		// A program gone, something it started still holding the socket:
 		// bounded as pipes' are.

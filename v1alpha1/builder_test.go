@@ -676,6 +676,9 @@ type fakeBinder struct {
 	// origins is HTTP_ORIGIN as each Start found it, in order: what the
 	// programs a bound origin starts would inherit.
 	origins []string
+	// exited is what Exited hands the run: a case sends every program's
+	// status on it to say they have all ended.
+	exited chan []int
 	// onAnnounce fires when it arrives, which is after the URL is live and
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
@@ -718,6 +721,9 @@ func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) er
 }
 
 func (f *fakeBinder) Close() error { f.closed = true; return nil }
+
+// Exited is when every program has ended, as a case sends it.
+func (f *fakeBinder) Exited() <-chan []int { return f.exited }
 
 // Start is what a run starts its programs through.
 func (f *fakeBinder) Start() { f.origins = append(f.origins, os.Getenv(v1.HTTPOriginEnv)) }
@@ -2858,6 +2864,54 @@ func TestAttachedSettlesBetweenStreams(t *testing.T) {
 	}
 	if switches < 4 {
 		t.Errorf("%d turns between the streams, want each address between its spinner or origin lines", switches)
+	}
+}
+
+// TestARunEndsWithItsPrograms pins what a run does once every program it
+// started has exited: all of them succeeding ends it cleanly; a failure ends
+// it with that program's status (ExitError) when nobody is at a terminal, as
+// in CI, and leaves it up for a restart when somebody is.
+func TestARunEndsWithItsPrograms(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		codes    []int
+		terminal bool
+		want     int // the ExitError's code, 0 for a clean end, -1 for still up
+	}{
+		{"all succeeded", []int{0, 0}, false, 0},
+		{"one failed, no terminal", []int{0, 3}, false, 3},
+		{"one failed, at a terminal", []int{3}, true, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000")
+			if tc.terminal {
+				ptmx, tty, err := pty.Open()
+				if err != nil {
+					t.Skipf("no pty to be a terminal on: %v", err)
+				}
+				t.Cleanup(func() { tty.Close(); ptmx.Close() })
+				h.console = tty
+			}
+			h.binder.exited = make(chan []int, 1)
+			h.cache.onSave = func() { h.binder.exited <- tc.codes }
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+
+			err := h.run(t, ctx, "--multiview=false")
+			var exit v1.ExitError
+			switch {
+			case tc.want < 0:
+				if err != nil || ctx.Err() == nil {
+					t.Errorf("run() = %v, ctx %v; want it still up until the deadline", err, ctx.Err())
+				}
+			case tc.want == 0:
+				if err != nil || ctx.Err() != nil {
+					t.Errorf("run() = %v, ctx %v; want a clean end before the deadline", err, ctx.Err())
+				}
+			case !errors.As(err, &exit) || exit.Code != tc.want:
+				t.Errorf("run() = %v, want an ExitError with status %d", err, tc.want)
+			}
+		})
 	}
 }
 

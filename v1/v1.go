@@ -38,6 +38,7 @@ package v1
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/url"
 
@@ -156,6 +157,15 @@ var ErrNoDocker = errors.New("docker daemon unreachable")
 // and share one registration, so the second is refused before it mints
 // anything; the message names the first one's pid.
 var ErrRunning = errors.New("already running")
+
+// ExitError ends a run that its programs ended: every program it started has
+// exited, and Code is the status the process exits with, the first non-zero
+// one among theirs. A run whose programs all exited 0 ends with no error.
+type ExitError struct{ Code int }
+
+func (e ExitError) Error() string {
+	return fmt.Sprintf("a program the run started exited with status %d", e.Code)
+}
 
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator

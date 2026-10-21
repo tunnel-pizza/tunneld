@@ -147,6 +147,14 @@ type Ender interface {
 	End(ctx context.Context) error
 }
 
+// Exiter is a target whose program ends with a status: ExitCode is how the
+// last run ended, 0 for success, 128 plus the signal for one a signal ended.
+// A container is not one; a program the run starts is, and a Bound reports
+// through Exited when every one of those has ended.
+type Exiter interface {
+	ExitCode() int
+}
+
 // Noticer says for itself what its page should explain about how the target
 // is served, in place of the explanation built from TTY and Stdin — which
 // names the docker flags a container was started without, and is wrong for a
@@ -345,7 +353,7 @@ func (b *BinderImpl) answered() []string {
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
 	dialable := make([]*url.URL, 0, shown.Len())
-	servers := bound{}
+	servers := bound{exits: &exits{ch: make(chan []int, 1)}}
 	asked := newAsk()
 	for _, origin := range shown.All() {
 		// Anything no provider claims is an address the tunnel dials itself.
@@ -378,6 +386,10 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 			return nil, nil, err
 		}
 		servers.origins = append(servers.origins, boundOrigin{at: origin.Index, srv: server})
+		servers.exits.mu.Lock()
+		servers.exits.servers = append(servers.exits.servers, server)
+		servers.exits.mu.Unlock()
+		server.session.setEnded(servers.exits.ended)
 		dialable = append(dialable, server.URL())
 		log.Info("serving a reference as an origin", "reference", origin.URI.Host+origin.URI.Path, "scheme", origin.URI.Scheme, "origin", server.URL())
 	}
@@ -389,6 +401,11 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	// tiles. That run gets the report on the console and the panel in a tab.
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
+	servers.exits.mu.Lock()
+	servers.exits.bound = true
+	servers.exits.mu.Unlock()
+	servers.exits.ended()
+
 	if len(servers.origins) == 1 && shown.Len() == 1 {
 		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
 	}
@@ -422,6 +439,10 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 type Bound interface {
 	io.Closer
 	Announce(public []string)
+	// Exited delivers the exit statuses, in origin order, each time every
+	// program these servers started has ended on its own (not for a restart).
+	// Never, when they started none.
+	Exited() <-chan []int
 	// Start runs the programs these servers start (exec:// origins), which
 	// wait for it so that they start knowing the tunnel's origin. Nothing
 	// for a container, attached from the start, or a program already
@@ -442,6 +463,55 @@ type Bound interface {
 // derived from n.
 type bound struct {
 	origins []boundOrigin
+	exits   *exits
+}
+
+// exits is where the programs one Bind started report ending, and where the
+// run learns that all of them have.
+type exits struct {
+	mu      sync.Mutex
+	servers []*Server
+	ch      chan []int
+	// bound is whether Bind has every server: a program that ends before
+	// then is checked once it has.
+	bound bool
+}
+
+// ended checks, as one program ends, whether every program has: if so their
+// statuses go on ch, replacing any the run has not read.
+func (e *exits) ended() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.bound {
+		return
+	}
+	var codes []int
+	for _, srv := range e.servers {
+		code, program, over := srv.session.status()
+		if !program {
+			continue
+		}
+		if !over {
+			return
+		}
+		codes = append(codes, code)
+	}
+	if codes == nil {
+		return
+	}
+	select {
+	case <-e.ch:
+	default:
+	}
+	e.ch <- codes
+}
+
+// Exited is where the run learns every program has ended.
+func (b bound) Exited() <-chan []int {
+	if b.exits == nil {
+		return nil
+	}
+	return b.exits.ch
 }
 
 // show puts the one origin bound here on the given streams.

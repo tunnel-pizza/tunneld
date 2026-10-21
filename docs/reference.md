@@ -395,14 +395,24 @@ somewhere else, and an explicit scheme always wins. A word that resolves only
 through the working directory is left alone: a file that happens to sit where
 you started tunneld does not become a public origin because you typed its name.
 
-The program starts when the first viewer opens the page and ends with the
-session. It gets a real pseudo-terminal, so a full-screen program draws,
+The program starts with the run, once the run knows the tunnel's origin (see
+`HTTP_ORIGIN` above), not when the first viewer opens the page, so what it
+printed before anybody looked is on the screen when they do. It gets a real
+pseudo-terminal, so a full-screen program draws,
 keystrokes reach it, and resizing the browser resizes it. Nothing replays when
 the page opens — unlike a container, it has not been running since before you
 looked.
 
-**A program that ends can be started again.** Whatever ends it — `Ctrl-C`, the
-key the program quits on, or simply finishing — the origin stays up, the page
+**A run ends when its programs do.** Once every program the run started has
+exited on its own (a restart does not count), the run ends: cleanly, exit status
+0, when they all exited 0. When one failed, the run ends with that program's
+status (128 plus the signal for one a signal ended) if nobody is at a terminal,
+as in CI, so `tunneld :3001 'node scripts/test.mjs'` passes or fails with the
+script; with somebody at a terminal it stays up, so the program can be fixed
+and started again. A run with containers and addresses beside its programs ends
+the same way: they are not programs the run started.
+
+**A program that ends can be started again**, while the run stays up. The page
 offers a **restart** where a container's offers only a reconnect, and the next
 visit runs it once more on a clean screen. That is a new program and not a
 resumed one: nothing it had open before is still open. A container cannot be
