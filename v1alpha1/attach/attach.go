@@ -352,7 +352,7 @@ func (b *BinderImpl) answered() []string {
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
 func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
-	dialable := make([]*url.URL, 0, shown.Len())
+	dialable := make([]v1.Origin, 0, shown.Len())
 	servers := bound{exits: &exits{ch: make(chan []int, 1)}}
 	asked := newAsk()
 	for _, origin := range shown.All() {
@@ -368,7 +368,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
 					origin.URI.Scheme, origin.URI.Host, strings.Join(b.answered(), ", "))
 			}
-			dialable = append(dialable, &origin.URI)
+			dialable = append(dialable, origin)
 			continue
 		}
 
@@ -390,7 +390,12 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		servers.exits.servers = append(servers.exits.servers, server)
 		servers.exits.mu.Unlock()
 		server.session.setEnded(servers.exits.ended)
-		dialable = append(dialable, server.URL())
+		// Only where it is dialed changes: a token's scope is held against
+		// what the origin is, and a program served over loopback http is
+		// still a program.
+		at := origin
+		at.URI = *server.URL()
+		dialable = append(dialable, at)
 		log.Info("serving a reference as an origin", "reference", origin.URI.Host+origin.URI.Path, "scheme", origin.URI.Scheme, "origin", server.URL())
 	}
 	// A closer that can be shown on a console says so by carrying the method,
@@ -406,10 +411,12 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	servers.exits.mu.Unlock()
 	servers.exits.ended()
 
+	reached := origins.New()
+	reached.Add(dialable...)
 	if len(servers.origins) == 1 && shown.Len() == 1 {
-		return origins.New(origins.WithURL(dialable...)), sole{servers}, nil
+		return reached, sole{servers}, nil
 	}
-	return origins.New(origins.WithURL(dialable...)), servers, nil
+	return reached, servers, nil
 }
 
 // sole is a bound list of exactly one, from a run of exactly one origin, which
