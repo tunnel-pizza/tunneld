@@ -43,13 +43,13 @@ func connect(t *testing.T, m *McpImpl) *sdk.ClientSession {
 // log replaces the discarding default, and a nil log keeps it.
 func TestNew(t *testing.T) {
 	all := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh")
-	served := tooltest.Bound{}
+	served := tooltest.Attached{}
 	log := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
 		name     string
 		opts     []Option
 		origins  v1.Origins
-		attached attach.Bound
+		attached attach.Attached
 		log      *slog.Logger
 	}{
 		{"defaults", nil, nil, nil, nil},
@@ -131,12 +131,12 @@ func TestATerminalOverMcp(t *testing.T) {
 		t.Skip("no /bin/sh")
 	}
 	shown := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh")
-	bound, err := attach.New(attach.WithTargets(shell.New())).Attach(t.Context(), shown, slog.New(slog.DiscardHandler))
+	attached, err := attach.New(attach.WithTargets(shell.New())).Attach(t.Context(), shown, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	defer func() { _ = bound.Close() }()
-	cs := connect(t, New(WithOrigins(shown), WithAttached(bound)))
+	defer func() { _ = attached.Close() }()
+	cs := connect(t, New(WithOrigins(shown), WithAttached(attached)))
 
 	call := func(name, args string) *sdk.CallToolResult {
 		t.Helper()

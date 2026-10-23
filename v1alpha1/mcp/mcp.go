@@ -35,7 +35,7 @@ type Option = v1.Option[*McpImpl]
 // handler to mount on the control path and a Close for the run's end.
 type McpImpl struct {
 	origins  v1.Origins
-	attached attach.Bound
+	attached attach.Attached
 	log      v1.Logger
 	cache    cache.Cache
 	ctx      context.Context
@@ -97,7 +97,7 @@ func WithOrigins(origins v1.Origins) Option {
 
 // WithAttached sets the servers standing in for the run's served origins,
 // which the terminal tools type into and read.
-func WithAttached(attached attach.Bound) Option {
+func WithAttached(attached attach.Attached) Option {
 	return func(m *McpImpl) { m.attached = attached }
 }
 

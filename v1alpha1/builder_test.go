@@ -659,9 +659,9 @@ func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.O
 // fakeAttacher stands in for the attach package: it serves none of the
 // origins and closes nothing, so TestRun never stands up a real listener.
 type fakeAttacher struct {
-	attach.Bound // the rest, which a run never asks of it
-	err          error
-	closed       bool
+	attach.Attached // the rest, which a run never asks of it
+	err             error
+	closed          bool
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}
@@ -673,7 +673,7 @@ type fakeAttacher struct {
 	// origin starts inherits.
 	env string
 	// origins is HTTP_ORIGIN as each Start found it, in order: what the
-	// programs a bound origin starts would inherit.
+	// programs an attached origin starts would inherit.
 	origins []string
 	// exited is what Exited hands the run: a case sends every program's
 	// status on it to say they have all ended.
@@ -697,7 +697,7 @@ type fakeAttacher struct {
 	shows atomic.Int32
 }
 
-func (f *fakeAttacher) Attach(_ context.Context, _ Origins, _ v1.Logger) (attach.Bound, error) {
+func (f *fakeAttacher) Attach(_ context.Context, _ Origins, _ v1.Logger) (attach.Attached, error) {
 	f.env = os.Getenv(v1.SpecPathEnv)
 	// Carrying Mirror is how the real attacher says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
@@ -709,7 +709,7 @@ func (f *fakeAttacher) Attach(_ context.Context, _ Origins, _ v1.Logger) (attach
 	return f, f.err
 }
 
-// mirrorableAttacher is a bound closer with a terminal to draw, which is what
+// mirrorableAttacher is an attached closer with a terminal to draw, which is what
 // the attacher hands back for a single served origin.
 type mirrorableAttacher struct{ *fakeAttacher }
 
@@ -735,7 +735,7 @@ func (f *fakeAttacher) Start() { f.origins = append(f.origins, os.Getenv(v1.HTTP
 
 func (f *fakeAttacher) Done() <-chan struct{} { return f.asked }
 
-// Announce is what a bound closer is told the public addresses through. Every
+// Announce is what an attached closer is told the public addresses through. Every
 // one of them can be, which is why it is on the type Attach returns rather than
 // an interface a caller has to go looking for.
 func (f *fakeAttacher) Announce(public []string) {
@@ -1872,7 +1872,7 @@ func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
 // originStrings renders parsed origins for comparison, so a table can be
 // written the way somebody types origins rather than as *url.URL literals.
 func originStrings(origins Origins) []string {
-	return urlStrings(urisOf(origins))
+	return urlStrings(urlsOf(origins))
 }
 
 // urlStrings is the same for a plain slice, which is what a case that slices
@@ -2023,7 +2023,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 			// Compared as fields rather than as strings, because a Windows
 			// path is C:\... and url.URL.String escapes every separator in it.
-			got := urisOf(b.Origins())
+			got := urlsOf(b.Origins())
 			if !slices.EqualFunc(got, want, func(a, b *url.URL) bool {
 				return a.Scheme == b.Scheme && a.Host == b.Host && a.Path == b.Path && a.RawQuery == b.RawQuery
 			}) {
@@ -2118,7 +2118,7 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || uriAt(got, 2).Path != want {
+	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || got.At(2).URL().Path != want {
 		t.Fatalf("Origins() = %q, want the last to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
@@ -2129,15 +2129,15 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// way round. It costs nothing there, because the attacher reads the path off
 	// the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
-		again, err := url.Parse(uriAt(got, 2).String())
+		again, err := url.Parse(got.At(2).URL().String())
 		if err != nil {
-			t.Fatalf("%q did not parse back: %v", uriAt(got, 2), err)
+			t.Fatalf("%q did not parse back: %v", got.At(2).URL(), err)
 		}
 		if again.Path != want {
-			t.Errorf("%q parsed back to path %q, want %q", uriAt(got, 2), again.Path, want)
+			t.Errorf("%q parsed back to path %q, want %q", got.At(2).URL(), again.Path, want)
 		}
 	}
-	if rest := urlStrings(urisOf(got)[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
+	if rest := urlStrings(urlsOf(got)[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 
@@ -2146,12 +2146,12 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// something, so it is looked up as a program first — and lands on the
 	// resolved path, exactly as the bare word does.
 	spelled := New(WithOrigin(string(v1.ExecScheme) + "://" + name)).Origins()
-	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || uriAt(spelled, 0).Path != want {
+	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || spelled.At(0).URL().Path != want {
 		t.Fatalf("Origins(%q) = %q, want %s://%s", string(v1.ExecScheme)+"://"+name, originStrings(spelled), v1.ExecScheme, want)
 	}
-	if uriAt(got, 2).String() != uriAt(spelled, 0).String() {
+	if got.At(2).URL().String() != spelled.At(0).URL().String() {
 		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
-			name, string(v1.ExecScheme)+"://"+name, uriAt(got, 2), uriAt(spelled, 0))
+			name, string(v1.ExecScheme)+"://"+name, got.At(2).URL(), spelled.At(0).URL())
 	}
 }
 
@@ -2307,7 +2307,7 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 		t.Fatalf("positional args = %q, want %q", got, want)
 	}
 	got := b.Origins()
-	if got.Len() != 1 || !slices.Equal(uriAt(got, 0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
+	if got.Len() != 1 || !slices.Equal(got.At(0).URL().Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
 		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
 }
@@ -2582,7 +2582,7 @@ func TestReportLogsWhatNothingListensOn(t *testing.T) {
 			if h.router.probed == nil {
 				t.Fatal("the run never asked the router what answers")
 			}
-			if got, want := urlStrings(urisOf(h.router.probed)), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
+			if got, want := urlStrings(urlsOf(h.router.probed)), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
 				t.Errorf("asked about %q, want the origins as typed %q", got, want)
 			}
 			out := h.stderr.String()
@@ -3007,7 +3007,7 @@ func TestProgramsLearnTheOrigin(t *testing.T) {
 }
 
 // TestProgramsLearnTheSpecFile pins TUNNELD_ENV: set to where the run's
-// spec is kept before anything is bound, since a program an exec origin runs
+// spec is kept before anything is attached, since a program an exec origin runs
 // starts at Attach, and unset when the run keeps no file, so a run inside
 // another run's shell does not pass on its parent's.
 func TestProgramsLearnTheSpecFile(t *testing.T) {
@@ -4019,18 +4019,12 @@ func TestTheDefaultAuthReadsTheOwner(t *testing.T) {
 	}
 }
 
-// uriAt is origin i's URI, as a pointer: what URL methods are called on.
-func uriAt(origins v1.Origins, i int) *url.URL {
-	u := origins.At(i).URI
-	return &u
-}
-
-// urisOf is every origin's URI, in order.
-func urisOf(origins v1.Origins) []*url.URL {
+// urlsOf is every origin's URL, in order.
+func urlsOf(origins v1.Origins) []*url.URL {
 	all := origins.All()
 	out := make([]*url.URL, len(all))
 	for i := range all {
-		out[i] = &all[i].URI
+		out[i] = all[i].URL()
 	}
 	return out
 }

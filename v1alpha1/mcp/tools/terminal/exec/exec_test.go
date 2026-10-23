@@ -72,7 +72,7 @@ func TestTerminalExec(t *testing.T) {
 			term := &tooltest.Terminal{Prints: "$ \n", Reply: "go.mod\n", Err: tc.err}
 			c := tool.Context{
 				Origins:  tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh"),
-				Attached: tooltest.Bound{Terminals: map[int]attach.Terminal{1: term}},
+				Attached: tooltest.Attached{Terminals: map[int]attach.Terminal{1: term}},
 			}
 			status, body := tooltest.Call(t, Tool, c, tc.access, tc.args)
 			if status != 200 {

@@ -95,8 +95,8 @@ func TestAll(t *testing.T) {
 // served is a run's served origins as a test arranges them, terminals by
 // index.
 type served struct {
-	attach.Bound // the rest, which a tool never asks of it
-	at           map[int]attach.Terminal
+	attach.Attached // the rest, which a tool never asks of it
+	at              map[int]attach.Terminal
 }
 
 func (b served) Terminal(index int) (attach.Terminal, bool) {

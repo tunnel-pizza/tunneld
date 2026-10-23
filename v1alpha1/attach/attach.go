@@ -148,7 +148,7 @@ type Ender interface {
 
 // Exiter is a target whose program ends with a status: ExitCode is how the
 // last run ended, 0 for success, 128 plus the signal for one a signal ended.
-// A container is not one; a program the run starts is, and a Bound reports
+// A container is not one; a program the run starts is, and an Attached reports
 // through Exited when every one of those has ended.
 type Exiter interface {
 	ExitCode() int
@@ -243,7 +243,7 @@ func CopyOutput(out, errw io.Writer, r io.Reader, tty bool) error {
 // tells origins where with Serve, so their Dialable is what the tunnel dials.
 // What it returns shuts every server the attach started.
 type Attacher interface {
-	Attach(ctx context.Context, origins v1.Origins, log v1.Logger) (attached Bound, err error)
+	Attach(ctx context.Context, origins v1.Origins, log v1.Logger) (Attached, error)
 }
 
 // Option configures an AttacherImpl at construction.
@@ -270,7 +270,7 @@ type AttacherImpl struct {
 	logs    logs.Log
 	motd    motd.Motd
 	sinks   []Sink
-	// hold is whether a program an Attach starts waits for Bound.Start.
+	// hold is whether a program an Attach starts waits for Attached.Start.
 	hold bool
 }
 
@@ -335,7 +335,7 @@ func WithSinks(sinks ...Sink) Option {
 }
 
 // WithHold has every program an Attach starts (an exec:// origin) wait for
-// Bound.Start rather than start at Attach, so that it starts once the run
+// Attached.Start rather than start at Attach, so that it starts once the run
 // knows the tunnel's origin. A container is attached at Attach either way.
 func WithHold() Option {
 	return func(b *AttacherImpl) { b.hold = true }
@@ -355,11 +355,11 @@ func (b *AttacherImpl) answered() []string {
 
 // Attach implements Attacher.
 //
-// A failure unwinds everything already bound. The command is about to return
+// A failure unwinds everything already attached. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog.Logger) (Bound, error) {
-	servers := bound{exits: &exits{ch: make(chan []int, 1)}}
+func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog.Logger) (Attached, error) {
+	servers := attached{exits: &exits{ch: make(chan []int, 1)}}
 	asked := newAsk()
 	for _, origin := range origins.All() {
 		// Anything no provider claims is an address the tunnel dials itself.
@@ -391,7 +391,7 @@ func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog
 			_ = servers.Close()
 			return nil, err
 		}
-		servers.origins = append(servers.origins, boundOrigin{at: origin.Index, srv: server})
+		servers.origins = append(servers.origins, attachedOrigin{at: origin.Index, srv: server})
 		servers.exits.mu.Lock()
 		servers.exits.servers = append(servers.exits.servers, server)
 		servers.exits.mu.Unlock()
@@ -411,7 +411,7 @@ func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
 	servers.exits.mu.Lock()
-	servers.exits.bound = true
+	servers.exits.attached = true
 	servers.exits.mu.Unlock()
 	servers.exits.ended()
 
@@ -421,31 +421,31 @@ func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog
 	return servers, nil
 }
 
-// sole is a bound list of exactly one, from a run of exactly one origin, which
-// is the only shape that can put a terminal on a console: with several
-// origins, served or not, a console has no way to say which it is watching
-// and no room to watch them at once — that is what the public hostname, its
-// routing parameter and the panel are for.
+// sole is an attached list of exactly one, from a run of exactly one origin,
+// which is the only shape that can put a terminal on a console: with several
+// origins, served or not, a console has no way to say which it is watching and
+// no room to watch them at once — that is what the public hostname, its routing
+// parameter and the panel are for.
 //
 // A wrapper rather than a flag, because what a caller wants to know is whether
-// to ask, and a method set is how Go says that. bound keeps show unexported
+// to ask, and a method set is how Go says that. attached keeps show unexported
 // to this file so the only way to reach it is through here.
-type sole struct{ bound }
+type sole struct{ attached }
 
 func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
-	return s.bound.show(ctx, in, out)
+	return s.attached.show(ctx, in, out)
 }
 
-// Bound is what an Attach call hands back: the servers it started, and the
+// Attached is what an Attach call hands back: the servers it started, and the
 // three things every one of them can do — be closed, be told the public
 // addresses, and say when a viewer has asked the run to end.
 //
 // None of those is conditional, which is why they are here rather than
-// discovered by type assertion one at a time. Exactly one thing is: a bound
+// discovered by type assertion one at a time. Exactly one thing is: an attached
 // list of one served origin also carries Show, since that is the only shape a
 // console can put on a screen. That one stays an assertion, because it is the
 // only one that can answer no.
-type Bound interface {
+type Attached interface {
 	io.Closer
 	Announce(public []string)
 	// Mirror copies every served origin's output to w a line at a time,
@@ -468,15 +468,15 @@ type Bound interface {
 	Terminal(index int) (Terminal, bool)
 }
 
-// bound is every attach server an Attach call started, with the place in the
+// attached is every attach server an Attach call started, with the place in the
 // origin list each of them took.
 //
 // The index is kept because that is the only thing that connects a server to
 // the address it will answer on: the tunnel hands back one public URL and the
 // origins are told apart by their routing parameter, so origin n's address is
 // derived from n.
-type bound struct {
-	origins []boundOrigin
+type attached struct {
+	origins []attachedOrigin
 	exits   *exits
 }
 
@@ -486,9 +486,9 @@ type exits struct {
 	mu      sync.Mutex
 	servers []*Server
 	ch      chan []int
-	// bound is whether Attach has every server: a program that ends before
+	// attached is whether Attach has every server: a program that ends before
 	// then is checked once it has.
-	bound bool
+	attached bool
 }
 
 // ended checks, as one program ends, whether every program has: if so their
@@ -496,7 +496,7 @@ type exits struct {
 func (e *exits) ended() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.bound {
+	if !e.attached {
 		return
 	}
 	var codes []int
@@ -521,20 +521,20 @@ func (e *exits) ended() {
 }
 
 // Exited is where the run learns every program has ended.
-func (b bound) Exited() <-chan []int {
+func (b attached) Exited() <-chan []int {
 	if b.exits == nil {
 		return nil
 	}
 	return b.exits.ch
 }
 
-// show puts the one origin bound here on the given streams.
+// show puts the one origin attached here on the given streams.
 //
 // Unexported, and reached only through the sole wrapper Attach returns
-// when there is exactly one: a bound list of several has nothing to draw, and
+// when there is exactly one: an attached list of several has nothing to draw, and
 // the length check that used to live here was a guard against a caller that
 // can no longer exist.
-func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
+func (b attached) show(ctx context.Context, in io.Reader, out io.Writer) error {
 	if len(b.origins) != 1 {
 		return fmt.Errorf("attach: %d origins to show, want exactly one", len(b.origins))
 	}
@@ -557,7 +557,7 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 // same breath as the frame's own ask; a relay goroutine would not have run
 // yet, and the console would leave "Press Ctrl+C to stop the tunnel..." on a
 // prompt the run is about to walk away from.
-func (b bound) Done() <-chan struct{} {
+func (b attached) Done() <-chan struct{} {
 	if len(b.origins) == 0 {
 		// Nothing served, so nobody who could ask: a channel that never closes.
 		return make(chan struct{})
@@ -566,7 +566,7 @@ func (b bound) Done() <-chan struct{} {
 }
 
 // Terminal is the session of the server that took index.
-func (b bound) Terminal(index int) (Terminal, bool) {
+func (b attached) Terminal(index int) (Terminal, bool) {
 	for _, o := range b.origins {
 		if o.at == index {
 			return o.srv.session, true
@@ -575,7 +575,7 @@ func (b bound) Terminal(index int) (Terminal, bool) {
 	return nil, false
 }
 
-type boundOrigin struct {
+type attachedOrigin struct {
 	at  int
 	srv *Server
 }
@@ -583,7 +583,7 @@ type boundOrigin struct {
 // Close shuts every attach server down, and with it every container client
 // they own. The first error is returned and the rest still close: a partial
 // shutdown is worse than a lost error message.
-func (b bound) Close() error {
+func (b attached) Close() error {
 	var err error
 	for _, o := range b.origins {
 		if cerr := o.srv.Close(); err == nil {
@@ -594,7 +594,7 @@ func (b bound) Close() error {
 }
 
 // Mirror copies each server's output to w behind the prefix for its index.
-func (b bound) Mirror(w io.Writer, prefixes []string) {
+func (b attached) Mirror(w io.Writer, prefixes []string) {
 	mu := &sync.Mutex{}
 	for _, o := range b.origins {
 		if o.at < len(prefixes) && prefixes[o.at] != "" {
@@ -604,7 +604,7 @@ func (b bound) Mirror(w io.Writer, prefixes []string) {
 }
 
 // Start runs every program a server here was holding for it.
-func (b bound) Start() {
+func (b attached) Start() {
 	for _, o := range b.origins {
 		o.srv.Start()
 	}
@@ -613,14 +613,14 @@ func (b bound) Start() {
 // Announce gives each server the public address it answers on, taken from
 // public by the index the origin had.
 //
-// It is what the root's Announce reaches. Declared on Bound, which the Attacher
-// contract names, so a caller has it rather than having to ask for it: every
-// bound list can be told its addresses, and an interface that says so is
-// better than one a caller discovers by type assertion and a happy guess.
+// It is what the root's Announce reaches. Declared on Attached, which the
+// Attacher contract names, so a caller has it rather than having to ask for it:
+// every attached list can be told its addresses, and an interface that says so
+// is better than one a caller discovers by type assertion and a happy guess.
 //
 // A short list is not an error. It means the caller had fewer addresses than
 // origins, and a server without one simply has nothing to show.
-func (b bound) Announce(public []string) {
+func (b attached) Announce(public []string) {
 	for _, o := range b.origins {
 		if o.at < len(public) {
 			o.srv.Announce(public[o.at])
@@ -651,9 +651,9 @@ type Server struct {
 
 // ask is one channel for the process, closed the first time a viewer of any
 // served origin asks the run to end. Every Server an Attach starts is handed the
-// same one, so what a Bound's Done returns is the ask itself: closed on the
+// same one, so what an Attached's Done returns is the ask itself: closed on the
 // asking goroutine, and already closed by the time the frame that asked has
-// returned its terminal. bound.Done says why that timing is load-bearing.
+// returned its terminal. attached.Done says why that timing is load-bearing.
 type ask struct {
 	once sync.Once
 	ch   chan struct{}
@@ -689,7 +689,7 @@ func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 // covers that half, on the one route where it matters.
 //
 // asked is where a viewer's request to end the run lands, shared by every
-// Server one Attach starts so that a Bound has one channel to offer; a caller
+// Server one Attach starts so that an Attached has one channel to offer; a caller
 // starting a Server on its own passes newAsk().
 //
 // The Server takes ownership of target: Close closes both.

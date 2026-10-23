@@ -77,6 +77,7 @@ What an embedding program calls, in `v1alpha1`:
 func New(opts ...Option) *BuilderImpl       // defaults, then opts; satisfies v1.Builder
 func Version() string                       // the release this build is
 func VersionLine(origins Origins) string    // the human-facing build banner; nil origins drops the cache key
+func NewOrigin(u *url.URL) Origin           // u as an origin: its scheme, provider, ref and arguments read off it
 
 // The builder's options. Each seeds a flag's default, so argv still wins.
 func WithName(name string) Option                  // command name; default "tunneld"
@@ -142,9 +143,13 @@ type Origins interface {
     All() []Origin
     From(url string) (Origin, error) // https://<host>/?n, routed as a visit is
     Key() string
+    WebSocket() (int, bool)          // the +ws origin's index, if one is marked
+    Serve(i int, at *url.URL)        // origin i is dialed at at; the origin is unchanged
+    Dialable() []*url.URL            // where each origin is dialed, in order
 }
 
 // Origin is one origin, worked out once from the URL it was settled as.
+// Declared in v1/origin and aliased here, with Scheme and Provider.
 type Origin struct {
     Index    int      // its ?n
     URI      url.URL  // exec:///bin/zsh?arg=-l, attach://dockerd/web, http://localhost:3000
@@ -153,6 +158,10 @@ type Origin struct {
     Ref      string   // /bin/zsh, web, localhost:3000
     Args     []string // an exec origin's arguments
 }
+func (o Origin) URL() *url.URL // a copy of URI, credentials included, the caller's to change
+func (o Origin) Label() string // as the map prints it: a program without its arguments
+func (o Origin) Bare() string  // scheme, host and path: nothing that can hold a secret
+func (o Origin) Name() string  // as compose output prefixes it
 
 type Scheme string   // ExecScheme, AttachScheme, HttpScheme
 type Provider string // DockerProvider

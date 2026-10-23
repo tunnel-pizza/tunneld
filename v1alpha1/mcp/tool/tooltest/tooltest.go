@@ -97,15 +97,15 @@ func Origins(t *testing.T, raws ...string) v1.Origins {
 	return origins.New(opts...)
 }
 
-// Bound is a run's served origins as a test arranges them: its terminals,
+// Attached is a run's served origins as a test arranges them: its terminals,
 // by index.
-type Bound struct {
-	attach.Bound // the rest, which a tool never asks of it
-	Terminals    map[int]attach.Terminal
+type Attached struct {
+	attach.Attached // the rest, which a tool never asks of it
+	Terminals       map[int]attach.Terminal
 }
 
 // Terminal is the terminal at index.
-func (b Bound) Terminal(index int) (attach.Terminal, bool) {
+func (b Attached) Terminal(index int) (attach.Terminal, bool) {
 	t, ok := b.Terminals[index]
 	return t, ok
 }

@@ -70,7 +70,7 @@ type RunImpl struct {
 	// somebody is watching them.
 	cmd      *cobra.Command
 	origins  v1.Origins
-	attached attach.Bound
+	attached attach.Attached
 	cache    cache.Cache
 	// tracking is what the run settled on, saved beside the spec with the
 	// tunnel's hostname added.
@@ -143,7 +143,7 @@ func WithOrigins(origins v1.Origins) Option { return func(r *RunImpl) { r.origin
 
 // WithAttached sets what the origins are attached to: told the addresses they
 // answer on, and how a viewer asks the run to end.
-func WithAttached(attached attach.Bound) Option { return func(r *RunImpl) { r.attached = attached } }
+func WithAttached(attached attach.Attached) Option { return func(r *RunImpl) { r.attached = attached } }
 
 // WithCache sets where a tunnel that came up is saved.
 func WithCache(c cache.Cache) Option { return func(r *RunImpl) { r.cache = c } }

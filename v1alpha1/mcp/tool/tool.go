@@ -22,7 +22,7 @@ import (
 // nil when it has none, and where a call is logged.
 type Context struct {
 	Origins  v1.Origins
-	Attached attach.Bound
+	Attached attach.Attached
 	Cache    cache.Cache
 	Log      v1.Logger
 }

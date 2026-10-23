@@ -50,7 +50,7 @@ func TestTerminalRead(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := tool.Context{
 				Origins:  tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh"),
-				Attached: tooltest.Bound{Terminals: map[int]attach.Terminal{1: &tooltest.Terminal{Prints: tc.prints}}},
+				Attached: tooltest.Attached{Terminals: map[int]attach.Terminal{1: &tooltest.Terminal{Prints: tc.prints}}},
 			}
 			status, body := tooltest.Call(t, Tool, c, tc.access, tc.args)
 			body = strings.ReplaceAll(body, `\\n`, `\n`)
@@ -67,7 +67,7 @@ func TestTerminalReadsOnFromWhereItStopped(t *testing.T) {
 	term := &tooltest.Terminal{Prints: "$ ls\n"}
 	c := tool.Context{
 		Origins:  tooltest.Origins(t, "exec:///bin/sh"),
-		Attached: tooltest.Bound{Terminals: map[int]attach.Terminal{0: term}},
+		Attached: tooltest.Attached{Terminals: map[int]attach.Terminal{0: term}},
 	}
 	me := &auth.Access{Sub: "github:1", Grant: "g-1", Scopes: []string{"mcp", "tunnel:exec"}}
 	read := func() string {

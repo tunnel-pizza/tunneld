@@ -1058,7 +1058,7 @@ func TestSessionEnds(t *testing.T) {
 	}{
 		{"the tunnel shuts down", true, func(_ *Server, _ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
 		// Close with nobody having cancelled anything, which is the shape of
-		// the tunnel failing on its own: run's defer closes what it bound and
+		// the tunnel failing on its own: run's defer closes what it attached and
 		// the context is still live. Neither close inside reaches a live
 		// session — net/http leaves hijacked connections alone by design, and
 		// a Target's Close only reaps what is idle — so Close has to end the
@@ -1176,10 +1176,10 @@ func (e *exitTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 	return nil
 }
 
-// TestExitedWhenEveryProgramHas pins Bound.Exited: the programs an Attach starts
-// are reported, with their statuses in origin order, once every one of them
-// has ended, and not before. A container is not a program and is not waited
-// for.
+// TestExitedWhenEveryProgramHas pins Attached.Exited: the programs an Attach
+// starts are reported, with their statuses in origin order, once every one of
+// them has ended, and not before. A container is not a program and is not
+// waited for.
 func TestExitedWhenEveryProgramHas(t *testing.T) {
 	programs := &exitTargets{
 		codes: map[string]int{"/bin/ok": 0, "/bin/fails": 3},
@@ -1652,8 +1652,8 @@ func TestDoneReachesTheAttacher(t *testing.T) {
 	}
 	defer func() { _ = closer.Close() }()
 
-	// No assertion: Bound carries Done, because every bound list can say when
-	// a viewer asked the run to end. Only Show is conditional.
+	// No assertion: Attached carries Done, because every attached list can say
+	// when a viewer asked the run to end. Only Show is conditional.
 	asked := closer.Done()
 
 	select {
@@ -1664,7 +1664,7 @@ func TestDoneReachesTheAttacher(t *testing.T) {
 
 	// The second origin's viewer asks. One channel for all of them, because
 	// what they are asking for is the process.
-	servers := closer.(bound)
+	servers := closer.(attached)
 	servers.origins[1].srv.session.endRun()
 
 	select {
@@ -1745,10 +1745,10 @@ func TestAttachKeepsWhatEachOriginIs(t *testing.T) {
 
 	for i, want := range before {
 		got := display.At(i)
-		if got.Index != want.Index || got.Scheme != want.Scheme || got.Provider != want.Provider || got.Ref != want.Ref || got.URI != want.URI {
+		if got.Index != want.Index || got.Scheme != want.Scheme || got.Provider != want.Provider || got.Ref != want.Ref || got.URL().String() != want.URL().String() {
 			t.Errorf("origin %d = %d %s %q %q %q, want %d %s %q %q %q", i,
-				got.Index, got.Scheme, got.Provider, got.Ref, got.URI.String(),
-				want.Index, want.Scheme, want.Provider, want.Ref, want.URI.String())
+				got.Index, got.Scheme, got.Provider, got.Ref, got.URL(),
+				want.Index, want.Scheme, want.Provider, want.Ref, want.URL())
 		}
 	}
 	if got := display.Dialable()[1]; !strings.HasPrefix(got.Host, "127.0.0.1:") {
@@ -1758,7 +1758,7 @@ func TestAttachKeepsWhatEachOriginIs(t *testing.T) {
 
 // TestAnnounceReachesTheRightTerminal pins the other half of that invariant.
 //
-// A container is bound before the tunnel exists, so where it answers from
+// A container is attached before the tunnel exists, so where it answers from
 // outside is not known until later, and the only thing connecting a server to
 // its address is the place its origin had in the list. Announce is handed the
 // addresses in that order, and hands each server the one at its own index —
@@ -1787,12 +1787,12 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 		"https://example.test/?3",
 	})
 
-	servers, ok := closer.(bound)
+	servers, ok := closer.(attached)
 	if !ok {
-		t.Fatalf("closer is %T, want the bound list", closer)
+		t.Fatalf("closer is %T, want the attached list", closer)
 	}
 	if len(servers.origins) != 2 {
-		t.Fatalf("bound %d servers, want the two containers", len(servers.origins))
+		t.Fatalf("attached %d servers, want the two containers", len(servers.origins))
 	}
 	for _, o := range servers.origins {
 		want := fmt.Sprintf("https://example.test/?%d", o.at)
@@ -1803,7 +1803,7 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 
 	// And a caller with fewer addresses than origins leaves them unset rather
 	// than reaching for one that is not there.
-	short := bound{origins: []boundOrigin{{at: 9, srv: servers.origins[0].srv}}}
+	short := attached{origins: []attachedOrigin{{at: 9, srv: servers.origins[0].srv}}}
 	short.Announce([]string{"https://example.test/?0"})
 	if got := servers.origins[0].srv.session.announced(); got == "https://example.test/?0" {
 		t.Error("an index past the addresses given took the first one, want it left alone")
@@ -1826,7 +1826,7 @@ func TestAttachWithoutContainers(t *testing.T) {
 		t.Errorf("opened %q, want nothing", targets.asked)
 	}
 	for i, u := range display.Dialable() {
-		if *u != display.At(i).URI {
+		if u.String() != display.At(i).URL().String() {
 			t.Errorf("Dialable()[%d] = %q, want the original origin", i, u)
 		}
 	}

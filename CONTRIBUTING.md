@@ -546,21 +546,18 @@ Two things there will bite if you change them without knowing why:
   renders once with the new pane and the old emulator. Both go through a buffer
   of their own size and are blitted, which is also what makes a label truncate
   instead of erasing the border to its right.
-- **The public address arrives after the servers do, by assertion.** A
-  `attach://dockerd/` origin is bound *before* the tunnel is minted — the binding is
-  what the tunnel is handed to proxy to — so at the only moment `Attach` could be
-  told where it answers from outside, nobody knows. `RunE` asks the closer
-  `Attach` returned whether it is an `Announcer` once `public` is known, and
-  hands over one address per origin, indexed the way `display` was. It is an
-  assertion rather than a method on `Attacher` because of the import direction:
-  `attach` cannot name a type declared in `v1alpha1`, so a contract mentioning
-  one could never be satisfied from there. Same shape as `http.Flusher`.
+- **The public address arrives after the servers do.** An
+  `attach://dockerd/` origin is attached *before* the tunnel is minted — its
+  loopback address is what the tunnel is handed to proxy to — so at the only
+  moment `Attach` could be told where it answers from outside, nobody knows.
+  The run calls `Announce` on the `Attached` that `Attach` returned once `public`
+  is known, with one address per origin, indexed the way `display` was.
 - **The build line is configuration, the address is an announcement.** Both are
   root knowledge a subpackage cannot work out, but the banner names the command
   — which an embedding program renames — and versions the root resolves from
   build information, and none of it changes while the process runs. So it
   arrives through `attach.WithBanner` at construction, where the address has to
-  arrive later through `Announcer`.
+  arrive later through `Attached.Announce`.
 - **A hyperlink needs both ends.** The frame marks its address with OSC 8, the
   build line arrives with tunneld's name marked the same way (a link to
   tunnel.pizza, built by `frameLine` in the root), and `index.html` sets
@@ -723,8 +720,8 @@ Two things there will bite if you change them without knowing why:
   package that chooses between them is the one that names the other, so
   `console.Screen` is declared once rather than twice.
 
-  **`Attach` hands back an `attach.Bound`, not an `io.Closer` with secrets.**
-  Close, `Announce` and `Done` are on the type, because every bound list can
+  **`Attach` hands back an `attach.Attached`, not an `io.Closer` with secrets.**
+  Close, `Announce` and `Done` are on the type, because every attached list can
   do all three — they were spelled as optional interfaces discovered by type
   assertion, which is a lie a caller has to write an `if` around. Exactly one
   thing is conditional: `Show`, which only a single served origin carries, and
@@ -796,7 +793,7 @@ Two things there will bite if you change them without knowing why:
   them. It is decided before the browser because the browser is told about it:
   a mirrored run opens no tab, `WithOpen(true)` or not. Its first two checks —
   one origin, served scheme — are what the attacher already worked out, since it
-  stands a server up only for a served origin and `bound.Mirror` refuses
+  stands a server up only for a served origin and `attached.Mirror` refuses
   anything but a list of one. They are said again because the answer is needed
   before the mirror starts: the browser is told, and the log ring is muted.
 - **A drawing console mutes the log's stderr.** stderr writes straight through
@@ -816,10 +813,9 @@ Two things there will bite if you change them without knowing why:
   builder only points the slot, and is called as often as anything wants the
   logger.
 - **A keystroke can end the process, and the path is deliberate.** `x` in the
-  frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
-  fans every origin's into one, because what they are asking for is the
-  process and there is only one; and `RunE` selects on it through the
-  `Quitter` contract, discovered on the closer the way `Announcer` is. Nothing
+  frame calls `session.endRun`, which closes the ask every Server one `Attach`
+  started shares, because what they are asking for is the process and there is
+  only one; and the run selects on it through `Attached.Done`. Nothing
   in `attach` acts on it — a frame can end its own viewer, and ending a run is
   the command's, which is what owns the context everything else hangs from.
 - **The page asks whether coming back is worth offering.** A socket ending

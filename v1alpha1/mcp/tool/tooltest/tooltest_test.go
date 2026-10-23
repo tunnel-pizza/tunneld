@@ -64,11 +64,11 @@ func TestOrigins(t *testing.T) {
 	}
 }
 
-// TestBound pins the fake run: a terminal at the index it was given, none
+// TestAttached pins the fake run: a terminal at the index it was given, none
 // elsewhere.
-func TestBound(t *testing.T) {
+func TestAttached(t *testing.T) {
 	term := &Terminal{}
-	b := Bound{Terminals: map[int]attach.Terminal{1: term}}
+	b := Attached{Terminals: map[int]attach.Terminal{1: term}}
 	if got, ok := b.Terminal(1); !ok || got != term {
 		t.Errorf("Terminal(1) = %v, %v; want the one given", got, ok)
 	}

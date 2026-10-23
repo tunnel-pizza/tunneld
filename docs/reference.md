@@ -530,7 +530,7 @@ you wrote in the compose file. Opposite it is the tunnel's own address for this
 origin, which with several origins carries the `?n` that reaches this one, so it
 is the address to send somebody else — and it is a hyperlink, so a terminal
 that understands OSC 8 opens it in a tab of its own. The frame has nothing to
-show there until the tunnel is up, because a container is bound before the
+show there until the tunnel is up, because a container is attached before the
 tunnel exists.
 
 The build along the bottom starts with tunneld's name, and that is a link too,

@@ -20,18 +20,18 @@ import (
 // log, and a test that printed would be one nobody could read the output of.
 var discard = slog.New(slog.DiscardHandler)
 
-// fakeOrigin is a bound origin that reports what it was handed and ends when
+// fakeOrigin is an attached origin that reports what it was handed and ends when
 // told to, which is the whole of what a console does to one. It is also the
 // closer For is given, since that is where For looks for both answers.
 type fakeOrigin struct {
-	attach.Bound // the rest, which a console never asks of it
-	mu           sync.Mutex
-	in           io.Reader
-	out          io.Writer
-	release      chan struct{}
-	err          error
-	drew         chan struct{}
-	ended        chan struct{}
+	attach.Attached // the rest, which a console never asks of it
+	mu              sync.Mutex
+	in              io.Reader
+	out             io.Writer
+	release         chan struct{}
+	err             error
+	drew            chan struct{}
+	ended           chan struct{}
 }
 
 func newFakeOrigin(err error) *fakeOrigin {
@@ -212,9 +212,9 @@ func TestForRefusesWhatItCannotDraw(t *testing.T) {
 	})
 }
 
-// noOrigin is a bound closer that cannot be mirrored, which is what the attacher
-// hands back for anything but a single served origin.
-type noOrigin struct{ attach.Bound }
+// noOrigin is an attached closer that cannot be mirrored, which is what the
+// attacher hands back for anything but a single served origin.
+type noOrigin struct{ attach.Attached }
 
 func (noOrigin) Close() error          { return nil }
 func (noOrigin) Announce([]string)     {}

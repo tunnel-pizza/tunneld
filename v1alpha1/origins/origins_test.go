@@ -103,9 +103,9 @@ func TestAllCannotBeUsedToReorderTheRun(t *testing.T) {
 	got := o.All()
 	got[0], got[1] = got[1], got[0]
 
-	first, second := o.At(0).URI, o.At(1).URI
-	if first != *a || second != *b {
-		t.Errorf("At(0), At(1) = %v, %v, want %v, %v — All handed out the list itself", &first, &second, a, b)
+	first, second := o.At(0).URL(), o.At(1).URL()
+	if *first != *a || *second != *b {
+		t.Errorf("At(0), At(1) = %v, %v, want %v, %v — All handed out the list itself", first, second, a, b)
 	}
 	if o.Len() != 2 {
 		t.Errorf("Len() = %d, want 2", o.Len())
@@ -277,7 +277,7 @@ func TestOriginsAreParsedOnce(t *testing.T) {
 	}
 	got[1].Args[0] = "changed"
 	got[0].URI.Host = "changed"
-	if again := o.All(); again[1].Args[0] != "--resume" || again[0].URI.Host != "localhost:3000" {
+	if again := o.All(); again[1].Args[0] != "--resume" || again[0].URL().Host != "localhost:3000" {
 		t.Errorf("All() handed out the run's own origins: %+v", again)
 	}
 }
@@ -331,7 +331,7 @@ func TestAdd(t *testing.T) {
 	shell := New(WithOrigins(NewOrigin(must(t, "exec:///bin/sh")))).All()
 	o.Add(shell...)
 	all := o.All()
-	if len(all) != 2 || all[1].URI.String() != "exec:///bin/sh" || all[1].Index != 1 || all[1].Scheme != v1.ExecScheme {
+	if len(all) != 2 || all[1].URL().String() != "exec:///bin/sh" || all[1].Index != 1 || all[1].Scheme != v1.ExecScheme {
 		t.Fatalf("All() = %+v, want :3000 then /bin/sh at index 1", all)
 	}
 	if shell[0].Index != 0 {

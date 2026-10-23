@@ -178,13 +178,13 @@ type Motd = motd.Motd
 type Auth = auth.Auth
 
 // Run is one run's tunnel, from its spec to its end: minted from the spec,
-// brought up and put in front of everybody — the addresses, the map, the bound
-// origins told where they answer from, the provider's messages, the browser
-// or the console, the save, a waiting launcher handed back — and waited on
-// until the run is over. Everything the run settled before its first tunnel,
+// brought up and put in front of everybody — the addresses, the map, the
+// attached origins told where they answer from, the provider's messages, the
+// browser or the console, the save, a waiting launcher handed back — and waited
+// on until the run is over. Everything the run settled before its first tunnel,
 // and every collaborator a tunnel is shown through, is handed over with the
-// call. Nil for a run told to stop; the tunnel's error when it fails to come
-// up or ends on its own.
+// call. Nil for a run told to stop; the tunnel's error when it fails to come up
+// or ends on its own.
 type Run interface {
 	Run(ctx context.Context, opts ...run.Option) error
 }

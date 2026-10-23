@@ -25,7 +25,7 @@ func TestTerminalScreen(t *testing.T) {
 	term := &tooltest.Terminal{Shows: attach.Screen{Width: 80, Height: 24, Rows: []string{"$ ls", "go.mod"}, Cursor: attach.Cursor{Row: 2}, Title: "sh"}}
 	c := tool.Context{
 		Origins:  tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh"),
-		Attached: tooltest.Bound{Terminals: map[int]attach.Terminal{1: term}},
+		Attached: tooltest.Attached{Terminals: map[int]attach.Terminal{1: term}},
 	}
 	exec := &auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}}
 	for name, tc := range map[string]struct {
