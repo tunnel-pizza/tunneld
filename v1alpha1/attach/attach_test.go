@@ -1728,6 +1728,31 @@ func TestBindKeepsOrder(t *testing.T) {
 	}
 }
 
+// TestBindKeepsWhatEachOriginIs pins that a served origin is still what it
+// was on the dialable list, with only the address it is dialed at changed: a
+// token's scope is held against the scheme there, and a container served on
+// a loopback http address is still tunnel:attach, never tunnel:http.
+func TestBindKeepsWhatEachOriginIs(t *testing.T) {
+	display := shown(t, "http://localhost:3000", "attach://dockerd/api")
+
+	dialable, closer, err := New(WithTargets(&stubTargets{})).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	defer closer.Close()
+
+	for i, want := range display.All() {
+		got := dialable.At(i)
+		if got.Index != want.Index || got.Scheme != want.Scheme || got.Provider != want.Provider || got.Ref != want.Ref {
+			t.Errorf("dialable[%d] = %d %s %q %q, want %d %s %q %q", i,
+				got.Index, got.Scheme, got.Provider, got.Ref, want.Index, want.Scheme, want.Provider, want.Ref)
+		}
+	}
+	if got := uriAt(dialable, 1); !strings.HasPrefix(got.Host, "127.0.0.1:") {
+		t.Errorf("dialable[1] = %q, want the loopback address it is served at", got)
+	}
+}
+
 // TestAnnounceReachesTheRightTerminal pins the other half of that invariant.
 //
 // A container is bound before the tunnel exists, so where it answers from
@@ -1845,8 +1870,8 @@ func TestBindHasRoomForASecondVerb(t *testing.T) {
 	if want := []string{"api"}; !slices.Equal(execInto.asked, want) {
 		t.Errorf("the provider was asked for %v, want %v", execInto.asked, want)
 	}
-	if dialable.Len() != 1 || dialable.At(0).Scheme != "http" {
-		t.Errorf("dialable = %v, want the loopback server standing in for the origin", dialable)
+	if dialable.Len() != 1 || dialable.At(0).URI.Scheme != "http" || dialable.At(0).Scheme != v1.ExecScheme {
+		t.Errorf("dialable = %v, want the loopback server standing in for the exec origin", dialable)
 	}
 	if got := execInto.opened[0].Origin(); got != "exec://dockerd/api" {
 		t.Errorf("the target's origin = %q, want it spelled back whole", got)
