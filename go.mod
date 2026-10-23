@@ -7,6 +7,11 @@ module github.com/tunnel-pizza/tunneld
 // a dependency or the surface actually needs the newer semantics.
 go 1.26.0
 
+// What CI and the release binaries build with: setup-go installs this rather
+// than the go line, so a standard-library fix ships without raising the floor
+// for an embedding program.
+toolchain go1.26.10
+
 require (
 	charm.land/bubbletea/v2 v2.0.9
 	github.com/ProtonMail/go-crypto v0.0.0-20221026131551-cf6655e29de4
@@ -25,7 +30,7 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/google/go-tpm v0.9.2-0.20240919181259-d96ccf715685
 	github.com/google/uuid v1.6.0
-	github.com/gopacket/gopacket v1.2.0
+	github.com/gopacket/gopacket v1.7.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/insomniacslk/dhcp v0.0.0-20231206064809-8c70d406f6d2
 	github.com/ishidawataru/sctp v0.0.0-20230406120618-7ff4192f6ff2
@@ -56,7 +61,7 @@ require (
 	go.bug.st/serial v1.6.2
 	golang.org/x/crypto v0.57.0
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0
