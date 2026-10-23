@@ -34,7 +34,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -2018,7 +2017,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 					want = []*url.URL{builtinURL}
 				}
 			default:
-				resolved, ok := shell.Resolve(paths[tc.want])
+				resolved, ok := origins.Resolve(paths[tc.want])
 				if !ok {
 					t.Fatalf("fake %s does not resolve", tc.want)
 				}
@@ -3669,27 +3668,6 @@ func TestFuncName(t *testing.T) {
 	for want, fn := range map[string]any{"pod": b.pod, "shell": b.shell, "splitList": splitList} {
 		if got := funcName(fn); got != want {
 			t.Errorf("funcName = %q, want %q", got, want)
-		}
-	}
-}
-
-func TestFieldsSplitLikeAShell(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want []string
-	}{
-		{"python3 -m http.server 8000", []string{"python3", "-m", "http.server", "8000"}},
-		{"  spaced   out  ", []string{"spaced", "out"}},
-		{`bash -c 'echo hi there'`, []string{"bash", "-c", "echo hi there"}},
-		{`bash -c "echo \"quoted\" $x"`, []string{"bash", "-c", `echo "quoted" $x`}},
-		{`printf a\ b`, []string{"printf", "a b"}},
-		{`echo ''`, []string{"echo", ""}},
-		{`echo 'unclosed`, []string{"echo", "unclosed"}},
-		{"single", []string{"single"}},
-		{"", nil},
-	} {
-		if got := fields(tc.in); !slices.Equal(got, tc.want) {
-			t.Errorf("fields(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

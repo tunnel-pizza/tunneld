@@ -306,14 +306,13 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 					// else keeps its scheme, so a tile framing a container
 					// reads as attach://dockerd/api rather than as a bare
 					// hostname that happens to be a container name.
-					u := origin.URL()
-					local := u.Host
+					local := origin.URL().Host
 					terminal := origin.Scheme != v1.HttpScheme
 					if terminal {
 						// A served origin is the verb, the provider that
 						// answers it and the reference — and the reference is
 						// always the path, so the three join in order.
-						local = u.Scheme + "://" + u.Host + u.Path
+						local = origin.Bare()
 					}
 					data.Origins = append(data.Origins, tile{
 						Index:    i,

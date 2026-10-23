@@ -3,7 +3,10 @@ package origins
 import (
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -338,5 +341,93 @@ func TestAdd(t *testing.T) {
 	empty.Add(shell...)
 	if empty.Len() != 1 || empty.At(0).Index != 0 {
 		t.Errorf("Add to an empty list = %+v, want /bin/sh at index 0", empty.All())
+	}
+}
+
+// TestResolve pins what turns a bare argument into a program origin, and what
+// the origin then carries. The rules belong to the host — the $PATH search,
+// the executable bit, the Windows extensions — so the fixture is a directory
+// made the whole of $PATH and the cases are what an operator can type at it.
+func TestResolve(t *testing.T) {
+	dir := t.TempDir()
+	prog := write(t, dir, runnable("tunneld-fixture"), 0o755)
+	write(t, dir, "tunneld-plain", 0o644)
+	t.Setenv("PATH", dir)
+
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"a command on PATH", runnable("tunneld-fixture"), true},
+		{"the same command by path", prog, true},
+		// Not runnable for a different reason on each platform — no executable
+		// bit on Unix, no PATHEXT extension on Windows — and the answer is the
+		// one that matters either way.
+		{"a file on PATH that is not runnable", "tunneld-plain", false},
+		{"a name that is not there", "tunneld-absent-fixture", false},
+		// The parser asks this before the http:// default, so anything already
+		// carrying a scheme has to answer no: LookPath stats it as a path.
+		{"a URL", "http://localhost:3000", false},
+		{"a host and port", "localhost:3000", false},
+		{"a bare port", ":8000", false},
+		{"a container reference", "attach://dockerd/api", false},
+		{"nothing at all", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, got := Resolve(tc.in)
+			if got != tc.want {
+				t.Errorf("Resolve(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			// What resolves resolves to the one absolute path that will run,
+			// whichever spelling was typed at it.
+			if got && path != prog {
+				t.Errorf("Resolve(%q) = %q, want the resolved path %q", tc.in, path, prog)
+			}
+			if !got && path != "" {
+				t.Errorf("Resolve(%q) = %q alongside false, want no path", tc.in, path)
+			}
+		})
+	}
+}
+
+// runnable is base as a program file's name on this platform.
+func runnable(base string) string {
+	if runtime.GOOS == "windows" {
+		return base + ".bat"
+	}
+	return base
+}
+
+// write drops a fixture program into dir and returns its path.
+func write(t *testing.T, dir, name string, mode os.FileMode) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho TUNNELD_FIXTURE_OK\n"), mode); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+	return path
+}
+
+func TestFieldsSplitLikeAShell(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"python3 -m http.server 8000", []string{"python3", "-m", "http.server", "8000"}},
+		{"  spaced   out  ", []string{"spaced", "out"}},
+		{`bash -c 'echo hi there'`, []string{"bash", "-c", "echo hi there"}},
+		{`bash -c "echo \"quoted\" $x"`, []string{"bash", "-c", `echo "quoted" $x`}},
+		{`printf a\ b`, []string{"printf", "a b"}},
+		{`echo ''`, []string{"echo", ""}},
+		{`echo 'unclosed`, []string{"echo", "unclosed"}},
+		{"single", []string{"single"}},
+		{"", nil},
+	} {
+		if got := fields(tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("fields(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

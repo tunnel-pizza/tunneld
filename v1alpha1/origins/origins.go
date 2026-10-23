@@ -12,11 +12,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
@@ -230,4 +234,377 @@ func (o *OriginsImpl) Key() string {
 	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])[:keyWidth]
+}
+
+// servedSchemes is every scheme whose value names something tunneld serves on
+// the origin's behalf rather than an address it proxies to. The binder stands
+// a loopback attach server up for each one, and the provider behind that
+// scheme is what resolves the reference.
+//
+// The words are for the operator: a message that says "names no container" for
+// attach:// and "names no program" for exec:// is one somebody can act on,
+// where a message about a malformed authority component is not. A scheme
+// absent from here is not served, which is what makes the parser and the
+// binder agree on the same list.
+var servedSchemes = map[v1.Scheme]struct {
+	noun, example string
+	// resolve, when set, is how an authority with nothing after it is read
+	// before it is read as a provider: exec://htop is the program, because a
+	// provider with no reference could not be asked for anything anyway, so
+	// the reading that can succeed wins over the one that cannot.
+	//
+	// It is the same function the bare-argument shorthand uses, held here
+	// rather than called by name below so the two readings of a word cannot
+	// drift — whatever `tunneld htop` accepts, exec://htop accepts.
+	resolve func(string) (string, bool)
+}{
+	v1.AttachScheme: {noun: "container", example: "attach://dockerd/my-container"},
+	v1.ExecScheme:   {noun: "program", example: "exec:///usr/bin/htop", resolve: Resolve},
+}
+
+// Resolve answers whether s names a program this machine can run, and with
+// what: the absolute path of the thing that would actually run.
+//
+// The path rather than a bare yes, because the origin carries it from here on.
+// "top" says which program only on the machine that resolved it, while
+// /usr/bin/top says it anywhere — so that is what the frame puts in its corner,
+// what the reported map prints, and what somebody pastes back into a command
+// line to get the same program rather than whatever their own $PATH finds.
+//
+// exec.LookPath is the whole of the lookup, which means the rules are the
+// host's rather than ours: the $PATH search and the executable bit on Unix,
+// the PATHEXT extensions on Windows, and a value carrying a separator taken as
+// a path to the file itself rather than as a name to search for. Anything
+// shaped like a URL answers false for that last reason — "http://localhost:3000"
+// is stat'd as a path and is not there.
+//
+// A command that resolves only through the working directory answers false
+// too: LookPath returns exec.ErrDot for it, and a file that happens to sit
+// where tunneld was started should not become a public origin because somebody
+// typed its name.
+//
+// The answer is about this machine and this moment. The same argument is a
+// program on one host and a hostname on another, which is why nothing here is
+// cached and why the lookup happens while origins are settled rather than when
+// they are seeded.
+func Resolve(s string) (string, bool) {
+	path, err := exec.LookPath(s)
+	if err != nil {
+		return "", false
+	}
+	// LookPath answers a PATH hit absolutely and a path-shaped argument as it
+	// was given, so this is what makes the two agree.
+	//
+	// On Windows the absolute form is C:\..., which has no spelling inside a
+	// exec:// URL — whichever half of the URL it is put in, url.URL escapes
+	// the separators. The origin is still correct where it counts, since the
+	// binder reads the path off the URL rather than off its printed form, and
+	// the platform has no pseudo-terminals to serve it on either way.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path, true
+	}
+	return abs, true
+}
+
+// program is a program origin with args as its arguments: the words after it
+// on the command line, carried as the origin's query under v1.ArgKey so they
+// arrive the same way from argv, the environment and a seed, and so the frame
+// shows a string that pastes back into a command line as the same run.
+//
+// Appended to any the origin already carries, in order — a seed can name a
+// program's first arguments and the command line its last.
+//
+// This is where the command line stops being a list of origins: the words
+// after a program are the program's, so it is the last origin on the line,
+// the way docker's image is followed only by its own command. A second
+// program, or a URL after the first, is that program's argument.
+func program(u *url.URL, args []string) *url.URL {
+	if len(args) == 0 {
+		return u
+	}
+	q := u.Query()
+	for _, arg := range args {
+		q.Add(v1.ArgKey, arg)
+	}
+	u.RawQuery = q.Encode()
+	return u
+}
+
+// split divides the words after a program into its arguments and what comes
+// after them: the arguments run until the first word that can only be an
+// origin, and that word and the rest are origins again.
+//
+// The docker-run rule — a program takes every word after it — is what lets
+// `tunneld claude --resume` work without a separator, and it is kept. But
+// ":8000" is not an argument anybody means: a port with nothing in front of it
+// is the shorthand every other position reads as this machine's :8000, and a
+// URL with a scheme is an address. Either one after a program is a second
+// origin, so `tunneld bash :8000` is a shell beside a service rather than a
+// shell told to run a script called :8000. So is the program's own word said
+// again: `tunneld bash bash` is two shells, not a shell looking for a script
+// called bash — nobody passes a program its own name as an argument on
+// purpose, and two of the same terminal is the ordinary way to want a second
+// one. A flag, a path, any other bare word — a program's, as before.
+func split(word string, words []string) (args, rest []string) {
+	for i, w := range words {
+		if isOrigin(w) || w == word {
+			return words[:i], words[i:]
+		}
+	}
+	return words, nil
+}
+
+// fields splits one word into the words a shell would have made of it had the
+// outer quotes not been there: whitespace separates, single quotes keep
+// everything literal, double quotes keep everything but a backslash escape,
+// and a backslash outside quotes keeps the next character. An unclosed quote
+// runs to the end rather than failing — the word already reached us, and
+// what it meant is clearer kept than dropped.
+func fields(word string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		open  bool // something has gone into cur, even if empty ("")
+		quote rune // 0, '\'', or '"'
+	)
+	flush := func() {
+		if open {
+			out = append(out, cur.String())
+			cur.Reset()
+			open = false
+		}
+	}
+	rs := []rune(word)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case quote == '"':
+			if r == '"' {
+				quote = 0
+			} else if r == '\\' && i+1 < len(rs) && strings.ContainsRune("\"\\$`", rs[i+1]) {
+				i++
+				cur.WriteRune(rs[i])
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote, open = r, true
+		case r == '\\' && i+1 < len(rs):
+			i++
+			cur.WriteRune(rs[i])
+			open = true
+		case unicode.IsSpace(r):
+			flush()
+		default:
+			cur.WriteRune(r)
+			open = true
+		}
+	}
+	flush()
+	return out
+}
+
+// isOrigin reports whether a word can only be an origin: a port shorthand
+// (":8000") or a URL with a scheme ("http://…", "attach://…"). Anything else
+// after a program is the program's.
+func isOrigin(word string) bool {
+	if port, ok := strings.CutPrefix(word, ":"); ok {
+		_, err := strconv.Atoi(port)
+		return err == nil && port != ""
+	}
+	return strings.Contains(word, "://")
+}
+
+// arguments reports whether a served origin's query is a program's arguments
+// and nothing else — the one query a served origin is allowed to carry.
+func arguments(u *url.URL) bool {
+	if v1.Scheme(u.Scheme) != v1.ExecScheme {
+		return false
+	}
+	for key := range u.Query() {
+		if key != v1.ArgKey {
+			return false
+		}
+	}
+	return true
+}
+
+// Parse is settled read as origins: each word a program on this machine, a
+// program with its arguments, or an address. A word it cannot use is dropped
+// with a warning rather than failing the run.
+func Parse(log v1.Logger, settled []string) *OriginsImpl {
+	parsed := make([]v1.Origin, 0, len(settled))
+	// One line per origin at the moment it is settled, because how the words
+	// were read is the thing the report cannot show: a program's arguments
+	// hide behind its label, and a word taken as an argument looks exactly
+	// like a word that was never there.
+	add := func(word string, u *url.URL) {
+		log.Info(fmt.Sprintf("%q interpolated into %s", word, u))
+		parsed = append(parsed, NewOrigin(u))
+	}
+	// The first origin seen carrying a +ws marker, kept to strip a second, and
+	// its index in the list, which is where the marker goes once it is off the
+	// scheme.
+	wsOrigin, ws := "", -1
+	for i := 0; i < len(settled); i++ {
+		s := strings.TrimSpace(settled[i])
+		word := s // as typed, for the log; s is rewritten on the way to a URL
+		if s == "" {
+			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
+			continue
+		}
+		// Short circuit for executables: a path to a binary is not a URL, and the binder runs it
+		if path, ok := Resolve(s); ok {
+			// Built rather than parsed, and done with: the reference resolved
+			// a line ago, so there is nothing for the checks below to add.
+			//
+			// The resolved path rather than the word typed, because the origin
+			// is what everything downstream shows and what somebody pastes
+			// back — "top" names a program only on the machine that looked it
+			// up. It goes in Path and not Host because that is the only shape
+			// an absolute path survives: url.URL escapes the separators of a
+			// host, so exec:///usr/bin/top round-trips and exec://%2Fusr%2Fbin
+			// is what the other spelling produces. The empty authority is this
+			// machine, which is the whole of what exec:// with no provider says.
+			args, _ := split(s, settled[i+1:])
+			add(word, program(&url.URL{Scheme: string(v1.ExecScheme), Path: path}, args))
+			i += len(args)
+			continue
+		}
+		// A word with spaces in it is a program and its arguments quoted as
+		// one thing — no origin can contain whitespace, and the shell has
+		// already taken the quotes off. Split the way a shell would, so an
+		// argument that was itself quoted stays whole. The group is complete:
+		// the space inside the word is the one piece of quoting that survives
+		// the shell, and it says the person closed the group where they did,
+		// so the words after it on the line are origins again and a bare
+		// `bash` after `'next dev'` is a second terminal, not next's third
+		// argument. Quoting is also how a program with arguments reads inside
+		// a comma-separated TUNNELD_ORIGINS.
+		if fs := fields(s); len(fs) > 1 {
+			if path, ok := Resolve(fs[0]); ok {
+				add(word, program(&url.URL{Scheme: string(v1.ExecScheme), Path: path}, fs[1:]))
+				continue
+			}
+			log.Warn("dropping an origin", "origin", s, "reason", "has spaces but "+fs[0]+" names no program that can be run")
+			continue
+		}
+		if !strings.Contains(s, "://") {
+			s = "http://" + s
+		}
+		u, err := url.Parse(s)
+		if err != nil {
+			log.Warn("dropping an origin", "origin", s, "reason", "not a URL", "err", err)
+			continue
+		}
+		// A served origin is not proxied at all: it names a thing the binder
+		// stands a loopback server up for — a container, a program — rather
+		// than an address to reach. Everything the shorthands below fill in — a
+		// default scheme, a default host, a preserved path — is meaningless
+		// here, so the value is taken exactly as typed and anything extra is
+		// dropped rather than silently ignored.
+		if what, served := servedSchemes[v1.Scheme(u.Scheme)]; served {
+			// An authority with nothing after it is not a provider being asked
+			// for something — there is nothing to ask for — so where the
+			// scheme allows it, the word is looked up as a program first. It
+			// is rewritten to the resolved path for the same reason the bare
+			// argument above is: the word names a program only on the machine
+			// that looked it up.
+			if what.resolve != nil && u.Host != "" && u.Path == "" {
+				if path, ok := what.resolve(u.Host); ok {
+					args, _ := split(s, settled[i+1:])
+					add(word, program(&url.URL{Scheme: u.Scheme, Path: path}, args))
+					i += len(args)
+					continue
+				}
+			}
+			// The reference is the path. The authority beside it names the
+			// provider that resolves the reference, and an empty one is this
+			// machine — which is why the binder, not this loop, decides how
+			// much of the path is the reference: with a provider the leading
+			// separator is the URL's, and without one the path is absolute and
+			// keeps every byte. Here only its emptiness matters.
+			if strings.TrimPrefix(u.Path, "/") == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "names no "+what.noun+", pass e.g. "+what.example)
+				continue
+			}
+			// A reference and nothing else: a fragment or a userinfo is not
+			// part of the name of anything served, and neither is a query —
+			// except a program's arguments, which are the one thing a program
+			// origin carries besides the program.
+			if u.Fragment != "" || u.User != nil || (u.RawQuery != "" && !arguments(u)) {
+				log.Warn("dropping an origin", "origin", s, "reason", "carries more than a "+what.noun+" reference, pass "+u.Scheme+"://"+u.Host+u.Path)
+				continue
+			}
+			if v1.Scheme(u.Scheme) == v1.ExecScheme {
+				args, _ := split(s, settled[i+1:])
+				add(word, program(u, args))
+				i += len(args)
+				continue
+			}
+			add(word, u)
+			continue
+		}
+		// A +ws / +wss suffix declares that this origin owns WebSockets, so a
+		// handshake the page did not build with a routing index goes here
+		// rather than following the sticky cookie. The marker comes off here
+		// and rides the list as an index (WithWebSocket), so every URL
+		// downstream — the binder's, the panel's, the one the router dials —
+		// is the bare address and nothing has to know to leave it alone
+		// (#173, #176). The key follows: an origin marked and unmarked is one
+		// tunnel.
+		//
+		// The two spellings (+ws and +wss) mean the same thing: the suffix
+		// induces the designation rather than describing a transport — the
+		// origin is dialed by its base scheme either way — so accepting both
+		// spares an operator from reasoning about which one their service
+		// "is", which is not a question the marker asks.
+		base, marked := u.Scheme, false
+		if s, ok := strings.CutSuffix(u.Scheme, "+wss"); ok {
+			base, marked = s, true
+		} else if s, ok := strings.CutSuffix(u.Scheme, "+ws"); ok {
+			base, marked = s, true
+		}
+		if base != "http" && base != "https" {
+			log.Warn("dropping an origin", "origin", s, "reason", "scheme is not http, https, "+v1.AttachScheme+" or "+v1.ExecScheme, "scheme", u.Scheme)
+			continue
+		}
+		u.Scheme = base
+		// A port with no host in front of it — ":8000", or the "http://:8000"
+		// the scheme default above makes of it — means the local machine, the
+		// way every dev server reads that shorthand. The test is Hostname, not
+		// Host: url.Parse keeps the colon, so ":8000" arrives as a non-empty
+		// Host with nothing before the port, and a bare Host check waves it
+		// through as the unresolvable origin "http://:8000".
+		if u.Hostname() == "" {
+			if u.Port() == "" {
+				log.Warn("dropping an origin", "origin", s, "reason", "no host, pass e.g. http://localhost:3000")
+				continue
+			}
+			u.Host = net.JoinHostPort("localhost", u.Port())
+		}
+		// Claimed only here, once the origin is certain to be kept: an origin
+		// dropped above for want of a host would otherwise hold the claim and
+		// strip the marker from the one that should have had it.
+		if marked {
+			if wsOrigin != "" {
+				// Two origins cannot both own the websockets. The marker goes
+				// and the origin stays: it is a perfectly good origin that
+				// asked for something already taken, and a handshake has
+				// only one place to go.
+				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
+			} else {
+				wsOrigin, ws = s, len(parsed)
+			}
+		}
+		add(word, u)
+	}
+	return New(WithOrigins(parsed...), WithWebSocket(ws))
 }

@@ -67,55 +67,6 @@ func (s *sink) String() string {
 	return s.buf.String()
 }
 
-// TestResolve pins what turns a bare argument into a program origin, and what
-// the origin then carries. The rules belong to the host — the $PATH search,
-// the executable bit, the Windows extensions — so the fixture is a directory
-// made the whole of $PATH and the cases are what an operator can type at it.
-func TestResolve(t *testing.T) {
-	dir := t.TempDir()
-	prog := write(t, dir, runnable("tunneld-fixture"), 0o755)
-	write(t, dir, "tunneld-plain", 0o644)
-	t.Setenv("PATH", dir)
-
-	cases := []struct {
-		name string
-		in   string
-		want bool
-	}{
-		{"a command on PATH", runnable("tunneld-fixture"), true},
-		{"the same command by path", prog, true},
-		// Not runnable for a different reason on each platform — no executable
-		// bit on Unix, no PATHEXT extension on Windows — and the answer is the
-		// one that matters either way.
-		{"a file on PATH that is not runnable", "tunneld-plain", false},
-		{"a name that is not there", "tunneld-absent-fixture", false},
-		// The parser asks this before the http:// default, so anything already
-		// carrying a scheme has to answer no: LookPath stats it as a path.
-		{"a URL", "http://localhost:3000", false},
-		{"a host and port", "localhost:3000", false},
-		{"a bare port", ":8000", false},
-		{"a container reference", "attach://dockerd/api", false},
-		{"nothing at all", "", false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path, got := Resolve(tc.in)
-			if got != tc.want {
-				t.Errorf("Resolve(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-			// What resolves resolves to the one absolute path that will run,
-			// whichever spelling was typed at it.
-			if got && path != prog {
-				t.Errorf("Resolve(%q) = %q, want the resolved path %q", tc.in, path, prog)
-			}
-			if !got && path != "" {
-				t.Errorf("Resolve(%q) = %q alongside false, want no path", tc.in, path)
-			}
-		})
-	}
-}
-
 // write drops a fixture into dir and returns its path. The body is a shell
 // script that says one word, which is what the attach test reads back.
 func write(t *testing.T, dir, name string, mode os.FileMode) string {

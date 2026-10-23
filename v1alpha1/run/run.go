@@ -426,12 +426,12 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		if view != "" {
 			say(true, view)
 			for _, origin := range origins.All() {
-				say(false, "  -> "+label(origin))
+				say(false, "  -> "+origin.Label())
 			}
 		} else {
 			for i, origin := range origins.All() {
 				say(true, publicURL(public, i, origins.Len()))
-				say(false, "  -> "+label(origin))
+				say(false, "  -> "+origin.Label())
 			}
 		}
 	}
@@ -772,22 +772,6 @@ func publicURL(public *url.URL, i, n int) string {
 	return routed.String()
 }
 
-// label is an origin as a person reads it: a program without its arguments.
-//
-// The arguments ride the origin as a query because that is how they travel —
-// argv, the environment and a seed all spell them the same way — but a query
-// is a carrier, not a label. What the map says a tunnel reaches is the
-// program; how it was started is in the cache file beside the spec, and in
-// the key that names the file. An http origin's query is part of its address
-// and stays.
-func label(origin v1.Origin) string {
-	u := origin.URL()
-	if origin.Scheme == v1.ExecScheme {
-		u.RawQuery = ""
-	}
-	return u.String()
-}
-
 // originsHeader is X-Tunneld-Origins for these origins: each as scheme,
 // host and path, in order. A query, a fragment or credentials can hold a
 // secret, so they are dropped rather than sent to the provider.
@@ -797,9 +781,7 @@ func originsHeader(origins v1.Origins) (key, value string) {
 	}
 	shown := make([]string, 0, origins.Len())
 	for _, origin := range origins.All() {
-		u := origin.URL()
-		bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}
-		shown = append(shown, bare.String())
+		shown = append(shown, origin.Bare())
 	}
 	return v1.OriginsHeader, strings.Join(shown, ", ")
 }

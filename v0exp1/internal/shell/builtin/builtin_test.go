@@ -18,6 +18,7 @@ import (
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // needsPTY skips a test on a platform with no pseudo-terminals, as the shell
@@ -67,7 +68,7 @@ func TestOrigin(t *testing.T) {
 	if origin.Scheme != v1.ExecScheme || origin.Provider != "" || !slices.Equal(origin.Args, []string{Arg}) {
 		t.Errorf("Origin() = %s, want exec:///<this executable>?%s=%s", origin.URL(), v1.ArgKey, Arg)
 	}
-	if _, ok := shell.Resolve(origin.Ref); !ok {
+	if _, ok := origins.Resolve(origin.Ref); !ok {
 		t.Errorf("Origin()'s program %q does not resolve", origin.Ref)
 	}
 }
