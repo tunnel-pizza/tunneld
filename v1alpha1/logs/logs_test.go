@@ -18,7 +18,7 @@ import (
 func run(t *testing.T) v1.Origins {
 	t.Helper()
 	u, _ := url.Parse("http://localhost:3000")
-	return origins.New(origins.WithDir("/work/project"), origins.WithURL(u))
+	return origins.New(origins.WithDir("/work/project"), origins.WithOrigins(origins.NewOrigin(u)))
 }
 
 func text(buf *bytes.Buffer, level slog.Level) slog.Handler {

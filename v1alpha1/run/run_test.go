@@ -165,7 +165,7 @@ func TestOriginsHeader(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var opts []origins.Option
 			for _, raw := range tc.urls {
-				opts = append(opts, origins.WithURL(parse(raw)))
+				opts = append(opts, origins.WithOrigins(origins.NewOrigin(parse(raw))))
 			}
 			key, got := originsHeader(origins.New(opts...))
 			if key != v1.OriginsHeader || got != tc.want {

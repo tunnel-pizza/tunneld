@@ -69,7 +69,7 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 		b    *BuilderImpl
 	}{
 		{"browser", New(WithOrigin(":3000"), WithDisplay(nil))},
-		{"binder", New(WithOrigin(":3000"), WithBinder(nil))},
+		{"attacher", New(WithOrigin(":3000"), WithAttacher(nil))},
 		{"router", New(WithOrigin(":3000"), WithRouter(nil))},
 		{"motd", New(WithOrigin(":3000"), WithMotd(nil))},
 		{"auth", New(WithOrigin(":3000"), WithAuth(nil))},
@@ -106,10 +106,10 @@ func TestNewWiresEveryCollaborator(t *testing.T) {
 // TestContractOptionsLand pins that a contract option replaces the default
 // rather than sitting beside it: what run reads is what the caller gave.
 func TestContractOptionsLand(t *testing.T) {
-	c, o, g := &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, &fakeBinder{}
-	b := New(WithCache(c), WithDisplay(o), WithBinder(g))
+	c, o, g := &fakeCache{}, &fakeDisplay{DisplayImpl: display.New()}, &fakeAttacher{}
+	b := New(WithCache(c), WithDisplay(o), WithAttacher(g))
 
-	if b.cache != Cache(c) || b.display != Display(o) || b.binder != Binder(g) {
+	if b.cache != Cache(c) || b.display != Display(o) || b.attacher != Attacher(g) {
 		t.Error("a contract option did not land on the field run reads")
 	}
 

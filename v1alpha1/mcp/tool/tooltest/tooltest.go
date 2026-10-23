@@ -17,7 +17,6 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
@@ -84,7 +83,7 @@ func Listed(t *testing.T, tl tool.Tool) *sdk.Tool {
 }
 
 // Origins is raws as a run settles them.
-func Origins(t *testing.T, raws ...string) v1.Origins {
+func Origins(t *testing.T, raws ...string) *origins.OriginsImpl {
 	t.Helper()
 	var opts []origins.Option
 	for _, raw := range raws {
@@ -92,20 +91,20 @@ func Origins(t *testing.T, raws ...string) v1.Origins {
 		if err != nil {
 			t.Fatal(err)
 		}
-		opts = append(opts, origins.WithURL(u))
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(u)))
 	}
 	return origins.New(opts...)
 }
 
-// Bound is a run's served origins as a test arranges them: its terminals,
+// Attached is a run's served origins as a test arranges them: its terminals,
 // by index.
-type Bound struct {
-	attach.Bound // the rest, which a tool never asks of it
-	Terminals    map[int]attach.Terminal
+type Attached struct {
+	attach.Attached // the rest, which a tool never asks of it
+	Terminals       map[int]attach.Terminal
 }
 
 // Terminal is the terminal at index.
-func (b Bound) Terminal(index int) (attach.Terminal, bool) {
+func (b Attached) Terminal(index int) (attach.Terminal, bool) {
 	t, ok := b.Terminals[index]
 	return t, ok
 }

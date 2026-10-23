@@ -254,13 +254,13 @@ func (r *recorder) commands() []int {
 
 // TestWithSinksStoresAndServeAccepts pins the plumbing this task adds, without
 // asserting dispatch: a Sink installed with WithSinks is carried by the
-// binder, and Serve's new sinks parameter is accepted and passed through to a
+// attacher, and Serve's new sinks parameter is accepted and passed through to a
 // session that starts cleanly. What a sink is actually told is Task 3's to
 // pin, once session.said exists to tell it.
 func TestWithSinksStoresAndServeAccepts(t *testing.T) {
 	b := New(WithSinks(&recorder{}, &recorder{}))
 	if got := len(b.sinks); got != 2 {
-		t.Fatalf("binder carries %d sinks, want 2", got)
+		t.Fatalf("attacher carries %d sinks, want 2", got)
 	}
 
 	s, err := Serve(t.Context(), newFakeTarget("api", true, true), testBanner, testLogs{}, nil, []Sink{&recorder{}}, newAsk(), slog.New(slog.DiscardHandler))
@@ -1058,7 +1058,7 @@ func TestSessionEnds(t *testing.T) {
 	}{
 		{"the tunnel shuts down", true, func(_ *Server, _ *websocket.Conn, shutdown context.CancelFunc) { shutdown() }},
 		// Close with nobody having cancelled anything, which is the shape of
-		// the tunnel failing on its own: run's defer closes what it bound and
+		// the tunnel failing on its own: run's defer closes what it attached and
 		// the context is still live. Neither close inside reaches a live
 		// session — net/http leaves hijacked connections alone by design, and
 		// a Target's Close only reaps what is idle — so Close has to end the
@@ -1087,7 +1087,7 @@ func TestSessionEnds(t *testing.T) {
 	}
 }
 
-// stubTarget is a container that never says anything. Bind only needs a
+// stubTarget is a container that never says anything. Attach only needs a
 // Target to stand a server on; what the stream does is tested elsewhere in
 // this package.
 type stubTarget struct {
@@ -1176,19 +1176,19 @@ func (e *exitTarget) AttachContainer(ctx context.Context, _, _, _ string, _ io.R
 	return nil
 }
 
-// TestExitedWhenEveryProgramHas pins Bound.Exited: the programs a Bind starts
-// are reported, with their statuses in origin order, once every one of them
-// has ended, and not before. A container is not a program and is not waited
-// for.
+// TestExitedWhenEveryProgramHas pins Attached.Exited: the programs an Attach
+// starts are reported, with their statuses in origin order, once every one of
+// them has ended, and not before. A container is not a program and is not
+// waited for.
 func TestExitedWhenEveryProgramHas(t *testing.T) {
 	programs := &exitTargets{
 		codes: map[string]int{"/bin/ok": 0, "/bin/fails": 3},
 		end:   map[string]chan struct{}{"/bin/ok": make(chan struct{}), "/bin/fails": make(chan struct{})},
 	}
 	display := shown(t, "exec:///bin/ok", "attach://dockerd/db", "exec:///bin/fails")
-	_, closer, err := New(WithTargets(programs, &stubTargets{}), WithHold()).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(programs, &stubTargets{}), WithHold()).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = closer.Close() }()
 	closer.Start()
@@ -1233,9 +1233,9 @@ func TestARestartIsNotAnExit(t *testing.T) {
 	target.holdFrom = 1
 	t.Cleanup(target.release)
 	display := shown(t, "exec:///usr/bin/prog")
-	_, closer, err := New(WithTargets(oneTarget{exitingRerun{target}}), WithHold()).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(oneTarget{exitingRerun{target}}), WithHold()).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = closer.Close() }()
 	closer.Start()
@@ -1260,23 +1260,23 @@ func TestARestartIsNotAnExit(t *testing.T) {
 	}
 }
 
-// TestBindPicksTheProviderByScheme pins the dispatch: each provider answers
-// one verb://provider pair, the binder chooses on that alone, and an origin no
+// TestAttachPicksTheProviderByScheme pins the dispatch: each provider answers
+// one verb://provider pair, the attacher chooses on that alone, and an origin no
 // pair claims never silently becomes an address the tunnel tries to dial.
 //
 // The two providers are also asked for their references differently, which is
 // the authority doing its work: a named provider is handed the reference
 // without the separator that belongs to the URL, and the empty authority — this
 // machine — is handed the path whole, because there it is a filesystem path.
-func TestBindPicksTheProviderByScheme(t *testing.T) {
+func TestAttachPicksTheProviderByScheme(t *testing.T) {
 	containers := &stubTargets{}
 	programs := &stubTargets{verb: v1.ExecScheme, local: true}
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "exec:///usr/bin/htop")
 
-	dialable, closer, err := New(WithTargets(containers, programs)).
-		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(containers, programs)).
+		Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = closer.Close() }()
 
@@ -1288,26 +1288,26 @@ func TestBindPicksTheProviderByScheme(t *testing.T) {
 	}
 	// The http origin passes through as itself; the other two were replaced by
 	// the loopback servers standing in for them, at their own indexes.
-	if got := uriAt(dialable, 0).String(); got != "http://localhost:3000" {
+	if got := display.Dialable()[0].String(); got != "http://localhost:3000" {
 		t.Errorf("origin 0 = %q, want the address untouched", got)
 	}
 	for _, at := range []int{1, 2} {
-		if got := uriAt(dialable, at).Hostname(); got != "127.0.0.1" {
-			t.Errorf("origin %d = %q, want a loopback server", at, uriAt(dialable, at))
+		if got := display.Dialable()[at].Hostname(); got != "127.0.0.1" {
+			t.Errorf("origin %d = %q, want a loopback server", at, display.Dialable()[at])
 		}
 	}
 }
 
-// TestBindRefusesAnUnservedScheme pins that a scheme no provider answers is an
+// TestAttachRefusesAnUnservedScheme pins that a scheme no provider answers is an
 // error rather than an origin: dialing "exec:///usr/bin/htop" as an address would mint
 // a public hostname in front of nothing at all.
-func TestBindRefusesAnUnservedScheme(t *testing.T) {
+func TestAttachRefusesAnUnservedScheme(t *testing.T) {
 	display := shown(t, "exec:///usr/bin/htop")
 
-	_, _, err := New(WithTargets(&stubTargets{})).
-		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	_, err := New(WithTargets(&stubTargets{})).
+		Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err == nil {
-		t.Fatal("Bind with no provider for the scheme succeeded, want an error")
+		t.Fatal("Attach with no provider for the scheme succeeded, want an error")
 	}
 	if !strings.Contains(err.Error(), "exec://") {
 		t.Errorf("error %q does not name the origin", err)
@@ -1477,7 +1477,7 @@ func (r *rerunTarget) awaitRun(t *testing.T, want int) {
 	}
 }
 
-// TestAHeldProgramWaitsForStart pins WithHold: a program a Bind starts does
+// TestAHeldProgramWaitsForStart pins WithHold: a program an Attach starts does
 // not run until Start, so it can start knowing the tunnel's origin, and Start
 // runs it once however often it is called.
 func TestAHeldProgramWaitsForStart(t *testing.T) {
@@ -1617,9 +1617,9 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 			targets := &stubTargets{}
 			display := shown(t, tc.display...)
 
-			_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+			closer, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 			if err != nil {
-				t.Fatalf("Bind: %v", err)
+				t.Fatalf("Attach: %v", err)
 			}
 			defer func() { _ = closer.Close() }()
 
@@ -1633,27 +1633,27 @@ func TestShowIsOfferedOnlyForOneOrigin(t *testing.T) {
 	}
 }
 
-// TestDoneReachesTheBinder pins the path from a viewer's keystroke to the
+// TestDoneReachesTheAttacher pins the path from a viewer's keystroke to the
 // thing that can act on it. The frame asks its Server, the Server says so on
-// Done, and the closer Bind handed back is where the command is listening —
+// Done, and the closer Attach handed back is where the command is listening —
 // which is the only reason a key inside a browser tab can end a process.
 //
 // Synchronously: the channel is closed before endRun returns, not relayed by
 // a goroutine that may not have run yet. The console checks Done the moment
 // the frame gives the terminal back, and a relay would have it print the
 // Ctrl+C line onto a prompt the run is about to leave.
-func TestDoneReachesTheBinder(t *testing.T) {
+func TestDoneReachesTheAttacher(t *testing.T) {
 	targets := &stubTargets{}
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "attach://dockerd/db")
 
-	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = closer.Close() }()
 
-	// No assertion: Bound carries Done, because every bound list can say when
-	// a viewer asked the run to end. Only Show is conditional.
+	// No assertion: Attached carries Done, because every attached list can say
+	// when a viewer asked the run to end. Only Show is conditional.
 	asked := closer.Done()
 
 	select {
@@ -1664,7 +1664,7 @@ func TestDoneReachesTheBinder(t *testing.T) {
 
 	// The second origin's viewer asks. One channel for all of them, because
 	// what they are asking for is the process.
-	servers := closer.(bound)
+	servers := closer.(attached)
 	servers.origins[1].srv.session.endRun()
 
 	select {
@@ -1674,53 +1674,54 @@ func TestDoneReachesTheBinder(t *testing.T) {
 	}
 }
 
-// shown is what an operator asked for, in the type Bind takes: the origins as
+// shown is what an operator asked for, in the type Attach takes: the origins as
 // they were typed, before any of them is stood up behind a loopback address.
-func shown(t *testing.T, raw ...string) v1.Origins {
+func shown(t *testing.T, raw ...string) *origins.OriginsImpl {
 	t.Helper()
-	return origins.New(origins.WithURL(mustURLs(t, raw...)...))
+	return origins.New(origins.WithOrigins(mustOrigins(t, raw...)...))
 }
 
-// mustURLs parses raw as URLs, failing the test on the first one that is not.
-func mustURLs(t *testing.T, raw ...string) []*url.URL {
+// mustOrigins parses raw as origins, failing the test on the first one that
+// is not a URL.
+func mustOrigins(t *testing.T, raw ...string) []v1.Origin {
 	t.Helper()
-	got := make([]*url.URL, 0, len(raw))
+	got := make([]v1.Origin, 0, len(raw))
 	for _, s := range raw {
 		u, err := url.Parse(s)
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", s, err)
 		}
-		got = append(got, u)
+		got = append(got, origins.NewOrigin(u))
 	}
 	return got
 }
 
-// TestBindKeepsOrder pins the invariant the whole feature rests on: the
-// dialable list is the same length and the same order as what the operator
-// typed, so index n still means origin n everywhere downstream — ?n routing,
+// TestAttachKeepsOrder pins the invariant the whole feature rests on: the
+// addresses dialed are the same length and the same order as what the
+// operator typed, so index n still means origin n everywhere downstream — ?n routing,
 // the reported addresses, the reported map, the multiview tiles.
-func TestBindKeepsOrder(t *testing.T) {
+func TestAttachKeepsOrder(t *testing.T) {
 	targets := &stubTargets{}
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
-	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer closer.Close()
 
-	if dialable.Len() != display.Len() {
-		t.Fatalf("dialable has %d entries, want %d", dialable.Len(), display.Len())
+	if got := len(display.Dialable()); got != display.Len() {
+		t.Fatalf("Dialable() has %d entries, want %d", got, display.Len())
 	}
-	if got := uriAt(dialable, 0).String(); got != "http://localhost:3000" {
-		t.Errorf("dialable.At(0) = %q, want the http origin unchanged", got)
+	if got := display.Dialable()[0].String(); got != "http://localhost:3000" {
+		t.Errorf("Dialable()[0] = %q, want the http origin unchanged", got)
 	}
-	if got := uriAt(dialable, 2).String(); got != "http://localhost:4000" {
-		t.Errorf("dialable.At(2) = %q, want the http origin unchanged", got)
+	if got := display.Dialable()[2].String(); got != "http://localhost:4000" {
+		t.Errorf("Dialable()[2] = %q, want the http origin unchanged", got)
 	}
 	for _, i := range []int{1, 3} {
-		if !strings.HasPrefix(uriAt(dialable, i).Host, "127.0.0.1:") {
-			t.Errorf("dialable[%d] = %q, want a loopback origin", i, uriAt(dialable, i))
+		if !strings.HasPrefix(display.Dialable()[i].Host, "127.0.0.1:") {
+			t.Errorf("Dialable()[%d] = %q, want a loopback origin", i, display.Dialable()[i])
 		}
 	}
 	if want := []string{"api", "db"}; !slices.Equal(targets.asked, want) {
@@ -1728,34 +1729,36 @@ func TestBindKeepsOrder(t *testing.T) {
 	}
 }
 
-// TestBindKeepsWhatEachOriginIs pins that a served origin is still what it
-// was on the dialable list, with only the address it is dialed at changed: a
-// token's scope is held against the scheme there, and a container served on
-// a loopback http address is still tunnel:attach, never tunnel:http.
-func TestBindKeepsWhatEachOriginIs(t *testing.T) {
+// TestAttachKeepsWhatEachOriginIs pins that serving an origin changes only
+// the address it is dialed at: a token's scope is held against the origin's
+// scheme, and a container served on a loopback http address is still
+// tunnel:attach, never tunnel:http.
+func TestAttachKeepsWhatEachOriginIs(t *testing.T) {
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api")
+	before := display.All()
 
-	dialable, closer, err := New(WithTargets(&stubTargets{})).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(&stubTargets{})).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer closer.Close()
 
-	for i, want := range display.All() {
-		got := dialable.At(i)
-		if got.Index != want.Index || got.Scheme != want.Scheme || got.Provider != want.Provider || got.Ref != want.Ref {
-			t.Errorf("dialable[%d] = %d %s %q %q, want %d %s %q %q", i,
-				got.Index, got.Scheme, got.Provider, got.Ref, want.Index, want.Scheme, want.Provider, want.Ref)
+	for i, want := range before {
+		got := display.At(i)
+		if got.Index != want.Index || got.Scheme != want.Scheme || got.Provider != want.Provider || got.Ref != want.Ref || got.URL().String() != want.URL().String() {
+			t.Errorf("origin %d = %d %s %q %q %q, want %d %s %q %q %q", i,
+				got.Index, got.Scheme, got.Provider, got.Ref, got.URL(),
+				want.Index, want.Scheme, want.Provider, want.Ref, want.URL())
 		}
 	}
-	if got := uriAt(dialable, 1); !strings.HasPrefix(got.Host, "127.0.0.1:") {
-		t.Errorf("dialable[1] = %q, want the loopback address it is served at", got)
+	if got := display.Dialable()[1]; !strings.HasPrefix(got.Host, "127.0.0.1:") {
+		t.Errorf("Dialable()[1] = %q, want the loopback address it is served at", got)
 	}
 }
 
 // TestAnnounceReachesTheRightTerminal pins the other half of that invariant.
 //
-// A container is bound before the tunnel exists, so where it answers from
+// A container is attached before the tunnel exists, so where it answers from
 // outside is not known until later, and the only thing connecting a server to
 // its address is the place its origin had in the list. Announce is handed the
 // addresses in that order, and hands each server the one at its own index —
@@ -1765,15 +1768,15 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 	targets := &stubTargets{}
 	display := shown(t, "http://localhost:3000", "attach://dockerd/api", "http://localhost:4000", "attach://dockerd/db")
 
-	_, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer closer.Close()
 
 	announcer, ok := closer.(interface{ Announce(public []string) })
 	if !ok {
-		t.Fatalf("Bind returned %T, want something the root can announce to", closer)
+		t.Fatalf("Attach returned %T, want something the root can announce to", closer)
 	}
 
 	// One address per origin, in the order the operator typed them.
@@ -1784,12 +1787,12 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 		"https://example.test/?3",
 	})
 
-	servers, ok := closer.(bound)
+	servers, ok := closer.(attached)
 	if !ok {
-		t.Fatalf("closer is %T, want the bound list", closer)
+		t.Fatalf("closer is %T, want the attached list", closer)
 	}
 	if len(servers.origins) != 2 {
-		t.Fatalf("bound %d servers, want the two containers", len(servers.origins))
+		t.Fatalf("attached %d servers, want the two containers", len(servers.origins))
 	}
 	for _, o := range servers.origins {
 		want := fmt.Sprintf("https://example.test/?%d", o.at)
@@ -1800,45 +1803,45 @@ func TestAnnounceReachesTheRightTerminal(t *testing.T) {
 
 	// And a caller with fewer addresses than origins leaves them unset rather
 	// than reaching for one that is not there.
-	short := bound{origins: []boundOrigin{{at: 9, srv: servers.origins[0].srv}}}
+	short := attached{origins: []attachedOrigin{{at: 9, srv: servers.origins[0].srv}}}
 	short.Announce([]string{"https://example.test/?0"})
 	if got := servers.origins[0].srv.session.announced(); got == "https://example.test/?0" {
 		t.Error("an index past the addresses given took the first one, want it left alone")
 	}
 }
 
-// TestBindWithoutContainers pins that a command with no attach:// URL starts
+// TestAttachWithoutContainers pins that a command with no attach:// URL starts
 // nothing at all — the feature is inert until somebody asks for it.
-func TestBindWithoutContainers(t *testing.T) {
+func TestAttachWithoutContainers(t *testing.T) {
 	targets := &stubTargets{}
 	display := shown(t, "http://localhost:3000", "http://localhost:4000")
 
-	dialable, closer, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer closer.Close()
 
 	if len(targets.asked) != 0 {
 		t.Errorf("opened %q, want nothing", targets.asked)
 	}
-	for i, u := range urisOf(dialable) {
-		if *u != display.At(i).URI {
-			t.Errorf("dialable[%d] = %q, want the original origin", i, u)
+	for i, u := range display.Dialable() {
+		if u.String() != display.At(i).URL().String() {
+			t.Errorf("Dialable()[%d] = %q, want the original origin", i, u)
 		}
 	}
 }
 
-// TestBindUnwindsOnFailure pins that a later container failing does not leave
-// an earlier one's server listening. The command is about to return an error
-// and exit; a leaked goroutine holding a port would outlive it in an
-// embedding program.
-func TestBindUnwindsOnFailure(t *testing.T) {
+// TestAttachUnwindsOnFailure pins that a later container failing does not
+// leave an earlier one's server listening, or its address on the origins. The
+// command is about to return an error and exit; a leaked goroutine holding a
+// port would outlive it in an embedding program.
+func TestAttachUnwindsOnFailure(t *testing.T) {
 	targets := &stubTargets{failOn: 2}
 	display := shown(t, "attach://dockerd/api", "attach://dockerd/missing")
 
-	if _, _, err := New(WithTargets(targets)).Bind(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
-		t.Fatal("Bind succeeded, want an error")
+	if _, err := New(WithTargets(targets)).Attach(t.Context(), display, slog.New(slog.DiscardHandler)); err == nil {
+		t.Fatal("Attach succeeded, want an error")
 	}
 	if len(targets.opened) != 1 {
 		t.Fatalf("opened %d targets, want 1", len(targets.opened))
@@ -1846,64 +1849,67 @@ func TestBindUnwindsOnFailure(t *testing.T) {
 	if !targets.opened[0].closed {
 		t.Error("the first container's target was left open")
 	}
+	if got := display.Dialable()[0].String(); got != "attach://dockerd/api" {
+		t.Errorf("Dialable()[0] = %q after a failed Attach, want the origin, not a closed server", got)
+	}
 }
 
-// TestBindHasRoomForASecondVerb pins that the shape leaves room for a second
-// way into the same provider without touching the parser or the binder.
+// TestAttachHasRoomForASecondVerb pins that the shape leaves room for a second
+// way into the same provider without touching the parser or the attacher.
 //
 // exec://dockerd/api is the future row #101 names: the same daemon as
 // attach://dockerd/api, asked for a different thing. Nothing answers it in a
 // real build, so what this registers is a stub — and the point is that
 // registering one is the whole of the work. If a later change narrows the
 // parser to the pairs that exist today, this fails.
-func TestBindHasRoomForASecondVerb(t *testing.T) {
+func TestAttachHasRoomForASecondVerb(t *testing.T) {
 	execInto := &stubTargets{verb: v1.ExecScheme, provider: v1.DockerProvider}
 	display := shown(t, "exec://dockerd/api")
 
-	dialable, closer, err := New(WithTargets(execInto)).
-		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(execInto)).
+		Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = closer.Close() }()
 
 	if want := []string{"api"}; !slices.Equal(execInto.asked, want) {
 		t.Errorf("the provider was asked for %v, want %v", execInto.asked, want)
 	}
-	if dialable.Len() != 1 || dialable.At(0).URI.Scheme != "http" || dialable.At(0).Scheme != v1.ExecScheme {
-		t.Errorf("dialable = %v, want the loopback server standing in for the exec origin", dialable)
+	if d := display.Dialable(); len(d) != 1 || d[0].Scheme != "http" || display.At(0).Scheme != v1.ExecScheme {
+		t.Errorf("Dialable() = %v, want the loopback server standing in for the exec origin", d)
 	}
 	if got := execInto.opened[0].Origin(); got != "exec://dockerd/api" {
 		t.Errorf("the target's origin = %q, want it spelled back whole", got)
 	}
 }
 
-// TestBindWithoutTargets pins that an attach:// origin met with no Targets
+// TestAttachWithoutTargets pins that an attach:// origin met with no Targets
 // configured fails with a message naming the missing dependency, rather than
 // panicking on a nil interface.
-func TestBindWithoutTargets(t *testing.T) {
+func TestAttachWithoutTargets(t *testing.T) {
 	display := shown(t, "attach://dockerd/api")
 
-	_, _, err := New().Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	_, err := New().Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err == nil {
-		t.Fatal("Bind succeeded, want an error")
+		t.Fatal("Attach succeeded, want an error")
 	}
 	if want := "attach: nothing answers attach://dockerd, only "; !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("error = %q, want %q", err, want)
 	}
 }
 
-// TestBindHandsAProgramItsArguments pins the seam the words after a program on
-// the command line cross: they ride the origin's query, and the binder hands
+// TestAttachHandsAProgramItsArguments pins the seam the words after a program on
+// the command line cross: they ride the origin's query, and the attacher hands
 // them to the provider in the order written. A container provider is handed
 // none, because nothing after a container's name is its.
-func TestBindHandsAProgramItsArguments(t *testing.T) {
+func TestAttachHandsAProgramItsArguments(t *testing.T) {
 	programs := &stubTargets{verb: v1.ExecScheme, local: true}
 	display := shown(t, "exec:///usr/bin/claude?arg=--resume&arg=--model&arg=opus")
 
-	_, closer, err := New(WithTargets(programs)).Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	closer, err := New(WithTargets(programs)).Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer closer.Close()
 
@@ -1968,20 +1974,4 @@ func TestRestartIsNothingForAContainer(t *testing.T) {
 		t.Error("restart ended a container's run")
 	default:
 	}
-}
-
-// uriAt is origin i's URI, as a pointer: what URL methods are called on.
-func uriAt(origins v1.Origins, i int) *url.URL {
-	u := origins.At(i).URI
-	return &u
-}
-
-// urisOf is every origin's URI, in order.
-func urisOf(origins v1.Origins) []*url.URL {
-	all := origins.All()
-	out := make([]*url.URL, len(all))
-	for i := range all {
-		out[i] = &all[i].URI
-	}
-	return out
 }

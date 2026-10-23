@@ -14,20 +14,20 @@ import (
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 )
 
-// TestBoundTerminal pins which origins have a terminal: a served one does,
+// TestAttachedTerminal pins which origins have a terminal: a served one does,
 // by the index it has in the run, and a dialed one or an index past the run
 // does not.
-func TestBoundTerminal(t *testing.T) {
+func TestAttachedTerminal(t *testing.T) {
 	display := shown(t, "http://localhost:3000", "exec:///usr/bin/htop")
-	_, bound, err := New(WithTargets(&stubTargets{verb: v1.ExecScheme, local: true})).
-		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	attached, err := New(WithTargets(&stubTargets{verb: v1.ExecScheme, local: true})).
+		Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
-	defer func() { _ = bound.Close() }()
+	defer func() { _ = attached.Close() }()
 
 	for index, want := range map[int]bool{0: false, 1: true, 2: false, -1: false} {
-		if term, ok := bound.Terminal(index); ok != want || (term != nil) != want {
+		if term, ok := attached.Terminal(index); ok != want || (term != nil) != want {
 			t.Errorf("Terminal(%d) = %v, %v; want a terminal: %v", index, term, ok, want)
 		}
 	}

@@ -95,8 +95,8 @@ func TestAll(t *testing.T) {
 // served is a run's served origins as a test arranges them, terminals by
 // index.
 type served struct {
-	attach.Bound // the rest, which a tool never asks of it
-	at           map[int]attach.Terminal
+	attach.Attached // the rest, which a tool never asks of it
+	at              map[int]attach.Terminal
 }
 
 func (b served) Terminal(index int) (attach.Terminal, bool) {
@@ -111,7 +111,7 @@ func TestTerminal(t *testing.T) {
 	var opts []origins.Option
 	for _, raw := range []string{"http://localhost:3000", "exec:///bin/sh", "attach://dockerd/api"} {
 		u, _ := url.Parse(raw)
-		opts = append(opts, origins.WithURL(u))
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(u)))
 	}
 	type terminal struct {
 		attach.Terminal
@@ -127,13 +127,13 @@ func TestTerminal(t *testing.T) {
 		want attach.Terminal
 		says string
 	}{
-		"the secret":                       {Context{Origins: origins.New(opts...), Bound: run}, t.Context(), "https://0tabc.tunneld.domain/?1", shell, ""},
-		"the scheme's scope":               {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneld.domain/?1", shell, ""},
-		"another scheme's scope":           {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneld.domain/?2", nil, "a_tool needs the tunnel:attach scope"},
-		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneld.domain/", nil, "https://0tabc.tunneld.domain/ is not a terminal: origin 0 is http"},
-		"past the list":                    {Context{Origins: origins.New(opts...), Bound: run}, exec, "https://0tabc.tunneld.domain/?5", nil, "names origin 5"},
+		"the secret":                       {Context{Origins: origins.New(opts...), Attached: run}, t.Context(), "https://0tabc.tunneld.domain/?1", shell, ""},
+		"the scheme's scope":               {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/?1", shell, ""},
+		"another scheme's scope":           {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/?2", nil, "a_tool needs the tunnel:attach scope"},
+		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/", nil, "https://0tabc.tunneld.domain/ is not a terminal: origin 0 is http"},
+		"past the list":                    {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/?5", nil, "names origin 5"},
 		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal."},
-		"a run with no origins":            {Context{Bound: run}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal."},
+		"a run with no origins":            {Context{Attached: run}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, got := logged(t)

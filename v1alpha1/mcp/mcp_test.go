@@ -43,18 +43,18 @@ func connect(t *testing.T, m *McpImpl) *sdk.ClientSession {
 // log replaces the discarding default, and a nil log keeps it.
 func TestNew(t *testing.T) {
 	all := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh")
-	served := tooltest.Bound{}
+	served := tooltest.Attached{}
 	log := slog.New(slog.DiscardHandler)
 	for _, tc := range []struct {
-		name    string
-		opts    []Option
-		origins v1.Origins
-		bound   attach.Bound
-		log     *slog.Logger
+		name     string
+		opts     []Option
+		origins  v1.Origins
+		attached attach.Attached
+		log      *slog.Logger
 	}{
 		{"defaults", nil, nil, nil, nil},
 		{"origins", []Option{WithOrigins(all)}, all, nil, nil},
-		{"bound", []Option{WithBound(served)}, nil, served, nil},
+		{"attached", []Option{WithAttached(served)}, nil, served, nil},
 		{"log", []Option{WithLog(log)}, nil, nil, log},
 		{"nil log keeps the default", []Option{WithLog(nil)}, nil, nil, nil},
 	} {
@@ -63,8 +63,8 @@ func TestNew(t *testing.T) {
 			if m.origins != tc.origins {
 				t.Errorf("origins = %v, want the ones given, %v", m.origins, tc.origins)
 			}
-			if (m.bound == nil) != (tc.bound == nil) {
-				t.Errorf("bound = %v, want the one given, %v", m.bound, tc.bound)
+			if (m.attached == nil) != (tc.attached == nil) {
+				t.Errorf("attached = %v, want the one given, %v", m.attached, tc.attached)
 			}
 			if m.log == nil {
 				t.Error("log = nil, want the discarding default")
@@ -131,12 +131,12 @@ func TestATerminalOverMcp(t *testing.T) {
 		t.Skip("no /bin/sh")
 	}
 	shown := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh")
-	_, bound, err := attach.New(attach.WithTargets(shell.New())).Bind(t.Context(), shown, slog.New(slog.DiscardHandler))
+	attached, err := attach.New(attach.WithTargets(shell.New())).Attach(t.Context(), shown, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
-	defer func() { _ = bound.Close() }()
-	cs := connect(t, New(WithOrigins(shown), WithBound(bound)))
+	defer func() { _ = attached.Close() }()
+	cs := connect(t, New(WithOrigins(shown), WithAttached(attached)))
 
 	call := func(name, args string) *sdk.CallToolResult {
 		t.Helper()

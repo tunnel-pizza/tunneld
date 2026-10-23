@@ -3,11 +3,11 @@
 // is over.
 //
 // Everything a live tunnel does lives here — the addresses on stdout, the map
-// on stderr, the bound origins told where they answer from, the provider's
+// on stderr, the attached origins told where they answer from, the provider's
 // messages learned, the browser or the console opened, the spec saved, a
 // waiting launcher handed back — so what happens to a tunnel over its life
 // reads top to bottom in one place. What the run settled before its first
-// tunnel (the logger, the origins, what they are bound to, the router's
+// tunnel (the logger, the origins, what they are attached to, the router's
 // address, the credential) the builder hands over with each call, along with
 // the collaborators a tunnel is shown through, each behind the interface its
 // own package declares.
@@ -68,10 +68,10 @@ type RunImpl struct {
 
 	// cmd is the command the run belongs to: its streams, and whether
 	// somebody is watching them.
-	cmd     *cobra.Command
-	origins v1.Origins
-	bound   attach.Bound
-	cache   cache.Cache
+	cmd      *cobra.Command
+	origins  v1.Origins
+	attached attach.Attached
+	cache    cache.Cache
 	// tracking is what the run settled on, saved beside the spec with the
 	// tunnel's hostname added.
 	tracking map[string]string
@@ -86,13 +86,13 @@ type RunImpl struct {
 
 	// qr prints the address as a code; open is a caller's decision about a
 	// tab, nil for none; spinner allows the one shown while the tunnel comes
-	// up; attached is somebody watching though no stream is a terminal; hint
+	// up; piped is somebody watching though no stream is a terminal; hint
 	// is what a console with nothing to draw is told.
-	qr       bool
-	open     *bool
-	spinner  bool
-	attached bool
-	hint     string
+	qr      bool
+	open    *bool
+	spinner bool
+	piped   bool
+	hint    string
 
 	// screen is the console a frame was drawn on for an earlier tunnel of
 	// this call, nil when none was: that frame is still up, showing the same
@@ -141,9 +141,9 @@ func WithCommand(cmd *cobra.Command) Option { return func(r *RunImpl) { r.cmd = 
 // WithOrigins sets the origins the run exposes, as the operator typed them.
 func WithOrigins(origins v1.Origins) Option { return func(r *RunImpl) { r.origins = origins } }
 
-// WithBound sets what the origins are bound to: told the addresses they answer
-// on, and how a viewer asks the run to end.
-func WithBound(bound attach.Bound) Option { return func(r *RunImpl) { r.bound = bound } }
+// WithAttached sets what the origins are attached to: told the addresses they
+// answer on, and how a viewer asks the run to end.
+func WithAttached(attached attach.Attached) Option { return func(r *RunImpl) { r.attached = attached } }
 
 // WithCache sets where a tunnel that came up is saved.
 func WithCache(c cache.Cache) Option { return func(r *RunImpl) { r.cache = c } }
@@ -184,13 +184,13 @@ func WithOpen(open *bool) Option { return func(r *RunImpl) { r.open = open } }
 // its logger on gets the lines instead.
 func WithSpinner(on bool) Option { return func(r *RunImpl) { r.spinner = on } }
 
-// streamSettle is how long an attached run waits when it turns from one of
+// streamSettle is how long a piped run waits when it turns from one of
 // its streams to the other, for the relay to deliver what it wrote before.
 const streamSettle = 100 * time.Millisecond
 
-// WithAttached says somebody is watching though none of the command's streams
+// WithPiped says somebody is watching though none of the command's streams
 // is a terminal: a client relaying them onto one, as kubectl debug -i does.
-func WithAttached(on bool) Option { return func(r *RunImpl) { r.attached = on } }
+func WithPiped(on bool) Option { return func(r *RunImpl) { r.piped = on } }
 
 // WithHint sets what a console with nothing left to draw is told.
 func WithHint(hint string) Option { return func(r *RunImpl) { r.hint = hint } }
@@ -315,12 +315,12 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 }
 
 // up waits for tun to come up and puts it in front of everybody: the addresses
-// on stdout, the map on stderr, the bound origins told where they answer from,
+// on stdout, the map on stderr, the attached origins told where they answer from,
 // the provider's messages learned, the browser or the console opened, the spec
 // saved, a waiting launcher handed back, the stop hint. It answers with the
 // spec it saved; a tunnel that never comes up is the error.
 func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error) {
-	cmd, log, origins, bound, spec := r.cmd, r.log, r.origins, r.bound, r.cache
+	cmd, log, origins, attached, spec := r.cmd, r.log, r.origins, r.attached, r.cache
 	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
 	// Something turning, because the wait below is the long one: minting,
@@ -344,7 +344,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	//
 	// Not while a frame an earlier tunnel drew is up: the console is the
 	// frame's, and a spinner there animates over it.
-	if (display.IsInteractive(cmd) || r.attached) && r.spinner && r.screen == nil {
+	if (display.IsInteractive(cmd) || r.piped) && r.spinner && r.screen == nil {
 		console.Loading(stderr, tun.Ready(), "Creating tunnel...")
 	}
 
@@ -357,7 +357,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		return "", cmp.Or(tun.Err(), ctx.Err(), v1.ErrNotReady)
 	}
 
-	// A bound container is served before the tunnel exists —
+	// An attached container is served before the tunnel exists —
 	// the binding is what the tunnel is handed to proxy to — so
 	// this is the first moment anything down there can be told
 	// where it answers from outside. Each origin gets its own
@@ -367,7 +367,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	for i := range addresses {
 		addresses[i] = publicURL(public, i, origins.Len())
 	}
-	bound.Announce(addresses)
+	attached.Announce(addresses)
 
 	// The panel's address when there is a panel, "" when there is
 	// not: the browser answers the question, and everything below
@@ -412,7 +412,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// streamSettle wherever it turns from one stream to the other.
 	onStdout := false
 	say := func(toStdout bool, line string) {
-		if r.attached && toStdout != onStdout {
+		if r.piped && toStdout != onStdout {
 			time.Sleep(streamSettle)
 		}
 		onStdout = toStdout
@@ -426,12 +426,12 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		if view != "" {
 			say(true, view)
 			for _, origin := range origins.All() {
-				say(false, "  -> "+label(origin))
+				say(false, "  -> "+origin.Label())
 			}
 		} else {
 			for i, origin := range origins.All() {
 				say(true, publicURL(public, i, origins.Len()))
-				say(false, "  -> "+label(origin))
+				say(false, "  -> "+origin.Label())
 			}
 		}
 	}
@@ -444,8 +444,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// TODO(#209): show it to the operator beneath the map, from the builder,
 	// once there is one place that prints the run's human lines.
 	for _, i := range r.router.Unanswered(ctx, origins) {
-		uri := origins.At(i).URI
-		log.Warn("nothing is listening on an origin yet", "origin", uri.Redacted())
+		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).URL().Redacted())
 	}
 
 	// What the provider said with the spec, learned here because Messages
@@ -460,7 +459,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// is reported here is only what it cannot see for itself.
 	//
 	// Whether there is a console at all is the console package's answer, not
-	// this function's: it is handed the bound origins and this command's own
+	// this function's: it is handed the attached origins and this command's own
 	// streams and says nil when there is nothing to draw or nowhere to draw
 	// it. One page, never a fan of tabs — the panel when there is one, since
 	// it reaches every origin, and otherwise the default origin itself.
@@ -479,7 +478,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	showing := r.screen != nil
 	screen, open := r.screen, r.open
 	if !showing {
-		screen = r.console.For(bound, cmd)
+		screen = r.console.For(attached, cmd)
 	}
 	if os.Getenv(openEnv) == "false" {
 		shown := false
@@ -554,7 +553,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 		}
 		_ = os.Setenv(v1.HTTPOriginEnv, origin)
 	}
-	bound.Start()
+	attached.Start()
 
 	// A launcher waiting to hand the console back gets it now, after the
 	// save, so the file it reads to say what is running is there. Ctrl-C
@@ -589,7 +588,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 // save's own and passes quietly; one sent again is somebody asking for the
 // tunnel the run already has, and the log says it was kept.
 func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string) (next string, respec bool, err error) {
-	bound, log := r.bound, r.log
+	attached, log := r.attached, r.log
 	var specs <-chan string
 	if r.cache != nil {
 		specs = r.cache.Spec()
@@ -631,10 +630,10 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 			waiting = false
 		case <-tun.Done():
 			waiting = false
-		case <-bound.Done():
+		case <-attached.Done():
 			log.Info("a viewer asked this run to end; stopping")
 			return "", false, nil
-		case codes := <-bound.Exited():
+		case codes := <-attached.Exited():
 			// Every program the run started has exited. All of them
 			// succeeding ends the run cleanly. A failure ends it with that
 			// program's status, unless somebody is at a terminal to restart
@@ -650,7 +649,7 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 				log.Info("every program the run started has exited; stopping")
 				return "", false, nil
 			}
-			if display.IsInteractive(r.cmd) || r.attached {
+			if display.IsInteractive(r.cmd) || r.piped {
 				log.Warn("a program the run started has exited; staying up so it can be restarted", "status", code)
 				continue
 			}
@@ -773,22 +772,6 @@ func publicURL(public *url.URL, i, n int) string {
 	return routed.String()
 }
 
-// label is an origin as a person reads it: a program without its arguments.
-//
-// The arguments ride the origin as a query because that is how they travel —
-// argv, the environment and a seed all spell them the same way — but a query
-// is a carrier, not a label. What the map says a tunnel reaches is the
-// program; how it was started is in the cache file beside the spec, and in
-// the key that names the file. An http origin's query is part of its address
-// and stays.
-func label(origin v1.Origin) string {
-	u := origin.URI
-	if origin.Scheme == v1.ExecScheme {
-		u.RawQuery = ""
-	}
-	return u.String()
-}
-
 // originsHeader is X-Tunneld-Origins for these origins: each as scheme,
 // host and path, in order. A query, a fragment or credentials can hold a
 // secret, so they are dropped rather than sent to the provider.
@@ -798,9 +781,7 @@ func originsHeader(origins v1.Origins) (key, value string) {
 	}
 	shown := make([]string, 0, origins.Len())
 	for _, origin := range origins.All() {
-		u := origin.URI
-		bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}
-		shown = append(shown, bare.String())
+		shown = append(shown, origin.Bare())
 	}
 	return v1.OriginsHeader, strings.Join(shown, ", ")
 }

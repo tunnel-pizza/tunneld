@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -53,51 +52,6 @@ var (
 // dying of it, which is what it would have done on a terminal.
 var Shells = []string{"zsh", "fish", "bash", "ksh", "mksh", "dash", "ash", "sh"}
 
-// Resolve answers whether s names a program this machine can run, and with
-// what: the absolute path of the thing that would actually run.
-//
-// The path rather than a bare yes, because the origin carries it from here on.
-// "top" says which program only on the machine that resolved it, while
-// /usr/bin/top says it anywhere — so that is what the frame puts in its corner,
-// what the reported map prints, and what somebody pastes back into a command
-// line to get the same program rather than whatever their own $PATH finds.
-//
-// exec.LookPath is the whole of the lookup, which means the rules are the
-// host's rather than ours: the $PATH search and the executable bit on Unix,
-// the PATHEXT extensions on Windows, and a value carrying a separator taken as
-// a path to the file itself rather than as a name to search for. Anything
-// shaped like a URL answers false for that last reason — "http://localhost:3000"
-// is stat'd as a path and is not there.
-//
-// A command that resolves only through the working directory answers false
-// too: LookPath returns exec.ErrDot for it, and a file that happens to sit
-// where tunneld was started should not become a public origin because somebody
-// typed its name.
-//
-// The answer is about this machine and this moment. The same argument is a
-// program on one host and a hostname on another, which is why nothing here is
-// cached and why the lookup happens while origins are settled rather than when
-// they are seeded.
-func Resolve(s string) (string, bool) {
-	path, err := exec.LookPath(s)
-	if err != nil {
-		return "", false
-	}
-	// LookPath answers a PATH hit absolutely and a path-shaped argument as it
-	// was given, so this is what makes the two agree.
-	//
-	// On Windows the absolute form is C:\..., which has no spelling inside a
-	// exec:// URL — whichever half of the URL it is put in, url.URL escapes
-	// the separators. The origin is still correct where it counts, since the
-	// binder reads the path off the URL rather than off its printed form, and
-	// the platform has no pseudo-terminals to serve it on either way.
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path, true
-	}
-	return abs, true
-}
-
 // Option configures a TargetsImpl at construction. There are none yet; the
 // signature exists so a knob added later changes no caller.
 type Option = v1.Option[*TargetsImpl]
@@ -119,7 +73,7 @@ func New(opts ...Option) *TargetsImpl {
 
 // Scheme is v1.ExecScheme and Provider is empty: this provider answers exec://
 // origins with no authority — the empty one being this machine — and no
-// others, which is the whole of how the binder picks it.
+// others, which is the whole of how the attacher picks it.
 func (*TargetsImpl) Scheme() v1.Scheme     { return v1.ExecScheme }
 func (*TargetsImpl) Provider() v1.Provider { return "" }
 

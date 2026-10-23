@@ -1231,7 +1231,7 @@ func (s *session) titles() (title, subtitle string) {
 // announce records the public address this origin answers on, and has every
 // frame say so.
 //
-// It arrives after the servers do, and cannot not: a container is bound before
+// It arrives after the servers do, and cannot not: a container is attached before
 // the tunnel is minted, because the binding is what the tunnel is given to
 // proxy to. So a frame drawn in between has nothing to put in its corner, and
 // this is what fills it in when there is finally something to say.

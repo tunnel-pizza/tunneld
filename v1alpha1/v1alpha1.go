@@ -10,6 +10,7 @@ import (
 	"cmp"
 	"context"
 	"io"
+	"net/url"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -28,6 +29,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
@@ -43,6 +45,9 @@ type Option = v1.Option[*BuilderImpl]
 // effect and nothing to replace, so it carries no With* option and takes no
 // seat in the list below.
 type Origins = v1.Origins
+
+// NewOrigin is u as an origin; see origins.NewOrigin.
+func NewOrigin(u *url.URL) v1.Origin { return origins.NewOrigin(u) }
 
 // The contracts Command's RunE composes. Each is something with an external
 // effect — the edge, the disk, the daemon, the browser, an HTTP probe —
@@ -71,7 +76,7 @@ type Pid = pid.Pid
 type Log = logs.Log
 
 // WithLog replaces a run's logging. The default is logs.New(), which New also
-// hands the console and the binder; a replacement leaves their log view and
+// hands the console and the attacher; a replacement leaves their log view and
 // muting on the default's ring.
 func WithLog(l Log) Option {
 	return func(b *BuilderImpl) { b.log = l }
@@ -137,14 +142,8 @@ func WithRouter(r Router) Option {
 	return func(b *BuilderImpl) { b.router = r }
 }
 
-// Binder turns the origins the operator typed into the origins the tunnel
-// dials, standing a loopback server in for each origin that names something to
-// serve rather than an address to reach — a container, a local program. The dialable list
-// keeps shown's length and order — index n means origin n everywhere
-// downstream — and the closer shuts every server the binding started.
-type Binder interface {
-	Bind(ctx context.Context, shown Origins, log v1.Logger) (dialable Origins, bound attach.Bound, err error)
-}
+// Attacher is attach.Attacher.
+type Attacher = attach.Attacher
 
 // WithConsole replaces the console a run may draw its terminal on. Seeded by
 // New with the log ring and the hint; a caller replaces it to draw somewhere
@@ -180,25 +179,25 @@ type Motd = motd.Motd
 type Auth = auth.Auth
 
 // Run is one run's tunnel, from its spec to its end: minted from the spec,
-// brought up and put in front of everybody — the addresses, the map, the bound
-// origins told where they answer from, the provider's messages, the browser
-// or the console, the save, a waiting launcher handed back — and waited on
-// until the run is over. Everything the run settled before its first tunnel,
+// brought up and put in front of everybody — the addresses, the map, the
+// attached origins told where they answer from, the provider's messages, the
+// browser or the console, the save, a waiting launcher handed back — and waited
+// on until the run is over. Everything the run settled before its first tunnel,
 // and every collaborator a tunnel is shown through, is handed over with the
-// call. Nil for a run told to stop; the tunnel's error when it fails to come
-// up or ends on its own.
+// call. Nil for a run told to stop; the tunnel's error when it fails to come up
+// or ends on its own.
 type Run interface {
 	Run(ctx context.Context, opts ...run.Option) error
 }
 
 // WithMotd replaces what keeps and renders the provider's messages of the day.
-// The default is motd.New(), shared into the binder and the display; a
+// The default is motd.New(), shared into the attacher and the display; a
 // replacement is shared the same way by whoever builds it:
 //
 //	board := motd.New()
 //	v1alpha1.New(v1alpha1.WithMotd(board),
 //	    v1alpha1.WithDisplay(display.New(display.WithMotd(board))),
-//	    v1alpha1.WithBinder(attach.New(attach.WithMotd(board), …)))
+//	    v1alpha1.WithAttacher(attach.New(attach.WithMotd(board), …)))
 func WithMotd(m Motd) Option {
 	return func(b *BuilderImpl) { b.motd = m }
 }
@@ -242,7 +241,7 @@ func WithRun(r Run) Option {
 	return func(b *BuilderImpl) { b.run = r }
 }
 
-// WithBinder replaces what stands a loopback origin in for a container or a
+// WithAttacher replaces what stands a loopback origin in for a container or a
 // program. The default is
 //
 //	attach.New(attach.WithTargets(docker.New(), shell.New()), attach.WithBanner(…),
@@ -252,8 +251,8 @@ func WithRun(r Run) Option {
 // is the logging New shares with the console and board the motd instance it
 // gives WithMotd; a replacement built without them serves a frame whose logs
 // view is empty and with no messages above it.
-func WithBinder(binder Binder) Option {
-	return func(b *BuilderImpl) { b.binder = binder }
+func WithAttacher(attacher Attacher) Option {
+	return func(b *BuilderImpl) { b.attacher = attacher }
 }
 
 // The defaults satisfy their contracts, checked here so a drift fails the
@@ -262,7 +261,7 @@ var (
 	_ v1.Builder = (*BuilderImpl)(nil)
 	_ Cache      = (*cache.CacheImpl)(nil)
 	_ Display    = (*display.DisplayImpl)(nil)
-	_ Binder     = (*attach.BinderImpl)(nil)
+	_ Attacher   = (*attach.AttacherImpl)(nil)
 	_ Router     = (*router.RouterImpl)(nil)
 	_ Console    = (*console.ConsoleImpl)(nil)
 	_ Motd       = (*motd.MotdImpl)(nil)
@@ -287,13 +286,13 @@ var (
 // and its field is a pointer for exactly that reason.
 func New(opts ...Option) *BuilderImpl {
 	// The first thing built, because everything after it may log: the one
-	// logger a run has, which the console mutes and the binder's frames read
+	// logger a run has, which the console mutes and the attacher's frames read
 	// the recent lines of, and the command points at stderr once it knows
 	// the level.
 	log := logs.New()
 
 	// One board for the three places a message is shown, built before the
-	// builder for the same reason the ring is: the binder and the display
+	// builder for the same reason the ring is: the attacher and the display
 	// are constructed here with it, and the builder learns into it later.
 	board := motd.New()
 
@@ -315,7 +314,7 @@ func New(opts ...Option) *BuilderImpl {
 			console.WithLogs(log),
 			console.WithHint(stopHint),
 		)),
-		WithBinder(attach.New(
+		WithAttacher(attach.New(
 			attach.WithTargets(docker.New(), shell.New()),
 			attach.WithHold(),
 			// Built here, before a flag has been parsed: no run to name yet.
@@ -370,7 +369,7 @@ type BuilderImpl struct {
 	// declared above. Seeded by New; a test or a contributor swaps one with
 	// its With* option.
 	display  Display
-	binder   Binder
+	attacher Attacher
 	router   Router
 	identity Identity
 	// cache is the one collaborator allowed to be nil: that is what caching
@@ -386,7 +385,7 @@ type BuilderImpl struct {
 	stdout, stderr io.Writer
 
 	// log is the run's logging: the one logger, the recent lines a terminal
-	// shows, and the run's log file. The binder and the console were handed
+	// shows, and the run's log file. The attacher and the console were handed
 	// the same one at construction — see New.
 	log Log
 

@@ -12,18 +12,19 @@ Deep-link by filename; line numbers will drift.
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Process shell (signals → context → Execute)    | [`main.go`](./main.go)                                           |
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
+| `Origin`, `Scheme`, `Provider` (aliased in `v1`) | [`v1/origin/`](./v1/origin)                                    |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
+| Origins, their key, the options that build one, `Parse`, `Resolve` and `servedSchemes` | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and the MCP server `WithMcp` puts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
-| `Target`, `Targets`, `Server`, the terminal frame, `Terminal` (a session as an agent types into and reads it), and the `Binder` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
+| `Target`, `Targets`, `Server`, the terminal frame, `Terminal` (a session as an agent types into and reads it), and the `Attacher` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `Resolve`, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Local-program provider, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | The MCP server served to agents on the control path | [`v1alpha1/mcp/`](./v1alpha1/mcp) |
 | What every MCP tool shares, and one package per tool | [`v1alpha1/mcp/tool/`](./v1alpha1/mcp/tool), [`v1alpha1/mcp/tools/`](./v1alpha1/mcp/tools) |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
@@ -93,7 +94,7 @@ builder exists: `Command` and `Name`. Everything `Command`'s `RunE` composes
 that owns an external effect — the edge, the disk, the daemon, the browser, an
 HTTP probe — is an internal contract in
 [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go): `Cache`, `Display`,
-`Binder`, `Router`, `Console`, `Identity`, `Motd`, `Pid`, `Log`, implemented respectively by
+`Attacher`, `Router`, `Console`, `Identity`, `Motd`, `Pid`, `Log`, implemented respectively by
 `cache`, `display`, `attach`, `router`, `console`, `identity`, `motd`, `pid`, `logs`. The tunnel itself is `libtunnel.From`, called directly: with
 `From("")` minting fresh there is one call and nothing to choose between, so
 no contract stands in front of it — only `WithTunnelFactory`, the seam a test
@@ -425,7 +426,7 @@ Easy to get wrong from the diff alone:
   `LIBTUNNEL_TOKEN` rule; a provider is a directory under it
   (`identity/github`, `identity/anthropic`), and adding one touches neither the builder nor either
   contract. The builder's `Identity` contract has two methods because the two
-  questions are asked at two moments — `Known` before `Bind` opens anything, so
+  questions are asked at two moments — `Known` before `Attach` opens anything, so
   a typo costs nothing, and `Token` just before the mint, so a run that fails
   earlier never pays for a `gh` subprocess. `Token` returns no error: a
   provider that finds nothing has not failed, and the run mints anonymously
@@ -448,7 +449,7 @@ implements `attach.Target` — five methods, four of its own plus the embedded
 `docker.TargetImpl` is that provider, and `shell.TargetImpl` is the second:
 a local program run on a pseudo-terminal. What opens one by reference —
 `TargetsImpl.Open` in either — sits behind `attach`'s own `Targets` contract,
-which is how `attach.BinderImpl.Bind` is tested with a stub and no daemon.
+which is how `attach.AttacherImpl.Attach` is tested with a stub and no daemon.
 
 **A served origin is spelled by verb, provider, reference.** The scheme says
 what tunneld does — `attach`, `exec` — the authority says where it does it, and
@@ -461,7 +462,7 @@ asked of different places. The empty authority is this machine, which only
 **One provider, one pair.** `Targets.Scheme()` and `Targets.Provider()` are the
 whole of the dispatch: `WithTargets` keys providers by the pair each one says
 it answers (`answers()` builds that key, and both sides call it, so a provider
-cannot be registered under a key no origin can produce), and `Bind` looks the
+cannot be registered under a key no origin can produce), and `Attach` looks the
 pair up rather than branching on it. A pair no provider claims and a scheme
 that is not `http`/`https` is an error there, naming what *is* answered —
 dialing `exec:///usr/bin/htop` as an address would mint a hostname in front of
@@ -473,7 +474,7 @@ is why neither scheme is spelled anywhere in `frame.go`.
 provider named, the leading separator belongs to the URL rather than the
 reference — `attach://dockerd/api` is the container `api`. Without one the path
 is a filesystem path and keeps every byte, because an absolute path has to be
-the URL's path: `url.URL` percent-escapes the separators of a host. `Bind` is
+the URL's path: `url.URL` percent-escapes the separators of a host. `Attach` is
 the one place that rule lives. The parser resolves a bare word to its absolute
 path for the same reason the origin carries it: it then names the same program
 on any machine that reads it.
@@ -481,14 +482,14 @@ on any machine that reads it.
 **An authority with nothing after it is looked up as a program first.**
 `exec://htop` cannot be a provider being asked for something — there is nothing
 to ask for — so the reading that can succeed wins over the one that cannot. The
-lookup is `shell.Resolve`, held in the `servedSchemes` table rather than called
+lookup is `origins.Resolve`, held in the `servedSchemes` table rather than called
 by name in the loop, so whatever the bare-word shorthand accepts, `exec://`
 accepts.
 
 The parser has to agree about which schemes are served, and `servedSchemes` in
-[`v1alpha1/builder.go`](./v1alpha1/builder.go) is that list. A scheme added to
-one and not the other is an origin the parser drops before the binder ever sees
-it, or one the binder refuses after the parser waved it through.
+[`v1alpha1/origins/origins.go`](./v1alpha1/origins/origins.go) is that list. A scheme added to
+one and not the other is an origin the parser drops before the attacher ever sees
+it, or one the attacher refuses after the parser waved it through.
 
 A provider does not read its own stream. `attach.CopyOutput` does, and it is
 where the wire format is agreed: raw with a terminal, and Docker's 8-byte
@@ -508,10 +509,11 @@ Two things there will bite if you change them without knowing why:
   subresource and would fall back to the sticky `tunneld-origin` cookie,
   which is last-write-wins across tabs. Drop the suffix and two container tiles
   fight over one socket.
-- **`attach.BinderImpl.Bind` keeps the dialable list the same length and order
-  as the displayed one.** Index *n* means origin *n* for `?n` routing,
-  `publicURL`, the reported map and the multiview tiles. Reordering or
-  filtering either list breaks all four at once.
+- **`attach.AttacherImpl.Attach` serves an origin in place.** It records the
+  loopback address on the origins with `Serve`, so `Dialable()` stays the same
+  length and order as `All()`: index *n* means origin *n* for `?n` routing,
+  `publicURL`, the reported map and the multiview tiles, and the origin keeps
+  its scheme, which a token's scope is held against.
 - **One attach per `Server`, not per page.** `attach.session` opens the target
   once, so a refresh is not an event the container can see. Every byte goes
   through a terminal emulator, and a viewer arriving late renders the screen —
@@ -545,21 +547,18 @@ Two things there will bite if you change them without knowing why:
   renders once with the new pane and the old emulator. Both go through a buffer
   of their own size and are blitted, which is also what makes a label truncate
   instead of erasing the border to its right.
-- **The public address arrives after the servers do, by assertion.** A
-  `attach://dockerd/` origin is bound *before* the tunnel is minted — the binding is
-  what the tunnel is handed to proxy to — so at the only moment `Bind` could be
-  told where it answers from outside, nobody knows. `RunE` asks the closer
-  `Bind` returned whether it is an `Announcer` once `public` is known, and
-  hands over one address per origin, indexed the way `display` was. It is an
-  assertion rather than a method on `Binder` because of the import direction:
-  `attach` cannot name a type declared in `v1alpha1`, so a contract mentioning
-  one could never be satisfied from there. Same shape as `http.Flusher`.
+- **The public address arrives after the servers do.** An
+  `attach://dockerd/` origin is attached *before* the tunnel is minted — its
+  loopback address is what the tunnel is handed to proxy to — so at the only
+  moment `Attach` could be told where it answers from outside, nobody knows.
+  The run calls `Announce` on the `Attached` that `Attach` returned once `public`
+  is known, with one address per origin, indexed the way `display` was.
 - **The build line is configuration, the address is an announcement.** Both are
   root knowledge a subpackage cannot work out, but the banner names the command
   — which an embedding program renames — and versions the root resolves from
   build information, and none of it changes while the process runs. So it
   arrives through `attach.WithBanner` at construction, where the address has to
-  arrive later through `Announcer`.
+  arrive later through `Attached.Announce`.
 - **A hyperlink needs both ends.** The frame marks its address with OSC 8, the
   build line arrives with tunneld's name marked the same way (a link to
   tunnel.pizza, built by `frameLine` in the root), and `index.html` sets
@@ -683,7 +682,7 @@ Two things there will bite if you change them without knowing why:
   `strippedEnv` so a case does not inherit a developer's. The parse
   loop's fallback for a word it cannot resolve is to read it as an address, so
   an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
-  a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
+  a tunnel to nothing that reports no problem. `origins.Resolve` runs first and a
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The browser decision is derived, and split where the knowledge is.**
@@ -722,8 +721,8 @@ Two things there will bite if you change them without knowing why:
   package that chooses between them is the one that names the other, so
   `console.Screen` is declared once rather than twice.
 
-  **`Bind` hands back an `attach.Bound`, not an `io.Closer` with secrets.**
-  Close, `Announce` and `Done` are on the type, because every bound list can
+  **`Attach` hands back an `attach.Attached`, not an `io.Closer` with secrets.**
+  Close, `Announce` and `Done` are on the type, because every attached list can
   do all three — they were spelled as optional interfaces discovered by type
   assertion, which is a lie a caller has to write an `if` around. Exactly one
   thing is conditional: `Show`, which only a single served origin carries, and
@@ -752,11 +751,11 @@ Two things there will bite if you change them without knowing why:
   top of a spinner.
 
   **One vocabulary: a `console.Terminal` is `Show`n on a `console.Screen`.**
-  `Terminal` is what the binder hands back, `Screen` is what a run was started
+  `Terminal` is what the attacher hands back, `Screen` is what a run was started
   on, and both carry `Show` — no `Mirror`/`Draw`/`Drawer` alongside them
   meaning the same thing. `attach` implements `Show` on its side.
 
-  **Nobody counts origins to find out whether a console can show one.** `Bind`
+  **Nobody counts origins to find out whether a console can show one.** `Attach`
   answers by carrying the method: a closer satisfies `console.Terminal` only
   when it wrapped exactly one server, which is one served origin since nothing
   else gets one. `console.For` asks that question and the stream question
@@ -794,8 +793,8 @@ Two things there will bite if you change them without knowing why:
   and not on `os.Stdin`/`os.Stdout`, because an embedding program redirects
   them. It is decided before the browser because the browser is told about it:
   a mirrored run opens no tab, `WithOpen(true)` or not. Its first two checks —
-  one origin, served scheme — are what the binder already worked out, since it
-  stands a server up only for a served origin and `bound.Mirror` refuses
+  one origin, served scheme — are what the attacher already worked out, since it
+  stands a server up only for a served origin and `attached.Mirror` refuses
   anything but a list of one. They are said again because the answer is needed
   before the mirror starts: the browser is told, and the log ring is muted.
 - **A drawing console mutes the log's stderr.** stderr writes straight through
@@ -804,7 +803,7 @@ Two things there will bite if you change them without knowing why:
   are read; the mirror unmutes on its way out, so a detached console gets its
   logs back with its prompt.
 - **One logger, from `New` on.** `v1alpha1/logs` is the `Log` contract: the
-  first thing `New` builds, handed to the console (to mute) and the binder (to
+  first thing `New` builds, handed to the console (to mute) and the attacher (to
   read the recent lines), and the logger every later caller gets. It is
   `slog.NewMultiHandler` over three handlers — the ring (`Pretty`, uncoloured),
   the run's `<key>.log` (slog's text handler, buffered until `Open` names the
@@ -815,10 +814,9 @@ Two things there will bite if you change them without knowing why:
   builder only points the slot, and is called as often as anything wants the
   logger.
 - **A keystroke can end the process, and the path is deliberate.** `x` in the
-  frame calls `session.endRun`, which closes the Server's `quit`; `bound.Quit`
-  fans every origin's into one, because what they are asking for is the
-  process and there is only one; and `RunE` selects on it through the
-  `Quitter` contract, discovered on the closer the way `Announcer` is. Nothing
+  frame calls `session.endRun`, which closes the ask every Server one `Attach`
+  started shares, because what they are asking for is the process and there is
+  only one; and the run selects on it through `Attached.Done`. Nothing
   in `attach` acts on it — a frame can end its own viewer, and ending a run is
   the command's, which is what owns the context everything else hangs from.
 - **The page asks whether coming back is worth offering.** A socket ending

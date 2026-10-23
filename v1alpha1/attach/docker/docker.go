@@ -46,7 +46,7 @@ func New(opts ...Option) *TargetsImpl {
 
 // Scheme is v1.AttachScheme and Provider is v1.DockerProvider: this provider
 // answers attach://dockerd/ origins and no others, which is the whole of how
-// the binder picks it. A container has one way in today; exec://dockerd/ is
+// the attacher picks it. A container has one way in today; exec://dockerd/ is
 // the same daemon asked for a different thing, and nothing answers it yet.
 func (*TargetsImpl) Scheme() v1.Scheme     { return v1.AttachScheme }
 func (*TargetsImpl) Provider() v1.Provider { return v1.DockerProvider }
@@ -260,7 +260,7 @@ func (*TargetsImpl) Open(ctx context.Context, ref string, _ []string, log v1.Log
 }
 
 // Drift in either package fails here: TargetImpl is what attach serves,
-// TargetsImpl what the binder resolves references through.
+// TargetsImpl what the attacher resolves references through.
 var (
 	_ attach.Target  = (*TargetImpl)(nil)
 	_ attach.Targets = (*TargetsImpl)(nil)

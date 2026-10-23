@@ -46,18 +46,18 @@ func echo(t *testing.T, name string) *httptest.Server {
 	return srv
 }
 
-// listOf is the servers as an origin list, the way the binder hands one over.
+// listOf is the servers as an origin list, the way the attacher hands one over.
 func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 	t.Helper()
-	urls := make([]*url.URL, len(srvs))
+	listed := make([]v1.Origin, len(srvs))
 	for i, srv := range srvs {
 		u, err := url.Parse(srv.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
-		urls[i] = u
+		listed[i] = origins.NewOrigin(u)
 	}
-	return origins.New(origins.WithURL(urls...))
+	return origins.New(origins.WithOrigins(listed...))
 }
 
 // route stands the router up over list for the life of the test and returns
@@ -66,7 +66,8 @@ func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
 	r := New()
-	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithWrap(front), WithLog(log))
+	marked := origins.New(origins.WithOrigins(list.All()...), origins.WithWebSocket(ws))
+	u, err := r.Route(t.Context(), WithOrigins(marked), WithWrap(front), WithLog(log))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestRouteALoneOriginIsRouted(t *testing.T) {
 		t.Fatalf("Route: %v", err)
 	}
 	t.Cleanup(r.Cancel)
-	if got.Host == uriAt(list, 0).Host {
+	if got.Host == list.At(0).URL().Host {
 		t.Fatalf("Route() = %v, the origin itself; want the router in front of it", got)
 	}
 	base := strings.TrimSuffix(got.String(), "/")
@@ -147,9 +148,9 @@ func TestRouteNothingStillServes(t *testing.T) {
 // New was given, then what Route is given for that route alone — on a copy,
 // so the next route starts from the router's own again.
 func TestOptions(t *testing.T) {
-	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Wrap() != nil || r.mux == nil || r.log != discard {
-		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
-			r.Origins(), r.WebSockets(), r.Wrap() != nil, r.mux != nil, r.log == discard)
+	if r := New(); r.Origins() != nil || r.Wrap() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, handler set %v, mux made %v, discarding %v; want none, false, true, true",
+			r.Origins(), r.Wrap() != nil, r.mux != nil, r.log == discard)
 	}
 	if r := New(WithLog(nil)); r.log != discard {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
@@ -167,7 +168,7 @@ func TestOptions(t *testing.T) {
 		return body
 	}
 	a, b := listOf(t, echo(t, "A")), listOf(t, echo(t, "B"))
-	r := New(WithOrigins(a), WithWebSockets(0))
+	r := New(WithOrigins(a))
 	t.Cleanup(r.Cancel)
 	if got := reaches(t, r); got != "A|" {
 		t.Errorf("Route() with New's origins reaches %q, want A", got)
@@ -175,7 +176,7 @@ func TestOptions(t *testing.T) {
 	if got := reaches(t, r, WithOrigins(b)); got != "B|" {
 		t.Errorf("Route(WithOrigins(b)) reaches %q, want B", got)
 	}
-	if r.Origins() != a || r.WebSockets() != 0 {
+	if r.Origins() != a {
 		t.Error("a route's options changed the router's own, want them applied to that route alone")
 	}
 	if got := reaches(t, r); got != "A|" {
@@ -743,7 +744,7 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 	down := echo(t, "B")
 	list := listOf(t, echo(t, "A"), down)
 	down.Close()
-	host := uriAt(list, 1).Host
+	host := list.At(1).URL().Host
 	// A loopback origin is named by its port, the way a person starting a
 	// server on it says it.
 	_, port, _ := net.SplitHostPort(host)
@@ -890,7 +891,7 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 			}
 		}()
 		rude := &url.URL{Scheme: "http", Host: l.Addr().String()}
-		base := route(t, origins.New(origins.WithURL(rude)), -1, nil, discard)
+		base := route(t, origins.New(origins.WithOrigins(origins.NewOrigin(rude))), -1, nil, discard)
 		req, _ := http.NewRequest("GET", base+"/", nil)
 		req.Header.Set("Accept", browser)
 		resp, body := get(t, http.DefaultClient, req)
@@ -912,7 +913,7 @@ func TestUnanswered(t *testing.T) {
 	gone.Close()
 	alsoGone.Close()
 	served := &url.URL{Scheme: "attach", Host: "dockerd", Path: "/api"}
-	list = origins.New(origins.WithURL(append(urisOf(list), served)...))
+	list = origins.New(origins.WithOrigins(append(list.All(), origins.NewOrigin(served))...))
 
 	if got := New().Unanswered(t.Context(), list); !slices.Equal(got, []int{1, 3}) {
 		t.Errorf("Unanswered() = %v, want [1 3]: the two with nothing listening", got)
@@ -1842,22 +1843,6 @@ func TestResourceMetadataFallback(t *testing.T) {
 	}
 }
 
-// uriAt is origin i's URI, as a pointer: what URL methods are called on.
-func uriAt(origins v1.Origins, i int) *url.URL {
-	u := origins.At(i).URI
-	return &u
-}
-
-// urisOf is every origin's URI, in order.
-func urisOf(origins v1.Origins) []*url.URL {
-	all := origins.All()
-	out := make([]*url.URL, len(all))
-	for i := range all {
-		out[i] = &all[i].URI
-	}
-	return out
-}
-
 // TestProxyHoldsTheScope pins a request a token let in to the scope of the
 // scheme of the origin it routes to, refused naming that scope; a request
 // with no token's access behind it, a cookie's or the secret's, goes anywhere.
@@ -1869,8 +1854,16 @@ func TestProxyHoldsTheScope(t *testing.T) {
 		return u
 	}
 	app, term := serve("app"), serve("term")
-	both := proxy([]*url.URL{app, term}, []v1.Scheme{v1.HttpScheme, v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
-	alone := proxy([]*url.URL{term}, []v1.Scheme{v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
+	shell, _ := url.Parse("exec:///bin/sh")
+	execAt := func(i int) v1.Origin {
+		return v1.Origin{Index: i, URI: *shell, Scheme: v1.ExecScheme, Ref: shell.Path}
+	}
+	listed := origins.New(origins.WithOrigins(origins.NewOrigin(app), execAt(1)))
+	listed.Serve(1, term)
+	lone := origins.New(origins.WithOrigins(execAt(0)))
+	lone.Serve(0, term)
+	both := proxy(listed, slog.New(slog.DiscardHandler))
+	alone := proxy(lone, slog.New(slog.DiscardHandler))
 	for _, tc := range []struct {
 		h       http.Handler
 		target  string

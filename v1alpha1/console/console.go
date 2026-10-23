@@ -4,7 +4,7 @@
 // them.
 //
 // Its own subpackage because what it does is not what either of its neighbours
-// does. The bound origin in v1alpha1/attach knows how to feed a viewer and has
+// does. The attached origin in v1alpha1/attach knows how to feed a viewer and has
 // no opinion about consoles; the browser package decides which way a run
 // should be shown and should not also be the thing that shows it one of them.
 // What is left here is the console's own housekeeping — a log ring that must
@@ -24,11 +24,11 @@ import (
 	"golang.org/x/term"
 )
 
-// Terminal is a bound origin that can show itself on streams of the caller's
+// Terminal is an attached origin that can show itself on streams of the caller's
 // choosing. It returns when that viewer leaves or the run ends, and leaves the
 // console as it found it.
 //
-// Discovered by type assertion on the closer a Binder returns, like the other
+// Discovered by type assertion on the closer an Attacher returns, like the other
 // optional interfaces beside it, and declared here rather than there because
 // this package is the only thing that shows one.
 type Terminal interface {
@@ -63,10 +63,10 @@ type Screen interface {
 
 // Console is the screen a run was started on, when it turns out to be one.
 //
-// For is the whole of it, and it answers rather than asks: given the bound
+// For is the whole of it, and it answers rather than asks: given the attached
 // origins and the command's own streams, it says nil when there is no screen —
 // nothing to show, or nowhere to show it — and one ready to be handed over
-// otherwise. Nothing out here counts origins or tests a stream — the binder
+// otherwise. Nothing out here counts origins or tests a stream — the attacher
 // already decided the first by carrying Show, and the second is a question
 // about streams that the thing drawing on them should be the one to ask.
 //
@@ -74,13 +74,13 @@ type Screen interface {
 // is what this run gets shown on: one interface, declared where the console
 // is, named by the package that chooses between it and a tab.
 type Console interface {
-	For(bound attach.Bound, streams Streams) Screen
+	For(attached attach.Attached, streams Streams) Screen
 }
 
 // Option configures a ConsoleImpl at construction.
 type Option = v1.Option[*ConsoleImpl]
 
-// ConsoleImpl is the default console: the run's own screen, handed to a bound
+// ConsoleImpl is the default console: the run's own screen, handed to an attached
 // origin for as long as somebody is watching it there.
 //
 // Two tiers. What New is given outlives a single run — the log ring to keep
@@ -88,7 +88,7 @@ type Option = v1.Option[*ConsoleImpl]
 // For is given is one run's: the origin to draw, and the streams that are the
 // console itself.
 type ConsoleImpl struct {
-	// terminal is the bound origin that knows how to show itself.
+	// terminal is the attached origin that knows how to show itself.
 	terminal Terminal
 	// in, out are the console itself; hintTo is where a line to a returned
 	// prompt goes, which is stderr rather than the machine interface out
@@ -141,10 +141,10 @@ func WithHint(hint string) Option {
 //
 // A copy, so the seeded original stays a template: what New was given is what
 // outlives a single run, and what this takes is what does not.
-func (c *ConsoleImpl) For(origins attach.Bound, streams Streams) Screen {
+func (c *ConsoleImpl) For(origins attach.Attached, streams Streams) Screen {
 	in, out, hintTo := streams.InOrStdin(), streams.OutOrStdout(), streams.ErrOrStderr()
 	// Two questions, both answered by asking rather than deriving. Whether
-	// there is a terminal to show is the binder's — a closer carries Show
+	// there is a terminal to show is the attacher's — a closer carries Show
 	// only when it has exactly one served origin, so the assertion is the
 	// whole check. Whether there is a console to show it on is these streams'
 	// own, and they are the command's rather than the process's, since an

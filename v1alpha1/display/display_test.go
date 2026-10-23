@@ -29,9 +29,9 @@ var discard = slog.New(slog.DiscardHandler)
 // framed is the origin list the helpers below hand to Panel when the test
 // does not care which origins they are: two, because a lone origin is not
 // framed at all and Panel would answer with nothing to put in front.
-var framed = origins.New(origins.WithURL(
-	&url.URL{Scheme: "http", Host: "localhost:3000"},
-	&url.URL{Scheme: "http", Host: "localhost:4000"},
+var framed = origins.New(origins.WithOrigins(
+	origins.NewOrigin(&url.URL{Scheme: "http", Host: "localhost:3000"}),
+	origins.NewOrigin(&url.URL{Scheme: "http", Host: "localhost:4000"}),
 ))
 
 // panelOf returns the panel in front of next, which stands in for the
@@ -430,33 +430,35 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 
 // TestLabel pins how a tile names the origin behind it. An http origin is
 // named by its host, which is what the operator typed; anything else keeps its
-// scheme, so a container tile cannot be misread as a hostname.
+// scheme, so a container tile cannot be misread as a hostname, and its path
+// as the operator typed it, unescaped.
 func TestLabel(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"http://localhost:3000", "localhost:3000"},
 		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
 		{"attach://dockerd/api", "attach://dockerd/api"},
+		{"exec:///Applications/My%20App.app/bin/run", "exec:///Applications/My App.app/bin/run"},
 	}
 
-	urls := make([]*url.URL, len(cases))
+	listed := make([]v1.Origin, len(cases))
 	for i, tc := range cases {
 		u, err := url.Parse(tc.in)
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", tc.in, err)
 		}
-		urls[i] = u
+		listed[i] = origins.NewOrigin(u)
 	}
 
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Host = "foo.tunneld.domain"
 
-	pageOf(t, origins.New(origins.WithURL(urls...))).ServeHTTP(rec, r)
+	pageOf(t, origins.New(origins.WithOrigins(listed...))).ServeHTTP(rec, r)
 
 	body := rec.Body.String()
-	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "attach://dockerd/api"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("rendered page does not contain label %q", want)
+	for _, tc := range cases {
+		if !strings.Contains(body, tc.want) {
+			t.Errorf("rendered page does not contain label %q", tc.want)
 		}
 	}
 }
@@ -760,15 +762,15 @@ func TestOpen(t *testing.T) {
 // in v1alpha1, which this package cannot import — it is the other direction —
 // and these fixtures are already-valid URLs, so a plain parse is enough.
 func mustOrigins(raw []string) (v1.Origins, error) {
-	urls := make([]*url.URL, 0, len(raw))
+	listed := make([]v1.Origin, 0, len(raw))
 	for _, s := range raw {
 		u, err := url.Parse(s)
 		if err != nil {
 			return nil, err
 		}
-		urls = append(urls, u)
+		listed = append(listed, origins.NewOrigin(u))
 	}
-	return origins.New(origins.WithURL(urls...)), nil
+	return origins.New(origins.WithOrigins(listed...)), nil
 }
 
 // TestATerminalTileIsBare pins that the panel adds no chrome around an origin

@@ -34,7 +34,6 @@ import (
 	"github.com/tunnel-pizza/tunneld/v0exp1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
@@ -657,12 +656,12 @@ func (f *fakeDisplay) Open(ctx context.Context, log v1.Logger, opts ...display.O
 	}, opts...)...)
 }
 
-// fakeBinder stands in for the attach package: it hands the origins back
-// unchanged and closes nothing, so TestRun never stands up a real listener.
-type fakeBinder struct {
-	attach.Bound // the rest, which a run never asks of it
-	err          error
-	closed       bool
+// fakeAttacher stands in for the attach package: it serves none of the
+// origins and closes nothing, so TestRun never stands up a real listener.
+type fakeAttacher struct {
+	attach.Attached // the rest, which a run never asks of it
+	err             error
+	closed          bool
 	// asked is what a viewer's exit closes, and what Done hands back: how the
 	// run learns a terminal asked it to stop.
 	asked chan struct{}
@@ -670,11 +669,11 @@ type fakeBinder struct {
 	// address it was handed, in order.
 	announced    []string
 	announcedAll []string
-	// env is TUNNELD_ENV as Bind found it: what every program a bound
+	// env is TUNNELD_ENV as Attach found it: what every program a bound
 	// origin starts inherits.
 	env string
 	// origins is HTTP_ORIGIN as each Start found it, in order: what the
-	// programs a bound origin starts would inherit.
+	// programs an attached origin starts would inherit.
 	origins []string
 	// exited is what Exited hands the run: a case sends every program's
 	// status on it to say they have all ended.
@@ -686,8 +685,8 @@ type fakeBinder struct {
 	// before the cache is written — the one signal a case can end a run on
 	// whether or not this run caches anything.
 	onAnnounce func()
-	// mirrors makes what Bind returns carry Show, which is how the real
-	// binder reports a single served origin — the only shape a console can
+	// mirrors makes what Attach returns carry Show, which is how the real
+	// attacher reports a single served origin — the only shape a console can
 	// draw.
 	mirrors bool
 	// showed records that a viewer was drawn, so a case can assert on the
@@ -698,48 +697,48 @@ type fakeBinder struct {
 	shows atomic.Int32
 }
 
-func (f *fakeBinder) Bind(_ context.Context, shown Origins, _ v1.Logger) (Origins, attach.Bound, error) {
+func (f *fakeAttacher) Attach(_ context.Context, _ attach.Servable, _ v1.Logger) (attach.Attached, error) {
 	f.env = os.Getenv(v1.SpecPathEnv)
-	// Carrying Mirror is how the real binder says a run has exactly one
+	// Carrying Mirror is how the real attacher says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
-	// binder itself: a fake that always carried it would mirror every case
+	// attacher itself: a fake that always carried it would mirror every case
 	// that happens to have a terminal, and a browser would never open.
 	if f.mirrors {
-		return shown, mirrorableBinder{f}, f.err
+		return mirrorableAttacher{f}, f.err
 	}
-	return shown, f, f.err
+	return f, f.err
 }
 
-// mirrorableBinder is a bound closer with a terminal to draw, which is what
-// the binder hands back for a single served origin.
-type mirrorableBinder struct{ *fakeBinder }
+// mirrorableAttacher is an attached closer with a terminal to draw, which is what
+// the attacher hands back for a single served origin.
+type mirrorableAttacher struct{ *fakeAttacher }
 
 // Mirror blocks until the run ends, like the real one, so a case can assert on
 // what happened while it was drawing.
-func (m mirrorableBinder) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
+func (m mirrorableAttacher) Show(ctx context.Context, _ io.Reader, _ io.Writer) error {
 	m.showed.Store(true)
 	m.shows.Add(1)
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (f *fakeBinder) Close() error { f.closed = true; return nil }
+func (f *fakeAttacher) Close() error { f.closed = true; return nil }
 
 // Mirror is where compose output would copy the served origins' lines.
-func (f *fakeBinder) Mirror(_ io.Writer, prefixes []string) { f.mirrored = prefixes }
+func (f *fakeAttacher) Mirror(_ io.Writer, prefixes []string) { f.mirrored = prefixes }
 
 // Exited is when every program has ended, as a case sends it.
-func (f *fakeBinder) Exited() <-chan []int { return f.exited }
+func (f *fakeAttacher) Exited() <-chan []int { return f.exited }
 
 // Start is what a run starts its programs through.
-func (f *fakeBinder) Start() { f.origins = append(f.origins, os.Getenv(v1.HTTPOriginEnv)) }
+func (f *fakeAttacher) Start() { f.origins = append(f.origins, os.Getenv(v1.HTTPOriginEnv)) }
 
-func (f *fakeBinder) Done() <-chan struct{} { return f.asked }
+func (f *fakeAttacher) Done() <-chan struct{} { return f.asked }
 
-// Announce is what a bound closer is told the public addresses through. Every
-// one of them can be, which is why it is on the type Bind returns rather than
+// Announce is what an attached closer is told the public addresses through. Every
+// one of them can be, which is why it is on the type Attach returns rather than
 // an interface a caller has to go looking for.
-func (f *fakeBinder) Announce(public []string) {
+func (f *fakeAttacher) Announce(public []string) {
 	f.announced = public
 	f.announcedAll = append(f.announcedAll, public...)
 	if f.onAnnounce != nil {
@@ -756,10 +755,9 @@ var routed = &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
 // to put behind the tunnel and answers with routed, so TestRun never stands
 // up a listener. A lone origin is routed like any run, as the real one does.
 type fakeRouter struct {
-	err      error
-	dialable Origins
-	ws       int
-	front    func(http.Handler) http.Handler
+	err     error
+	origins Origins
+	front   func(http.Handler) http.Handler
 	// ctx is the router's lifetime: the run's context detached from its
 	// cancellation, as the real one makes it, and ended only by Cancel — so a
 	// case can see when the run cancels it.
@@ -785,9 +783,8 @@ func (f *fakeRouter) Route(ctx context.Context, opts ...router.Option) (*url.URL
 	// one that serves.
 	r := router.New(opts...)
 	f.configured = r
-	dialable, front := r.Origins(), r.Wrap()
 	f.ctx, f.stop = context.WithCancel(context.WithoutCancel(ctx))
-	f.dialable, f.ws, f.front = dialable, r.WebSockets(), front
+	f.origins, f.front = r.Origins(), r.Wrap()
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -844,17 +841,17 @@ type runHarness struct {
 	// tunnels are handed out in order through the run's one seam — a remint
 	// after a refused replay gets the second — and specs records what each
 	// was asked to hint with.
-	tunnels []*fakeTunnel
-	specs   []string
-	cache   *fakeCache
-	display *fakeDisplay
-	binder  *fakeBinder
-	router  *fakeRouter
-	motd    *fakeMotd
-	auth    *fakeAuth
-	order   []string
-	stdout  bytes.Buffer
-	stderr  bytes.Buffer
+	tunnels  []*fakeTunnel
+	specs    []string
+	cache    *fakeCache
+	display  *fakeDisplay
+	attacher *fakeAttacher
+	router   *fakeRouter
+	motd     *fakeMotd
+	auth     *fakeAuth
+	order    []string
+	stdout   bytes.Buffer
+	stderr   bytes.Buffer
 	// console, when set, is what the command is given for stdin and stdout
 	// instead of the buffers: a real terminal, which is what mirrorable asks
 	// about and what a bytes.Buffer can never be.
@@ -935,7 +932,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 	h := &runHarness{tunnels: []*fakeTunnel{tun}}
 	h.cache = &fakeCache{order: &h.order}
 	h.display = &fakeDisplay{DisplayImpl: display.New(), order: &h.order}
-	h.binder = &fakeBinder{}
+	h.attacher = &fakeAttacher{}
 	h.router = &fakeRouter{}
 	h.motd = &fakeMotd{}
 	h.auth = &fakeAuth{AuthImpl: auth.New(), router: h.router}
@@ -956,7 +953,7 @@ func newRunHarness(t *testing.T, tun *fakeTunnel, urls ...string) *runHarness {
 		// writes into the machine's own cache directory.
 		WithLog(logs.New(logs.WithDir(t.TempDir()))),
 		WithDisplay(h.display),
-		WithBinder(h.binder),
+		WithAttacher(h.attacher),
 		WithRouter(h.router),
 		WithMotd(h.motd),
 		WithAuth(h.auth),
@@ -1088,14 +1085,14 @@ func TestRun(t *testing.T) {
 		if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 			t.Errorf("the bare address through the router's front = %q, want the page", got)
 		}
-		if got := h.router.dialable.Len(); got != 2 {
+		if got := h.router.origins.Len(); got != 2 {
 			t.Errorf("router was given %d origins, want 2", got)
 		}
 		if tun := h.tunnels[0]; len(tun.locals) != 1 || tun.locals[0] != routed {
 			t.Errorf("tunnel was given %v, want the router's address alone", tun.locals)
 		}
-		if !h.binder.closed {
-			t.Error("the binder's closer was never called; RunE's defer did not run")
+		if !h.attacher.closed {
+			t.Error("the attacher's closer was never called; RunE's defer did not run")
 		}
 	})
 
@@ -1436,13 +1433,13 @@ func TestRun(t *testing.T) {
 		}
 	})
 
-	t.Run("a binder failure is returned before the engine is asked for anything", func(t *testing.T) {
+	t.Run("an attacher failure is returned before the engine is asked for anything", func(t *testing.T) {
 		h := newRunHarness(t, live(public), ":3000")
-		h.binder.err = errors.New("no such container")
+		h.attacher.err = errors.New("no such container")
 
 		err := h.run(t, t.Context())
-		if !errors.Is(err, h.binder.err) {
-			t.Errorf("run() = %v, want the binder's own error", err)
+		if !errors.Is(err, h.attacher.err) {
+			t.Errorf("run() = %v, want the attacher's own error", err)
 		}
 		if len(h.specs) != 0 {
 			t.Errorf("engine was asked for %d specs, want none", len(h.specs))
@@ -1470,10 +1467,10 @@ func TestRun(t *testing.T) {
 		if err := h.run(t, ctx); err != nil {
 			t.Fatalf("run() = %v", err)
 		}
-		if h.router.ws != 1 {
-			t.Errorf("router was given ws = %d, want 1", h.router.ws)
+		if ws, _ := h.router.origins.WebSocket(); ws != 1 {
+			t.Errorf("router was given ws = %d, want 1", ws)
 		}
-		if got := urlStrings(urisOf(h.router.dialable)); got[1] != "http://localhost:5173" {
+		if got := urlStrings(h.router.origins.Dialable()); got[1] != "http://localhost:5173" {
 			t.Errorf("router was given %q, want the marker off the scheme", got)
 		}
 	})
@@ -1493,7 +1490,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(origin.Close)
 		u, _ := url.Parse(origin.URL)
 		r := h.router.configured
-		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithOrigins(origins.NewOrigin(u)))))
 		if err != nil {
 			t.Fatalf("Route: %v", err)
 		}
@@ -1526,7 +1523,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(origin.Close)
 		u, _ := url.Parse(origin.URL)
 		r := h.router.configured
-		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithOrigins(origins.NewOrigin(u)))))
 		if err != nil {
 			t.Fatalf("Route: %v", err)
 		}
@@ -1818,7 +1815,7 @@ func TestParseOriginsAccepts(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run(%q) = %v, want ok", tc.in, err)
 			}
-			got := urisOf(h.router.dialable)
+			got := h.router.origins.Dialable()
 			if len(got) != len(tc.want) {
 				t.Fatalf("run(%q) routed %d origins, want %d", tc.in, len(got), len(tc.want))
 			}
@@ -1834,7 +1831,7 @@ func TestParseOriginsAccepts(t *testing.T) {
 // TestOriginsTakesTheMarkerOffTheScheme pins where the +ws marker goes: off
 // the scheme and onto the list as an index, so every URL downstream is the
 // bare address it dials. It used to ride the scheme through three packages to
-// the tunnel engine, and the binder dropping it was #173; there is nothing
+// the tunnel engine, and the attacher dropping it was #173; there is nothing
 // left to drop now (#176).
 func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
 	for _, tc := range []struct {
@@ -1875,7 +1872,7 @@ func TestOriginsTakesTheMarkerOffTheScheme(t *testing.T) {
 // originStrings renders parsed origins for comparison, so a table can be
 // written the way somebody types origins rather than as *url.URL literals.
 func originStrings(origins Origins) []string {
-	return urlStrings(urisOf(origins))
+	return urlStrings(urlsOf(origins))
 }
 
 // urlStrings is the same for a plain slice, which is what a case that slices
@@ -1963,7 +1960,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	var builtinURL *url.URL
 	if builtin := v0exp1.Experimental().Builtin(); builtin != nil {
 		if origin, err := builtin.Origin(); err == nil {
-			builtinURL, _ = url.Parse(origin)
+			builtinURL = origin.URL()
 		} else if runtime.GOOS != "windows" {
 			t.Fatalf("v0exp1.Experimental().Builtin().Origin() = %v", err)
 		}
@@ -1981,7 +1978,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		{"an unrunnable $SHELL is passed over for bash", []string{"bash", "sh"}, "missing", nil, "bash", "not exposing $SHELL"},
 		{"no $SHELL is bash", []string{"bash", "sh"}, "", nil, "bash", ""},
 		{"no bash is sh", []string{"sh"}, "", nil, "sh", ""},
-		{"no shell at all is the built-in one", nil, "", nil, "builtin", ""},
+		{"no shell at all is the built-in one, parsed like any origin", nil, "", nil, "builtin", "interpolated into"},
 		{"an unrunnable $SHELL and nothing else is the built-in one", nil, "missing", nil, "builtin", "not exposing $SHELL"},
 		{"an argument outranks it", []string{"bash"}, "", []string{":3000"}, ":3000", ""},
 	} {
@@ -2003,7 +2000,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			b := New(WithLogLevel("warn"), WithStderr(&stderr))
+			b := New(WithLogLevel("info"), WithStderr(&stderr))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
@@ -2018,7 +2015,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 					want = []*url.URL{builtinURL}
 				}
 			default:
-				resolved, ok := shell.Resolve(paths[tc.want])
+				resolved, ok := origins.Resolve(paths[tc.want])
 				if !ok {
 					t.Fatalf("fake %s does not resolve", tc.want)
 				}
@@ -2026,13 +2023,13 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 			// Compared as fields rather than as strings, because a Windows
 			// path is C:\... and url.URL.String escapes every separator in it.
-			got := urisOf(b.Origins())
+			got := urlsOf(b.Origins())
 			if !slices.EqualFunc(got, want, func(a, b *url.URL) bool {
 				return a.Scheme == b.Scheme && a.Host == b.Host && a.Path == b.Path && a.RawQuery == b.RawQuery
 			}) {
 				t.Errorf("Origins() = %v, want %v", got, want)
 			}
-			if tc.mention != "" && !strings.Contains(stderr.String(), tc.mention) {
+			if tc.mention != "" && len(want) > 0 && !strings.Contains(stderr.String(), tc.mention) {
 				t.Errorf("stderr %q does not mention %q", stderr.String(), tc.mention)
 			}
 		})
@@ -2121,7 +2118,7 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// program only on the machine that looked it up, and the frame, the
 	// reported map and a pasted-back copy all read this.
 	want := filepath.Join(dir, name)
-	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || uriAt(got, 2).Path != want {
+	if got.Len() != 3 || got.At(2).Scheme != v1.ExecScheme || got.At(2).URL().Path != want {
 		t.Fatalf("Origins() = %q, want the last to be %s://%s", originStrings(got), v1.ExecScheme, want)
 	}
 	// And it survives being written out and read back, which is the promise
@@ -2129,18 +2126,18 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	//
 	// A Unix promise only: a Windows absolute path is C:\..., which has no
 	// spelling inside an exec:// URL — url.URL escapes the separators either
-	// way round. It costs nothing there, because the binder reads the path off
+	// way round. It costs nothing there, because the attacher reads the path off
 	// the URL rather than off its printed form.
 	if runtime.GOOS != "windows" {
-		again, err := url.Parse(uriAt(got, 2).String())
+		again, err := url.Parse(got.At(2).URL().String())
 		if err != nil {
-			t.Fatalf("%q did not parse back: %v", uriAt(got, 2), err)
+			t.Fatalf("%q did not parse back: %v", got.At(2).URL(), err)
 		}
 		if again.Path != want {
-			t.Errorf("%q parsed back to path %q, want %q", uriAt(got, 2), again.Path, want)
+			t.Errorf("%q parsed back to path %q, want %q", got.At(2).URL(), again.Path, want)
 		}
 	}
-	if rest := urlStrings(urisOf(got)[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
+	if rest := urlStrings(urlsOf(got)[:2]); !slices.Equal(rest, []string{"http://localhost:3000", "attach://dockerd/api"}) {
 		t.Errorf("the other origins = %q, want them untouched", rest)
 	}
 
@@ -2149,12 +2146,12 @@ func TestOriginsRunsAProgram(t *testing.T) {
 	// something, so it is looked up as a program first — and lands on the
 	// resolved path, exactly as the bare word does.
 	spelled := New(WithOrigin(string(v1.ExecScheme) + "://" + name)).Origins()
-	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || uriAt(spelled, 0).Path != want {
+	if spelled.Len() != 1 || spelled.At(0).Scheme != v1.ExecScheme || spelled.At(0).URL().Path != want {
 		t.Fatalf("Origins(%q) = %q, want %s://%s", string(v1.ExecScheme)+"://"+name, originStrings(spelled), v1.ExecScheme, want)
 	}
-	if uriAt(got, 2).String() != uriAt(spelled, 0).String() {
+	if got.At(2).URL().String() != spelled.At(0).URL().String() {
 		t.Errorf("%q and %q are the same program spelled two ways, got %q and %q",
-			name, string(v1.ExecScheme)+"://"+name, uriAt(got, 2), uriAt(spelled, 0))
+			name, string(v1.ExecScheme)+"://"+name, got.At(2).URL(), spelled.At(0).URL())
 	}
 }
 
@@ -2310,7 +2307,7 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 		t.Fatalf("positional args = %q, want %q", got, want)
 	}
 	got := b.Origins()
-	if got.Len() != 1 || !slices.Equal(uriAt(got, 0).Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
+	if got.Len() != 1 || !slices.Equal(got.At(0).URL().Query()[v1.ArgKey], []string{"--log-level", "loud"}) {
 		t.Errorf("Origins() = %q, want one program with --log-level loud as its arguments", originStrings(got))
 	}
 }
@@ -2465,22 +2462,22 @@ func TestRunComesUpWithNoOrigins(t *testing.T) {
 //
 // The command is the only thing that can — ending the run takes its context
 // and everything started under it — so what the terminal does is ask, on the
-// closer Bind handed back, and this is the arm that listens. It is a clean
+// closer Attach handed back, and this is the arm that listens. It is a clean
 // exit, not a failure: nothing went wrong, somebody chose it.
 func TestAViewerCanEndTheRun(t *testing.T) {
 	const public = "https://foo.tunneld.domain/"
 	h := newRunHarness(t, live(public), ":3000")
-	h.binder.asked = make(chan struct{})
+	h.attacher.asked = make(chan struct{})
 
 	// Asked once the run is up, so what is pinned is the wait ending rather
 	// than a start that never happened. The cache save is the last thing
 	// before the wait, which makes it the moment a viewer could be looking.
-	h.cache.onSave = func() { close(h.binder.asked) }
+	h.cache.onSave = func() { close(h.attacher.asked) }
 
 	if err := h.run(t, t.Context()); err != nil {
 		t.Fatalf("run() = %v, want a clean exit", err)
 	}
-	if !h.binder.closed {
+	if !h.attacher.closed {
 		t.Error("the origins were left up after the run ended")
 	}
 }
@@ -2504,8 +2501,8 @@ func TestReportNamesAProgramWithoutItsArguments(t *testing.T) {
 		t.Errorf("stderr shows the arguments' carrier:\n%s", h.stderr.String())
 	}
 	// The router in front of the tunnel was still handed the origin whole;
-	// the arguments are the binder's to read off it.
-	if got := urisOf(h.router.dialable); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
+	// the arguments are the attacher's to read off it.
+	if got := h.router.origins.Dialable(); len(got) != 1 || got[0].Query().Get(v1.ArgKey) != "-d" {
 		t.Errorf("router was given %v, want the origin with its arguments", got)
 	}
 }
@@ -2585,7 +2582,7 @@ func TestReportLogsWhatNothingListensOn(t *testing.T) {
 			if h.router.probed == nil {
 				t.Fatal("the run never asked the router what answers")
 			}
-			if got, want := urlStrings(urisOf(h.router.probed)), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
+			if got, want := urlStrings(urlsOf(h.router.probed)), []string{"http://localhost:3000", "http://localhost:4000"}; !slices.Equal(got, want) {
 				t.Errorf("asked about %q, want the origins as typed %q", got, want)
 			}
 			out := h.stderr.String()
@@ -2629,7 +2626,7 @@ func TestMirroringTellsTheBrowser(t *testing.T) {
 
 	const public = "https://foo.tunneld.domain/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
-	h.binder.mirrors = true
+	h.attacher.mirrors = true
 	// Asked for, so the mirror is the only thing that can be suppressing it —
 	// otherwise a runner with $CI set would pass this for the wrong reason.
 	v1.Apply(h.b, WithOpen(true))
@@ -2685,7 +2682,7 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 	next := live(second)
 	next.order = &h.order
 	h.tunnels = append(h.tunnels, next)
-	h.binder.mirrors = true
+	h.attacher.mirrors = true
 	h.console = tty
 	h.cache.specs = make(chan string, 1)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -2723,10 +2720,10 @@ func TestMirroringOutlivesARespec(t *testing.T) {
 	if strings.Contains(drawn, "bar.tunneld.domain") {
 		t.Errorf("terminal = %q, want the second tunnel's address kept off the frame", drawn)
 	}
-	if want := []string{public, second}; !slices.Equal(h.binder.announcedAll, want) {
-		t.Errorf("announced %q, want each tunnel's address told to the frame", h.binder.announcedAll)
+	if want := []string{public, second}; !slices.Equal(h.attacher.announcedAll, want) {
+		t.Errorf("announced %q, want each tunnel's address told to the frame", h.attacher.announcedAll)
 	}
-	if n := h.binder.shows.Load(); n != 1 {
+	if n := h.attacher.shows.Load(); n != 1 {
 		t.Errorf("frames drawn = %d, want 1: the respec keeps the one that is up", n)
 	}
 }
@@ -2917,7 +2914,7 @@ func TestComposeOutputWhenNoFrame(t *testing.T) {
 			if err := h.run(t, ctx, tc.args...); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			if got := h.binder.mirrored != nil; got != tc.want {
+			if got := h.attacher.mirrored != nil; got != tc.want {
 				t.Errorf("compose output on = %v, want %v", got, tc.want)
 			}
 		})
@@ -2949,8 +2946,8 @@ func TestARunEndsWithItsPrograms(t *testing.T) {
 				t.Cleanup(func() { tty.Close(); ptmx.Close() })
 				h.console = tty
 			}
-			h.binder.exited = make(chan []int, 1)
-			h.cache.onSave = func() { h.binder.exited <- tc.codes }
+			h.attacher.exited = make(chan []int, 1)
+			h.cache.onSave = func() { h.attacher.exited <- tc.codes }
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 
@@ -2999,8 +2996,8 @@ func TestProgramsLearnTheOrigin(t *testing.T) {
 			if err := h.run(t, ctx, "--log-level", "warn"); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			if !slices.Equal(h.binder.origins, tc.want) {
-				t.Errorf("%s at each Start = %q, want %q", v1.HTTPOriginEnv, h.binder.origins, tc.want)
+			if !slices.Equal(h.attacher.origins, tc.want) {
+				t.Errorf("%s at each Start = %q, want %q", v1.HTTPOriginEnv, h.attacher.origins, tc.want)
 			}
 			if got := strings.Contains(h.stderr.String(), "the tunnel's origin changed"); got != tc.warned {
 				t.Errorf("warned = %v, want %v; stderr = %q", got, tc.warned, h.stderr.String())
@@ -3010,8 +3007,8 @@ func TestProgramsLearnTheOrigin(t *testing.T) {
 }
 
 // TestProgramsLearnTheSpecFile pins TUNNELD_ENV: set to where the run's
-// spec is kept before anything is bound, since a program an exec origin runs
-// starts at Bind, and unset when the run keeps no file, so a run inside
+// spec is kept before anything is attached, since a program an exec origin runs
+// starts at Attach, and unset when the run keeps no file, so a run inside
 // another run's shell does not pass on its parent's.
 func TestProgramsLearnTheSpecFile(t *testing.T) {
 	for _, tc := range []struct {
@@ -3030,8 +3027,8 @@ func TestProgramsLearnTheSpecFile(t *testing.T) {
 			if err := h.run(t, ctx); err != nil {
 				t.Fatalf("run() = %v", err)
 			}
-			if h.binder.env != tc.want {
-				t.Errorf("%s at Bind = %q, want %q", v1.SpecPathEnv, h.binder.env, tc.want)
+			if h.attacher.env != tc.want {
+				t.Errorf("%s at Attach = %q, want %q", v1.SpecPathEnv, h.attacher.env, tc.want)
 			}
 		})
 	}
@@ -3043,7 +3040,7 @@ func TestProgramsLearnTheSpecFile(t *testing.T) {
 // for — the frame is drawn over exactly the output they are trying to read.
 //
 // Set up as the case that would otherwise do both. A pty on the command's
-// streams is a console to draw on, a mirroring binder is a terminal to draw,
+// streams is a console to draw on, a mirroring attacher is a terminal to draw,
 // and WithOpen(true) is a caller who insisted on a tab; each of the three is
 // the thing the variable has to beat.
 //
@@ -3061,7 +3058,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 
 	const public = "https://foo.tunneld.domain/"
 	h := newRunHarness(t, live(public), "attach://dockerd/my-container")
-	h.binder.mirrors = true
+	h.attacher.mirrors = true
 	v1.Apply(h.b, WithOpen(true))
 	h.console = tty
 	ctx, cancel := context.WithCancel(t.Context())
@@ -3070,7 +3067,7 @@ func TestOpenFalseShowsNothing(t *testing.T) {
 	if err := h.run(t, ctx); err != nil {
 		t.Fatalf("run() = %v", err)
 	}
-	if h.binder.showed.Load() {
+	if h.attacher.showed.Load() {
 		t.Error("the console drew the terminal, want a run that shows nothing")
 	}
 	if len(h.display.opened) != 0 {
@@ -3537,7 +3534,7 @@ func TestCachingIsOnUnlessItIsTurnedOff(t *testing.T) {
 			// Announce is the signal, not the save: a run with no cache never
 			// saves, and a case waiting on that would wait out its deadline.
 			ctx, cancel := context.WithCancel(t.Context())
-			h.binder.onAnnounce = cancel
+			h.attacher.onAnnounce = cancel
 
 			if err := h.run(t, ctx, tc.args...); err != nil {
 				t.Fatalf("run() = %v, want nil after a signal", err)
@@ -3669,27 +3666,6 @@ func TestFuncName(t *testing.T) {
 	for want, fn := range map[string]any{"pod": b.pod, "shell": b.shell, "splitList": splitList} {
 		if got := funcName(fn); got != want {
 			t.Errorf("funcName = %q, want %q", got, want)
-		}
-	}
-}
-
-func TestFieldsSplitLikeAShell(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		want []string
-	}{
-		{"python3 -m http.server 8000", []string{"python3", "-m", "http.server", "8000"}},
-		{"  spaced   out  ", []string{"spaced", "out"}},
-		{`bash -c 'echo hi there'`, []string{"bash", "-c", "echo hi there"}},
-		{`bash -c "echo \"quoted\" $x"`, []string{"bash", "-c", `echo "quoted" $x`}},
-		{`printf a\ b`, []string{"printf", "a b"}},
-		{`echo ''`, []string{"echo", ""}},
-		{`echo 'unclosed`, []string{"echo", "unclosed"}},
-		{"single", []string{"single"}},
-		{"", nil},
-	} {
-		if got := fields(tc.in); !slices.Equal(got, tc.want) {
-			t.Errorf("fields(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -4043,18 +4019,12 @@ func TestTheDefaultAuthReadsTheOwner(t *testing.T) {
 	}
 }
 
-// uriAt is origin i's URI, as a pointer: what URL methods are called on.
-func uriAt(origins v1.Origins, i int) *url.URL {
-	u := origins.At(i).URI
-	return &u
-}
-
-// urisOf is every origin's URI, in order.
-func urisOf(origins v1.Origins) []*url.URL {
+// urlsOf is every origin's URL, in order.
+func urlsOf(origins v1.Origins) []*url.URL {
 	all := origins.All()
 	out := make([]*url.URL, len(all))
 	for i := range all {
-		out[i] = &all[i].URI
+		out[i] = all[i].URL()
 	}
 	return out
 }

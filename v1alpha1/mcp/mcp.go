@@ -34,11 +34,11 @@ type Option = v1.Option[*McpImpl]
 // McpImpl is the Mcp contract: one run's MCP server over its origins, a
 // handler to mount on the control path and a Close for the run's end.
 type McpImpl struct {
-	origins v1.Origins
-	bound   attach.Bound
-	log     v1.Logger
-	cache   cache.Cache
-	ctx     context.Context
+	origins  v1.Origins
+	attached attach.Attached
+	log      v1.Logger
+	cache    cache.Cache
+	ctx      context.Context
 
 	server  *sdk.Server
 	handler http.Handler
@@ -61,7 +61,7 @@ type McpImpl struct {
 func New(opts ...Option) *McpImpl {
 	m := v1.Apply(&McpImpl{log: slog.New(slog.DiscardHandler)}, opts...)
 	m.server = sdk.NewServer(&sdk.Implementation{Name: "tunneld", Version: "0"}, nil)
-	c := tool.Context{Origins: m.origins, Bound: m.bound, Cache: m.cache, Log: m.log}
+	c := tool.Context{Origins: m.origins, Attached: m.attached, Cache: m.cache, Log: m.log}
 	for _, t := range tools {
 		t.Add(m.server, c)
 	}
@@ -95,10 +95,10 @@ func WithOrigins(origins v1.Origins) Option {
 	return func(m *McpImpl) { m.origins = origins }
 }
 
-// WithBound sets the servers standing in for the run's served origins, which
-// the terminal tools type into and read.
-func WithBound(bound attach.Bound) Option {
-	return func(m *McpImpl) { m.bound = bound }
+// WithAttached sets the servers standing in for the run's served origins,
+// which the terminal tools type into and read.
+func WithAttached(attached attach.Attached) Option {
+	return func(m *McpImpl) { m.attached = attached }
 }
 
 // WithCache sets the run's cache, which terminal_sessions reads the

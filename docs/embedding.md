@@ -77,6 +77,7 @@ What an embedding program calls, in `v1alpha1`:
 func New(opts ...Option) *BuilderImpl       // defaults, then opts; satisfies v1.Builder
 func Version() string                       // the release this build is
 func VersionLine(origins Origins) string    // the human-facing build banner; nil origins drops the cache key
+func NewOrigin(u *url.URL) Origin           // u as an origin: its scheme, provider, ref and arguments read off it
 
 // The builder's options. Each seeds a flag's default, so argv still wins.
 func WithName(name string) Option                  // command name; default "tunneld"
@@ -97,7 +98,7 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is `Command`, `Origins`, `Name` and `Run`. An embedder on the old
 shape changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithBinder`,
+`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithAttacher`,
 `WithRouter`, `WithConsole`, `WithIdentity`, `WithMotd`, `WithAuth` and `WithRun`, which swap the collaborators the
 tunnel run composes, and `WithTunnelFactory`, which replaces `libtunnel.From`
 as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
@@ -112,8 +113,8 @@ the default, a run is neither — a program that mounts tunneld under its own
 name is a process `-k` would end whole, so it stays out of reach unless it
 passes `WithPid(pid.New())`, which is what the tunneld binary does.
 The motd board and the log ring are built once in `New` and shared through
-their own options — the board into the display and the binder, the ring into
-the console and the binder — so an embedder replacing one of those passes the
+their own options — the board into the display and the attacher, the ring into
+the console and the attacher — so an embedder replacing one of those passes the
 same instance.
 
 What `v1` declares — the contract it satisfies, the option type every `New`
@@ -142,9 +143,12 @@ type Origins interface {
     All() []Origin
     From(url string) (Origin, error) // https://<host>/?n, routed as a visit is
     Key() string
+    WebSocket() (int, bool)          // the +ws origin's index, if one is marked
+    Dialable() []*url.URL            // where each origin is dialed, in order
 }
 
 // Origin is one origin, worked out once from the URL it was settled as.
+// Declared in v1/origin and aliased here, with Scheme and Provider.
 type Origin struct {
     Index    int      // its ?n
     URI      url.URL  // exec:///bin/zsh?arg=-l, attach://dockerd/web, http://localhost:3000
@@ -153,6 +157,10 @@ type Origin struct {
     Ref      string   // /bin/zsh, web, localhost:3000
     Args     []string // an exec origin's arguments
 }
+func (o Origin) URL() *url.URL // a copy of URI, credentials included, the caller's to change
+func (o Origin) Label() string // as the map prints it: a program without its arguments
+func (o Origin) Bare() string  // scheme, host and path: nothing that can hold a secret
+func (o Origin) Name() string  // as compose output prefixes it
 
 type Scheme string   // ExecScheme, AttachScheme, HttpScheme
 type Provider string // DockerProvider

@@ -70,7 +70,7 @@ func TestVersionLineNamesTheCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing: %v", err)
 	}
-	o := origins.New(origins.WithDir("/work/project"), origins.WithURL(u))
+	o := origins.New(origins.WithDir("/work/project"), origins.WithOrigins(origins.NewOrigin(u)))
 
 	line := VersionLine(o)
 	if !strings.Contains(line, "cache "+o.Key()) {

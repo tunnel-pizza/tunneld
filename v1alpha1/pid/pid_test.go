@@ -26,7 +26,7 @@ func fixed(t *testing.T, opts ...pid.Option) (*pid.PidImpl, v1.Origins, string) 
 	t.Helper()
 	dir := t.TempDir()
 	u, _ := url.Parse("http://localhost:3000")
-	o := origins.New(origins.WithDir("/work/project"), origins.WithURL(u))
+	o := origins.New(origins.WithDir("/work/project"), origins.WithOrigins(origins.NewOrigin(u)))
 	return pid.New(append([]pid.Option{pid.WithDir(dir)}, opts...)...), o, filepath.Join(dir, o.Key())
 }
 

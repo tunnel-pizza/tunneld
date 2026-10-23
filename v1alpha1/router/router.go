@@ -103,9 +103,9 @@ var unreachableTmpl = template.Must(template.New("unreachable").Parse(unreachabl
 // Route answers with that URL, the router's own — a lone origin's run
 // included, so tunneld's /_tunneld/ control path answers on every tunnel.
 // What it routes is the run's,
-// handed over in the options it takes, as Display's Open is: the dialable
-// origins, the index of the one marked +ws, what the display's Panel answered
-// to put in front, and the run's logger.
+// handed over in the options it takes, as Display's Open is: the origins,
+// which say where each is dialed and which one owns WebSockets, what the
+// display's Panel answered to put in front, and the run's logger.
 //
 // Unanswered dials each http and https origin once and says which indexes
 // nothing answered on, so the run can report that the address is up and the
@@ -130,12 +130,9 @@ var discard = slog.New(slog.DiscardHandler)
 // field is set by an option — given to New as a default, or to Route for that
 // route alone.
 type RouterImpl struct {
-	// dialable is the origins a request can reach, in the order the operator
-	// gave them: index n is origin n.
-	dialable v1.Origins
-	// ws is the index of the origin marked +ws, which a WebSocket handshake
-	// with nothing else to route on goes to; -1 for none.
-	ws int
+	// origins is what a request can reach, in the order the operator gave
+	// them: index n is origin n, dialed at its Dialable address.
+	origins v1.Origins
 	// wrap wraps the routing handler: the display's panel and its framing
 	// scrub, which answer or reshape a request before any origin is chosen.
 	// Nil is nothing in front.
@@ -204,19 +201,12 @@ func New(opts ...Option) *RouterImpl {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = io.WriteString(w, "pong")
 	})
-	return v1.Apply(&RouterImpl{ws: -1, log: discard, mux: mux, live: &routes{}, env: &env{auth: fallback, cache: cache.None{}}}, opts...)
+	return v1.Apply(&RouterImpl{log: discard, mux: mux, live: &routes{}, env: &env{auth: fallback, cache: cache.None{}}}, opts...)
 }
 
-// WithOrigins sets the origins to route between: the dialable list, in the
-// operator's order.
-func WithOrigins(dialable v1.Origins) Option {
-	return func(r *RouterImpl) { r.dialable = dialable }
-}
-
-// WithWebSockets sets the origin a WebSocket handshake goes to when nothing
-// else in it routes: the index of the origin marked +ws, -1 for none.
-func WithWebSockets(ix int) Option {
-	return func(r *RouterImpl) { r.ws = ix }
+// WithOrigins sets the origins to route between, in the operator's order.
+func WithOrigins(origins v1.Origins) Option {
+	return func(r *RouterImpl) { r.origins = origins }
 }
 
 // WithWrap sets what wraps the routing handler — the display's Panel — or
@@ -367,11 +357,9 @@ func WithLog(log v1.Logger) Option {
 	}
 }
 
-// Origins, WebSockets and Wrap read back what the options set, for a
-// caller standing in for a router that wants to see what it was handed
-// without standing one up.
-func (r *RouterImpl) Origins() v1.Origins                   { return r.dialable }
-func (r *RouterImpl) WebSockets() int                       { return r.ws }
+// Origins and Wrap read back what the options set, for a caller standing in
+// for a router that wants to see what it was handed without standing one up.
+func (r *RouterImpl) Origins() v1.Origins                   { return r.origins }
 func (r *RouterImpl) Wrap() func(http.Handler) http.Handler { return r.wrap }
 
 // Unanswered dials each http and https origin in origins once and answers
@@ -388,7 +376,7 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 	down := make([]bool, len(all))
 	var wg sync.WaitGroup
 	for i, origin := range all {
-		u := origin.URI
+		u := origin.URL()
 		port := u.Port()
 		switch {
 		case u.Scheme != "http" && u.Scheme != "https":
@@ -446,10 +434,10 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error) {
 	route := *r
 	v1.Apply(&route, opts...)
-	dialable, ws, front, log := route.dialable, route.ws, route.wrap, route.log
+	origins, front, log := route.origins, route.wrap, route.log
 	n := 0
-	if dialable != nil {
-		n = dialable.Len()
+	if origins != nil {
+		n = origins.Len()
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -466,7 +454,7 @@ func (r *RouterImpl) Route(ctx context.Context, opts ...Option) (*url.URL, error
 		http.Error(w, "tunneld: nothing is exposed here yet", http.StatusNotFound)
 	})
 	if n > 0 {
-		site = redirect(n, logged(route.requests, proxy(urlsOf(dialable), schemesOf(dialable), ws, log)))
+		site = redirect(n, logged(route.requests, proxy(origins, log)))
 		if front != nil {
 			site = front(site)
 		}
@@ -845,47 +833,26 @@ func (r *RouterImpl) Cancel() {
 	}
 }
 
-// schemesOf is each origin's scheme, in order: what proxy holds a token's
-// scope against.
-func schemesOf(origins v1.Origins) []v1.Scheme {
-	all := origins.All()
-	out := make([]v1.Scheme, len(all))
-	for i := range all {
-		out[i] = all[i].Scheme
-	}
-	return out
-}
-
-// urlsOf is each origin's URI, in order: what the reverse proxy and its
-// transport dial.
-func urlsOf(origins v1.Origins) []*url.URL {
-	all := origins.All()
-	out := make([]*url.URL, len(all))
-	for i := range all {
-		out[i] = &all[i].URI
-	}
-	return out
-}
-
-// proxy relays each request to one of origins, relaying the response verbatim
+// proxy relays each request to one of origins, at its Dialable address,
+// relaying the response verbatim
 // — status, headers, body untouched — and dialing https origins without
 // verifying them, the way the tunnel engine dials an origin it is handed.
 //
 // With more than one origin the index is resolved as: a bare numeric query
 // parameter (?n, empty value, dropped from the forwarded query), else — for a
-// WebSocket handshake — the origin declared to own WebSockets (ws, the +ws
-// marker, -1 for none), else a same-host Referer carrying one (an iframe's or
+// WebSocket handshake — the origin declared to own WebSockets (the +ws
+// marker, origins.WebSocket), else a same-host Referer carrying one (an iframe's or
 // page's subresources follow their document URL — per-tab, no shared state),
 // else a same-host Referer naming a subresource this router already routed
 // (see remembered: a stylesheet's font, a script's import), else the sticky
-// Cookie, else origins[0]. The declaration sits above the
+// Cookie, else the first origin. The declaration sits above the
 // cookie deliberately: the cookie is a per-browser guess, the declaration an
 // operator-stated fact, and a fact beats a guess. It sits below an explicit
 // parameter so a page carrying its own index — and every tile of a multiview
 // panel — is unaffected. An explicit parameter on a top-level navigation
 // answers with the sticky cookie so parameter-less follow-ups stay on the
 // same origin — an iframe's pick does not, or side-by-side iframes would
-// fight over the shared jar. Anything out of range falls back to origins[0].
+// fight over the shared jar. Anything out of range falls back to the first origin.
 // A single origin skips all of it: a bare numeric parameter is then the
 // application's own.
 //
@@ -893,14 +860,17 @@ func urlsOf(origins v1.Origins) []*url.URL {
 // would rewrite it to the origin's own host.
 //
 // A request a token let in (auth.AccessOf) reaches its origin only holding
-// the scope of the origin's scheme, auth.Scope; anything else is
+// the scope of the origin's own scheme, auth.Scope, whatever address it is
+// dialed at; anything else is
 // auth.InsufficientScope naming it.
-func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) http.Handler {
+func proxy(origins v1.Origins, log *slog.Logger) http.Handler {
+	dialed, all := origins.Dialable(), origins.All()
+	ws, _ := origins.WebSocket()
 	paths := &remembered{origin: map[string]int{}}
 	// index is the origin a request was routed to, found in the list by the
 	// host it was sent to rather than read off the request; -1 for none.
 	index := func(host string) int {
-		for i, o := range origins {
+		for i, o := range dialed {
 			if o.Host == host {
 				return i
 			}
@@ -910,7 +880,7 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 	// pick is the origin a request goes to, by the rules above, and the
 	// query to forward with the routing segments dropped.
 	pick := func(in *http.Request) routed {
-		if len(origins) == 1 {
+		if len(dialed) == 1 {
 			return routed{query: in.URL.RawQuery}
 		}
 		// A segment Atoi accepts is exactly a bare numeric parameter:
@@ -966,11 +936,11 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 					// the app half-works, and the tunnel is the last
 					// thing anybody suspects (cnuss/libtunnel#159).
 					log.Warn("websocket could not be routed and fell back to the default origin; mark the origin that owns websockets with the +ws scheme suffix (http+ws://host)",
-						"url", in.URL.String(), "origin", origins[0].Redacted())
+						"url", in.URL.String(), "origin", dialed[0].Redacted())
 				}
 			}
 		}
-		if ix < 0 || ix >= len(origins) {
+		if ix < 0 || ix >= len(dialed) {
 			ix = 0
 		}
 		if followed {
@@ -979,12 +949,12 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 		return routed{ix: ix, query: strings.Join(kept, "&"), explicit: explicit}
 	}
 	rp := &httputil.ReverseProxy{
-		Transport: transport(origins),
+		Transport: transport(dialed),
 		Rewrite: func(r *httputil.ProxyRequest) {
 			to, _ := r.In.Context().Value(routedKey{}).(routed)
-			origin := origins[to.ix]
+			origin := dialed[to.ix]
 			r.Out.URL.RawQuery = to.query
-			if len(origins) > 1 {
+			if len(dialed) > 1 {
 				if to.explicit && navigation(r.In) {
 					// ModifyResponse below answers an explicit top-level pick
 					// with the sticky cookie; the outbound context carries the
@@ -1041,7 +1011,7 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 			ix := index(r.URL.Host)
 			origin := "unknown"
 			if ix >= 0 {
-				origin = origins[ix].Redacted()
+				origin = dialed[ix].Redacted()
 			}
 			if errors.Is(err, context.Canceled) {
 				log.Debug("request ended before the origin answered", "origin", origin)
@@ -1067,7 +1037,7 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 			// counts), and never a WebSocket handshake. Anything else gets the
 			// same news in a line of text. Either way it is never stored, so a
 			// visit after the origin is up gets the origin.
-			host := origins[ix].Host
+			host := dialed[ix].Host
 			// What the page and the line tell someone to start something
 			// on: "port 3999" for an origin on this machine, which is how a
 			// person says it and what a dev server is started on, and the
@@ -1124,7 +1094,7 @@ func proxy(origins []*url.URL, schemes []v1.Scheme, ws int, log *slog.Logger) ht
 			*picked = to.ix
 		}
 		if access, ok := auth.AccessOf(r.Context()); ok {
-			if scope := auth.Scope(schemes[to.ix]); !access.Has(scope) {
+			if scope := auth.Scope(all[to.ix].Scheme); !access.Has(scope) {
 				auth.InsufficientScope(w, r, scope)
 				return
 			}
