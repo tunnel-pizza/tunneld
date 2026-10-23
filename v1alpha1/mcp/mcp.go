@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -110,14 +111,24 @@ func WithCache(c cache.Cache) Option {
 // WithStdio serves the same server on this process's stdin and stdout as
 // well as the HTTP handler, for as long as the server is open: what an MCP
 // client that started the process speaks.
+//
+// The streams are read here, as the option is applied, rather than when the
+// server connects on a goroutine of its own: what os.Stdin and os.Stdout name
+// is the process's to change in between.
 func WithStdio(on bool) Option {
 	return func(m *McpImpl) {
 		m.stdio = nil
 		if on {
-			m.stdio = &sdk.StdioTransport{}
+			m.stdio = &sdk.IOTransport{Reader: os.Stdin, Writer: openWriter{os.Stdout}}
 		}
 	}
 }
+
+// openWriter is w with a Close that leaves it open: the server closing its
+// transport ends the session, not the process's stdout.
+type openWriter struct{ io.Writer }
+
+func (openWriter) Close() error { return nil }
 
 // WithContext closes the server once ctx is done, so the caller has no
 // Close to defer.

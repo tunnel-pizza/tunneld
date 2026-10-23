@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -19,6 +20,32 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach/shell"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
 )
+
+// TestWithStdioTakesTheStreamsWhenApplied pins that WithStdio reads os.Stdin
+// and os.Stdout as it is applied, not when the server connects on a goroutine
+// of its own: by then whoever set them may have put them back.
+func TestWithStdioTakesTheStreamsWhenApplied(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	was := os.Stdin
+	os.Stdin = r
+	m := v1.Apply(&McpImpl{}, WithStdio(true))
+	os.Stdin = was
+
+	got, ok := m.stdio.(*sdk.IOTransport)
+	if !ok || got.Reader != r {
+		t.Fatalf("stdio = %#v, want an IOTransport reading the stdin it was applied with", m.stdio)
+	}
+	if err := got.Writer.Close(); err != nil {
+		t.Errorf("closing the writer = %v, want it to leave os.Stdout open", err)
+	}
+	if _, err := os.Stdout.Stat(); err != nil {
+		t.Errorf("os.Stdout after the writer closed: %v", err)
+	}
+}
 
 // connect stands m's server up over an in-memory transport and returns a
 // client session on it.
