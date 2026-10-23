@@ -658,9 +658,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// TODO: lock stdio for an MCP run at the fd level, before anything
 	// writes: dup(1) a private stdout for the MCP transport, dup2(2, 1) so
 	// os.Stdout, libraries and inherited children land on stderr, and hand
-	// mcp.WithStdio that reader and writer over the SDK's IOTransport instead
-	// of StdioTransport. SetStdHandle on Windows. Until then only cmd's stdout
-	// is redirected, at the top of Run.
+	// mcp.WithStdio that reader and writer rather than os.Stdin and
+	// os.Stdout. SetStdHandle on Windows. Until then only cmd's stdout is
+	// redirected, at the top of Run.
 	piped := isPod() && isPipe(cmd.InOrStdin()) && !b.mcp
 	hint := stopHint
 	if piped {
