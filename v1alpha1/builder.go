@@ -905,7 +905,7 @@ func (b *BuilderImpl) logger() (*slog.Logger, error) {
 func (b *BuilderImpl) tracking(origins Origins) map[string]string {
 	shown := make([]string, 0, origins.Len())
 	for _, origin := range origins.All() {
-		shown = append(shown, origin.URI.String())
+		shown = append(shown, origin.URL().String())
 	}
 
 	out := map[string]string{
@@ -1484,12 +1484,13 @@ func composePrefixes(origins Origins, color bool) (served, dialed []string) {
 		if o.Index < 0 || o.Index >= origins.Len() {
 			continue
 		}
-		name := o.URI.Host
+		u := o.URL()
+		name := u.Host
 		switch o.Scheme {
 		case v1.ExecScheme, v1.AttachScheme:
 			name = path.Base(o.Ref)
 		default:
-			host, port := o.URI.Hostname(), o.URI.Port()
+			host, port := u.Hostname(), u.Port()
 			if ip := net.ParseIP(host); port != "" && (host == "localhost" || ip != nil && ip.IsLoopback()) {
 				name = ":" + port
 			}

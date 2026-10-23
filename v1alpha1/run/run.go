@@ -444,8 +444,7 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	// TODO(#209): show it to the operator beneath the map, from the builder,
 	// once there is one place that prints the run's human lines.
 	for _, i := range r.router.Unanswered(ctx, origins) {
-		uri := origins.At(i).URI
-		log.Warn("nothing is listening on an origin yet", "origin", uri.Redacted())
+		log.Warn("nothing is listening on an origin yet", "origin", origins.At(i).URL().Redacted())
 	}
 
 	// What the provider said with the spec, learned here because Messages
@@ -782,7 +781,7 @@ func publicURL(public *url.URL, i, n int) string {
 // the key that names the file. An http origin's query is part of its address
 // and stays.
 func label(origin v1.Origin) string {
-	u := origin.URI
+	u := origin.URL()
 	if origin.Scheme == v1.ExecScheme {
 		u.RawQuery = ""
 	}
@@ -798,7 +797,7 @@ func originsHeader(origins v1.Origins) (key, value string) {
 	}
 	shown := make([]string, 0, origins.Len())
 	for _, origin := range origins.All() {
-		u := origin.URI
+		u := origin.URL()
 		bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}
 		shown = append(shown, bare.String())
 	}

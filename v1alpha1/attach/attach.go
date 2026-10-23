@@ -361,12 +361,13 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		// refuses every other scheme, so this is a pass-through rather than a
 		// judgement. A +ws marker never reaches here: the parser takes it off
 		// the scheme and keeps it as an index beside the list.
-		provider, served := b.targets[answers(v1.Scheme(origin.URI.Scheme), v1.Provider(origin.URI.Host))]
+		u := origin.URL()
+		provider, served := b.targets[answers(v1.Scheme(u.Scheme), v1.Provider(u.Host))]
 		if !served {
-			if origin.URI.Scheme != "http" && origin.URI.Scheme != "https" {
+			if u.Scheme != "http" && u.Scheme != "https" {
 				_ = servers.Close()
 				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
-					origin.URI.Scheme, origin.URI.Host, strings.Join(b.answered(), ", "))
+					u.Scheme, u.Host, strings.Join(b.answered(), ", "))
 			}
 			dialable = append(dialable, origin)
 			continue
@@ -396,7 +397,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		at := origin
 		at.URI = *server.URL()
 		dialable = append(dialable, at)
-		log.Info("serving a reference as an origin", "reference", origin.URI.Host+origin.URI.Path, "scheme", origin.URI.Scheme, "origin", server.URL())
+		log.Info("serving a reference as an origin", "reference", u.Host+u.Path, "scheme", u.Scheme, "origin", server.URL())
 	}
 	// A closer that can be shown on a console says so by carrying the method,
 	// and only when it can: one origin in the whole run, and that one served.

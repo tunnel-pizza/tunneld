@@ -167,10 +167,7 @@ func (o *OriginsImpl) From(raw string) (v1.Origin, error) {
 // its own.
 func clone(origin v1.Origin) v1.Origin {
 	origin.Args = slices.Clone(origin.Args)
-	if origin.URI.User != nil {
-		user := *origin.URI.User
-		origin.URI.User = &user
-	}
+	origin.URI = *origin.URL()
 	return origin
 }
 
@@ -211,7 +208,7 @@ func (o *OriginsImpl) WebSocket() (int, bool) {
 func (o *OriginsImpl) Key() string {
 	parts := make([]string, 0, len(o.origins))
 	for _, origin := range o.origins {
-		parts = append(parts, origin.URI.String())
+		parts = append(parts, origin.URL().String())
 	}
 	slices.Sort(parts)
 	parts = slices.Compact(parts)

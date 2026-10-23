@@ -494,6 +494,17 @@ type Origin struct {
 	Args []string `json:"-"`
 }
 
+// URL is the origin as settled, as a copy with credentials of its own:
+// changing what comes back changes nothing in the run.
+func (o Origin) URL() *url.URL {
+	u := o.URI
+	if u.User != nil {
+		user := *u.User
+		u.User = &user
+	}
+	return &u
+}
+
 // Builder assembles the tunneld command. Obtain one from v1alpha1.New,
 // configured by that package's options, and call the terminal Command to
 // produce a *cobra.Command.

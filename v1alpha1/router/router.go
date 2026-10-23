@@ -388,7 +388,7 @@ func (r *RouterImpl) Unanswered(ctx context.Context, origins v1.Origins) []int {
 	down := make([]bool, len(all))
 	var wg sync.WaitGroup
 	for i, origin := range all {
-		u := origin.URI
+		u := origin.URL()
 		port := u.Port()
 		switch {
 		case u.Scheme != "http" && u.Scheme != "https":
@@ -862,7 +862,7 @@ func urlsOf(origins v1.Origins) []*url.URL {
 	all := origins.All()
 	out := make([]*url.URL, len(all))
 	for i := range all {
-		out[i] = &all[i].URI
+		out[i] = all[i].URL()
 	}
 	return out
 }
