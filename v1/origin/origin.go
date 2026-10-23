@@ -134,9 +134,9 @@ func (o Origin) Label() string {
 	return u.String()
 }
 
-// Bare is the origin as scheme, host and path. A query, a fragment or
-// credentials can hold a secret, so none of them is in it: what a provider is
-// told an origin is, and how a served origin's tile names it.
+// Bare is the origin as scheme, host and path, escaped as a URL. A query, a
+// fragment or credentials can hold a secret, so none of them is in it: what a
+// provider is told an origin is.
 func (o Origin) Bare() string {
 	u := o.URL()
 	bare := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, Opaque: u.Opaque}

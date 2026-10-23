@@ -39,8 +39,10 @@ var sessionEnv = []string{
 // Option configures an OriginsImpl at construction.
 type Option = v1.Option[*OriginsImpl]
 
-// OriginsImpl is the default Origins: a list, and the directory it was settled
-// in. Both are fixed once New returns, but for what Add appends.
+// OriginsImpl is the default Origins: a list, the directory it was settled
+// in, and where each served origin is dialed. The list and the directory are
+// fixed once New returns, but for what Add appends; Serve records an address
+// after, and is not safe to call while the list is read.
 type OriginsImpl struct {
 	// dir is the working directory this run's identity is scoped to, so two
 	// projects serving :3000 are two tunnels rather than one.
@@ -184,9 +186,10 @@ func (o *OriginsImpl) WebSocket() (int, bool) {
 	return o.ws, true
 }
 
-// Serve implements v1.Origins. The origin itself is unchanged: it is still
-// what the operator typed, a program or a container, and only where it is
-// dialed is new.
+// Serve says the origin at i is served at at, which Dialable then hands back
+// in place of its URI. The origin itself is unchanged: it is still what the
+// operator typed, a program or a container, and only where it is dialed is
+// new. An i outside the list, or a nil at, is ignored.
 func (o *OriginsImpl) Serve(i int, at *url.URL) {
 	if i < 0 || i >= len(o.origins) || at == nil {
 		return
@@ -221,13 +224,11 @@ func (o *OriginsImpl) Dialable() []*url.URL {
 // cannot run together: a directory and an origin concatenated raw could be
 // split two ways and collide.
 //
-// A program's arguments used to be set aside here, on the reading that claude
-// and claude --resume are one tunnel started two ways. They are not once the
-// arguments say which thing is running: claude --resume ABC and claude
-// --resume DEF are two sessions, and one key put them on one hostname — two
-// connectors on one tunnel when run together, a link that quietly changed
-// what it opened when run apart (#182). The arguments ride the origin as a
-// query, in order, so the whole URL is the whole invocation.
+// A program's arguments count: claude --resume ABC and claude --resume DEF
+// are two sessions, and one key would put them on one hostname — two
+// connectors on one tunnel when run together, a link that changes what it
+// opens when run apart. The arguments ride the origin as a query, in order,
+// so the whole URL is the whole invocation.
 func (o *OriginsImpl) Key() string {
 	parts := make([]string, 0, len(o.origins))
 	for _, origin := range o.origins {
@@ -580,9 +581,8 @@ func Parse(log v1.Logger, settled []string) *OriginsImpl {
 		// rather than following the sticky cookie. The marker comes off here
 		// and rides the list as an index (WithWebSocket), so every URL
 		// downstream — the attacher's, the panel's, the one the router dials —
-		// is the bare address and nothing has to know to leave it alone
-		// (#173, #176). The key follows: an origin marked and unmarked is one
-		// tunnel.
+		// is the bare address and nothing has to know to leave it alone. The
+		// key follows: an origin marked and unmarked is one tunnel.
 		//
 		// The two spellings (+ws and +wss) mean the same thing: the suffix
 		// induces the designation rather than describing a transport — the

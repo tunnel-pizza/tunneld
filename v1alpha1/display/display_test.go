@@ -430,12 +430,14 @@ func TestServeShellEscapesTheHost(t *testing.T) {
 
 // TestLabel pins how a tile names the origin behind it. An http origin is
 // named by its host, which is what the operator typed; anything else keeps its
-// scheme, so a container tile cannot be misread as a hostname.
+// scheme, so a container tile cannot be misread as a hostname, and its path
+// as the operator typed it, unescaped.
 func TestLabel(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"http://localhost:3000", "localhost:3000"},
 		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
 		{"attach://dockerd/api", "attach://dockerd/api"},
+		{"exec:///Applications/My%20App.app/bin/run", "exec:///Applications/My App.app/bin/run"},
 	}
 
 	listed := make([]v1.Origin, len(cases))
@@ -454,9 +456,9 @@ func TestLabel(t *testing.T) {
 	pageOf(t, origins.New(origins.WithOrigins(listed...))).ServeHTTP(rec, r)
 
 	body := rec.Body.String()
-	for _, want := range []string{"localhost:3000", "127.0.0.1:8443", "attach://dockerd/api"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("rendered page does not contain label %q", want)
+	for _, tc := range cases {
+		if !strings.Contains(body, tc.want) {
+			t.Errorf("rendered page does not contain label %q", tc.want)
 		}
 	}
 }

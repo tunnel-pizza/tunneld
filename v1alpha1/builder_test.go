@@ -697,7 +697,7 @@ type fakeAttacher struct {
 	shows atomic.Int32
 }
 
-func (f *fakeAttacher) Attach(_ context.Context, _ Origins, _ v1.Logger) (attach.Attached, error) {
+func (f *fakeAttacher) Attach(_ context.Context, _ attach.Servable, _ v1.Logger) (attach.Attached, error) {
 	f.env = os.Getenv(v1.SpecPathEnv)
 	// Carrying Mirror is how the real attacher says a run has exactly one
 	// served origin, so it is a wrapper here too rather than a method on the
@@ -1978,7 +1978,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 		{"an unrunnable $SHELL is passed over for bash", []string{"bash", "sh"}, "missing", nil, "bash", "not exposing $SHELL"},
 		{"no $SHELL is bash", []string{"bash", "sh"}, "", nil, "bash", ""},
 		{"no bash is sh", []string{"sh"}, "", nil, "sh", ""},
-		{"no shell at all is the built-in one", nil, "", nil, "builtin", ""},
+		{"no shell at all is the built-in one, parsed like any origin", nil, "", nil, "builtin", "interpolated into"},
 		{"an unrunnable $SHELL and nothing else is the built-in one", nil, "missing", nil, "builtin", "not exposing $SHELL"},
 		{"an argument outranks it", []string{"bash"}, "", []string{":3000"}, ":3000", ""},
 	} {
@@ -2000,7 +2000,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			b := New(WithLogLevel("warn"), WithStderr(&stderr))
+			b := New(WithLogLevel("info"), WithStderr(&stderr))
 			if err := b.Command().ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags(%v): %v", tc.args, err)
 			}
@@ -2029,7 +2029,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 			}) {
 				t.Errorf("Origins() = %v, want %v", got, want)
 			}
-			if tc.mention != "" && !strings.Contains(stderr.String(), tc.mention) {
+			if tc.mention != "" && len(want) > 0 && !strings.Contains(stderr.String(), tc.mention) {
 				t.Errorf("stderr %q does not mention %q", stderr.String(), tc.mention)
 			}
 		})

@@ -243,7 +243,15 @@ func CopyOutput(out, errw io.Writer, r io.Reader, tty bool) error {
 // tells origins where with Serve, so their Dialable is what the tunnel dials.
 // What it returns shuts every server the attach started.
 type Attacher interface {
-	Attach(ctx context.Context, origins v1.Origins, log v1.Logger) (Attached, error)
+	Attach(ctx context.Context, origins Servable, log v1.Logger) (Attached, error)
+}
+
+// Servable is the origins Attach is handed: the run's list, and Serve, which
+// records the loopback address it stands up for one of them. Kept off
+// v1.Origins so the packages that read the list cannot reroute it.
+type Servable interface {
+	v1.Origins
+	Serve(i int, at *url.URL)
 }
 
 // Option configures an AttacherImpl at construction.
@@ -358,7 +366,7 @@ func (b *AttacherImpl) answered() []string {
 // A failure unwinds everything already attached. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog.Logger) (Attached, error) {
+func (b *AttacherImpl) Attach(ctx context.Context, origins Servable, log *slog.Logger) (Attached, error) {
 	servers := attached{exits: &exits{ch: make(chan []int, 1)}}
 	asked := newAsk()
 	for _, origin := range origins.All() {
@@ -396,10 +404,6 @@ func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog
 		servers.exits.servers = append(servers.exits.servers, server)
 		servers.exits.mu.Unlock()
 		server.session.setEnded(servers.exits.ended)
-		// Only where it is dialed changes: a token's scope is held against
-		// what the origin is, and a program served over loopback http is
-		// still a program.
-		origins.Serve(origin.Index, server.URL())
 		log.Info("serving a reference as an origin", "reference", u.Host+u.Path, "scheme", u.Scheme, "origin", server.URL())
 	}
 	// A closer that can be shown on a console says so by carrying the method,
@@ -410,6 +414,13 @@ func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog
 	// tiles. That run gets the report on the console and the panel in a tab.
 	// A caller then asks by type assertion and gets a straight answer, rather
 	// than re-deriving from the origin list what was already decided here.
+	// Recorded only once every origin is served, so a failure above leaves
+	// origins as it was handed over. Only where each is dialed changes: a
+	// token's scope is held against what the origin is, and a program served
+	// over loopback http is still a program.
+	for _, o := range servers.origins {
+		origins.Serve(o.at, o.srv.URL())
+	}
 	servers.exits.mu.Lock()
 	servers.exits.attached = true
 	servers.exits.mu.Unlock()

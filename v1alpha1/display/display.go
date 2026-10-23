@@ -312,7 +312,8 @@ func (d *DisplayImpl) Panel(enabled bool, origins v1.Origins, log v1.Logger) fun
 						// A served origin is the verb, the provider that
 						// answers it and the reference — and the reference is
 						// always the path, so the three join in order.
-						local = origin.Bare()
+						u := origin.URL()
+						local = u.Scheme + "://" + u.Host + u.Path
 					}
 					data.Origins = append(data.Origins, tile{
 						Index:    i,

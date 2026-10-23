@@ -865,10 +865,7 @@ func (r *RouterImpl) Cancel() {
 // auth.InsufficientScope naming it.
 func proxy(origins v1.Origins, log *slog.Logger) http.Handler {
 	dialed, all := origins.Dialable(), origins.All()
-	ws, marked := origins.WebSocket()
-	if !marked {
-		ws = -1
-	}
+	ws, _ := origins.WebSocket()
 	paths := &remembered{origin: map[string]int{}}
 	// index is the origin a request was routed to, found in the list by the
 	// host it was sent to rather than read off the request; -1 for none.

@@ -144,7 +144,6 @@ type Origins interface {
     From(url string) (Origin, error) // https://<host>/?n, routed as a visit is
     Key() string
     WebSocket() (int, bool)          // the +ws origin's index, if one is marked
-    Serve(i int, at *url.URL)        // origin i is dialed at at; the origin is unchanged
     Dialable() []*url.URL            // where each origin is dialed, in order
 }
 

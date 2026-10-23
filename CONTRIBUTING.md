@@ -12,18 +12,19 @@ Deep-link by filename; line numbers will drift.
 | ---------------------------------------------- | ---------------------------------------------------------------- |
 | Process shell (signals → context → Execute)    | [`main.go`](./main.go)                                           |
 | Stable interface (`Builder`)                   | [`v1/v1.go`](./v1/v1.go)                                         |
+| `Origin`, `Scheme`, `Provider` (aliased in `v1`) | [`v1/origin/`](./v1/origin)                                    |
 | `Err*` sentinels + env / default constants     | [`v1/v1.go`](./v1/v1.go)                                         |
 | `New`, `BuilderImpl`, the internal contracts + options | [`v1alpha1/v1alpha1.go`](./v1alpha1/v1alpha1.go)                 |
 | Builder options, `Command` (flags, env binding, the tunnel run), `Origins`, `flagEnv`, `publicURL` | [`v1alpha1/builder.go`](./v1alpha1/builder.go) |
 | Version resolution + build banner              | [`v1alpha1/version.go`](./v1alpha1/version.go)                   |
-| Origins, their key, and the options that build one | [`v1alpha1/origins/`](./v1alpha1/origins) |
+| Origins, their key, the options that build one, `Parse`, `Resolve` and `servedSchemes` | [`v1alpha1/origins/`](./v1alpha1/origins) |
 | Spec cache, one file per run (`Cache`)         | [`v1alpha1/cache/`](./v1alpha1/cache)                            |
 | Choosing a tab or a console, browser launch, multiview panel, framing headers, template (`Display`) | [`v1alpha1/display/`](./v1alpha1/display) |
 | Several origins behind one loopback address: `?n`, the `+ws` origin, Referer, the sticky cookie, the page for an origin nothing answers on, and the MCP server `WithMcp` puts on the control path (`Router`) | [`v1alpha1/router/`](./v1alpha1/router) |
 | A run's tunnel from its spec to its end: the mint, the addresses and the map, the browser or the console, the save, the wait (`Run`) | [`v1alpha1/run/`](./v1alpha1/run) |
 | `Target`, `Targets`, `Server`, the terminal frame, `Terminal` (a session as an agent types into and reads it), and the `Attacher` implementation | [`v1alpha1/attach/`](./v1alpha1/attach) |
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
-| Local-program provider, `Resolve`, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
+| Local-program provider, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | The MCP server served to agents on the control path | [`v1alpha1/mcp/`](./v1alpha1/mcp) |
 | What every MCP tool shares, and one package per tool | [`v1alpha1/mcp/tool/`](./v1alpha1/mcp/tool), [`v1alpha1/mcp/tools/`](./v1alpha1/mcp/tools) |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
@@ -481,12 +482,12 @@ on any machine that reads it.
 **An authority with nothing after it is looked up as a program first.**
 `exec://htop` cannot be a provider being asked for something — there is nothing
 to ask for — so the reading that can succeed wins over the one that cannot. The
-lookup is `shell.Resolve`, held in the `servedSchemes` table rather than called
+lookup is `origins.Resolve`, held in the `servedSchemes` table rather than called
 by name in the loop, so whatever the bare-word shorthand accepts, `exec://`
 accepts.
 
 The parser has to agree about which schemes are served, and `servedSchemes` in
-[`v1alpha1/builder.go`](./v1alpha1/builder.go) is that list. A scheme added to
+[`v1alpha1/origins/origins.go`](./v1alpha1/origins/origins.go) is that list. A scheme added to
 one and not the other is an origin the parser drops before the attacher ever sees
 it, or one the attacher refuses after the parser waved it through.
 
@@ -681,7 +682,7 @@ Two things there will bite if you change them without knowing why:
   `strippedEnv` so a case does not inherit a developer's. The parse
   loop's fallback for a word it cannot resolve is to read it as an address, so
   an unrunnable `$SHELL` would become a proxy to `http://localhost/bin/nope` —
-  a tunnel to nothing that reports no problem. `shell.Resolve` runs first and a
+  a tunnel to nothing that reports no problem. `origins.Resolve` runs first and a
   failure leaves the count at zero, which already has a message naming the
   lever. Argv, `TUNNELD_ORIGINS` and a `WithOrigin` seed all settle above it.
 - **The browser decision is derived, and split where the knowledge is.**

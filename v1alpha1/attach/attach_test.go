@@ -1676,7 +1676,7 @@ func TestDoneReachesTheAttacher(t *testing.T) {
 
 // shown is what an operator asked for, in the type Attach takes: the origins as
 // they were typed, before any of them is stood up behind a loopback address.
-func shown(t *testing.T, raw ...string) v1.Origins {
+func shown(t *testing.T, raw ...string) *origins.OriginsImpl {
 	t.Helper()
 	return origins.New(origins.WithOrigins(mustOrigins(t, raw...)...))
 }
@@ -1832,10 +1832,10 @@ func TestAttachWithoutContainers(t *testing.T) {
 	}
 }
 
-// TestAttachUnwindsOnFailure pins that a later container failing does not leave
-// an earlier one's server listening. The command is about to return an error
-// and exit; a leaked goroutine holding a port would outlive it in an
-// embedding program.
+// TestAttachUnwindsOnFailure pins that a later container failing does not
+// leave an earlier one's server listening, or its address on the origins. The
+// command is about to return an error and exit; a leaked goroutine holding a
+// port would outlive it in an embedding program.
 func TestAttachUnwindsOnFailure(t *testing.T) {
 	targets := &stubTargets{failOn: 2}
 	display := shown(t, "attach://dockerd/api", "attach://dockerd/missing")
@@ -1848,6 +1848,9 @@ func TestAttachUnwindsOnFailure(t *testing.T) {
 	}
 	if !targets.opened[0].closed {
 		t.Error("the first container's target was left open")
+	}
+	if got := display.Dialable()[0].String(); got != "attach://dockerd/api" {
+		t.Errorf("Dialable()[0] = %q after a failed Attach, want the origin, not a closed server", got)
 	}
 }
 

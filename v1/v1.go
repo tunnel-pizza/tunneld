@@ -383,10 +383,10 @@ const DefaultIdentityProviders = "github,anthropic"
 //
 // A type rather than a []*url.URL, because the list answers questions no
 // slice can: Key is what identifies this run's tunnel, and it is the name its
-// cached spec is filed under; WebSocket is the origin marked +ws; Serve and
-// Dialable are where a served origin is dialed, kept beside the origin rather
-// than in a second list. Len, At and All are the slice's own vocabulary, so a
-// caller reads the list the way it would read a slice.
+// cached spec is filed under; WebSocket is the origin marked +ws; Dialable is
+// where each origin is dialed, a served one's address kept beside the origin
+// rather than in a second list. Len, At and All are the slice's own
+// vocabulary, so a caller reads the list the way it would read a slice.
 type Origins interface {
 	// Len is how many origins this run exposes.
 	Len() int
@@ -410,13 +410,9 @@ type Origins interface {
 	// nothing in it routes, the one an operator marked +ws, and false when
 	// none is marked.
 	WebSocket() (int, bool)
-	// Serve says the origin at i is served at at: a loopback address tunneld
-	// stands up in its place, for a program or a container, which the tunnel
-	// dials instead of its URI. An i outside the list, or a nil at, is
-	// ignored.
-	Serve(i int, at *url.URL)
 	// Dialable is the address the tunnel dials for each origin, in order:
-	// where Serve said it is served, else its URI. Each a copy.
+	// the loopback address tunneld serves it at, for a program or a
+	// container, else its URI. Each a copy.
 	Dialable() []*url.URL
 }
 

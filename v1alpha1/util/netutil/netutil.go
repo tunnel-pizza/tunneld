@@ -15,9 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // ForeignListeners is every TCP socket listening in this network namespace
@@ -120,8 +117,8 @@ const probeTimeout = time.Second
 // it, and is left out without a byte written to it.
 const bannerWait = 100 * time.Millisecond
 
-// AttachableListeners is the listeners that speak HTTP, as the origin to
-// reach each, in the order given: https for one that completes a TLS handshake, http
+// AttachableListeners is the listeners that speak HTTP, as the URL to reach
+// each, in the order given: https for one that completes a TLS handshake, http
 // for one that answers HEAD / with an HTTP status line. Anything else is
 // left out: one that speaks first (a banner, so not HTTP), or one that says
 // nothing useful within probeTimeout (a database). An unspecified address is
@@ -133,20 +130,14 @@ const bannerWait = 100 * time.Millisecond
 // its own, which would pass for http. Then HEAD /, the app's front page
 // without its body, which every HTTP server answers and logs with userAgent.
 // The probes run at once.
-func AttachableListeners(listeners []netip.AddrPort, userAgent string) []v1.Origin {
-	found := make([]*url.URL, len(listeners))
+func AttachableListeners(listeners []netip.AddrPort, userAgent string) []*url.URL {
+	out := make([]*url.URL, len(listeners))
 	var wg sync.WaitGroup
 	for i, l := range listeners {
-		wg.Go(func() { found[i] = attachable(l, userAgent) })
+		wg.Go(func() { out[i] = attachable(l, userAgent) })
 	}
 	wg.Wait()
-	out := make([]v1.Origin, 0, len(found))
-	for _, u := range found {
-		if u != nil {
-			out = append(out, origins.NewOrigin(u))
-		}
-	}
-	return out
+	return slices.DeleteFunc(out, func(u *url.URL) bool { return u == nil })
 }
 
 // attachable is l's URL when it speaks HTTP or HTTPS, nil otherwise.

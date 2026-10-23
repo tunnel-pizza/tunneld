@@ -10,6 +10,7 @@ import (
 	"cmp"
 	"context"
 	"io"
+	"net/url"
 	"sync"
 
 	"github.com/cnuss/libtunnel"
@@ -46,7 +47,7 @@ type Option = v1.Option[*BuilderImpl]
 type Origins = v1.Origins
 
 // NewOrigin is u as an origin; see origins.NewOrigin.
-var NewOrigin = origins.NewOrigin
+func NewOrigin(u *url.URL) v1.Origin { return origins.NewOrigin(u) }
 
 // The contracts Command's RunE composes. Each is something with an external
 // effect — the edge, the disk, the daemon, the browser, an HTTP probe —

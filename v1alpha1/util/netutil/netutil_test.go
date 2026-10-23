@@ -125,8 +125,8 @@ func TestAttachableListeners(t *testing.T) {
 		"https://" + secure.Listener.Addr().String(),
 	}
 	var urls []string
-	for _, o := range got {
-		urls = append(urls, o.URL().String())
+	for _, u := range got {
+		urls = append(urls, u.String())
 	}
 	if !slices.Equal(urls, want) {
 		t.Errorf("AttachableListeners = %v, want %v", urls, want)
@@ -148,7 +148,7 @@ func TestAttachableNamesUnspecifiedLocalhost(t *testing.T) {
 	t.Cleanup(plain.Close)
 	port := netip.MustParseAddrPort(plain.Listener.Addr().String()).Port()
 	got := AttachableListeners([]netip.AddrPort{netip.AddrPortFrom(netip.IPv4Unspecified(), port)}, "tunneld/test")
-	if len(got) != 1 || got[0].URL().Scheme != "http" || got[0].URL().Hostname() != "localhost" || got[0].URL().Port() != strconv.Itoa(int(port)) {
+	if len(got) != 1 || got[0].Scheme != "http" || got[0].Hostname() != "localhost" || got[0].Port() != strconv.Itoa(int(port)) {
 		t.Errorf("AttachableListeners(0.0.0.0:%d) = %v, want http://localhost:%d", port, got, port)
 	}
 }

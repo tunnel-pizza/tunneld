@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/user"
 	"reflect"
@@ -457,7 +458,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// seed and parsed. Anything unusable was dropped with a
 	// warning rather than failing the run, so what is left is what
 	// the tunnel gets.
-	origins := b.Origins()
+	origins := b.settle()
 
 	// The run's log file, as soon as the run has a key to name it by: what
 	// was logged settling the origins is written in first, and everything
@@ -950,7 +951,11 @@ func (b *BuilderImpl) cached(origins func() Origins) Origins {
 	return origins()
 }
 
-func (b *BuilderImpl) Origins() Origins {
+func (b *BuilderImpl) Origins() Origins { return b.settle() }
+
+// settle is Origins as the list itself, which the attacher records each
+// served origin's address on.
+func (b *BuilderImpl) settle() *origins.OriginsImpl {
 	// A refused --log-level is the run's error to report, not this one's; here
 	// it just means the warnings below go nowhere.
 	log, _ := b.logger()
@@ -972,13 +977,13 @@ func (b *BuilderImpl) Origins() Origins {
 // auto is what a run exposes when no origin is given anywhere (no
 // argument, no TUNNELD_ORIGINS, no WithOrigin seed): this machine's shell, as
 // shell finds one. Empty when there is none.
-func (b *BuilderImpl) auto() Origins {
+func (b *BuilderImpl) auto() *origins.OriginsImpl {
 	// A refused --log-level is the run's error to report; here it means the
 	// lines below go nowhere.
 	log, _ := b.logger()
 	log.Info("autodetect: starting")
 
-	detect := func(funcs ...func(v1.Logger) Origins) Origins {
+	detect := func(funcs ...func(v1.Logger) *origins.OriginsImpl) *origins.OriginsImpl {
 		for _, fn := range funcs {
 			log.Debug("autodetect", "fn", funcName(fn))
 			if origins := fn(log); origins != nil {
@@ -1013,7 +1018,7 @@ func (b *BuilderImpl) auto() Origins {
 // Each is parsed like any origin, but only once resolved: Parse reads a word
 // it cannot resolve as an address, which would make a $SHELL naming nothing
 // runnable a proxy to http://localhost/bin/nope. Empty when there is none.
-func (b *BuilderImpl) shell(log v1.Logger) Origins {
+func (b *BuilderImpl) shell(log v1.Logger) *origins.OriginsImpl {
 	if sh := os.Getenv("SHELL"); sh == "" {
 		log.Debug("$SHELL is not set; looking for another shell")
 	} else if path, ok := origins.Resolve(sh); ok {
@@ -1040,11 +1045,11 @@ func (b *BuilderImpl) shell(log v1.Logger) Origins {
 		return nil
 	}
 	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin.URL())
-	return origins.New(origins.WithOrigins(origin))
+	return origins.Parse(log, []string{origin.URL().String()})
 }
 
-func (b *BuilderImpl) pod(log v1.Logger) Origins {
-	origins := origins.New()
+func (b *BuilderImpl) pod(log v1.Logger) *origins.OriginsImpl {
+	listed := origins.New()
 
 	is_linked := func() bool {
 		envs := []string{"KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT"}
@@ -1071,13 +1076,13 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 	// Each port once, none only on loopback, which stay private, and only
 	// those that speak HTTP or HTTPS, as the URL to reach each. None without
 	// /proc, which is anywhere but Linux.
-	shares := func() []v1.Origin {
+	shares := func() []*url.URL {
 		listeners := netutil.ForeignListeners(os.DirFS("/"))
 		log.Debug("autodetect: foreign listeners", "addrs", listeners)
 		reachable := netutil.ReachableListeners(listeners)
 		log.Debug("autodetect: reachable listeners", "addrs", reachable)
 		attachable := netutil.AttachableListeners(reachable, UserAgent())
-		log.Debug("autodetect: attachable listeners", "origins", attachable)
+		log.Debug("autodetect: attachable listeners", "urls", attachable)
 		return attachable
 	}
 
@@ -1092,41 +1097,41 @@ func (b *BuilderImpl) pod(log v1.Logger) Origins {
 
 	if shared := shares(); len(shared) > 0 {
 		// The pod's apps first, so the bare address is one of them.
-		for _, listener := range shared {
-			log.Debug("autodetect: adding a pod listener", "origin", listener.URL())
-			origins.Add(listener)
+		for _, u := range shared {
+			log.Debug("autodetect: adding a pod listener", "origin", u)
+			listed.Add(origins.Parse(log, []string{u.String()}).All()...)
 		}
 
 		log.Debug("autodetect: adding a shell")
 		if shell := b.shell(log); shell != nil {
-			origins.Add(shell.All()...)
+			listed.Add(shell.All()...)
 		}
 	}
 
 	// Nil, not empty, so detect goes on to the next way.
-	if origins.Len() == 0 {
+	if listed.Len() == 0 {
 		return nil
 	}
-	return origins
+	return listed
 }
 
-func (b *BuilderImpl) agent(log v1.Logger) Origins {
+func (b *BuilderImpl) agent(log v1.Logger) *origins.OriginsImpl {
 	if !isAgent() {
 		log.Debug("autodetect: not an agent")
 		return nil
 	}
 
 	// FUTURE: we will allow agents to dynamically add and remove origins using MCP commands.
-	origins := origins.New()
+	listed := origins.New()
 
 	if os.Getenv(debugEnv) == "true" {
 		log.Debug("autodetect: debug mode enabled for agents, adding a shell")
 		if shell := b.shell(log); shell != nil {
-			origins.Add(shell.All()...)
+			listed.Add(shell.All()...)
 		}
 	}
 
-	return origins
+	return listed
 }
 
 // composePrefixes is each origin's prefix for compose output, by index:
