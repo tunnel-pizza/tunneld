@@ -5,10 +5,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -56,7 +56,7 @@ func (s *sink) String() string {
 func TestOrigin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		if origin, err := Origin(); !errors.Is(err, ErrNoTerminal) {
-			t.Errorf("Origin() = %q, %v; want ErrNoTerminal on Windows", origin, err)
+			t.Errorf("Origin() = %v, %v; want ErrNoTerminal on Windows", origin, err)
 		}
 		return
 	}
@@ -64,15 +64,11 @@ func TestOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Origin() = %v", err)
 	}
-	u, err := url.Parse(origin)
-	if err != nil {
-		t.Fatalf("Origin() = %q, not a URL: %v", origin, err)
+	if origin.Scheme != v1.ExecScheme || origin.Provider != "" || !slices.Equal(origin.Args, []string{Arg}) {
+		t.Errorf("Origin() = %s, want exec:///<this executable>?%s=%s", origin.URL(), v1.ArgKey, Arg)
 	}
-	if v1.Scheme(u.Scheme) != v1.ExecScheme || u.Host != "" || u.Query()[v1.ArgKey][0] != Arg || len(u.Query()[v1.ArgKey]) != 1 {
-		t.Errorf("Origin() = %q, want exec:///<this executable>?%s=%s", origin, v1.ArgKey, Arg)
-	}
-	if _, ok := shell.Resolve(u.Path); !ok {
-		t.Errorf("Origin()'s program %q does not resolve", u.Path)
+	if _, ok := shell.Resolve(origin.Ref); !ok {
+		t.Errorf("Origin()'s program %q does not resolve", origin.Ref)
 	}
 }
 

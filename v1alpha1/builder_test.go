@@ -1493,7 +1493,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(origin.Close)
 		u, _ := url.Parse(origin.URL)
 		r := h.router.configured
-		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithOrigins(origins.NewOrigin(u)))))
 		if err != nil {
 			t.Fatalf("Route: %v", err)
 		}
@@ -1526,7 +1526,7 @@ func TestRun(t *testing.T) {
 		t.Cleanup(origin.Close)
 		u, _ := url.Parse(origin.URL)
 		r := h.router.configured
-		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithURL(u))))
+		local, err := r.Route(t.Context(), router.WithOrigins(origins.New(origins.WithOrigins(origins.NewOrigin(u)))))
 		if err != nil {
 			t.Fatalf("Route: %v", err)
 		}
@@ -1963,7 +1963,7 @@ func TestOriginsFallsBackToTheShell(t *testing.T) {
 	var builtinURL *url.URL
 	if builtin := v0exp1.Experimental().Builtin(); builtin != nil {
 		if origin, err := builtin.Origin(); err == nil {
-			builtinURL, _ = url.Parse(origin)
+			builtinURL = origin.URL()
 		} else if runtime.GOOS != "windows" {
 			t.Fatalf("v0exp1.Experimental().Builtin().Origin() = %v", err)
 		}

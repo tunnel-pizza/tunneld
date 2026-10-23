@@ -12,7 +12,10 @@
 // started with its argument into that shell before main runs.
 package v0exp1
 
-import "github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
+import (
+	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
+	v1 "github.com/tunnel-pizza/tunneld/v1"
+)
 
 // Experiments is every experiment, one method each. A method returning nil is
 // that experiment turned off, and every caller checks for it — so switching
@@ -29,7 +32,7 @@ type Builtin interface {
 	// Origin is the built-in shell as an ordinary program origin: this
 	// executable, run with the argument that makes it the shell. Not on
 	// Windows, where it returns ErrBuiltinNoTerminal.
-	Origin() (string, error)
+	Origin() (v1.Origin, error)
 	// Run is the built-in shell itself, interactive on this process's own
 	// terminal until it exits; the result is its exit status.
 	Run() int
@@ -52,7 +55,7 @@ func (ExperimentsImpl) Builtin() Builtin { return BuiltinImpl{} }
 type BuiltinImpl struct{}
 
 // Origin is builtin.Origin.
-func (BuiltinImpl) Origin() (string, error) { return builtin.Origin() }
+func (BuiltinImpl) Origin() (v1.Origin, error) { return builtin.Origin() }
 
 // Run is builtin.Run.
 func (BuiltinImpl) Run() int { return builtin.Run() }

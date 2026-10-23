@@ -60,20 +60,16 @@ func New(opts ...Option) *OriginsImpl {
 	return v1.Apply(o, opts...)
 }
 
-// WithURL adds origins, in order, appending across calls — so a list can be
-// assembled from more than one source without the caller joining them first.
-// A repeat costs nothing: Key deduplicates, and the run exposes what it was
-// given. Each is worked out into a v1.Origin here, once.
-func WithURL(urls ...*url.URL) Option {
-	return func(o *OriginsImpl) {
-		for _, u := range urls {
-			o.origins = append(o.origins, originOf(len(o.origins), u))
-		}
-	}
+// WithOrigins adds origins, in order, appending across calls — so a list can
+// be assembled from more than one source without the caller joining them
+// first. Each is numbered by the place it lands, as Add numbers it. A repeat
+// costs nothing: Key deduplicates, and the run exposes what it was given.
+func WithOrigins(origins ...v1.Origin) Option {
+	return func(o *OriginsImpl) { o.Add(origins...) }
 }
 
-// originOf is u as the origin at index: what it counts as, who it is asked
-// of and what for.
+// NewOrigin is u as an origin, worked out once: what it counts as, who it is
+// asked of and what for. Its Index is 0 until a list numbers it.
 //
 // The reference is the path, and the authority decides how much of it: with
 // a provider named the leading separator belongs to the URL and not to the
@@ -81,8 +77,8 @@ func WithURL(urls ...*url.URL) Option {
 // empty authority is this machine, so the path is a filesystem path and keeps
 // every byte (exec:///usr/bin/top). An address's reference is its host and
 // port, with its path but for a bare "/".
-func originOf(index int, u *url.URL) v1.Origin {
-	o := v1.Origin{Index: index, URI: *u, Scheme: v1.HttpScheme}
+func NewOrigin(u *url.URL) v1.Origin {
+	o := v1.Origin{URI: *u, Scheme: v1.HttpScheme}
 	switch scheme := v1.Scheme(u.Scheme); scheme {
 	case v1.ExecScheme, v1.AttachScheme:
 		o.Scheme = scheme

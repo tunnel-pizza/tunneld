@@ -1142,14 +1142,14 @@ func (b *BuilderImpl) Origins() Origins {
 // program with its arguments, or an address. A word it cannot use is dropped
 // with a warning rather than failing the run.
 func (b *BuilderImpl) parse(log v1.Logger, settled []string) Origins {
-	urls := make([]*url.URL, 0, len(settled))
+	parsed := make([]v1.Origin, 0, len(settled))
 	// One line per origin at the moment it is settled, because how the words
 	// were read is the thing the report cannot show: a program's arguments
 	// hide behind its label, and a word taken as an argument looks exactly
 	// like a word that was never there.
 	add := func(word string, u *url.URL) {
 		log.Info(fmt.Sprintf("%q interpolated into %s", word, u))
-		urls = append(urls, u)
+		parsed = append(parsed, origins.NewOrigin(u))
 	}
 	// The first origin seen carrying a +ws marker, kept to strip a second, and
 	// its index in the list, which is where the marker goes once it is off the
@@ -1303,12 +1303,12 @@ func (b *BuilderImpl) parse(log v1.Logger, settled []string) Origins {
 				// only one place to go.
 				log.Warn("dropping a websockets marker", "origin", s, "reason", "already claimed by "+wsOrigin+", mark only one", "scheme", base)
 			} else {
-				wsOrigin, ws = s, len(urls)
+				wsOrigin, ws = s, len(parsed)
 			}
 		}
 		add(word, u)
 	}
-	return origins.New(origins.WithURL(urls...), origins.WithWebSocket(ws))
+	return origins.New(origins.WithOrigins(parsed...), origins.WithWebSocket(ws))
 }
 
 // auto is what a run exposes when no origin is given anywhere (no
@@ -1381,8 +1381,8 @@ func (b *BuilderImpl) shell(log v1.Logger) Origins {
 		log.Warn("not exposing a shell", "reason", err)
 		return nil
 	}
-	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin)
-	return b.parse(log, []string{origin})
+	log.Info("no origin given and no shell on this machine; exposing the shell built into tunneld", "shell", origin.URL())
+	return origins.New(origins.WithOrigins(origin))
 }
 
 func (b *BuilderImpl) pod(log v1.Logger) Origins {

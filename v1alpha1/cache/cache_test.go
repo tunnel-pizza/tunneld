@@ -54,7 +54,7 @@ func run(t *testing.T, raw ...string) v1.Origins {
 	t.Helper()
 	opts := []origins.Option{origins.WithDir("/work/project")}
 	for _, r := range raw {
-		opts = append(opts, origins.WithURL(mustParse(t, r)))
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(mustParse(t, r))))
 	}
 	return origins.New(opts...)
 }

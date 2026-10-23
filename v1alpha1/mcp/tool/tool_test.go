@@ -111,7 +111,7 @@ func TestTerminal(t *testing.T) {
 	var opts []origins.Option
 	for _, raw := range []string{"http://localhost:3000", "exec:///bin/sh", "attach://dockerd/api"} {
 		u, _ := url.Parse(raw)
-		opts = append(opts, origins.WithURL(u))
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(u)))
 	}
 	type terminal struct {
 		attach.Terminal

@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"src.elv.sh/pkg/prog"
 	elvish "src.elv.sh/pkg/shell"
 )
@@ -51,19 +52,19 @@ func init() {
 // Not on Windows, which has no pseudo-terminal to serve it on — and whose
 // C:\... path has no spelling in an exec:// URL besides — so a run there with
 // no shell of its own is refused for having no origin, as it was before.
-func Origin() (string, error) {
+func Origin() (v1.Origin, error) {
 	if runtime.GOOS == "windows" {
-		return "", ErrNoTerminal
+		return v1.Origin{}, ErrNoTerminal
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("find this executable to run its built-in shell: %w", err)
+		return v1.Origin{}, fmt.Errorf("find this executable to run its built-in shell: %w", err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
 	u := url.URL{Scheme: string(v1.ExecScheme), Path: exe, RawQuery: url.Values{v1.ArgKey: {Arg}}.Encode()}
-	return u.String(), nil
+	return origins.NewOrigin(&u), nil
 }
 
 // Run is the built-in shell: Elvish (https://elv.sh), interactive on this

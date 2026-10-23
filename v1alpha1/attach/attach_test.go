@@ -1678,19 +1678,20 @@ func TestDoneReachesTheBinder(t *testing.T) {
 // they were typed, before any of them is stood up behind a loopback address.
 func shown(t *testing.T, raw ...string) v1.Origins {
 	t.Helper()
-	return origins.New(origins.WithURL(mustURLs(t, raw...)...))
+	return origins.New(origins.WithOrigins(mustOrigins(t, raw...)...))
 }
 
-// mustURLs parses raw as URLs, failing the test on the first one that is not.
-func mustURLs(t *testing.T, raw ...string) []*url.URL {
+// mustOrigins parses raw as origins, failing the test on the first one that
+// is not a URL.
+func mustOrigins(t *testing.T, raw ...string) []v1.Origin {
 	t.Helper()
-	got := make([]*url.URL, 0, len(raw))
+	got := make([]v1.Origin, 0, len(raw))
 	for _, s := range raw {
 		u, err := url.Parse(s)
 		if err != nil {
 			t.Fatalf("url.Parse(%q): %v", s, err)
 		}
-		got = append(got, u)
+		got = append(got, origins.NewOrigin(u))
 	}
 	return got
 }

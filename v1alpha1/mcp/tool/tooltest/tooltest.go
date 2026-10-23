@@ -92,7 +92,7 @@ func Origins(t *testing.T, raws ...string) v1.Origins {
 		if err != nil {
 			t.Fatal(err)
 		}
-		opts = append(opts, origins.WithURL(u))
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(u)))
 	}
 	return origins.New(opts...)
 }

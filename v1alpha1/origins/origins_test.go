@@ -42,10 +42,10 @@ func TestKeyIsTheSetAndWhereItRan(t *testing.T) {
 		name string
 		opts []Option
 	}{
-		{"as given", []Option{WithDir(dir), WithURL(a, b)}},
-		{"reversed", []Option{WithDir(dir), WithURL(b, a)}},
-		{"repeated", []Option{WithDir(dir), WithURL(a, b, a)}},
-		{"appended across calls", []Option{WithDir(dir), WithURL(a), WithURL(b)}},
+		{"as given", []Option{WithDir(dir), WithOrigins(NewOrigin(a), NewOrigin(b))}},
+		{"reversed", []Option{WithDir(dir), WithOrigins(NewOrigin(b), NewOrigin(a))}},
+		{"repeated", []Option{WithDir(dir), WithOrigins(NewOrigin(a), NewOrigin(b), NewOrigin(a))}},
+		{"appended across calls", []Option{WithDir(dir), WithOrigins(NewOrigin(a)), WithOrigins(NewOrigin(b))}},
 	}
 	want := New(same[0].opts...).Key()
 	for _, tc := range same[1:] {
@@ -58,9 +58,9 @@ func TestKeyIsTheSetAndWhereItRan(t *testing.T) {
 		name string
 		opts []Option
 	}{
-		{"another directory", []Option{WithDir("/work/other"), WithURL(a, b)}},
-		{"one origin fewer", []Option{WithDir(dir), WithURL(a)}},
-		{"another origin", []Option{WithDir(dir), WithURL(a, must(t, "http://localhost:3001"))}},
+		{"another directory", []Option{WithDir("/work/other"), WithOrigins(NewOrigin(a), NewOrigin(b))}},
+		{"one origin fewer", []Option{WithDir(dir), WithOrigins(NewOrigin(a))}},
+		{"another origin", []Option{WithDir(dir), WithOrigins(NewOrigin(a), NewOrigin(must(t, "http://localhost:3001")))}},
 		{"no origins at all", []Option{WithDir(dir)}},
 	}
 	for _, tc := range differ {
@@ -81,11 +81,11 @@ func TestKeyIsTheSetAndWhereItRan(t *testing.T) {
 func TestNewSeedsTheWorkingDirectory(t *testing.T) {
 	u := must(t, "http://localhost:3000")
 
-	seeded := New(WithURL(u)).Key()
-	if elsewhere := New(WithDir("/somewhere/else"), WithURL(u)).Key(); seeded == elsewhere {
+	seeded := New(WithOrigins(NewOrigin(u))).Key()
+	if elsewhere := New(WithDir("/somewhere/else"), WithOrigins(NewOrigin(u))).Key(); seeded == elsewhere {
 		t.Errorf("Key() = %q from both the working directory and /somewhere/else", seeded)
 	}
-	if again := New(WithURL(u)).Key(); again != seeded {
+	if again := New(WithOrigins(NewOrigin(u))).Key(); again != seeded {
 		t.Errorf("Key() = %q then %q for the same run", seeded, again)
 	}
 }
@@ -95,7 +95,7 @@ func TestNewSeedsTheWorkingDirectory(t *testing.T) {
 // parameters as a side effect of asking what they are.
 func TestAllCannotBeUsedToReorderTheRun(t *testing.T) {
 	a, b := must(t, "http://localhost:3000"), must(t, "http://localhost:3001")
-	o := New(WithURL(a, b))
+	o := New(WithOrigins(NewOrigin(a), NewOrigin(b)))
 
 	got := o.All()
 	got[0], got[1] = got[1], got[0]
@@ -115,7 +115,7 @@ func TestAllCannotBeUsedToReorderTheRun(t *testing.T) {
 // same as an http origin's query, which was never set aside.
 func TestKeyIncludesAProgramsArguments(t *testing.T) {
 	const dir = "/work/project"
-	key := func(raw string) string { return New(WithDir(dir), WithURL(must(t, raw))).Key() }
+	key := func(raw string) string { return New(WithDir(dir), WithOrigins(NewOrigin(must(t, raw)))).Key() }
 
 	bare := key("exec:///usr/bin/claude")
 	resume := key("exec:///usr/bin/claude?arg=--resume")
@@ -151,12 +151,12 @@ func TestWebSocket(t *testing.T) {
 		want   int
 		wantOK bool
 	}{
-		{"none named", []Option{WithURL(a, b)}, -1, false},
-		{"the second", []Option{WithURL(a, b), WithWebSocket(1)}, 1, true},
-		{"the first", []Option{WithURL(a, b), WithWebSocket(0)}, 0, true},
-		{"a later call replaces", []Option{WithURL(a, b), WithWebSocket(0), WithWebSocket(1)}, 1, true},
-		{"past the end", []Option{WithURL(a), WithWebSocket(1)}, -1, false},
-		{"negative", []Option{WithURL(a, b), WithWebSocket(-3)}, -1, false},
+		{"none named", []Option{WithOrigins(NewOrigin(a), NewOrigin(b))}, -1, false},
+		{"the second", []Option{WithOrigins(NewOrigin(a), NewOrigin(b)), WithWebSocket(1)}, 1, true},
+		{"the first", []Option{WithOrigins(NewOrigin(a), NewOrigin(b)), WithWebSocket(0)}, 0, true},
+		{"a later call replaces", []Option{WithOrigins(NewOrigin(a), NewOrigin(b)), WithWebSocket(0), WithWebSocket(1)}, 1, true},
+		{"past the end", []Option{WithOrigins(NewOrigin(a)), WithWebSocket(1)}, -1, false},
+		{"negative", []Option{WithOrigins(NewOrigin(a), NewOrigin(b)), WithWebSocket(-3)}, -1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := New(tc.opts...).WebSocket()
@@ -166,8 +166,8 @@ func TestWebSocket(t *testing.T) {
 		})
 	}
 
-	plain := New(WithDir("/work"), WithURL(a, b)).Key()
-	if marked := New(WithDir("/work"), WithURL(a, b), WithWebSocket(1)).Key(); marked != plain {
+	plain := New(WithDir("/work"), WithOrigins(NewOrigin(a), NewOrigin(b))).Key()
+	if marked := New(WithDir("/work"), WithOrigins(NewOrigin(a), NewOrigin(b)), WithWebSocket(1)).Key(); marked != plain {
 		t.Errorf("Key() = %q marked and %q not, want one tunnel", marked, plain)
 	}
 }
@@ -176,7 +176,7 @@ func TestWebSocket(t *testing.T) {
 // to its session: two sessions in one directory are two tunnels, the same
 // session again is the same one, and none is the key a run outside one gets.
 func TestKeyIsScopedToTheSession(t *testing.T) {
-	o := New(WithDir("/work"), WithURL(must(t, "http://localhost:3000")))
+	o := New(WithDir("/work"), WithOrigins(NewOrigin(must(t, "http://localhost:3000"))))
 	outside := o.Key()
 
 	for _, env := range sessionEnv {
@@ -224,7 +224,7 @@ func TestKeyIsPinned(t *testing.T) {
 	} {
 		var opts []Option
 		for _, raw := range tc.urls {
-			opts = append(opts, WithURL(parse(raw)))
+			opts = append(opts, WithOrigins(NewOrigin(parse(raw))))
 		}
 		if got := New(append(opts, WithDir("/srv/project"))...).Key(); got != tc.want {
 			t.Errorf("Key(%v) = %q, want %q", tc.urls, got, tc.want)
@@ -253,7 +253,7 @@ func TestOriginsAreParsedOnce(t *testing.T) {
 	}
 	var opts []Option
 	for _, raw := range raws {
-		opts = append(opts, WithURL(parse(raw)))
+		opts = append(opts, WithOrigins(NewOrigin(parse(raw))))
 	}
 	o := New(opts...)
 	want := []v1.Origin{
@@ -290,8 +290,8 @@ func TestFrom(t *testing.T) {
 		}
 		return u
 	}
-	two := New(WithURL(parse("http://localhost:3000"), parse("exec:///bin/zsh")))
-	one := New(WithURL(parse("exec:///bin/zsh")))
+	two := New(WithOrigins(NewOrigin(parse("http://localhost:3000")), NewOrigin(parse("exec:///bin/zsh"))))
+	one := New(WithOrigins(NewOrigin(parse("exec:///bin/zsh"))))
 	for _, tc := range []struct {
 		name   string
 		of     *OriginsImpl
@@ -324,8 +324,8 @@ func TestFrom(t *testing.T) {
 // TestAdd pins that what Add appends lands after what is there, each renumbered
 // to its place, and that the caller's copy is left as it was.
 func TestAdd(t *testing.T) {
-	o := New(WithURL(must(t, "http://localhost:3000")))
-	shell := New(WithURL(must(t, "exec:///bin/sh"))).All()
+	o := New(WithOrigins(NewOrigin(must(t, "http://localhost:3000"))))
+	shell := New(WithOrigins(NewOrigin(must(t, "exec:///bin/sh")))).All()
 	o.Add(shell...)
 	all := o.All()
 	if len(all) != 2 || all[1].URI.String() != "exec:///bin/sh" || all[1].Index != 1 || all[1].Scheme != v1.ExecScheme {

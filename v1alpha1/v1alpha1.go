@@ -28,6 +28,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/identity/github"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
@@ -43,6 +44,9 @@ type Option = v1.Option[*BuilderImpl]
 // effect and nothing to replace, so it carries no With* option and takes no
 // seat in the list below.
 type Origins = v1.Origins
+
+// NewOrigin is u as an origin; see origins.NewOrigin.
+var NewOrigin = origins.NewOrigin
 
 // The contracts Command's RunE composes. Each is something with an external
 // effect — the edge, the disk, the daemon, the browser, an HTTP probe —

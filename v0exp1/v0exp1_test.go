@@ -2,6 +2,7 @@ package v0exp1
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/tunnel-pizza/tunneld/v0exp1/internal/shell/builtin"
@@ -19,7 +20,7 @@ func TestBuiltin(t *testing.T) {
 	}
 	got, gotErr := b.Origin()
 	want, wantErr := builtin.Origin()
-	if got != want || !errors.Is(gotErr, wantErr) {
-		t.Errorf("Experimental().Builtin().Origin() = %q, %v; want %q, %v", got, gotErr, want, wantErr)
+	if !reflect.DeepEqual(got, want) || !errors.Is(gotErr, wantErr) {
+		t.Errorf("Experimental().Builtin().Origin() = %v, %v; want %v, %v", got, gotErr, want, wantErr)
 	}
 }

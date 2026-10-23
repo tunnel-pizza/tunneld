@@ -49,15 +49,15 @@ func echo(t *testing.T, name string) *httptest.Server {
 // listOf is the servers as an origin list, the way the binder hands one over.
 func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 	t.Helper()
-	urls := make([]*url.URL, len(srvs))
+	listed := make([]v1.Origin, len(srvs))
 	for i, srv := range srvs {
 		u, err := url.Parse(srv.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
-		urls[i] = u
+		listed[i] = origins.NewOrigin(u)
 	}
-	return origins.New(origins.WithURL(urls...))
+	return origins.New(origins.WithOrigins(listed...))
 }
 
 // route stands the router up over list for the life of the test and returns
@@ -890,7 +890,7 @@ func TestRouteAnswersForAnOriginNothingListensOn(t *testing.T) {
 			}
 		}()
 		rude := &url.URL{Scheme: "http", Host: l.Addr().String()}
-		base := route(t, origins.New(origins.WithURL(rude)), -1, nil, discard)
+		base := route(t, origins.New(origins.WithOrigins(origins.NewOrigin(rude))), -1, nil, discard)
 		req, _ := http.NewRequest("GET", base+"/", nil)
 		req.Header.Set("Accept", browser)
 		resp, body := get(t, http.DefaultClient, req)
@@ -912,7 +912,7 @@ func TestUnanswered(t *testing.T) {
 	gone.Close()
 	alsoGone.Close()
 	served := &url.URL{Scheme: "attach", Host: "dockerd", Path: "/api"}
-	list = origins.New(origins.WithURL(append(urisOf(list), served)...))
+	list = origins.New(origins.WithOrigins(append(list.All(), origins.NewOrigin(served))...))
 
 	if got := New().Unanswered(t.Context(), list); !slices.Equal(got, []int{1, 3}) {
 		t.Errorf("Unanswered() = %v, want [1 3]: the two with nothing listening", got)
