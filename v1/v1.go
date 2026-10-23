@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 
 	"github.com/spf13/cobra"
 	"github.com/tunnel-pizza/tunneld/v1/origin"
@@ -403,6 +404,17 @@ type Origins interface {
 	// were typed does not make a second tunnel, deduplicated so a repeat does
 	// not either. Stable across runs, and safe as a filename.
 	Key() string
+	// WebSocket is the index of the origin a WebSocket handshake goes to when
+	// nothing in it routes, the one an operator marked +ws, and false when
+	// none is marked.
+	WebSocket() (int, bool)
+	// Serve says the origin at i is served at at: a loopback address tunneld
+	// stands up in its place, for a program or a container, which the tunnel
+	// dials instead of its URI. An i outside the list is ignored.
+	Serve(i int, at *url.URL)
+	// Dialable is the address the tunnel dials for each origin, in order:
+	// where Serve said it is served, else its URI. Each a copy.
+	Dialable() []*url.URL
 }
 
 // Origin, Scheme and Provider are the origin package's, aliased so a caller

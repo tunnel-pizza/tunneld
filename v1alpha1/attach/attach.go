@@ -13,7 +13,7 @@
 // wire format Docker's attach protocol defined, which every provider here
 // speaks: the provider arrives as a Targets that opens Target values,
 // CopyOutput is the one place a target's stream is read, and this package
-// hosts the binder that resolves an origin through it. index.html travels
+// hosts the attacher that resolves an origin through it. index.html travels
 // with the code: go:embed cannot reach outside its own package directory.
 package attach
 
@@ -43,7 +43,6 @@ import (
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 )
 
 // pageHTML is the terminal page. Embedded rather than fetched, so a tunnel
@@ -165,7 +164,7 @@ type Noticer interface {
 }
 
 // Targets opens an origin's reference as a Target. It is the half of the
-// provider contract the binder depends on — resolving what the operator
+// provider contract the attacher depends on — resolving what the operator
 // typed — where Target is the half Server depends on. One provider
 // implements both, which is why both live here.
 //
@@ -177,7 +176,7 @@ type Targets interface {
 	// origin — and Provider is the authority beside it, which is where it does
 	// it. Empty is this machine, which only exec:// has.
 	//
-	// The pair is the whole of how the binder chooses, and it is a pair rather
+	// The pair is the whole of how the attacher chooses, and it is a pair rather
 	// than one word because the two are separate questions: attach://dockerd
 	// and a future exec://dockerd are the same daemon asked for different
 	// things, and exec:// and exec://dockerd are the same thing asked of
@@ -239,23 +238,31 @@ func CopyOutput(out, errw io.Writer, r io.Reader, tty bool) error {
 	return err
 }
 
-// Option configures a BinderImpl at construction.
-type Option = v1.Option[*BinderImpl]
+// Attacher stands a loopback server in for each origin that names something to
+// serve rather than an address to reach — a container, a local program — and
+// tells origins where with Serve, so their Dialable is what the tunnel dials.
+// What it returns shuts every server the attach started.
+type Attacher interface {
+	Attach(ctx context.Context, origins v1.Origins, log v1.Logger) (attached Bound, err error)
+}
 
-// BinderImpl turns the origins the operator typed into the origins libtunnel
-// can proxy to.
+// Option configures an AttacherImpl at construction.
+type Option = v1.Option[*AttacherImpl]
+
+// AttacherImpl serves the origins the operator typed that libtunnel cannot
+// proxy to itself.
 //
 // An http or https origin passes through untouched; an origin whose scheme a
 // provider claims — attach://dockerd for a container, exec:// for a local program —
-// is served here, by a loopback attach server that takes its place in the
-// list. The two lists share a length and an order, which is the whole point:
-// index n still means origin n for the bare ?n routing parameter, for the
-// addresses reported, for the map printed and for the multiview tiles, so a
-// container is an origin like any other and nothing downstream learns a second
-// shape.
-type BinderImpl struct {
+// is served here, by a loopback attach server, and the origins are told its
+// address with Serve. The origin itself is unchanged, which is the whole
+// point: index n still means origin n for the bare ?n routing parameter, for
+// the addresses reported, for the map printed and for the multiview tiles, so
+// a container is an origin like any other and nothing downstream learns a
+// second shape.
+type AttacherImpl struct {
 	// targets is the providers by the scheme each one answers, which is how
-	// Bind picks between them. A map rather than a list because the lookup is
+	// Attach picks between them. A map rather than a list because the lookup is
 	// the dispatch, and because two providers claiming one scheme is a wiring
 	// mistake that should collapse rather than depend on order.
 	targets map[string]Targets
@@ -263,15 +270,15 @@ type BinderImpl struct {
 	logs    logs.Log
 	motd    motd.Motd
 	sinks   []Sink
-	// hold is whether a program a Bind starts waits for Bound.Start.
+	// hold is whether a program an Attach starts waits for Bound.Start.
 	hold bool
 }
 
-// New returns a BinderImpl, configured by opts. It carries no Targets until
+// New returns a AttacherImpl, configured by opts. It carries no Targets until
 // WithTargets sets some; an origin whose scheme none of them answers fails at
-// Bind rather than at construction.
-func New(opts ...Option) *BinderImpl {
-	return v1.Apply(&BinderImpl{}, opts...)
+// Attach rather than at construction.
+func New(opts ...Option) *AttacherImpl {
+	return v1.Apply(&AttacherImpl{}, opts...)
 }
 
 // WithTargets sets what turns an origin's reference into something attach can
@@ -282,7 +289,7 @@ func New(opts ...Option) *BinderImpl {
 // to keep in step with the values. Repeating the option appends, and a later
 // provider replaces an earlier one that answered the same pair.
 func WithTargets(targets ...Targets) Option {
-	return func(b *BinderImpl) {
+	return func(b *AttacherImpl) {
 		if b.targets == nil {
 			b.targets = make(map[string]Targets, len(targets))
 		}
@@ -292,19 +299,19 @@ func WithTargets(targets ...Targets) Option {
 	}
 }
 
-// WithLogs sets where the frames this binder serves read tunneld's own recent
+// WithLogs sets where the frames this attacher serves read tunneld's own recent
 // log lines from. Unset, a frame has none to show and says so.
 func WithLogs(logs logs.Log) Option {
-	return func(b *BinderImpl) { b.logs = logs }
+	return func(b *AttacherImpl) { b.logs = logs }
 }
 
-// WithMotd sets where the frames this binder serves read the provider's
+// WithMotd sets where the frames this attacher serves read the provider's
 // messages of the day from. Unset, a frame has none to show and shows none.
 func WithMotd(motd motd.Motd) Option {
-	return func(b *BinderImpl) { b.motd = motd }
+	return func(b *AttacherImpl) { b.motd = motd }
 }
 
-// WithBanner sets the build line every terminal this binder serves shows along
+// WithBanner sets the build line every terminal this attacher serves shows along
 // the bottom of its frame.
 //
 // Passed in rather than worked out here. It names the command, which an
@@ -317,27 +324,27 @@ func WithMotd(motd motd.Motd) Option {
 // frame's own address does; the default marks tunneld's name in it as a link
 // to tunnel.pizza.
 func WithBanner(banner string) Option {
-	return func(b *BinderImpl) { b.banner = banner }
+	return func(b *AttacherImpl) { b.banner = banner }
 }
 
-// WithSinks adds sinks told what every terminal this binder serves says about
+// WithSinks adds sinks told what every terminal this attacher serves says about
 // itself. They run after the built-in sinks, in the order given, and the same
-// set reaches every session the binder starts.
+// set reaches every session the attacher starts.
 func WithSinks(sinks ...Sink) Option {
-	return func(b *BinderImpl) { b.sinks = append(b.sinks, sinks...) }
+	return func(b *AttacherImpl) { b.sinks = append(b.sinks, sinks...) }
 }
 
-// WithHold has every program a Bind starts (an exec:// origin) wait for
-// Bound.Start rather than start at Bind, so that it starts once the run
-// knows the tunnel's origin. A container is attached at Bind either way.
+// WithHold has every program an Attach starts (an exec:// origin) wait for
+// Bound.Start rather than start at Attach, so that it starts once the run
+// knows the tunnel's origin. A container is attached at Attach either way.
 func WithHold() Option {
-	return func(b *BinderImpl) { b.hold = true }
+	return func(b *AttacherImpl) { b.hold = true }
 }
 
-// answered is every verb://provider pair this binder has a provider for, in
+// answered is every verb://provider pair this attacher has a provider for, in
 // order, for the message a caller gets when their origin names none of them.
 // Sorted, so the list reads the same twice: the registry is a map.
-func (b *BinderImpl) answered() []string {
+func (b *AttacherImpl) answered() []string {
 	keys := make([]string, 0, len(b.targets))
 	for k := range b.targets {
 		keys = append(keys, k)
@@ -346,16 +353,15 @@ func (b *BinderImpl) answered() []string {
 	return keys
 }
 
-// Bind implements Binder.
+// Attach implements Attacher.
 //
 // A failure unwinds everything already bound. The command is about to return
 // an error, and a listener left behind would outlive it inside an embedding
 // program.
-func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logger) (v1.Origins, Bound, error) {
-	dialable := make([]v1.Origin, 0, shown.Len())
+func (b *AttacherImpl) Attach(ctx context.Context, origins v1.Origins, log *slog.Logger) (Bound, error) {
 	servers := bound{exits: &exits{ch: make(chan []int, 1)}}
 	asked := newAsk()
-	for _, origin := range shown.All() {
+	for _, origin := range origins.All() {
 		// Anything no provider claims is an address the tunnel dials itself.
 		// http and https are the whole of that today; the origin parser
 		// refuses every other scheme, so this is a pass-through rather than a
@@ -366,10 +372,9 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		if !served {
 			if u.Scheme != "http" && u.Scheme != "https" {
 				_ = servers.Close()
-				return nil, nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
+				return nil, fmt.Errorf("attach: nothing answers %s://%s, only %s",
 					u.Scheme, u.Host, strings.Join(b.answered(), ", "))
 			}
-			dialable = append(dialable, origin)
 			continue
 		}
 
@@ -378,13 +383,13 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		target, err := provider.Open(ctx, origin.Ref, origin.Args, log)
 		if err != nil {
 			_ = servers.Close()
-			return nil, nil, err
+			return nil, err
 		}
 		server, err := serve(ctx, target, b.banner, b.logs, b.motd, b.sinks, asked, b.hold, log)
 		if err != nil {
 			_ = target.Close()
 			_ = servers.Close()
-			return nil, nil, err
+			return nil, err
 		}
 		servers.origins = append(servers.origins, boundOrigin{at: origin.Index, srv: server})
 		servers.exits.mu.Lock()
@@ -394,9 +399,7 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 		// Only where it is dialed changes: a token's scope is held against
 		// what the origin is, and a program served over loopback http is
 		// still a program.
-		at := origin
-		at.URI = *server.URL()
-		dialable = append(dialable, at)
+		origins.Serve(origin.Index, server.URL())
 		log.Info("serving a reference as an origin", "reference", u.Host+u.Path, "scheme", u.Scheme, "origin", server.URL())
 	}
 	// A closer that can be shown on a console says so by carrying the method,
@@ -412,12 +415,10 @@ func (b *BinderImpl) Bind(ctx context.Context, shown v1.Origins, log *slog.Logge
 	servers.exits.mu.Unlock()
 	servers.exits.ended()
 
-	reached := origins.New()
-	reached.Add(dialable...)
-	if len(servers.origins) == 1 && shown.Len() == 1 {
-		return reached, sole{servers}, nil
+	if len(servers.origins) == 1 && origins.Len() == 1 {
+		return sole{servers}, nil
 	}
-	return reached, servers, nil
+	return servers, nil
 }
 
 // sole is a bound list of exactly one, from a run of exactly one origin, which
@@ -435,7 +436,7 @@ func (s sole) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 	return s.bound.show(ctx, in, out)
 }
 
-// Bound is what a Bind call hands back: the servers it started, and the
+// Bound is what an Attach call hands back: the servers it started, and the
 // three things every one of them can do — be closed, be told the public
 // addresses, and say when a viewer has asked the run to end.
 //
@@ -467,7 +468,7 @@ type Bound interface {
 	Terminal(index int) (Terminal, bool)
 }
 
-// bound is every attach server a Bind call started, with the place in the
+// bound is every attach server an Attach call started, with the place in the
 // origin list each of them took.
 //
 // The index is kept because that is the only thing that connects a server to
@@ -479,13 +480,13 @@ type bound struct {
 	exits   *exits
 }
 
-// exits is where the programs one Bind started report ending, and where the
+// exits is where the programs one Attach started report ending, and where the
 // run learns that all of them have.
 type exits struct {
 	mu      sync.Mutex
 	servers []*Server
 	ch      chan []int
-	// bound is whether Bind has every server: a program that ends before
+	// bound is whether Attach has every server: a program that ends before
 	// then is checked once it has.
 	bound bool
 }
@@ -529,7 +530,7 @@ func (b bound) Exited() <-chan []int {
 
 // show puts the one origin bound here on the given streams.
 //
-// Unexported, and reached only through the sole wrapper Bind returns
+// Unexported, and reached only through the sole wrapper Attach returns
 // when there is exactly one: a bound list of several has nothing to draw, and
 // the length check that used to live here was a guard against a caller that
 // can no longer exist.
@@ -542,7 +543,7 @@ func (b bound) show(ctx context.Context, in io.Reader, out io.Writer) error {
 
 // Done closes when a viewer of any of these origins asks the run to end. One
 // channel for all of them, because what they are asking for is the process,
-// which there is only one of — and literally one: every Server a Bind starts
+// which there is only one of — and literally one: every Server an Attach starts
 // shares the same ask, so this is that channel and not a relay of several.
 //
 // Named for what a caller does with it rather than what fills it, so the
@@ -612,7 +613,7 @@ func (b bound) Start() {
 // Announce gives each server the public address it answers on, taken from
 // public by the index the origin had.
 //
-// It is what the root's Announce reaches. Declared on Bound, which the Binder
+// It is what the root's Announce reaches. Declared on Bound, which the Attacher
 // contract names, so a caller has it rather than having to ask for it: every
 // bound list can be told its addresses, and an interface that says so is
 // better than one a caller discovers by type assertion and a happy guess.
@@ -644,12 +645,12 @@ type Server struct {
 	// asked closes when a viewer asks the whole run to end. Not this origin's
 	// own shutdown — that is cancel — but the process's: the frame offers it,
 	// and what acts on it is the command, which is watching through Done.
-	// Shared with every other Server the same Bind started; see ask.
+	// Shared with every other Server the same Attach started; see ask.
 	asked *ask
 }
 
 // ask is one channel for the process, closed the first time a viewer of any
-// served origin asks the run to end. Every Server a Bind starts is handed the
+// served origin asks the run to end. Every Server an Attach starts is handed the
 // same one, so what a Bound's Done returns is the ask itself: closed on the
 // asking goroutine, and already closed by the time the frame that asked has
 // returned its terminal. bound.Done says why that timing is load-bearing.
@@ -671,7 +672,7 @@ func (s *Server) Show(ctx context.Context, in io.Reader, out io.Writer) error {
 }
 
 // Done closes when a viewer has asked the run to end — of this origin or of
-// any other the same Bind started, since the ask is shared. The channel is
+// any other the same Attach started, since the ask is shared. The channel is
 // never sent on and closes at most once, so a caller may select on it forever.
 func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 
@@ -688,7 +689,7 @@ func (s *Server) Done() <-chan struct{} { return s.asked.ch }
 // covers that half, on the one route where it matters.
 //
 // asked is where a viewer's request to end the run lands, shared by every
-// Server one Bind starts so that a Bound has one channel to offer; a caller
+// Server one Attach starts so that a Bound has one channel to offer; a caller
 // starting a Server on its own passes newAsk().
 //
 // The Server takes ownership of target: Close closes both.
@@ -733,7 +734,7 @@ func serve(ctx context.Context, target Target, banner string, logs logs.Log, mot
 	// connections) reaches a live session. Without this, a Close on that path
 	// leaves the session's goroutines and its daemon connection running until
 	// the websocket idle timeout unwinds them. The binary exits and never
-	// notices; an embedding program, which is the case Bind says it
+	// notices; an embedding program, which is the case Attach says it
 	// cares about, keeps running.
 	sctx, cancel := context.WithCancel(ctx)
 	s := &Server{

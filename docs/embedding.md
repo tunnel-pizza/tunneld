@@ -97,7 +97,7 @@ There are no fluent setters: every knob is an option passed to `New`, and
 `v1.Builder` is `Command`, `Origins`, `Name` and `Run`. An embedder on the old
 shape changes `New().WithURL(u).Build()` to `New(WithOrigin(u)).Command()`.
 
-`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithBinder`,
+`BuilderImpl` also takes `WithCache`, `WithDisplay`, `WithAttacher`,
 `WithRouter`, `WithConsole`, `WithIdentity`, `WithMotd`, `WithAuth` and `WithRun`, which swap the collaborators the
 tunnel run composes, and `WithTunnelFactory`, which replaces `libtunnel.From`
 as how a spec becomes a tunnel — `WithCache(nil)` being how an embedder turns
@@ -112,8 +112,8 @@ the default, a run is neither — a program that mounts tunneld under its own
 name is a process `-k` would end whole, so it stays out of reach unless it
 passes `WithPid(pid.New())`, which is what the tunneld binary does.
 The motd board and the log ring are built once in `New` and shared through
-their own options — the board into the display and the binder, the ring into
-the console and the binder — so an embedder replacing one of those passes the
+their own options — the board into the display and the attacher, the ring into
+the console and the attacher — so an embedder replacing one of those passes the
 same instance.
 
 What `v1` declares — the contract it satisfies, the option type every `New`

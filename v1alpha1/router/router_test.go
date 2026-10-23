@@ -46,7 +46,7 @@ func echo(t *testing.T, name string) *httptest.Server {
 	return srv
 }
 
-// listOf is the servers as an origin list, the way the binder hands one over.
+// listOf is the servers as an origin list, the way the attacher hands one over.
 func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 	t.Helper()
 	listed := make([]v1.Origin, len(srvs))
@@ -66,7 +66,8 @@ func listOf(t *testing.T, srvs ...*httptest.Server) v1.Origins {
 func route(t *testing.T, list v1.Origins, ws int, front func(http.Handler) http.Handler, log *slog.Logger) string {
 	t.Helper()
 	r := New()
-	u, err := r.Route(t.Context(), WithOrigins(list), WithWebSockets(ws), WithWrap(front), WithLog(log))
+	marked := origins.New(origins.WithOrigins(list.All()...), origins.WithWebSocket(ws))
+	u, err := r.Route(t.Context(), WithOrigins(marked), WithWrap(front), WithLog(log))
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -147,9 +148,9 @@ func TestRouteNothingStillServes(t *testing.T) {
 // New was given, then what Route is given for that route alone — on a copy,
 // so the next route starts from the router's own again.
 func TestOptions(t *testing.T) {
-	if r := New(); r.Origins() != nil || r.WebSockets() != -1 || r.Wrap() != nil || r.mux == nil || r.log != discard {
-		t.Errorf("New() = origins %v, ws %d, handler set %v, mux made %v, discarding %v; want none, -1, false, true, true",
-			r.Origins(), r.WebSockets(), r.Wrap() != nil, r.mux != nil, r.log == discard)
+	if r := New(); r.Origins() != nil || r.Wrap() != nil || r.mux == nil || r.log != discard {
+		t.Errorf("New() = origins %v, handler set %v, mux made %v, discarding %v; want none, false, true, true",
+			r.Origins(), r.Wrap() != nil, r.mux != nil, r.log == discard)
 	}
 	if r := New(WithLog(nil)); r.log != discard {
 		t.Error("WithLog(nil) replaced the logger, want the one it had kept")
@@ -167,7 +168,7 @@ func TestOptions(t *testing.T) {
 		return body
 	}
 	a, b := listOf(t, echo(t, "A")), listOf(t, echo(t, "B"))
-	r := New(WithOrigins(a), WithWebSockets(0))
+	r := New(WithOrigins(a))
 	t.Cleanup(r.Cancel)
 	if got := reaches(t, r); got != "A|" {
 		t.Errorf("Route() with New's origins reaches %q, want A", got)
@@ -175,7 +176,7 @@ func TestOptions(t *testing.T) {
 	if got := reaches(t, r, WithOrigins(b)); got != "B|" {
 		t.Errorf("Route(WithOrigins(b)) reaches %q, want B", got)
 	}
-	if r.Origins() != a || r.WebSockets() != 0 {
+	if r.Origins() != a {
 		t.Error("a route's options changed the router's own, want them applied to that route alone")
 	}
 	if got := reaches(t, r); got != "A|" {
@@ -1848,16 +1849,6 @@ func uriAt(origins v1.Origins, i int) *url.URL {
 	return &u
 }
 
-// urisOf is every origin's URI, in order.
-func urisOf(origins v1.Origins) []*url.URL {
-	all := origins.All()
-	out := make([]*url.URL, len(all))
-	for i := range all {
-		out[i] = &all[i].URI
-	}
-	return out
-}
-
 // TestProxyHoldsTheScope pins a request a token let in to the scope of the
 // scheme of the origin it routes to, refused naming that scope; a request
 // with no token's access behind it, a cookie's or the secret's, goes anywhere.
@@ -1869,8 +1860,16 @@ func TestProxyHoldsTheScope(t *testing.T) {
 		return u
 	}
 	app, term := serve("app"), serve("term")
-	both := proxy([]*url.URL{app, term}, []v1.Scheme{v1.HttpScheme, v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
-	alone := proxy([]*url.URL{term}, []v1.Scheme{v1.ExecScheme}, -1, slog.New(slog.DiscardHandler))
+	shell, _ := url.Parse("exec:///bin/sh")
+	execAt := func(i int) v1.Origin {
+		return v1.Origin{Index: i, URI: *shell, Scheme: v1.ExecScheme, Ref: shell.Path}
+	}
+	listed := origins.New(origins.WithOrigins(origins.NewOrigin(app), execAt(1)))
+	listed.Serve(1, term)
+	lone := origins.New(origins.WithOrigins(execAt(0)))
+	lone.Serve(0, term)
+	both := proxy(listed, slog.New(slog.DiscardHandler))
+	alone := proxy(lone, slog.New(slog.DiscardHandler))
 	for _, tc := range []struct {
 		h       http.Handler
 		target  string

@@ -28,7 +28,7 @@ import (
 // choosing. It returns when that viewer leaves or the run ends, and leaves the
 // console as it found it.
 //
-// Discovered by type assertion on the closer a Binder returns, like the other
+// Discovered by type assertion on the closer an Attacher returns, like the other
 // optional interfaces beside it, and declared here rather than there because
 // this package is the only thing that shows one.
 type Terminal interface {
@@ -66,7 +66,7 @@ type Screen interface {
 // For is the whole of it, and it answers rather than asks: given the bound
 // origins and the command's own streams, it says nil when there is no screen —
 // nothing to show, or nowhere to show it — and one ready to be handed over
-// otherwise. Nothing out here counts origins or tests a stream — the binder
+// otherwise. Nothing out here counts origins or tests a stream — the attacher
 // already decided the first by carrying Show, and the second is a question
 // about streams that the thing drawing on them should be the one to ask.
 //
@@ -144,7 +144,7 @@ func WithHint(hint string) Option {
 func (c *ConsoleImpl) For(origins attach.Bound, streams Streams) Screen {
 	in, out, hintTo := streams.InOrStdin(), streams.OutOrStdout(), streams.ErrOrStderr()
 	// Two questions, both answered by asking rather than deriving. Whether
-	// there is a terminal to show is the binder's — a closer carries Show
+	// there is a terminal to show is the attacher's — a closer carries Show
 	// only when it has exactly one served origin, so the assertion is the
 	// whole check. Whether there is a console to show it on is these streams'
 	// own, and they are the command's rather than the process's, since an

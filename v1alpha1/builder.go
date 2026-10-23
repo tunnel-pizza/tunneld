@@ -210,7 +210,7 @@ func (b *BuilderImpl) Command() *cobra.Command {
 			missing bool
 		}{
 			{"browser", b.display == nil},
-			{"binder", b.binder == nil},
+			{"attacher", b.attacher == nil},
 			{"router", b.router == nil},
 			{"motd", b.motd == nil},
 			{"auth", b.auth == nil},
@@ -511,9 +511,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	b.runCache = spec
 
 	// Every program the run starts learns where its spec file is, before
-	// Bind, which is where a program not held for Start starts. Unset when there is
-	// no file, so one inherited from a run this one was started under is not
-	// passed on as this run's.
+	// Attach, which is where a program not held for Start starts. Unset when
+	// there is no file, so one inherited from a run this one was started
+	// under is not passed on as this run's.
 	if path := spec.Path(origins); path != "" {
 		_ = os.Setenv(v1.SpecPathEnv, path)
 	} else {
@@ -523,14 +523,14 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	_ = os.Unsetenv(v1.HTTPOriginEnv)
 
 	// A container is not an HTTP service, so tunneld serves one on
-	// its behalf and hands the tunnel the loopback address instead.
-	// origins stays what the operator typed — it is what the
-	// reported map and the panel show.
-	dialable, bound, err := b.binder.Bind(ctx, origins, log)
+	// its behalf and records the loopback address on origins as where it
+	// is dialed. What each origin is stays what the operator typed — it is
+	// what the reported map and the panel show.
+	attached, err := b.attacher.Attach(ctx, origins, log)
 	if err != nil {
 		return err
 	}
-	defer bound.Close()
+	defer attached.Close()
 
 	log.Info("tunneld starting", "version", Version(), "libtunnel", libtunnel.Version(), "origins", origins.Len())
 
@@ -563,15 +563,6 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// panel in front of it when there is one, and the tunnel forwards to that
 	// one address. A lone origin is routed too — nothing to choose between, but
 	// tunneld's /_tunneld/ control path answers on every tunnel.
-	//
-	// The +ws origin is read off the parsed list, which is the origins
-	// package's own type; the dialable list has the same indexes.
-	ws := -1
-	if marked, ok := origins.(interface{ WebSocket() (int, bool) }); ok {
-		if i, ok := marked.WebSocket(); ok {
-			ws = i
-		}
-	}
 	// Loaded here, before anything is routed, because the cache file is one
 	// of the places the password comes from, and the password has to be in
 	// place before a visitor can reach anything. The variable is registered
@@ -608,9 +599,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// compose up shows its services. Not for an MCP run, whose client reads
 	// stderr as a log. Set before any program starts, so nothing is missed.
 	var requested []string
-	if !b.mcp && b.console.For(bound, cmd) == nil {
+	if !b.mcp && b.console.For(attached, cmd) == nil {
 		served, dialed := composePrefixes(origins, console.IsTerminal(stderr))
-		bound.Mirror(stderr, served)
+		attached.Mirror(stderr, served)
 		requested = dialed
 	}
 
@@ -623,7 +614,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	}
 	if json.Unmarshal([]byte(loaded), &cached) == nil && cached.Hostname != "" {
 		_ = os.Setenv(v1.HTTPOriginEnv, "https://"+cached.Hostname)
-		bound.Start()
+		attached.Start()
 	}
 
 	// The router lasts the run, not one tunnel: the run cancels it once it is
@@ -631,8 +622,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// the tunnel it is handed to, so nothing between the two can return and
 	// leave it serving with no tunnel to end it.
 	local, err := b.router.Route(ctx,
-		router.WithOrigins(dialable),
-		router.WithWebSockets(ws),
+		router.WithOrigins(origins),
 		router.WithWrap(b.display.Panel(b.multiview, origins, log)),
 		router.WithRequestLog(stderr, requested),
 		// The run's cached spec on the control path: the cache keeps the
@@ -646,7 +636,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		router.WithMcp(mcp.New(
 			mcp.WithContext(ctx),
 			mcp.WithOrigins(origins),
-			mcp.WithBound(bound),
+			mcp.WithAttached(attached),
 			mcp.WithCache(spec),
 			mcp.WithLog(log),
 			mcp.WithStdio(b.mcp),
@@ -670,9 +660,9 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// mcp.WithStdio that reader and writer over the SDK's IOTransport instead
 	// of StdioTransport. SetStdHandle on Windows. Until then only cmd's stdout
 	// is redirected, at the top of Run.
-	attached := isPod() && isPipe(cmd.InOrStdin()) && !b.mcp
+	piped := isPod() && isPipe(cmd.InOrStdin()) && !b.mcp
 	hint := stopHint
-	if attached {
+	if piped {
 		var stop context.CancelFunc
 		ctx, stop = context.WithCancel(ctx)
 		defer stop()
@@ -695,7 +685,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		run.WithLog(log),
 		run.WithCommand(cmd),
 		run.WithOrigins(origins),
-		run.WithBound(bound),
+		run.WithAttached(attached),
 		run.WithCache(spec),
 		run.WithTracking(b.tracking(origins)),
 		run.WithDisplay(b.display),
@@ -710,7 +700,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		// A log line lands on top of a spinner, so a run with its logger on
 		// gets the lines instead.
 		run.WithSpinner(b.logLevel == ""),
-		run.WithAttached(attached),
+		run.WithPiped(piped),
 		run.WithHint(hint),
 		run.WithAuth(b.auth),
 	)

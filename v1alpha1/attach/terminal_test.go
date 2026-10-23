@@ -19,10 +19,10 @@ import (
 // does not.
 func TestBoundTerminal(t *testing.T) {
 	display := shown(t, "http://localhost:3000", "exec:///usr/bin/htop")
-	_, bound, err := New(WithTargets(&stubTargets{verb: v1.ExecScheme, local: true})).
-		Bind(t.Context(), display, slog.New(slog.DiscardHandler))
+	bound, err := New(WithTargets(&stubTargets{verb: v1.ExecScheme, local: true})).
+		Attach(t.Context(), display, slog.New(slog.DiscardHandler))
 	if err != nil {
-		t.Fatalf("Bind: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
 	defer func() { _ = bound.Close() }()
 

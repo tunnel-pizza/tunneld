@@ -21,10 +21,10 @@ import (
 // the servers standing in for the ones it serves, nil when none, its cache,
 // nil when it has none, and where a call is logged.
 type Context struct {
-	Origins v1.Origins
-	Bound   attach.Bound
-	Cache   cache.Cache
-	Log     v1.Logger
+	Origins  v1.Origins
+	Attached attach.Bound
+	Cache    cache.Cache
+	Log      v1.Logger
 }
 
 // Tool is one MCP tool: how tools/list shows it, and how it is added to a
@@ -79,7 +79,7 @@ func (c Context) Refused(ctx context.Context, tool, scope string, start time.Tim
 // terminal, and the caller holds the scope of its scheme (tunnel:exec for a
 // program).
 func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time) (attach.Terminal, *sdk.CallToolResult) {
-	if c.Origins == nil || c.Bound == nil {
+	if c.Origins == nil || c.Attached == nil {
 		c.Logged(ctx, tool, "refused", start)
 		return nil, Failed("This run serves no terminal.")
 	}
@@ -88,7 +88,7 @@ func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time
 		c.Logged(ctx, tool, "refused", start)
 		return nil, Failed(err.Error() + ". terminal_sessions lists the terminals.")
 	}
-	term, ok := c.Bound.Terminal(origin.Index)
+	term, ok := c.Attached.Terminal(origin.Index)
 	if !ok {
 		c.Logged(ctx, tool, "refused", start)
 		return nil, Failed(url + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals.")

@@ -202,7 +202,7 @@ func TestForRefusesWhatItCannotDraw(t *testing.T) {
 	t.Run("a closer with no terminal behind it", func(t *testing.T) {
 		screen := tty(t)
 		if got := New().For(noOrigin{}, streams{screen, io.Discard}); got != nil {
-			t.Errorf("For() = %v, want nil — the binder offered nothing to draw", got)
+			t.Errorf("For() = %v, want nil — the attacher offered nothing to draw", got)
 		}
 	})
 	t.Run("a terminal but nowhere to draw it", func(t *testing.T) {
@@ -212,7 +212,7 @@ func TestForRefusesWhatItCannotDraw(t *testing.T) {
 	})
 }
 
-// noOrigin is a bound closer that cannot be mirrored, which is what the binder
+// noOrigin is a bound closer that cannot be mirrored, which is what the attacher
 // hands back for anything but a single served origin.
 type noOrigin struct{ attach.Bound }
 

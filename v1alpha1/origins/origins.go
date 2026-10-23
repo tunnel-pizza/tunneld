@@ -48,6 +48,8 @@ type OriginsImpl struct {
 	origins []v1.Origin
 	// ws is the index of the origin that owns WebSockets, or -1 for none.
 	ws int
+	// served is where Serve said each served origin answers, by index.
+	served map[int]url.URL
 }
 
 // New returns an OriginsImpl configured by opts, with the process's working
@@ -171,20 +173,41 @@ func clone(origin v1.Origin) v1.Origin {
 	return origin
 }
 
-// WebSocket is the index of the origin that owns WebSockets — the one an
-// operator marked +ws — and false when none is marked. The marker is routing
-// configuration rather than part of any address, so the parser takes it off
-// the scheme and keeps it here, and every URL the list hands out is the bare
-// address it dials. An index outside the list names none.
-//
-// A method of this type and not of v1.Origins: the router is its only reader,
-// and a method on the public interface is one every implementation outside
-// this module would have to grow.
+// WebSocket implements v1.Origins. The marker is routing configuration
+// rather than part of any address, so the parser takes it off the scheme and
+// keeps it here, and every URL the list hands out is the bare address it
+// dials. An index outside the list names none.
 func (o *OriginsImpl) WebSocket() (int, bool) {
 	if o.ws < 0 || o.ws >= len(o.origins) {
 		return -1, false
 	}
 	return o.ws, true
+}
+
+// Serve implements v1.Origins. The origin itself is unchanged: it is still
+// what the operator typed, a program or a container, and only where it is
+// dialed is new.
+func (o *OriginsImpl) Serve(i int, at *url.URL) {
+	if i < 0 || i >= len(o.origins) || at == nil {
+		return
+	}
+	if o.served == nil {
+		o.served = map[int]url.URL{}
+	}
+	o.served[i] = *at
+}
+
+// Dialable implements v1.Origins.
+func (o *OriginsImpl) Dialable() []*url.URL {
+	out := make([]*url.URL, len(o.origins))
+	for i, origin := range o.origins {
+		if at, ok := o.served[i]; ok {
+			out[i] = &at
+			continue
+		}
+		out[i] = origin.URL()
+	}
+	return out
 }
 
 // Key implements v1.Origins: the directory, each of sessionEnv that is set, and
@@ -237,7 +260,7 @@ func (o *OriginsImpl) Key() string {
 }
 
 // servedSchemes is every scheme whose value names something tunneld serves on
-// the origin's behalf rather than an address it proxies to. The binder stands
+// the origin's behalf rather than an address it proxies to. The attacher stands
 // a loopback attach server up for each one, and the provider behind that
 // scheme is what resolves the reference.
 //
@@ -245,7 +268,7 @@ func (o *OriginsImpl) Key() string {
 // attach:// and "names no program" for exec:// is one somebody can act on,
 // where a message about a malformed authority component is not. A scheme
 // absent from here is not served, which is what makes the parser and the
-// binder agree on the same list.
+// attacher agree on the same list.
 var servedSchemes = map[v1.Scheme]struct {
 	noun, example string
 	// resolve, when set, is how an authority with nothing after it is read
@@ -298,7 +321,7 @@ func Resolve(s string) (string, bool) {
 	// On Windows the absolute form is C:\..., which has no spelling inside a
 	// exec:// URL — whichever half of the URL it is put in, url.URL escapes
 	// the separators. The origin is still correct where it counts, since the
-	// binder reads the path off the URL rather than off its printed form, and
+	// attacher reads the path off the URL rather than off its printed form, and
 	// the platform has no pseudo-terminals to serve it on either way.
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -460,7 +483,7 @@ func Parse(log v1.Logger, settled []string) *OriginsImpl {
 			log.Warn("dropping an origin", "origin", s, "reason", "empty, pass a local service URL (e.g. http://localhost:3000)")
 			continue
 		}
-		// Short circuit for executables: a path to a binary is not a URL, and the binder runs it
+		// Short circuit for executables: a path to a binary is not a URL, and the attacher runs it
 		if path, ok := Resolve(s); ok {
 			// Built rather than parsed, and done with: the reference resolved
 			// a line ago, so there is nothing for the checks below to add.
@@ -504,7 +527,7 @@ func Parse(log v1.Logger, settled []string) *OriginsImpl {
 			log.Warn("dropping an origin", "origin", s, "reason", "not a URL", "err", err)
 			continue
 		}
-		// A served origin is not proxied at all: it names a thing the binder
+		// A served origin is not proxied at all: it names a thing the attacher
 		// stands a loopback server up for — a container, a program — rather
 		// than an address to reach. Everything the shorthands below fill in — a
 		// default scheme, a default host, a preserved path — is meaningless
@@ -527,7 +550,7 @@ func Parse(log v1.Logger, settled []string) *OriginsImpl {
 			}
 			// The reference is the path. The authority beside it names the
 			// provider that resolves the reference, and an empty one is this
-			// machine — which is why the binder, not this loop, decides how
+			// machine — which is why the attacher, not this loop, decides how
 			// much of the path is the reference: with a provider the leading
 			// separator is the URL's, and without one the path is absolute and
 			// keeps every byte. Here only its emptiness matters.
@@ -556,7 +579,7 @@ func Parse(log v1.Logger, settled []string) *OriginsImpl {
 		// handshake the page did not build with a routing index goes here
 		// rather than following the sticky cookie. The marker comes off here
 		// and rides the list as an index (WithWebSocket), so every URL
-		// downstream — the binder's, the panel's, the one the router dials —
+		// downstream — the attacher's, the panel's, the one the router dials —
 		// is the bare address and nothing has to know to leave it alone
 		// (#173, #176). The key follows: an origin marked and unmarked is one
 		// tunnel.

@@ -73,7 +73,7 @@ func New(opts ...Option) *TargetsImpl {
 
 // Scheme is v1.ExecScheme and Provider is empty: this provider answers exec://
 // origins with no authority — the empty one being this machine — and no
-// others, which is the whole of how the binder picks it.
+// others, which is the whole of how the attacher picks it.
 func (*TargetsImpl) Scheme() v1.Scheme     { return v1.ExecScheme }
 func (*TargetsImpl) Provider() v1.Provider { return "" }
 
