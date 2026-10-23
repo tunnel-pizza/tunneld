@@ -304,6 +304,7 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		// tunnel's owner without asking the tunnel. Sent on every mint.
 		WithHeader(originsHeader(r.origins)).
 		WithHeader(hostHeader()).
+		WithHeader(agentHeader()).
 		WithLogger(log).
 		WithContext(tctx).
 		WithEventListener(listen).
@@ -809,4 +810,10 @@ func originsHeader(origins v1.Origins) (key, value string) {
 func hostHeader() (key, value string) {
 	name, _ := os.Hostname()
 	return v1.HostHeader, name
+}
+
+// agentHeader is X-Tunneld-Agent: AI_AGENT, empty when the run was not
+// started by an agent host that says so.
+func agentHeader() (key, value string) {
+	return v1.AgentHeader, os.Getenv("AI_AGENT")
 }

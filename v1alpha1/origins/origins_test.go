@@ -2,6 +2,7 @@ package origins
 
 import (
 	"net/url"
+	"os"
 	"reflect"
 	"testing"
 
@@ -10,6 +11,15 @@ import (
 
 // The contract this implements, asserted where the implementation is.
 var _ v1.Origins = (*OriginsImpl)(nil)
+
+// TestMain clears the sessions Key reads, so a suite run inside an agent pins
+// the keys a run outside one gets.
+func TestMain(m *testing.M) {
+	for _, env := range sessionEnv {
+		os.Unsetenv(env)
+	}
+	os.Exit(m.Run())
+}
 
 // must parses a URL a test wrote, where a failure is the test's own bug.
 func must(t *testing.T, raw string) *url.URL {
@@ -162,6 +172,35 @@ func TestWebSocket(t *testing.T) {
 	}
 }
 
+// TestKeyIsScopedToTheSession pins that a run an agent host started is scoped
+// to its session: two sessions in one directory are two tunnels, the same
+// session again is the same one, and none is the key a run outside one gets.
+func TestKeyIsScopedToTheSession(t *testing.T) {
+	o := New(WithDir("/work"), WithURL(must(t, "http://localhost:3000")))
+	outside := o.Key()
+
+	for _, env := range sessionEnv {
+		t.Run(env, func(t *testing.T) {
+			t.Setenv(env, "3f2c")
+			first := o.Key()
+			if first == outside {
+				t.Errorf("Key() = %q in session 3f2c and outside any", first)
+			}
+			if again := o.Key(); again != first {
+				t.Errorf("Key() = %q then %q for the same session", first, again)
+			}
+			t.Setenv(env, "9a71")
+			if other := o.Key(); other == first {
+				t.Errorf("Key() = %q in sessions 3f2c and 9a71", other)
+			}
+			t.Setenv(env, "")
+			if none := o.Key(); none != outside {
+				t.Errorf("Key() = %q with %s empty, want %q", none, env, outside)
+			}
+		})
+	}
+}
+
 // TestKeyIsPinned pins Key to the values it had before origins became
 // v1.Origin: the key names a run's cache file, so a change here silently
 // starts every tunnel over on a new hostname.
@@ -181,6 +220,7 @@ func TestKeyIsPinned(t *testing.T) {
 		{[]string{"exec:///bin/zsh"}, "986d9abba66a86e9"},
 		{[]string{"http://localhost:3000", "exec:///usr/bin/claude?arg=--resume&arg=b2e1"}, "4303f5452b48b7f8"},
 		{[]string{"attach://dockerd/web", "https://example.test/app"}, "5a72d67e085224bb"},
+		{nil, "5d289ab3ce202563"},
 	} {
 		var opts []Option
 		for _, raw := range tc.urls {

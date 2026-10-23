@@ -2,7 +2,8 @@
 // that says which tunnel they are.
 //
 // A type rather than a slice because of that key. Two runs are the same tunnel
-// when they serve the same origins from the same directory, and the spec cache
+// when they serve the same origins from the same directory in the same agent
+// session, if any, and the spec cache
 // files a tunnel under exactly that — so the question "are these two runs the
 // same tunnel" has one answer, computed here, rather than one per caller.
 package origins
@@ -24,6 +25,12 @@ import (
 // 64 bits: far beyond collision for the number of tunnels one machine has, and
 // short enough to read out of a banner and compare by eye.
 const keyWidth = 16
+
+// sessionEnv is the environment an agent host names its session in, on what
+// it starts.
+var sessionEnv = []string{
+	"CLAUDE_CODE_SESSION_ID",
+}
 
 // Option configures an OriginsImpl at construction.
 type Option = v1.Option[*OriginsImpl]
@@ -183,9 +190,10 @@ func (o *OriginsImpl) WebSocket() (int, bool) {
 	return o.ws, true
 }
 
-// Key implements v1.Origins: the directory and the origins, sorted and
-// deduplicated, hashed together — each origin whole, a program's arguments
-// included.
+// Key implements v1.Origins: the directory, each of sessionEnv that is set, and
+// the origins, sorted and deduplicated, hashed together — each origin whole, a
+// program's arguments included. Without a session the key is what it was
+// before sessions counted, so a run outside an agent keeps its hostname.
 //
 // Sorted because the order is the run's business and not the tunnel's — ?0 and
 // ?1 index the list, but serving the same two things in the other order is the
@@ -208,6 +216,25 @@ func (o *OriginsImpl) Key() string {
 	slices.Sort(parts)
 	parts = slices.Compact(parts)
 
-	sum := sha256.Sum256([]byte(o.dir + "\n" + strings.Join(parts, "\n")))
+	var b strings.Builder
+	b.WriteString(o.dir)
+	for _, env := range sessionEnv {
+		if session := os.Getenv(env); session != "" {
+			// Named so it cannot be read as an origin, which always has a
+			// scheme of its own.
+			b.WriteByte('\n')
+			b.WriteString(env)
+			b.WriteByte('=')
+			b.WriteString(session)
+		}
+	}
+	b.WriteByte('\n')
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(part)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])[:keyWidth]
 }

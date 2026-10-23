@@ -322,6 +322,11 @@ const (
 	// an origin is. Empty when the system has no name to give.
 	HostHeader = "X-Tunneld-Host"
 
+	// AgentHeader is the agent host that started the run, on every mint
+	// request: AI_AGENT as the run found it, so a provider can say which
+	// agent a tunnel is serving. Empty when no agent says it started the run.
+	AgentHeader = "X-Tunneld-Agent"
+
 	// OwnerHeader is who the provider says owns a tunnel, on its mint answer,
 	// in the form a provider access token's sub takes ("github:<id>"):
 	// absent when the mint named nobody. The owner's token opens the MCP
