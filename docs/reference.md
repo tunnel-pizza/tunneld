@@ -1256,7 +1256,9 @@ A query, a fragment and credentials are dropped first, since they can hold a
 secret. tunnel.pizza shows the list to the tunnel's owner and to agents the
 owner approves, and an origin's place in it is its `n` in `?n`. With it goes
 `X-Tunneld-Host`, the machine's hostname (the `HOSTNAME` a run saves in its
-`.env`), so `localhost` in an origin has a machine to name.
+`.env`), so `localhost` in an origin has a machine to name, and
+`X-Tunneld-Agent`, the `AI_AGENT` of the agent host that started the run
+(`claude-code_2-1-309_agent`, `opencode`), empty when none did.
 
 **An app with its own Basic auth.** A request carries one `Authorization`, so
 a client cannot send the tunnel's password and the app's at once. Get the

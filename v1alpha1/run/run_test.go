@@ -187,3 +187,15 @@ func TestHostHeader(t *testing.T) {
 		t.Errorf("hostHeader = %q, %q; want %s, %q", key, got, v1.HostHeader, want)
 	}
 }
+
+// TestAgentHeader pins what a mint tells the provider about the agent host
+// that started the run: AI_AGENT as it is, and empty when nothing set it.
+func TestAgentHeader(t *testing.T) {
+	for _, want := range []string{"", "opencode"} {
+		t.Setenv("AI_AGENT", want)
+		key, got := agentHeader()
+		if key != v1.AgentHeader || got != want {
+			t.Errorf("agentHeader = %q, %q; want %s, %q", key, got, v1.AgentHeader, want)
+		}
+	}
+}

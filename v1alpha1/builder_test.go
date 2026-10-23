@@ -1107,7 +1107,7 @@ func TestRun(t *testing.T) {
 			t.Fatalf("run() = %v", err)
 		}
 		host, _ := os.Hostname()
-		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": ", v1.OriginsHeader + ": http://localhost:3000", v1.HostHeader + ": " + host}; !slices.Equal(got, want) {
+		if got, want := h.tunnels[0].headers, []string{v1.UserAgentHeader + ": " + UserAgent(), v1.AuthenticateHeader + ": ", v1.OriginsHeader + ": http://localhost:3000", v1.HostHeader + ": " + host, v1.AgentHeader + ": "}; !slices.Equal(got, want) {
 			t.Errorf("headers = %q, want %q", got, want)
 		}
 	})
