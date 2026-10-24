@@ -2,6 +2,7 @@ package errors
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -57,6 +58,10 @@ func TestAnswers(t *testing.T) {
 		}
 		r, reply, e := ErrExec(err)
 		check("ErrExec", r, reply == types.Reply{}, e, want)
+		r, added, e := ErrOriginAdd(err)
+		check("ErrOriginAdd", r, reflect.DeepEqual(added, types.Origin{}), e, want)
+		r, removed, e := ErrOriginRemove(err)
+		check("ErrOriginRemove", r, reflect.DeepEqual(removed, types.Origin{}), e, want)
 		r, read, e := ErrRead(err)
 		check("ErrRead", r, read == types.Read{}, e, want)
 		r, screen, e := ErrScreen(err)

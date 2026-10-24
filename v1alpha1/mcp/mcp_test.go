@@ -226,3 +226,31 @@ func TestATerminalOverMcp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestOriginToolsOverStdio pins who reaches origin_add and origin_remove
+// without a token: a client on the server's own connection, as stdio is,
+// gets as far as the tool (not implemented yet); one through the HTTP
+// handler with no token, as a call over the tunnel with its secret is, is
+// refused.
+func TestOriginToolsOverStdio(t *testing.T) {
+	m := New(WithOrigins(tooltest.Origins(t, "exec:///bin/sh")))
+	cs := connect(t, m)
+	for name, args := range map[string]map[string]any{
+		"origin_add":    {"origin": ":3000"},
+		"origin_remove": {"origin": "1"},
+	} {
+		r, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
+		if err != nil || !r.IsError || r.Content[0].(*sdk.TextContent).Text != name+" is not implemented yet" {
+			t.Errorf("%s on the server's own connection = %+v, %v; want not implemented yet", name, r, err)
+		}
+		body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": args}})
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, req)
+		if !strings.Contains(rec.Body.String(), "The tunnel's secret can't call "+name) {
+			t.Errorf("%s through the HTTP handler = %d %s; want the secret refused", name, rec.Code, rec.Body)
+		}
+	}
+}

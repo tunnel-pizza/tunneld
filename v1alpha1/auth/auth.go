@@ -72,8 +72,14 @@ func Scope(s v1.Scheme) string { return "tunnel:" + string(s) }
 // opens nothing past the gate.
 var Scopes = []string{Scope(v1.HttpScheme), Scope(v1.AttachScheme), Scope(v1.ExecScheme)}
 
-// opens is whether a reaches any origin at all.
-func (a Access) opens() bool { return slices.ContainsFunc(Scopes, a.Has) }
+// OriginsScope is what a token holds to change a run's origins: origin_add
+// and origin_remove. It reaches no origin itself; a new one still needs its
+// scheme's Scope.
+const OriginsScope = "tunnel:origins"
+
+// opens is whether a reaches anything past the gate: an origin, or the MCP
+// server's origin tools.
+func (a Access) opens() bool { return slices.ContainsFunc(Scopes, a.Has) || a.Has(OriginsScope) }
 
 // InsufficientScope answers a token that let its holder in but lacks scope:
 // a bodyless 403 naming the scope to ask for and the resource metadata
@@ -284,8 +290,9 @@ func (s *state) verifyAny(password string) bool {
 // went wrong; with a Basic one, Basic that verifies passes and gets the
 // cookie; anything else is a 303 to the login page for a browser page load,
 // a bodyless 401 for everyone else. A token passes only holding one of
-// Scopes, else InsufficientScope for tunnel:http, and carries its Access on
-// to next, which checks the scope of the origin it routes to.
+// Scopes or OriginsScope, else InsufficientScope for tunnel:http, and
+// carries its Access on to next, which checks the scope of the origin it
+// routes to.
 func (a *AuthImpl) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = withoutSub(r)
@@ -608,8 +615,9 @@ func (a *AuthImpl) ResourceMetadata(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resource += v1.ControlPath + "mcp"
-		// What the MCP server's terminal tools need.
-		scopes = []string{"openid", "profile", "offline_access", Scope(v1.ExecScheme)}
+		// What the MCP server's tools need: the terminal tools' and the
+		// origin tools'.
+		scopes = []string{"openid", "profile", "offline_access", Scope(v1.ExecScheme), OriginsScope}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(metadata{

@@ -217,7 +217,7 @@ server. Its `scopes_supported` are `openid`, `profile` and `offline_access`,
 which a client registered for refresh tokens asks for to stay signed in past
 its access token's hour, and the [scopes](#scopes) that reach an origin,
 `tunnel:http`, `tunnel:attach` and `tunnel:exec`; the MCP server's are the
-first three and `tunnel:exec`. Anything else the origin answers, its own metadata or a `401` from
+first three, `tunnel:exec` and `tunnel:origins`. Anything else the origin answers, its own metadata or a `401` from
 protection of its own, is what the client gets. Behind a password the origin
 is out of reach, so the gate answers it with tunneld's. A run with
 `--no-cache` saves nothing to disk but keeps its secret in memory, so
@@ -291,6 +291,8 @@ It offers these tools so far:
 | `terminal_read` | the scope of the origin's scheme: `tunnel:exec` for a program | what the program at `url` has printed, at once, `{text, cursor, dropped, truncated}`: read on from where this sign-in last stopped, or from `cursor` when given (the first read starts from everything kept, the last 1 MiB at least); `text` is its output as the terminal shows it, a line the terminal wrapped kept whole; a row is logged once it settles (it scrolls off, a read or wait answers it, input goes in, or the screen is erased), so rows a program redraws in place (a spinner) come once, as they last stood; faint text from the cursor on, on the line in progress, is a suggestion, not input, and is left out; a full-screen program's screen is not kept, so what is needed from `screen` is read when it comes; a program that repaints everything it has shown (Claude Code's Ctrl-L) brings old rows back into the log; then the cursor's row as far as the cursor; while a full-screen program is up it leaves no text, and the answer carries `screen`, as `terminal_screen` gives it; `cursor` is where the read stopped; `dropped` says output was no longer kept, so some was missed; `text` past 64 KiB keeps its end and says `truncated`. A `cursor` from another terminal, or from before tunneld started again, is a tool error |
 | `terminal_wait` | the scope of the origin's scheme: `tunnel:exec` for a program | `terminal_read`, once `until`, an RE2 regular expression, matches the text, the program prints nothing for `idle_ms` (500 when left out, 0 never), or `timeout_ms` passes (10000 when left out, at most 25000), `{text, cursor, dropped, matched, timed_out, truncated}`; neither `matched` nor `timed_out` means it fell quiet. A match answers once the screen has been unchanged for 50 ms (at most 250 ms), so a row a program is part way through redrawing is not answered torn. While a full-screen program is up, `until` matches the screen's rows and `idle_ms` counts from the screen's last change. A bad `until` is a tool error |
 | `terminal_exec` | the scope of the origin's scheme: `tunnel:exec` for a program | types into the terminal at `url`, as the person at it would and in their view, then waits for the reply as `terminal_wait` does, from where this sign-in last read (so what anyone else at the terminal did since comes first; for a sign-in that never read, from where the input went in), answering as it does; `idle_ms: 0` with no `until` answers at once, reading nothing. `input` is a list of steps sent in order, each exactly one of `{text}`, typed as it is, or `{key}`, one key by name (`Enter`, `Tab`, `Esc`, `Backspace`, `Delete`, `Space`, `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `F1` to `F12`, `Ctrl-<letter>`), so `[{"key":"Esc"},{"text":":wq"},{"key":"Enter"}]` leaves vim; an `Esc` with steps after it goes alone, 150 ms ahead of them, so a program does not read it and the next key as Alt (the gap is only within one call); an `Enter` right after text goes 100 ms after it, so a program that tells a paste by its speed reads a key press, not a newline in a paste; a step it cannot send, or a bad `until`, sends nothing. A program that has exited and can run again is started again first, as a tab arriving does. An agent is no viewer: it has no say in the terminal's size |
+| `origin_add` | `tunnel:origins`; the client that started tunneld, over stdio, needs no token; the tunnel's secret is refused | not implemented yet: a tool error saying so, and that the run's origins are the ones tunneld was started with. It is to add an origin to the running tunnel, `origin` as the command line takes one (`:3000`, `sh`, `exec:///bin/bash`), answering `{machine, session}` |
+| `origin_remove` | `tunnel:origins`, as for `origin_add` | not implemented yet: a tool error saying so, as `origin_add` does. It is to remove an origin, `origin` its index or public address, leaving its index a hole, answering `{machine, session}` |
 
 The terminal tools keep a read position per terminal for each sign-in: a
 token's `code_jti`, one per OAuth sign-in and kept across refreshes, or
@@ -1378,7 +1380,11 @@ origin only holding the scope of the origin's scheme:
 | `tunnel:attach` | `attach://` origins: terminals on something already running |
 | `tunnel:exec` | `exec://` origins: programs tunneld runs |
 
-A token holding none of them opens nothing, the panel (`/`) included, and is
+`tunnel:origins` reaches no origin: it lets a token call the MCP server's
+`origin_add` and `origin_remove`, which change what the run serves. An
+origin one adds still needs its own scheme's scope to reach.
+
+A token holding none of these opens nothing, the panel (`/`) included, and is
 a `403` with
 `WWW-Authenticate: Bearer error="insufficient_scope", scope="tunnel:http", resource_metadata="…"`.
 One routed (`?n`) to an origin whose scope it lacks is the same `403`

@@ -281,9 +281,10 @@ func TestProtectedResource(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &mcp); err != nil || mcp["resource"] != "https://h.example/_tunneld/mcp" {
 		t.Errorf("MCP metadata = %v, %v; want the MCP server as the resource", mcp, err)
 	}
-	// And the scope its terminal tools need.
-	if got := mcp["scopes_supported"]; !reflect.DeepEqual(got, []any{"openid", "profile", "offline_access", "tunnel:exec"}) {
-		t.Errorf("MCP scopes_supported = %v, want tunnel:exec beside the sign-in's", got)
+	// And the scopes its tools need: the terminal tools', and the origin
+	// tools'.
+	if got := mcp["scopes_supported"]; !reflect.DeepEqual(got, []any{"openid", "profile", "offline_access", "tunnel:exec", "tunnel:origins"}) {
+		t.Errorf("MCP scopes_supported = %v, want tunnel:exec and tunnel:origins beside the sign-in's", got)
 	}
 	// Or wherever the mint named an owner, whose token opens it on any tunnel.
 	rec = httptest.NewRecorder()
@@ -1002,4 +1003,21 @@ func TestBearerGate(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestOpens pins what lets a token past the gate: an origin's scope, or
+// OriginsScope for the MCP server's origin tools; nothing else.
+func TestOpens(t *testing.T) {
+	for scopes, want := range map[string]bool{
+		"tunnel:http":        true,
+		"tunnel:exec":        true,
+		"tunnel:origins":     true,
+		"mcp tunnel:origins": true,
+		"mcp":                false,
+		"":                   false,
+	} {
+		if got := (Access{Scopes: strings.Fields(scopes)}).opens(); got != want {
+			t.Errorf("opens(%q) = %v, want %v", scopes, got, want)
+		}
+	}
 }

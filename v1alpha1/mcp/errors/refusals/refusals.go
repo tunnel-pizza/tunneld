@@ -28,6 +28,21 @@ func refusal(usage string, errs ...error) error {
 	return Refusal(errs)
 }
 
+// NotImplemented is the refusal for tool, which this tunneld offers but
+// does not do yet.
+func NotImplemented(tool string) error {
+	return refusal("This run's origins are the ones tunneld was started with; terminal_sessions lists them",
+		fmt.Errorf("%s is not implemented yet", tool))
+}
+
+// SecretRefused is the refusal for tool, called over the tunnel with its
+// secret: only the client that started this tunneld, over stdio, or a
+// sign-in holding scope may call it.
+func SecretRefused(tool, scope string) error {
+	return refusal(fmt.Sprintf("%s answers the client that started this tunneld, over stdio, or a sign-in holding %s", tool, scope),
+		fmt.Errorf("The tunnel's secret can't call %s", tool))
+}
+
 // NoTerminal is the refusal for a run with nothing a terminal tool can
 // reach: no program or container, which until one is added is a run with no
 // origins at all.
@@ -53,7 +68,7 @@ func NotATerminal(url string, origin v1.Origin) error {
 // which tool needs.
 func NoScope(tool, scope string) error {
 	return refusal(fmt.Sprintf("%s needs the %s scope", tool, scope),
-		errors.New("This sign-in can't use the terminal"))
+		fmt.Errorf("This sign-in can't call %s", tool))
 }
 
 // NotAPattern is the refusal for an until that does not compile, err saying

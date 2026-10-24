@@ -25,6 +25,13 @@ type Read struct {
 	Truncated bool `json:"truncated" jsonschema:"whether text was cut to its last 64 KiB"`
 }
 
+// Origin is what origin_add and origin_remove answer: the machine, and the
+// origin added or removed, as a session.
+type Origin struct {
+	Machine v1types.Machine `json:"machine"`
+	Session v1types.Session `json:"session"`
+}
+
 // Sessions is what terminal_sessions answers.
 type Sessions struct {
 	Machine  v1types.Machine   `json:"machine"`

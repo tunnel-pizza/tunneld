@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -164,5 +166,49 @@ func TestCaller(t *testing.T) {
 	}
 	if c.Caller(t.Context()) != c.Caller(context.Background()) {
 		t.Error("the secret is one caller")
+	}
+}
+
+// TestStdio pins how a call over stdio is told from one through the tunnel:
+// the HTTP transport hands every request its header, stdio none.
+func TestStdio(t *testing.T) {
+	if !Stdio(&sdk.CallToolRequest{}) {
+		t.Error("a request with no transport extra is not stdio, want it to be")
+	}
+	if Stdio(&sdk.CallToolRequest{Extra: &sdk.RequestExtra{Header: http.Header{}}}) {
+		t.Error("a request carrying an HTTP header is stdio, want it not to be")
+	}
+}
+
+// TestChangesOrigins pins who may change a run's origins: the stdio client,
+// and a token holding tunnel:origins; the tunnel's secret and a token
+// without the scope are refused, saying why, and logged.
+func TestChangesOrigins(t *testing.T) {
+	overHTTP := &sdk.CallToolRequest{Extra: &sdk.RequestExtra{Header: http.Header{}}}
+	origins := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:origins"}})
+	exec := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}})
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		req  *sdk.CallToolRequest
+		says string
+	}{
+		"the stdio client":            {t.Context(), &sdk.CallToolRequest{}, ""},
+		"a token with tunnel:origins": {origins, overHTTP, ""},
+		"the tunnel's secret":         {t.Context(), overHTTP, "The tunnel's secret can't call a_tool"},
+		"a token without the scope":   {exec, overHTTP, "a_tool needs the tunnel:origins scope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := logged(t)
+			err := c.ChangesOrigins(tc.ctx, tc.req, "a_tool", time.Now())
+			if tc.says == "" {
+				if err != nil {
+					t.Errorf("ChangesOrigins = %v, want none", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.says) || !strings.Contains(got(), "ended=refused") {
+				t.Errorf("ChangesOrigins = %v, log %q; want a logged refusal saying %q", err, got(), tc.says)
+			}
+		})
 	}
 }
