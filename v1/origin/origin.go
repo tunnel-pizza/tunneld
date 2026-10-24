@@ -96,7 +96,7 @@ type Origin struct {
 	URI url.URL `json:"-"`
 	// Scheme is what it is: ExecScheme, AttachScheme, or HttpScheme for an
 	// http or https address.
-	Scheme Scheme `json:"scheme" jsonschema:"what the origin is: exec, attach or http"`
+	Scheme Scheme `json:"scheme" jsonschema:"what the origin is: exec, a program on this machine, or attach, a container, both terminals the terminal tools type into and read; or http, a web address the tunnel forwards to, which they cannot"`
 	// Provider is the authority a served origin names, "" for this machine
 	// and for an address.
 	Provider Provider `json:"provider,omitempty" jsonschema:"who it is asked of: dockerd for a container, none for this machine"`

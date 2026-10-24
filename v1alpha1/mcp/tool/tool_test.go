@@ -10,7 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -36,28 +35,6 @@ func logged(t *testing.T) (Context, func() string) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
-
-// TestRefused pins the scope check: the secret, and a token holding the
-// scope, go on; a token without it gets a tool error naming the scope, and
-// the call is logged as refused.
-func TestRefused(t *testing.T) {
-	c, got := logged(t)
-	with := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"tunnel:exec"}})
-	without := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"mcp"}})
-	if r := c.Refused(t.Context(), "a_tool", "tunnel:exec", time.Now()); r != nil {
-		t.Errorf("the secret's call: %+v, want none", r)
-	}
-	if r := c.Refused(with, "a_tool", "tunnel:exec", time.Now()); r != nil {
-		t.Errorf("a token holding the scope: %+v, want none", r)
-	}
-	r := c.Refused(without, "a_tool", "tunnel:exec", time.Now())
-	if r == nil || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, "a_tool needs the tunnel:exec scope") {
-		t.Errorf("a token without the scope: %+v, want a refusal naming it", r)
-	}
-	if !strings.Contains(got(), "ended=refused") {
-		t.Errorf("log %q, want the refusal", got())
-	}
-}
 
 // TestLogged pins the log: one line per call naming the tool, the person
 // and the client acting for them, and how it ended.
@@ -97,7 +74,7 @@ func (b served) Terminal(index int) (attach.Terminal, bool) {
 
 // TestTerminal pins how a tool reaches a terminal: url names an origin of
 // the run, that origin is served with a terminal, and the caller holds the
-// scope of its scheme. Each refusal is a tool error, logged.
+// scope of its scheme. Each refusal is an error saying why, logged.
 func TestTerminal(t *testing.T) {
 	var opts []origins.Option
 	for _, raw := range []string{"http://localhost:3000", "exec:///bin/sh", "attach://dockerd/api"} {
@@ -139,8 +116,8 @@ func TestTerminal(t *testing.T) {
 				}
 				return
 			}
-			if refusal == nil || !refusal.IsError || !strings.Contains(refusal.Content[0].(*sdk.TextContent).Text, tc.says) {
-				t.Errorf("refusal = %+v, want a tool error saying %q", refusal, tc.says)
+			if refusal == nil || !strings.Contains(refusal.Error(), tc.says) {
+				t.Errorf("refusal = %v, want one saying %q", refusal, tc.says)
 			}
 			if !strings.Contains(got(), "ended=refused") {
 				t.Errorf("log %q, want the refusal", got())

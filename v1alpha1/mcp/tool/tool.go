@@ -1,6 +1,6 @@
 // Package tool is what every MCP tool shares: its shape, an sdk.Tool and
-// the handler that runs it, the run it reads, the scope check and the one
-// log line a call leaves. Each tool is its own package under
+// the handler that runs it, the run it reads, the terminal a call names and
+// the one log line a call leaves. Each tool is its own package under
 // tools/, and the server adds them all.
 package tool
 
@@ -14,7 +14,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors/refusals"
 )
 
 // Context is the run a tool reads: its origins, nil when it was given none,
@@ -34,9 +34,13 @@ type Tool struct {
 	add func(*sdk.Server, Context)
 }
 
+// RunFunc runs a tool on a call: the run's Context, the call's, its request
+// and its input, answering a tool error, or the output.
+type RunFunc[In, Out any] func(Context, context.Context, *sdk.CallToolRequest, In) (*sdk.CallToolResult, Out, error)
+
 // New is the tool def, run by run with the run's Context. In and Out are
 // what the SDK infers the input and output schemas from.
-func New[In, Out any](def sdk.Tool, run func(Context, context.Context, *sdk.CallToolRequest, In) (*sdk.CallToolResult, Out, error)) Tool {
+func New[In, Out any](def sdk.Tool, run RunFunc[In, Out]) Tool {
 	return Tool{Tool: def, add: func(s *sdk.Server, c Context) {
 		listed := def
 		sdk.AddTool(s, &listed, func(ctx context.Context, req *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
@@ -56,39 +60,30 @@ func (c Context) All() []v1.Origin {
 	return c.Origins.All()
 }
 
-// Refused is the tool error for a provider token without scope, logged; nil
-// when the call may go on: the token holds it, or the tunnel's secret let the
-// call in, which opens everything.
-func (c Context) Refused(ctx context.Context, tool, scope string, start time.Time) *sdk.CallToolResult {
-	access, byToken := auth.AccessOf(ctx)
-	if !byToken || access.Has(scope) {
-		return nil
-	}
-	c.Logged(ctx, tool, "refused", start)
-	return errors.Refused(tool, scope)
-}
-
-// Terminal is the terminal at url, or the tool error saying why not,
-// logged: url names an origin of the run, the run serves it with a
-// terminal, and the caller holds the scope of its scheme (tunnel:exec for a
-// program).
-func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time) (attach.Terminal, *sdk.CallToolResult) {
+// Terminal is the terminal at url, or why not, logged: url names an origin
+// of the run, the run serves it with a terminal, and the caller holds the
+// scope of its scheme (tunnel:exec for a program).
+func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time) (attach.Terminal, error) {
 	if c.Origins == nil || c.Attached == nil {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, errors.NoTerminal()
+		return nil, refusals.NoTerminal()
 	}
 	origin, err := c.Origins.From(url)
 	if err != nil {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, errors.Unlisted(err)
+		return nil, refusals.Unlisted(err)
 	}
 	term, ok := c.Attached.Terminal(origin.Index)
 	if !ok {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, errors.NotATerminal(url, origin)
+		return nil, refusals.NotATerminal(url, origin)
 	}
-	if refusal := c.Refused(ctx, tool, auth.Scope(origin.Scheme), start); refusal != nil {
-		return nil, refusal
+	// A provider token reaches it only holding its scheme's scope; the
+	// tunnel's secret opens everything.
+	scope := auth.Scope(origin.Scheme)
+	if access, byToken := auth.AccessOf(ctx); byToken && !access.Has(scope) {
+		c.Logged(ctx, tool, "refused", start)
+		return nil, refusals.NoScope(tool, scope)
 	}
 	return term, nil
 }

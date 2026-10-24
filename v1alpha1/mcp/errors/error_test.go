@@ -2,14 +2,12 @@ package errors
 
 import (
 	"fmt"
-	"net/url"
 	"slices"
-	"strings"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	v1 "github.com/tunnel-pizza/tunneld/v1"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors/refusals"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/types"
 )
 
 // texts is r's texts, failing unless r is a tool error carrying only text.
@@ -25,47 +23,47 @@ func texts(t *testing.T, r *sdk.CallToolResult) []string {
 	return out
 }
 
-// TestFailed pins a tool error: an error result with each error's text as
-// its own content, in order, for the model to read.
-func TestFailed(t *testing.T) {
-	errs := []error{fmt.Errorf("nope"), fmt.Errorf("try this instead")}
-	if got, want := texts(t, Failed(errs...)), []string{"nope", "try this instead"}; !slices.Equal(got, want) {
-		t.Errorf("Failed(%v) says %q, want %q", errs, got, want)
+// noTerminal is what refusals.NoTerminal says.
+var noTerminal = []string{"This run serves no terminal: it has no program (exec) or container (attach) to type into", "A terminal is there once tunneld runs a program or attaches a container; terminal_sessions with scheme http lists the web addresses it serves, if any"}
+
+// TestWrapped pins that a refusal wrapped by a check still answers as one.
+func TestWrapped(t *testing.T) {
+	r, _, err := ErrWait(fmt.Errorf("checking: %w", refusals.NoTerminal()))
+	if err != nil || !slices.Equal(texts(t, r), noTerminal) {
+		t.Errorf("ErrWait(a wrapped refusal) = %+v, %v; want its text, no Go error", r, err)
 	}
 }
 
-// TestSays pins what each tool error tells the model: what went wrong, and
-// what to do instead where there is something.
-func TestSays(t *testing.T) {
-	shell, _ := url.Parse("http://localhost:3000")
-	for name, tc := range map[string]struct {
-		r    *sdk.CallToolResult
-		says string
-	}{
-		"Refused":       {Refused("a_tool", "tunnel:exec"), "a_tool needs the tunnel:exec scope"},
-		"NoTerminal":    {NoTerminal(), "serves no terminal"},
-		"Unlisted":      {Unlisted(fmt.Errorf("names origin 5")), "names origin 5\nterminal_sessions lists the terminals"},
-		"NotATerminal":  {NotATerminal("https://0tabc.tunneld.domain/", v1.Origin{Index: 0, URI: *shell, Scheme: v1.HttpScheme}), "is not a terminal: origin 0 is http"},
-		"NotAPattern":   {NotAPattern(fmt.Errorf("missing closing )")), "until is not a regular expression: missing closing )"},
-		"NothingToSend": {NothingToSend(), "input needs at least one step"},
-		"UnknownScheme": {UnknownScheme(), "exec, attach or http"},
-	} {
-		if got := strings.Join(texts(t, tc.r), "\n"); !strings.Contains(got, tc.says) {
-			t.Errorf("%s says %q, want it to say %q", name, got, tc.says)
+// TestAnswers pins each tool's Err: a refusal is a tool error with the empty
+// output and no Go error, and any other error is the Go error it is.
+func TestAnswers(t *testing.T) {
+	refusal, other := refusals.NoTerminal(), fmt.Errorf("broke")
+	check := func(name string, r *sdk.CallToolResult, empty bool, err error, wantErr error) {
+		t.Helper()
+		if wantErr == nil {
+			if err != nil || !empty || !slices.Equal(texts(t, r), noTerminal) {
+				t.Errorf("%s(refusal) = %+v, empty output %v, %v; want the tool error, the empty output, no Go error", name, r, empty, err)
+			}
+			return
+		}
+		if r != nil || err != wantErr {
+			t.Errorf("%s(other) = %+v, %v; want no result and the Go error", name, r, err)
 		}
 	}
-}
-
-// TestUnreadable pins the tool error for a cursor a read cannot use, and any
-// other read error said as it is.
-func TestUnreadable(t *testing.T) {
-	for err, says := range map[error]string{
-		attach.ErrStaleCursor:           "not this terminal's",
-		attach.ErrBadCursor:             "not a cursor",
-		fmt.Errorf("the session ended"): "the session ended",
-	} {
-		if got := strings.Join(texts(t, Unreadable(err)), "\n"); !strings.Contains(got, says) {
-			t.Errorf("Unreadable(%v) says %q, want %q", err, got, says)
+	for _, err := range []error{refusal, other} {
+		var want error
+		if err == other {
+			want = other
 		}
+		r, reply, e := ErrExec(err)
+		check("ErrExec", r, reply == types.Reply{}, e, want)
+		r, read, e := ErrRead(err)
+		check("ErrRead", r, read == types.Read{}, e, want)
+		r, screen, e := ErrScreen(err)
+		check("ErrScreen", r, screen.Rows == nil, e, want)
+		r, sessions, e := ErrSessions(err)
+		check("ErrSessions", r, sessions.Sessions == nil, e, want)
+		r, reply, e = ErrWait(err)
+		check("ErrWait", r, reply == types.Reply{}, e, want)
 	}
 }
