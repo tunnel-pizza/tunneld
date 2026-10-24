@@ -2961,21 +2961,33 @@ func TestComposePrefixes(t *testing.T) {
 
 // TestComposeOutputWhenNoFrame pins when compose output is on: whenever no
 // frame will be drawn on the console, as with several origins or no terminal,
-// and never for an MCP run.
+// unless the multiview panel is up for somebody at a terminal, and never for
+// an MCP run.
 func TestComposeOutputWhenNoFrame(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
-		want bool
+		name     string
+		args     []string
+		terminal bool
+		want     bool
 	}{
-		{"no frame", nil, true},
-		{"an MCP run", []string{"--mcp"}, false},
+		{"no frame, nobody watching", nil, false, true},
+		{"the panel, at a terminal", nil, true, false},
+		{"no panel, at a terminal", []string{"--multiview=false"}, true, true},
+		{"an MCP run", []string{"--mcp"}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if len(tc.args) > 0 {
+			if slices.Contains(tc.args, "--mcp") {
 				mcpStdin(t)
 			}
 			h := newRunHarness(t, live("https://foo.tunneld.domain/"), "http://localhost:3000", "http://localhost:4000")
+			if tc.terminal {
+				ptmx, tty, err := pty.Open()
+				if err != nil {
+					t.Skipf("no pty to be a terminal on: %v", err)
+				}
+				t.Cleanup(func() { tty.Close(); ptmx.Close() })
+				h.console = tty
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			h.cache.onSave = cancel
 			if err := h.run(t, ctx, tc.args...); err != nil {

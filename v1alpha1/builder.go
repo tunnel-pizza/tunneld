@@ -28,6 +28,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/console"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/display"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -598,9 +599,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// lines reach stderr behind a prefix naming it — a program's or
 	// container's output, a line per request for an address — as docker
 	// compose up shows its services. Not for an MCP run, whose client reads
-	// stderr as a log. Set before any program starts, so nothing is missed.
+	// stderr as a log, and not with the multiview panel up for somebody at a
+	// terminal, who watches the origins there. Set before any program starts,
+	// so nothing is missed.
+	panel := b.multiview && origins.Len() > 1 && display.IsInteractive(cmd)
 	var requested []string
-	if !b.mcp && b.console.For(attached, cmd) == nil {
+	if !b.mcp && !panel && b.console.For(attached, cmd) == nil {
 		served, dialed := composePrefixes(origins, console.IsTerminal(stderr))
 		attached.Mirror(stderr, served)
 		requested = dialed

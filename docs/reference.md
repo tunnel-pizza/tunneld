@@ -912,7 +912,9 @@ addresses without a parser.
 **Compose output.** With no frame drawn on the console (several origins,
 `--multiview=false` with more than one, or no terminal at all, as in CI), and
 not for an `--mcp` run, every origin's lines reach stderr too, behind a prefix
-naming it, the way `docker compose up` shows its services:
+naming it, the way `docker compose up` shows its services. At a terminal with
+the [multiview panel](#multiview) up there is none: the panel is where the
+origins are watched.
 
 ```
 [next] ▲ Next.js 16.4.2
