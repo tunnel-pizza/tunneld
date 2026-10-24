@@ -31,6 +31,16 @@ func ErrExec(err error) (*sdk.CallToolResult, types.Reply, error) {
 	return answer[types.Reply](err)
 }
 
+// ErrOriginAdd is err as origin_add's answer.
+func ErrOriginAdd(err error) (*sdk.CallToolResult, types.Origin, error) {
+	return answer[types.Origin](err)
+}
+
+// ErrOriginRemove is err as origin_remove's answer.
+func ErrOriginRemove(err error) (*sdk.CallToolResult, types.Origin, error) {
+	return answer[types.Origin](err)
+}
+
 // ErrRead is err as terminal_read's answer.
 func ErrRead(err error) (*sdk.CallToolResult, types.Read, error) {
 	return answer[types.Read](err)

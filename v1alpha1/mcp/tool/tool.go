@@ -88,6 +88,33 @@ func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time
 	return term, nil
 }
 
+// ChangesOrigins is nil when the caller may change the run's origins, else
+// why not, logged: the client that started this tunneld, over stdio, or a
+// token holding auth.OriginsScope. Not the tunnel's secret, which opens
+// everything else.
+func (c Context) ChangesOrigins(ctx context.Context, req *sdk.CallToolRequest, tool string, start time.Time) error {
+	if Stdio(req) {
+		return nil
+	}
+	access, byToken := auth.AccessOf(ctx)
+	if !byToken {
+		c.Logged(ctx, tool, "refused", start)
+		return refusals.SecretRefused(tool, auth.OriginsScope)
+	}
+	if !access.Has(auth.OriginsScope) {
+		c.Logged(ctx, tool, "refused", start)
+		return refusals.NoScope(tool, auth.OriginsScope)
+	}
+	return nil
+}
+
+// Stdio is whether req came over stdio, from the client that started this
+// tunneld, rather than over HTTP through the tunnel: the HTTP transport
+// hands every request it carries its header, and stdio hands none.
+func Stdio(req *sdk.CallToolRequest) bool {
+	return req.Extra == nil
+}
+
 // Caller is whose read position a call moves in a terminal's output: the
 // sign-in's grant (code_jti), one per connected app install; a token with
 // no grant, its person and the client acting for them; the tunnel's
