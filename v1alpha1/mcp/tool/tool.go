@@ -1,12 +1,11 @@
 // Package tool is what every MCP tool shares: its shape, an sdk.Tool and
-// the handler that runs it, the run it reads, a tool error, a scope refusal
-// and the one log line a call leaves. Each tool is its own package under
+// the handler that runs it, the run it reads, the scope check and the one
+// log line a call leaves. Each tool is its own package under
 // tools/, and the server adds them all.
 package tool
 
 import (
 	"context"
-	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 )
 
 // Context is the run a tool reads: its origins, nil when it was given none,
@@ -56,12 +56,6 @@ func (c Context) All() []v1.Origin {
 	return c.Origins.All()
 }
 
-// Failed is a tool error carrying text, for the model to read: an error
-// result, not a JSON-RPC error.
-func Failed(text string) *sdk.CallToolResult {
-	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: text}}}
-}
-
 // Refused is the tool error for a provider token without scope, logged; nil
 // when the call may go on: the token holds it, or the tunnel's secret let the
 // call in, which opens everything.
@@ -71,7 +65,7 @@ func (c Context) Refused(ctx context.Context, tool, scope string, start time.Tim
 		return nil
 	}
 	c.Logged(ctx, tool, "refused", start)
-	return Failed("This sign-in can't use the terminal: " + tool + " needs the " + scope + " scope.")
+	return errors.Refused(tool, scope)
 }
 
 // Terminal is the terminal at url, or the tool error saying why not,
@@ -81,17 +75,17 @@ func (c Context) Refused(ctx context.Context, tool, scope string, start time.Tim
 func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time) (attach.Terminal, *sdk.CallToolResult) {
 	if c.Origins == nil || c.Attached == nil {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, Failed("This run serves no terminal.")
+		return nil, errors.NoTerminal()
 	}
 	origin, err := c.Origins.From(url)
 	if err != nil {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, Failed(err.Error() + ". terminal_sessions lists the terminals.")
+		return nil, errors.Unlisted(err)
 	}
 	term, ok := c.Attached.Terminal(origin.Index)
 	if !ok {
 		c.Logged(ctx, tool, "refused", start)
-		return nil, Failed(url + " is not a terminal: origin " + strconv.Itoa(origin.Index) + " is " + string(origin.Scheme) + ". terminal_sessions lists the terminals.")
+		return nil, errors.NotATerminal(url, origin)
 	}
 	if refusal := c.Refused(ctx, tool, auth.Scope(origin.Scheme), start); refusal != nil {
 		return nil, refusal

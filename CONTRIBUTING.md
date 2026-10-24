@@ -26,7 +26,7 @@ Deep-link by filename; line numbers will drift.
 | Docker provider of `Target` and `Targets`      | [`v1alpha1/attach/docker/`](./v1alpha1/attach/docker)            |
 | Local-program provider, pty settings, the terminal shim (`ttyshim/`, rebuilt by `make ttyshim`), and pipes on a machine with no pseudo-terminals | [`v1alpha1/attach/shell/`](./v1alpha1/attach/shell)             |
 | The MCP server served to agents on the control path | [`v1alpha1/mcp/`](./v1alpha1/mcp) |
-| What every MCP tool shares, and one package per tool | [`v1alpha1/mcp/tool/`](./v1alpha1/mcp/tool), [`v1alpha1/mcp/tools/`](./v1alpha1/mcp/tools) |
+| What every MCP tool shares, every tool error it answers, and one package per tool | [`v1alpha1/mcp/tool/`](./v1alpha1/mcp/tool), [`v1alpha1/mcp/errors/`](./v1alpha1/mcp/errors), [`v1alpha1/mcp/tools/`](./v1alpha1/mcp/tools) |
 | Experiments: the only way in to what lives under `v0exp1/internal/` | [`v0exp1/v0exp1.go`](./v0exp1/v0exp1.go) |
 | The shell built in for a machine with none (Elvish), and the commands it brings (u-root) | [`v0exp1/internal/shell/builtin/`](./v0exp1/internal/shell/builtin) |
 | Ring of tunneld's own log lines (`logs.Log`)   | [`v1alpha1/logs/`](./v1alpha1/logs)                             |

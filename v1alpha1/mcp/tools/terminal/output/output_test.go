@@ -116,20 +116,3 @@ func TestWait(t *testing.T) {
 		})
 	}
 }
-
-// TestUnreadable pins the tool error for a cursor a read cannot use.
-func TestUnreadable(t *testing.T) {
-	c, got := logged(t)
-	for err, says := range map[error]string{
-		attach.ErrStaleCursor: "not this terminal's",
-		attach.ErrBadCursor:   "not a cursor",
-	} {
-		r := Unreadable(c, t.Context(), "a_tool", err, time.Now())
-		if r == nil || !r.IsError || !strings.Contains(r.Content[0].(*sdk.TextContent).Text, says) {
-			t.Errorf("Unreadable(%v) = %+v, want a tool error saying %q", err, r, says)
-		}
-	}
-	if !strings.Contains(got(), "ended=refused") {
-		t.Errorf("log %q, want the refusals", got())
-	}
-}

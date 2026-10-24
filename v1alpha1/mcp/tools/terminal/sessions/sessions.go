@@ -10,6 +10,7 @@ import (
 	ltv1 "github.com/cnuss/libtunnel/v1"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
 
@@ -57,7 +58,7 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	case v1.ExecScheme, v1.AttachScheme, v1.HttpScheme:
 	default:
 		c.Logged(ctx, "terminal_sessions", "refused", start)
-		return tool.Failed("scheme must be exec, attach or http."), Out{}, nil
+		return errors.UnknownScheme(), Out{}, nil
 	}
 	// Listing needs no scope beyond what let the call in: acting on an
 	// origin is what a tool asks a scope for. Each by its index among all

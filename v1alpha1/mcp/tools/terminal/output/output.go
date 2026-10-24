@@ -1,16 +1,17 @@
 // Package output is what the terminal tools that read a program's output
-// share: when a wait ends (WaitFor), what it answers (Reply), the wait
-// itself, and the tool error for a cursor a terminal refused.
+// share: when a wait ends (WaitFor), what it answers (Reply), and the wait
+// itself.
 package output
 
 import (
 	"context"
-	"errors"
+	stderrors "errors"
 	"regexp"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 )
 
@@ -55,7 +56,7 @@ func Wait(c tool.Context, ctx context.Context, name string, term attach.Terminal
 	until, err := w.Pattern()
 	if err != nil {
 		c.Logged(ctx, name, "refused", start)
-		return Reply{}, tool.Failed("until is not a regular expression: " + err.Error() + ".")
+		return Reply{}, errors.NotAPattern(err)
 	}
 	idle := defaultIdle
 	if w.IdleMs != nil {
@@ -69,23 +70,10 @@ func Wait(c tool.Context, ctx context.Context, name string, term attach.Terminal
 	defer cancel()
 	got, matched, err := term.Wait(waiting, reader, cursor, until, idle)
 	if err != nil {
-		return Reply{}, Unreadable(c, ctx, name, err, start)
+		c.Logged(ctx, name, "refused", start)
+		return Reply{}, errors.Unreadable(err)
 	}
-	reply := Reply{Output: got, Matched: matched, TimedOut: !matched && errors.Is(waiting.Err(), context.DeadlineExceeded)}
+	reply := Reply{Output: got, Matched: matched, TimedOut: !matched && stderrors.Is(waiting.Err(), context.DeadlineExceeded)}
 	reply.Text, reply.Truncated = tool.Capped(reply.Text)
 	return reply, nil
-}
-
-// Unreadable is the tool error for a read the terminal refused, logged: a
-// cursor not its own, from another terminal or before tunneld started
-// again, or one no terminal gave.
-func Unreadable(c tool.Context, ctx context.Context, name string, err error, start time.Time) *sdk.CallToolResult {
-	c.Logged(ctx, name, "refused", start)
-	if errors.Is(err, attach.ErrStaleCursor) {
-		return tool.Failed("That cursor is not this terminal's: it came from another terminal, or from before tunneld started again, so the output it points into is gone. Leave cursor out to read on from where this sign-in last stopped.")
-	}
-	if errors.Is(err, attach.ErrBadCursor) {
-		return tool.Failed("That is not a cursor: pass back one a terminal tool answered, or leave it out.")
-	}
-	return tool.Failed(err.Error() + ".")
 }

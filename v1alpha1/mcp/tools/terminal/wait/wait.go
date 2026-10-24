@@ -8,6 +8,7 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
 )
@@ -32,7 +33,7 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	start := time.Now()
 	if _, err := in.Pattern(); err != nil {
 		c.Logged(ctx, "terminal_wait", "refused", start)
-		return tool.Failed("until is not a regular expression: " + err.Error() + "."), output.Reply{}, nil
+		return errors.NotAPattern(err), output.Reply{}, nil
 	}
 	term, refusal := c.Terminal(ctx, "terminal_wait", in.URL, start)
 	if refusal != nil {

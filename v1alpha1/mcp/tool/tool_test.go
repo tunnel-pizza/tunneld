@@ -37,15 +37,6 @@ type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
-// TestFailed pins a tool error: an error result carrying the text, for the
-// model to read.
-func TestFailed(t *testing.T) {
-	r := Failed("nope")
-	if !r.IsError || len(r.Content) != 1 || r.Content[0].(*sdk.TextContent).Text != "nope" {
-		t.Errorf("Failed = %+v", r)
-	}
-}
-
 // TestRefused pins the scope check: the secret, and a token holding the
 // scope, go on; a token without it gets a tool error naming the scope, and
 // the call is logged as refused.
@@ -132,8 +123,8 @@ func TestTerminal(t *testing.T) {
 		"another scheme's scope":           {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/?2", nil, "a_tool needs the tunnel:attach scope"},
 		"an origin that is not a terminal": {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/", nil, "https://0tabc.tunneld.domain/ is not a terminal: origin 0 is http"},
 		"past the list":                    {Context{Origins: origins.New(opts...), Attached: run}, exec, "https://0tabc.tunneld.domain/?5", nil, "names origin 5"},
-		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal."},
-		"a run with no origins":            {Context{Attached: run}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal."},
+		"a run serving nothing":            {Context{Origins: origins.New(opts...)}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal"},
+		"a run with no origins":            {Context{Attached: run}, t.Context(), "https://0tabc.tunneld.domain/?1", nil, "This run serves no terminal"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, got := logged(t)

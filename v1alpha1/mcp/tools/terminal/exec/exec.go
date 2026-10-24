@@ -8,6 +8,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
 )
@@ -34,13 +35,13 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	start := time.Now()
 	if len(in.Input) == 0 {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("Nothing to send: input needs at least one step."), output.Reply{}, nil
+		return errors.NothingToSend(), output.Reply{}, nil
 	}
 	// Checked before anything is typed: a pattern refused after would leave
 	// the input sent and its reply unread.
 	if _, err := in.Pattern(); err != nil {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("until is not a regular expression: " + err.Error() + "."), output.Reply{}, nil
+		return errors.NotAPattern(err), output.Reply{}, nil
 	}
 	term, refusal := c.Terminal(ctx, "terminal_exec", in.URL, start)
 	if refusal != nil {
@@ -50,7 +51,7 @@ func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*s
 	sent, err := term.Send(reader, in.Input...)
 	if err != nil {
 		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed(err.Error() + "."), output.Reply{}, nil
+		return errors.Failed(err), output.Reply{}, nil
 	}
 	if in.Until == "" && in.IdleMs != nil && *in.IdleMs == 0 {
 		c.Logged(ctx, "terminal_exec", "sent", start)
