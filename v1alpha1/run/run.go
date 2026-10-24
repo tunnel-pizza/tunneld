@@ -68,8 +68,11 @@ type RunImpl struct {
 
 	// cmd is the command the run belongs to: its streams, and whether
 	// somebody is watching them.
-	cmd      *cobra.Command
-	origins  v1.Origins
+	cmd *cobra.Command
+	// origins is where the run's origins arrive, each value the whole set;
+	// current is the latest, what the live tunnel was minted and shown with.
+	origins  <-chan v1.Origins
+	current  v1.Origins
 	attached attach.Attached
 	cache    cache.Cache
 	// tracking is what the run settled on, saved beside the spec with the
@@ -138,8 +141,10 @@ func WithLog(log *slog.Logger) Option {
 // WithCommand sets the command the run belongs to: the streams it reports on.
 func WithCommand(cmd *cobra.Command) Option { return func(r *RunImpl) { r.cmd = cmd } }
 
-// WithOrigins sets the origins the run exposes, as the operator typed them.
-func WithOrigins(origins v1.Origins) Option { return func(r *RunImpl) { r.origins = origins } }
+// WithOrigins sets where the origins the run exposes arrive: the first value
+// before the first mint, and each later one, the whole set, a new tunnel from
+// the spec the run saved. Closed, the run keeps the set it has.
+func WithOrigins(origins <-chan v1.Origins) Option { return func(r *RunImpl) { r.origins = origins } }
 
 // WithAttached sets what the origins are attached to: told the addresses they
 // answer on, and how a viewer asks the run to end.
@@ -207,10 +212,11 @@ func WithAuth(a auth.Auth) Option {
 }
 
 // Run is one run's tunnel, from its spec to its end: mint, up, wait — and
-// again from the top whenever a new spec arrives while it waits, the tunnel
-// it has stopped and drained before the next is minted. It returns nil for a
-// run told to stop — a signal, or a viewer asking — and the tunnel's error
-// when one fails to come up or ends on its own.
+// again from the top whenever a new spec or a new set of origins arrives
+// while it waits, the tunnel it has stopped and drained before the next is
+// minted. It returns nil for a run told to stop — a signal, or a viewer
+// asking — and the tunnel's error when one fails to come up or ends on its
+// own.
 func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 	run := *r
 	v1.Apply(&run, opts...)
@@ -232,6 +238,27 @@ func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 		run.router.Cancel()
 	}()
 
+	// The first set, before the first mint. One already sent is taken even
+	// when ctx is done, so a run stopped early still mints with its origins.
+	if run.origins != nil {
+		var first v1.Origins
+		ok := true
+		select {
+		case first, ok = <-run.origins:
+		default:
+			select {
+			case first, ok = <-run.origins:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		if ok {
+			run.current = first
+		} else {
+			run.origins = nil
+		}
+	}
+
 	spec := run.spec
 	for {
 		tun, stop := run.mint(ctx, spec)
@@ -249,10 +276,10 @@ func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 			return err
 		}
 
-		// A new spec is a new tunnel: this one ends, and drains, before the
-		// next is minted from it — one tunnel at a time, and never two
-		// holding the same hostname.
-		run.log.Info("a new spec arrived; replacing the tunnel")
+		// A new spec or set of origins is a new tunnel: this one ends, and
+		// drains, before the next is minted — one tunnel at a time, and never
+		// two holding the same hostname.
+		run.log.Info("replacing the tunnel")
 		stop()
 		<-tun.Done()
 		if ctx.Err() != nil {
@@ -302,7 +329,7 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 		WithHeader(r.auth.Header()).
 		// What the tunnel serves, so the provider can say so to the
 		// tunnel's owner without asking the tunnel. Sent on every mint.
-		WithHeader(originsHeader(r.origins)).
+		WithHeader(originsHeader(r.current)).
 		WithHeader(hostHeader()).
 		WithHeader(agentHeader()).
 		WithLogger(log).
@@ -320,7 +347,7 @@ func (r *RunImpl) mint(ctx context.Context, spec string) (libtunnel.TunnelV1, co
 // saved, a waiting launcher handed back, the stop hint. It answers with the
 // spec it saved; a tunnel that never comes up is the error.
 func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error) {
-	cmd, log, origins, attached, spec := r.cmd, r.log, r.origins, r.attached, r.cache
+	cmd, log, origins, attached, spec := r.cmd, r.log, r.current, r.attached, r.cache
 	stdout, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
 	// Something turning, because the wait below is the long one: minting,
@@ -575,12 +602,13 @@ func (r *RunImpl) up(ctx context.Context, tun libtunnel.TunnelV1) (string, error
 	return saved, nil
 }
 
-// wait blocks until the run is over or a new spec arrives for it. A new spec
-// is next, with respec true, unless it differs from the tunnel's only in its
-// messages (messagesOnly): those are learned and saved in place, and the run
-// keeps waiting. Otherwise it says how the run ended: nil for a
-// signal or a viewer asking it to end, and the tunnel's own verdict when it
-// ends first.
+// wait blocks until the run is over or a new spec or set of origins arrives
+// for it. A new spec is next, with respec true, unless it differs from the
+// tunnel's only in its messages (messagesOnly): those are learned and saved in
+// place, and the run keeps waiting. A new set of origins becomes the run's,
+// and next is the spec saved for tun, with respec true. Otherwise it says how
+// the run ended: nil for a signal or a viewer asking it to end, and the
+// tunnel's own verdict when it ends first.
 //
 // saved is the spec up saved for tun. The cache hands on every spec it takes,
 // that one included, and it is this tunnel already: it is passed over. The
@@ -626,6 +654,14 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 			}
 			log.Info("a new spec arrived for the run")
 			return spec, true, nil
+		case changed, ok := <-r.origins:
+			if !ok {
+				r.origins = nil
+				continue
+			}
+			log.Info("a new set of origins arrived for the run", "count", changed.Len())
+			r.current = changed
+			return saved, true, nil
 		case <-ctx.Done():
 			waiting = false
 		case <-tun.Done():
