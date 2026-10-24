@@ -8,8 +8,11 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors/refusals"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
-	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tools/terminal/output"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/output"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/types"
 )
 
 // Tool is terminal_exec.
@@ -18,48 +21,51 @@ var Tool = tool.New(sdk.Tool{
 	Title:       "Run in a terminal",
 	Description: "Types input into a terminal on this machine, at url, then waits for the reply as terminal_wait does. Needs the scope of the origin's scheme: tunnel:exec for a program.",
 	Annotations: &sdk.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(false)},
-}, run)
+}, run())
 
 // In is what terminal_exec takes.
 type In struct {
 	URL   string         `json:"url" jsonschema:"the address of a terminal on this machine: https://hostname/, or https://hostname/?n for the origin at index n"`
 	Input []attach.Input `json:"input" jsonschema:"what to send, in order: each step exactly one of text or key"`
-	output.WaitFor
+	output.For
 }
 
 // run types into the terminal url names, then waits for the reply from
 // where this sign-in last read (where the input went in, the first time),
 // unless told to answer at once.
-func run(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, output.Reply, error) {
-	start := time.Now()
-	if len(in.Input) == 0 {
-		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("Nothing to send: input needs at least one step."), output.Reply{}, nil
-	}
-	// Checked before anything is typed: a pattern refused after would leave
-	// the input sent and its reply unread.
-	if _, err := in.Pattern(); err != nil {
-		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed("until is not a regular expression: " + err.Error() + "."), output.Reply{}, nil
-	}
-	term, refusal := c.Terminal(ctx, "terminal_exec", in.URL, start)
-	if refusal != nil {
-		return refusal, output.Reply{}, nil
-	}
-	reader := c.Caller(ctx)
-	sent, err := term.Send(reader, in.Input...)
-	if err != nil {
-		c.Logged(ctx, "terminal_exec", "refused", start)
-		return tool.Failed(err.Error() + "."), output.Reply{}, nil
-	}
-	if in.Until == "" && in.IdleMs != nil && *in.IdleMs == 0 {
+func run() tool.RunFunc[In, types.Reply] {
+	return func(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, types.Reply, error) {
+		start := time.Now()
+		if len(in.Input) == 0 {
+			c.Logged(ctx, "terminal_exec", "refused", start)
+			return errors.ErrExec(refusals.NothingToSend())
+		}
+		// Checked before anything is typed: a pattern refused after would leave
+		// the input sent and its reply unread.
+		until, err := in.Pattern()
+		if err != nil {
+			c.Logged(ctx, "terminal_exec", "refused", start)
+			return errors.ErrExec(refusals.NotAPattern(err))
+		}
+		term, err := c.Terminal(ctx, "terminal_exec", in.URL, start)
+		if err != nil {
+			return errors.ErrExec(err)
+		}
+		reader := c.Caller(ctx)
+		sent, err := term.Send(reader, in.Input...)
+		if err != nil {
+			c.Logged(ctx, "terminal_exec", "refused", start)
+			return errors.ErrExec(refusals.Unsendable(err))
+		}
+		if in.Until == "" && in.IdleMs != nil && *in.IdleMs == 0 {
+			c.Logged(ctx, "terminal_exec", "sent", start)
+			return nil, types.Reply{Output: attach.Output{Cursor: sent}}, nil
+		}
+		reply, err := output.Wait(c, ctx, "terminal_exec", term, reader, sent, until, in.For, start)
+		if err != nil {
+			return errors.ErrExec(err)
+		}
 		c.Logged(ctx, "terminal_exec", "sent", start)
-		return nil, output.Reply{Output: attach.Output{Cursor: sent}}, nil
+		return nil, reply, nil
 	}
-	reply, refusal := output.Wait(c, ctx, "terminal_exec", term, reader, sent, in.WaitFor, start)
-	if refusal != nil {
-		return refusal, output.Reply{}, nil
-	}
-	c.Logged(ctx, "terminal_exec", "sent", start)
-	return nil, reply, nil
 }

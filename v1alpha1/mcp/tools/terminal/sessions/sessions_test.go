@@ -7,10 +7,12 @@ import (
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
+	v1types "github.com/tunnel-pizza/tunneld/v1/types"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/cache"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool/tooltest"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/types"
 )
 
 // TestTerminalSessionsListing pins how terminal_sessions is listed: its
@@ -25,9 +27,15 @@ func TestTerminalSessionsListing(t *testing.T) {
 		t.Errorf("annotations = %+v, want read-only, idempotent, closed-world", a)
 	}
 	schema, _ := json.Marshal(listed.OutputSchema)
-	for _, s := range []string{"a bare ?1 (not ?n=1)", "never its arguments", `"index"`, `"ref"`, `"scheme"`} {
+	for _, s := range []string{"a bare ?1 (not ?n=1)", "never its arguments", `"index"`, `"ref"`, `"scheme"`, "a program on this machine", "a container", "a web address"} {
 		if !strings.Contains(string(schema), s) {
 			t.Errorf("outputSchema %s lacks %q", schema, s)
+		}
+	}
+	input, _ := json.Marshal(listed.InputSchema)
+	for _, s := range []string{"exec for its programs", "attach for its containers", "http for the web addresses"} {
+		if !strings.Contains(string(input), s) {
+			t.Errorf("inputSchema %s lacks %q", input, s)
 		}
 	}
 	for _, s := range []string{"origins of one scheme", "index"} {
@@ -43,15 +51,15 @@ func TestTerminalSessionsListing(t *testing.T) {
 // that is not one is a tool error, with no origin.
 func TestTerminalSessions(t *testing.T) {
 	origins := tooltest.Origins(t, "http://localhost:3000", "exec:///bin/sh", "attach://dockerd/web", "exec:///usr/bin/k9s?arg=--readonly")
-	execs := &Out{Sessions: []Session{
+	execs := &types.Sessions{Sessions: []v1types.Session{
 		{Origin: v1.Origin{Index: 1, Scheme: v1.ExecScheme, Ref: "/bin/sh"}},
 		{Origin: v1.Origin{Index: 3, Scheme: v1.ExecScheme, Ref: "/usr/bin/k9s"}},
 	}}
-	containers := &Out{Sessions: []Session{{Origin: v1.Origin{Index: 2, Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"}}}}
+	containers := &types.Sessions{Sessions: []v1types.Session{{Origin: v1.Origin{Index: 2, Scheme: v1.AttachScheme, Provider: v1.DockerProvider, Ref: "web"}}}}
 	for name, tc := range map[string]struct {
 		access *auth.Access
 		scheme string
-		want   *Out
+		want   *types.Sessions
 		says   string
 	}{
 		"the secret, exec":              {nil, "exec", execs, ""},
@@ -71,8 +79,8 @@ func TestTerminalSessions(t *testing.T) {
 			}
 			var msg struct {
 				Result struct {
-					IsError           bool `json:"isError"`
-					StructuredContent *Out `json:"structuredContent"`
+					IsError           bool            `json:"isError"`
+					StructuredContent *types.Sessions `json:"structuredContent"`
 					Content           []struct {
 						Text string `json:"text"`
 					} `json:"content"`
@@ -94,11 +102,11 @@ func TestTerminalSessions(t *testing.T) {
 			if tc.want != nil && (r.StructuredContent == nil || !reflect.DeepEqual(r.StructuredContent.Sessions, tc.want.Sessions)) {
 				t.Errorf("structuredContent = %+v, want %+v", r.StructuredContent, tc.want)
 			}
-			machine := Machine{Hostname: "box.local", Username: "christian", PID: 16653, PWD: "/Users/christian/cnuss"}
+			machine := v1types.Machine{Hostname: "box.local", Username: "christian", PID: 16653, PWD: "/Users/christian/cnuss"}
 			if tc.want != nil && r.StructuredContent.Machine != machine {
 				t.Errorf("machine = %+v, want %+v, from the run's .env", r.StructuredContent.Machine, machine)
 			}
-			if tc.says != "" && (len(r.Content) != 1 || !strings.Contains(r.Content[0].Text, tc.says) || strings.Contains(body, "/bin/sh")) {
+			if tc.says != "" && (len(r.Content) == 0 || !strings.Contains(body, tc.says) || strings.Contains(body, "/bin/sh")) {
 				t.Errorf("refusal %s, want %q and no origin", body, tc.says)
 			}
 		})
@@ -124,7 +132,7 @@ func TestTerminalSessionsAddresses(t *testing.T) {
 			}
 			var msg struct {
 				Result struct {
-					StructuredContent *Out `json:"structuredContent"`
+					StructuredContent *types.Sessions `json:"structuredContent"`
 				} `json:"result"`
 			}
 			data, _ := strings.CutPrefix(strings.TrimSpace(body[strings.Index(body, "data: "):]), "data: ")
@@ -158,10 +166,10 @@ func TestTerminalSessionsWithoutTerminals(t *testing.T) {
 // TestMachineWithoutACache pins a server with no cache, or one that holds no
 // tracking yet: the machine says nothing rather than guessing.
 func TestMachineWithoutACache(t *testing.T) {
-	if got := machine(tool.Context{}); got != (Machine{}) {
+	if got := machine(tool.Context{}); got != (v1types.Machine{}) {
 		t.Errorf("machine() = %+v, want nothing", got)
 	}
-	if got := machine(tool.Context{Cache: cache.None{}}); got != (Machine{}) {
+	if got := machine(tool.Context{Cache: cache.None{}}); got != (v1types.Machine{}) {
 		t.Errorf("machine() from None = %+v, want nothing", got)
 	}
 }
