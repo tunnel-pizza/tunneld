@@ -41,6 +41,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/motd"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
 	"rsc.io/qr"
 )
 
@@ -833,6 +834,31 @@ func (f *fakeMotd) Learn(raw []string, _ v1.Logger) {
 	}
 }
 
+// sendingOrigins is a Run whose origins arrive on origins instead of the
+// builder's, so a case can send the run a new set while it waits.
+type sendingOrigins struct {
+	run     Run
+	origins chan v1.Origins
+}
+
+func (s sendingOrigins) Run(ctx context.Context, opts ...run.Option) error {
+	return s.run.Run(ctx, append(opts, run.WithOrigins(s.origins))...)
+}
+
+// originsOf is the origins at urls, in order.
+func originsOf(t *testing.T, urls ...string) v1.Origins {
+	t.Helper()
+	var opts []origins.Option
+	for _, raw := range urls {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts = append(opts, origins.WithOrigins(origins.NewOrigin(u)))
+	}
+	return origins.New(opts...)
+}
+
 // runHarness is run with every collaborator faked except the one that is
 // pure: the shown's panel half, because its URL and the page it serves are
 // what the assertions check. order records the effects that matter in the
@@ -1235,6 +1261,47 @@ func TestRun(t *testing.T) {
 		const kept = "the spec sent is the one this tunnel already has; keeping the tunnel"
 		if n := strings.Count(h.stderr.String(), kept); n != 2 {
 			t.Errorf("%q logged %d times, want twice: once per replay, never for the run's own save", kept, n)
+		}
+	})
+
+	// A new set of origins while the run waits is a new tunnel too, minted
+	// from the spec the run saved, so the hostname stays: the provider is
+	// told the new set, and every address is shown again.
+	t.Run("a new set of origins replaces the tunnel from its saved spec", func(t *testing.T) {
+		first, next := live(public), live(public)
+		h := newRunHarness(t, first, ":3000")
+		h.tunnels = append(h.tunnels, next)
+		next.order = &h.order
+		changes := make(chan v1.Origins, 1)
+		changes <- originsOf(t, "http://localhost:3000")
+		v1.Apply(h.b, WithRun(sendingOrigins{run.New(), changes}))
+		ctx, cancel := context.WithCancel(t.Context())
+		saves := 0
+		h.cache.onSave = func() {
+			saves++
+			if saves == 1 {
+				changes <- originsOf(t, "http://localhost:3000", "http://localhost:4000")
+				return
+			}
+			cancel()
+		}
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v, want nil after a signal", err)
+		}
+		if want := []string{"", first.Serialize()}; !slices.Equal(h.specs, want) {
+			t.Errorf("minted from %q, want the cached spec then the one the run saved", h.specs)
+		}
+		if want := v1.OriginsHeader + ": http://localhost:3000"; !slices.Contains(first.headers, want) {
+			t.Errorf("first tunnel's headers = %q, want %q", first.headers, want)
+		}
+		if want := v1.OriginsHeader + ": http://localhost:3000, http://localhost:4000"; !slices.Contains(next.headers, want) {
+			t.Errorf("next tunnel's headers = %q, want %q", next.headers, want)
+		}
+		if want := public + "\n" + public + "\n"; h.stdout.String() != want {
+			t.Errorf("stdout = %q, want %q: the address, then the panel's", h.stdout.String(), want)
+		}
+		if want := "  -> http://localhost:4000\n"; !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("stderr %q does not contain %q", h.stderr.String(), want)
 		}
 	})
 

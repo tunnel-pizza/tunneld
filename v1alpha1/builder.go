@@ -674,6 +674,11 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		hint = detachHint
 	}
 
+	// The run takes its origins from a channel; the settled set is the only
+	// one sent.
+	settled := make(chan v1.Origins, 1)
+	settled <- origins
+
 	// A spec becomes a tunnel, the tunnel comes up and is shown, and the run
 	// waits on it — the run's, start to end. What was settled above is handed
 	// over with it, and so is everything a tunnel is shown through.
@@ -685,7 +690,7 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		run.WithLocalURL(local),
 		run.WithLog(log),
 		run.WithCommand(cmd),
-		run.WithOrigins(origins),
+		run.WithOrigins(settled),
 		run.WithAttached(attached),
 		run.WithCache(spec),
 		run.WithTracking(b.tracking(origins)),
