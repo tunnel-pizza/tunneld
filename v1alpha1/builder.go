@@ -32,6 +32,7 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/logs"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/preflight"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/router"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/run"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/util/netutil"
@@ -183,8 +184,9 @@ var flagEnv = map[string]string{
 
 	"identity-providers": v1.IdentityProvidersEnv,
 
-	"qr":  v1.QREnv,
-	"mcp": v1.MCPEnv,
+	"qr":        v1.QREnv,
+	"mcp":       v1.MCPEnv,
+	"preflight": v1.PreflightEnv,
 }
 
 // Command assembles the configured command. It is the terminal step; the
@@ -336,6 +338,8 @@ to stderr. More: https://github.com/tunnel-pizza/tunneld#readme`
 			"print the address as a QR code on stderr once the tunnel is up [$"+v1.QREnv+"]")
 		cmd.Flags().BoolVar(&b.mcp, "mcp", b.mcp,
 			"serve MCP on stdin and stdout, for the MCP client that started this run [$"+v1.MCPEnv+"]")
+		cmd.Flags().BoolVar(&b.preflight, "preflight", b.preflight,
+			"check every network path a tunnel needs and exit, minting nothing [$"+v1.PreflightEnv+"]")
 
 		// Docker's rule: options before the image. Flag parsing stops at the
 		// first origin, and every word after it is positional — so the words
@@ -433,6 +437,12 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 		return err
 	}
 	stderr := cmd.ErrOrStderr()
+
+	// Ahead of everything a run sets up: it needs no origins, no log file
+	// and no logger, and opens nothing.
+	if b.preflight {
+		return preflight.New(b.provider).Run(ctx).Write(cmd.OutOrStdout())
+	}
 
 	// An MCP run's stdin and stdout are its client's (mcp.WithStdio), so what
 	// the run would print there goes to stderr.

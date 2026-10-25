@@ -357,6 +357,10 @@ type BuilderImpl struct {
 	// client that started it. Flag-backed like the rest; off unless asked for.
 	mcp bool
 
+	// preflight is whether the command checks the network paths a tunnel
+	// depends on and exits instead of running. Flag-backed like the rest.
+	preflight bool
+
 	// pid is how the run is found and handed back from outside it, for the
 	// npm launcher; nil, the default, is neither. See WithPid.
 	pid Pid

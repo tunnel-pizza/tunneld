@@ -245,6 +245,11 @@ const (
 	// would print there goes to stderr.
 	MCPEnv = "TUNNELD_MCP"
 
+	// PreflightEnv names whether a run checks the network paths a tunnel
+	// depends on and exits, minting nothing — the mirror of --preflight,
+	// which beats it. Any value strconv.ParseBool accepts works.
+	PreflightEnv = "TUNNELD_PREFLIGHT"
+
 	// IdentityProvidersEnv names the identity providers to look for a mint
 	// credential with, comma-separated and in order — the mirror of
 	// --identity-providers, which beats it. Empty turns the lookup off.
