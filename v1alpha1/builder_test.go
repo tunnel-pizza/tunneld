@@ -1305,6 +1305,44 @@ func TestRun(t *testing.T) {
 		}
 	})
 
+	// A set with no origin in it is thrown away, before the first mint and
+	// while the run waits: the run mints with the next set that has one.
+	t.Run("an empty set of origins is thrown away", func(t *testing.T) {
+		first, next := live(public), live(public)
+		h := newRunHarness(t, first, ":3000")
+		h.tunnels = append(h.tunnels, next)
+		next.order = &h.order
+		changes := make(chan v1.Origins, 2)
+		changes <- originsOf(t)
+		changes <- originsOf(t, "http://localhost:3000")
+		v1.Apply(h.b, WithRun(sendingOrigins{run.New(), changes}))
+		ctx, cancel := context.WithCancel(t.Context())
+		saves := 0
+		h.cache.onSave = func() {
+			saves++
+			if saves == 1 {
+				go func() {
+					changes <- originsOf(t)
+					changes <- originsOf(t, "http://localhost:3000", "http://localhost:4000")
+				}()
+				return
+			}
+			cancel()
+		}
+		if err := h.run(t, ctx); err != nil {
+			t.Fatalf("run() = %v, want nil after a signal", err)
+		}
+		if len(h.specs) != 2 {
+			t.Errorf("minted %d times (%q), want twice: once per set with an origin", len(h.specs), h.specs)
+		}
+		if want := v1.OriginsHeader + ": http://localhost:3000"; !slices.Contains(first.headers, want) {
+			t.Errorf("first tunnel's headers = %q, want %q", first.headers, want)
+		}
+		if want := v1.OriginsHeader + ": http://localhost:3000, http://localhost:4000"; !slices.Contains(next.headers, want) {
+			t.Errorf("next tunnel's headers = %q, want %q", next.headers, want)
+		}
+	})
+
 	t.Run("a new spec whose tunnel never comes up ends the run", func(t *testing.T) {
 		cause := errors.New("the edge refused the spec")
 		h := newRunHarness(t, live(public), ":3000")
