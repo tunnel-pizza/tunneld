@@ -1442,25 +1442,60 @@ mirrored here.
 `tunneld --preflight` (or `npx tunneld --preflight`) answers, in seconds and
 before anything is built around it, whether a tunnel can come up on this
 network and, if not, what is in the way. It walks every path a run depends on,
-one line per check, prints the route a run would take, and exits. It mints
-nothing and opens no tunnel: every check is a lookup, a request that changes
-nothing, or a handshake closed as soon as it completes. `--provider` picks the
-host checked, as for a run.
+grouped under Network, DNS, Mint, Edge and Install, each line printed as its
+check runs (the name first, the result and its mark, `✓`, `!` or `✗`, at the
+end of the line when it finishes), then the route a run would take and one
+sentence saying whether tunneld will work here and how, and exits. It mints nothing and opens no tunnel: every check is a lookup,
+a request that changes nothing, or a handshake closed as soon as it completes.
+`--provider` picks the host checked, as for a run.
+
+In a sandbox whose only way out is an HTTPS proxy, with no DNS at all:
 
 ```text
-ok    proxy: none for tunnel.pizza:443
-ok    dns tunnel.pizza: 104.21.33.129, 172.67.145.48
-ok    dns SRV _v2-origintunneld._tcp.argotunnel.com: region1.v2.argotunnel.com:7844, region2.v2.argotunnel.com:7844
-ok    dns DoH region1.v2.argotunnel.com: 198.41.192.7
-ok    https GET https://tunnel.pizza/: 200 OK, certificate issued by "WE1 (Google Trust Services)"
-ok    https POST https://tunnel.pizza/: 200 OK
-fail  edge QUIC (UDP 7844): write udp [::]:45623->198.41.200.13:7844: sendmsg: operation not permitted
-      allow UDP 7844 to the Cloudflare edge (198.41.192.0/24 and 198.41.200.0/24); a run falls back to TCP
-fail  edge HTTP/2 (TCP 7844): dial tcp 198.41.200.13:7844: i/o timeout
-      allow TCP 7844 to the Cloudflare edge (198.41.192.0/24 and 198.41.200.0/24), server name h2.cftunnel.com
-ok    relay: wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com
+tunneld preflight  tunnel.pizza
+
+Network
+  proxy           tunnel.pizza:443 goes through http://proxy.internal:3128; the edge on 7844 is dialed directly (HTTPS_PROXY=http://proxy.internal:3128)  ✓
+  without proxy   blocked without the proxy, so the proxy is the only way out: Get "https://tunnel.pizza/": dial tcp: lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✓
+  captive portal  plain HTTP does not get out, so a portal cannot be seen from here: Get "http://captive.apple.com/hotspot-detect.html": dial tcp: lookup captive.apple.com on 127.0.0.11:53: server misbehaving  !
+
+DNS
+  tunnel.pizza    lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✗
+                  → the system resolver cannot find tunnel.pizza
+  interception    nothing to check: the system resolver did not answer  ✓
+  made-up name    the system resolver did not answer  ✓
+  edge SRV        lookup _v2-origintunneld._tcp.argotunnel.com on 127.0.0.11:53: server misbehaving  ✗
+                  → SRV lookups are refused here; a run falls back to DNS-over-HTTPS
+  DoH             tunnel should retry: lookup region1.v2.argotunnel.com on 127.0.0.11:53: Post "https://dns.google/dns-query": dial tcp 8.8.8.8:443: connect: network is unreachable  ✗
+                  → DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked
+
+Mint  https://tunnel.pizza/
+  GET             200 OK, certificate issued by "WE1 (Google Trust Services)"  ✓
+  POST            200 OK  ✓
+  address check   through the proxy, which resolves the tunnel's name  ✓
+
+Edge  port 7844, or the relay on 443
+  QUIC            no edge address: DNS found none  ✗
+                  → allow DNS lookups of region1.v2.argotunnel.com
+  HTTP/2          no edge address: DNS found none  ✗
+                  → allow DNS lookups of region1.v2.argotunnel.com
+  relay           wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
+
+Install  this platform's binary
+  release         github.com 302 → github.com 302 → release-assets.githubusercontent.com 206 (Azure Blob storage)  ✓
+  npm             registry.npmjs.org 200 → registry.npmjs.org 206 (Cloudflare)  ✓
+
 route: relay
+tunneld will work here using an HTTPS mint through the proxy at proxy.internal:3128, the proxy's resolver, and an address check through the proxy, over the relay (a WebSocket on HTTPS 443).  ✓
 ```
+
+On an open network the last line is "tunneld will work here using a direct
+HTTPS mint to tunnel.pizza, DNS-over-HTTPS, and an address check on HTTPS 443,
+over direct QUIC (UDP 7844)". When it cannot, the sentence names the first
+thing in the way and what to ask for: "tunneld will not work here: the address
+check failed (...). A run cannot confirm its address without one of them:
+...". Color, on a terminal only, and never under `NO_COLOR`; a pipe or a file
+gets the same layout without escapes.
 
 A failing check is followed by what to ask of whoever controls the network.
 The report goes to stdout. The exit status is 0 when some route works and 1
@@ -1469,19 +1504,26 @@ gate on it.
 
 | Check | What it asks | When it fails |
 | ----- | ------------ | ------------- |
-| `proxy` | Whether `HTTPS_PROXY`/`NO_PROXY` send the provider through a proxy. Informational: a run dials the edge on 7844 directly, never through the proxy. | Never. |
-| `dns <provider>` | The provider's addresses from the system resolver. | The resolver cannot find it. |
-| `dns SRV` | The edge's SRV record, `_v2-origintunneld._tcp.argotunnel.com`, and its targets' addresses. | SRV lookups are refused; a run falls back to DNS-over-HTTPS. |
-| `dns DoH` | `region1.v2.argotunnel.com` over DNS-over-HTTPS, from `cloudflare-dns.com` and `dns.google` at pinned addresses. Its answer is the edge address when SRV gives none. | DoH is blocked. |
-| `https GET` | The provider's `/`, through the proxy a run would use, with the certificate's issuer, so a TLS-intercepting proxy is visible. A certificate tunneld does not trust is named by issuer, with where its CA goes: the system store or `SSL_CERT_FILE`, which Go reads (`NODE_EXTRA_CA_CERTS` it does not). | HTTPS to the provider does not get through. |
-| `https POST` | The provider's `/` again with a POST, the mint's method. The mint itself is `POST /tunnel`, which this never sends. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
-| `edge QUIC` | A QUIC handshake with the edge on UDP 7844, as `quic.cftunnel.com`. | UDP 7844 is blocked; a run falls back to TCP. |
-| `edge HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
-| `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or something answers TLS for the relay with a certificate tunneld does not trust, named by issuer as for `https GET`. |
+| `proxy` | The proxy variables set (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, either case, passwords left out) and whether the provider goes through one. A run takes it for the mint, the relay and the address check, and dials the edge on 7844 directly. | Never; a warning (`!`) when upper and lower case differ (Go reads the upper), when only `HTTP_PROXY` is set (HTTPS goes direct), when only `ALL_PROXY` is set (tunneld does not read it), or when the proxy is SOCKS (the relay speaks HTTP CONNECT only). |
+| `without proxy` | With a proxy only: the provider asked directly, so a proxy refusing it can be told apart from a network that does. When the proxy fails and this gets through, the mint's hint says to set `NO_PROXY=<provider>`. | Never. |
+| `captive portal` | The pages devices ask for to tell whether a network wants a sign-in, all at once over plain HTTP: Apple's (`captive.apple.com/hotspot-detect.html`, and older iOS's `www.apple.com/library/test/success.html`, both `Success`), Android and Chrome's (`connectivitycheck.gstatic.com/generate_204`, a 204), Windows' (`www.msftconnecttest.com/connecttest.txt`, `Microsoft Connect Test`) and Firefox's (`detectportal.firefox.com/success.txt`, `success`). Some portals let one through, often Apple's so a phone shows its sign-in sheet, and hold the rest. | Any of them answers otherwise, a redirect to a sign-in page above all, and the line names which and where it was sent; a warning when none gets out over plain HTTP, since no portal can then be seen. |
+| `<provider>` | The provider's addresses from the system resolver. | The resolver cannot find it. |
+| `interception` | Whether the system resolver's answer for the provider really is the provider: a private address never is, and any other has to present the provider's certificate. Answers differing from DNS-over-HTTPS prove nothing, since a CDN answers by where it is asked from. Through a proxy the answer is only reported, since a run does not use it. When the mint's GET fails after this, its hint names the interception. | The answer is private, or cannot present the provider's certificate: a hotel's or airport's portal, or a filtering resolver. |
+| `made-up name` | A name that cannot exist, `tunneld-preflight-<random>.example.com`, from the system resolver. | A warning when it answers: the resolver answers every name, as a captive portal or an advertising resolver does, and none of its answers can be trusted. |
+| `edge SRV` | The edge's SRV record, `_v2-origintunneld._tcp.argotunnel.com`, and its targets' addresses. | SRV lookups are refused; a run falls back to DNS-over-HTTPS. |
+| `DoH` | `region1.v2.argotunnel.com` over DNS-over-HTTPS, from `cloudflare-dns.com` and `dns.google` at pinned addresses. Its answer is the edge address when SRV gives none. | DoH is blocked. |
+| `GET` | The provider's `/`, through the proxy a run would use, with the certificate's issuer, so a TLS-intercepting proxy is visible. A certificate tunneld does not trust is named by issuer, with where its CA goes: the system store or `SSL_CERT_FILE`, which Go reads (`NODE_EXTRA_CA_CERTS` it does not). | HTTPS to the provider does not get through. |
+| `POST` | The provider's `/` again with a POST, the mint's method. The mint itself is `POST /tunnel`, which this never sends. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
+| `address check` | The step after the mint: a run asks for its new address from here and prints it only once that comes back through the tunnel. Through the proxy when one applies, which resolves the tunnel's name; otherwise the name over DNS-over-HTTPS, or the system resolver when DoH cannot be reached, and HTTPS 443 directly. No tunnel exists to ask for, so this is settled from the checks above. | There is no proxy, and neither DNS-over-HTTPS nor the system resolver answers: a run would mint and never print its address. |
+| `QUIC` | A QUIC handshake with the edge on UDP 7844, as `quic.cftunnel.com`. | UDP 7844 is blocked; a run falls back to TCP. |
+| `HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
+| `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or something answers TLS for the relay with a certificate tunneld does not trust, named by issuer as for `GET`. |
+| `release` | This platform's release binary, `https://github.com/tunnel-pizza/tunneld/releases/download/<version>/tunneld-<os>-<arch>` (`latest` for a build that is not a release), followed one redirect at a time and asked for its first byte only: `github.com` redirects to `release-assets.githubusercontent.com`, GitHub's CDN in front of Azure Blob storage, with a signed address that expires within the hour. The line is the chain of hosts and statuses. Informational: it does not change the route. | A host on the chain does not get through, or answers anything but the file. |
+| `npm` | This platform's package as `npx` fetches it: its metadata from the registry (`registry.npmjs.org`, Cloudflare, or `npm_config_registry`), then its tarball's first byte. `www.npmjs.com`, the website, is never on that path. Informational. | The registry or the tarball does not get through. |
 
 The route is the first of direct QUIC, direct HTTP/2 and the relay that works,
-in the order a run tries them; `none` when none does, or when the mint's GET
-or POST cannot get through.
+in the order a run tries them; `none` when none does, when the mint's GET or
+POST cannot get through, or when the address check cannot succeed.
 
 ## Running in a container
 
