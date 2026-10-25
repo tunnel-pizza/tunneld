@@ -441,7 +441,8 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 	// Ahead of everything a run sets up: it needs no origins, no log file
 	// and no logger, and opens nothing.
 	if b.preflight {
-		return preflight.New(b.provider, Version()).Run(ctx).Write(cmd.OutOrStdout())
+		out := cmd.OutOrStdout()
+		return preflight.New(b.provider, Version()).Run(ctx, out).Close(out)
 	}
 
 	// An MCP run's stdin and stdout are its client's (mcp.WithStdio), so what

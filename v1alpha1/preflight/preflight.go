@@ -31,7 +31,6 @@ import (
 	"github.com/quic-go/quic-go"
 	"golang.org/x/net/http/httpproxy"
 	"golang.org/x/net/websocket"
-	"golang.org/x/term"
 )
 
 // Route is how a run would reach the edge.
@@ -52,8 +51,12 @@ type Check struct {
 	Category string
 	Name     string
 	OK       bool
-	Detail   string
-	Hint     string
+	// Warn is a check that passed with something worth knowing, its Hint.
+	Warn   bool
+	Detail string
+	Hint   string
+	// Direct is set by the check made without the proxy when it got through.
+	Direct bool
 }
 
 // Report is every check in the order run, the route they add up to, and
@@ -108,6 +111,10 @@ type Preflight struct {
 	lookupSRV  func(ctx context.Context) ([]*net.SRV, error)
 	doh        func(ctx context.Context, host string) (string, error)
 	proxy      func(scheme, target string) *url.URL
+	getenv     func(string) string
+	captiveURL string
+	// private is whether an address is one no public name resolves to.
+	private func(string) bool
 
 	timeout time.Duration
 
@@ -143,8 +150,11 @@ func New(provider, version string) *Preflight {
 			_, srvs, err := net.DefaultResolver.LookupSRV(ctx, "v2-origintunneld", "tcp", "argotunnel.com")
 			return srvs, err
 		},
-		doh:   prober.LookupHost,
-		proxy: proxyFor,
+		doh:        prober.LookupHost,
+		proxy:      proxyFor,
+		getenv:     os.Getenv,
+		private:    bogon,
+		captiveURL: "http://connectivitycheck.gstatic.com/generate_204",
 		// Each check's own budget. The whole walk stays under a minute even
 		// when every path times out.
 		timeout:     5 * time.Second,
@@ -198,45 +208,73 @@ func proxyFor(scheme, target string) *url.URL {
 	return proxy
 }
 
-// Run walks every check in order and settles the route.
-func (p *Preflight) Run(ctx context.Context) Report {
-	var r Report
-	r.Provider = p.provider
-	in := func(category string) func(Check) {
-		return func(c Check) {
-			c.Category = category
-			r.Checks = append(r.Checks, c)
-		}
+// Run walks every check in order and settles the route, printing each to w
+// as it goes when w is not nil: its name when it starts, its result when it
+// ends.
+func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
+	r := Report{Provider: p.provider}
+	out := newPrinter(w, p.provider)
+	out.title()
+	step := func(category, name string, check func() Check) Check {
+		out.start(category, name)
+		c := check()
+		c.Category, c.Name = category, name
+		r.Checks = append(r.Checks, c)
+		out.end(c)
+		return c
 	}
-	network, dns, mint, edge, install := in("Network"), in("DNS"), in("Mint"), in("Edge"), in("Install")
 	host := hostOf(p.provider)
+	proxy := p.proxy("https", net.JoinHostPort(host, portOf(p.provider, "443")))
 
-	network(p.proxyCheck())
-	dns(p.dnsProvider(ctx, host))
+	step("Network", "proxy", p.proxyEnv)
+	var direct Check
+	if proxy != nil {
+		direct = step("Network", "without proxy", func() Check { return p.withoutProxy(ctx) })
+	}
+	step("Network", "captive portal", func() Check { return p.captivePortal(ctx) })
 
-	srv, edges := p.dnsSRV(ctx)
-	dns(srv)
-	doh, address := p.dnsDoH(ctx)
-	dns(doh)
+	var system []string
+	resolved := step("DNS", host, func() (c Check) {
+		c, system = p.dnsProvider(ctx, host)
+		return c
+	})
+	intercepted := step("DNS", "interception", func() Check { return p.interception(ctx, host, system, proxy != nil) })
+	step("DNS", "made-up name", func() Check { return p.madeUpName(ctx) })
+	var edges []string
+	step("DNS", "edge SRV", func() (c Check) {
+		c, edges = p.dnsSRV(ctx)
+		return c
+	})
+	var address string
+	doh := step("DNS", "DoH", func() (c Check) {
+		c, address = p.dnsDoH(ctx)
+		return c
+	})
 	if len(edges) == 0 && address != "" {
 		edges = []string{net.JoinHostPort(address, "7844")}
 	}
 
-	get, post := p.https(ctx, host)
-	mint(get)
-	mint(post)
-	proxy := p.proxy("https", net.JoinHostPort(host, portOf(p.provider, "443")))
-	confirm := p.addressCheck(proxy, get, r.Checks[1], doh)
-	mint(confirm)
+	var post Check
+	get := step("Mint", "GET", func() Check {
+		get, answered := p.https(ctx, host)
+		post = answered
+		switch {
+		case get.OK:
+		case proxy != nil && direct.Direct:
+			get.Hint = "the proxy refuses " + host + " where a direct connection gets through: fix the proxy, or set NO_PROXY=" + host + " to go around it"
+		case !intercepted.OK:
+			get.Hint = "the system resolver's answer for " + host + " is not " + host + " (see interception): " + intercepted.Hint
+		}
+		return get
+	})
+	post = step("Mint", "POST", func() Check { return post })
+	confirm := step("Mint", "address check", func() Check { return p.addressCheck(proxy, get, resolved, doh) })
 
-	quicCheck := p.edgeQUIC(ctx, edges)
-	edge(quicCheck)
-	http2Check := p.edgeHTTP2(ctx, edges)
-	edge(http2Check)
-	relay := p.relay(ctx)
-	edge(relay)
-	install(p.downloadRelease(ctx))
-	install(p.downloadNPM(ctx))
+	quicCheck := step("Edge", "QUIC", func() Check { return p.edgeQUIC(ctx, edges) })
+	http2Check := step("Edge", "HTTP/2", func() Check { return p.edgeHTTP2(ctx, edges) })
+	relay := step("Edge", "relay", func() Check { return p.relay(ctx) })
+	step("Install", "release", func() Check { return p.downloadRelease(ctx) })
+	step("Install", "npm", func() Check { return p.downloadNPM(ctx) })
 
 	switch {
 	case !get.OK || !post.OK || !confirm.OK:
@@ -252,6 +290,12 @@ func (p *Preflight) Run(ctx context.Context) Report {
 	}
 	r.Assessment = p.assess(r, proxy, confirm)
 	return r
+}
+
+// Close prints the route and the assessment after a report Run printed as it
+// went, and returns an error naming what failed when no route works.
+func (r Report) Close(w io.Writer) error {
+	return newPrinter(w, r.Provider).close(r)
 }
 
 // addressCheck is the step after the mint: a run asks for its new address
@@ -336,21 +380,7 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-func (p *Preflight) proxyCheck() Check {
-	c := Check{Name: "proxy", OK: true}
-	target := net.JoinHostPort(hostOf(p.provider), portOf(p.provider, "443"))
-	proxy := p.proxy("https", target)
-	if proxy == nil {
-		c.Detail = "none for " + target
-		return c
-	}
-	shown := *proxy
-	shown.User = nil
-	c.Detail = shown.String() + " for " + target + "; the edge on 7844 is dialed directly"
-	return c
-}
-
-func (p *Preflight) dnsProvider(ctx context.Context, host string) Check {
+func (p *Preflight) dnsProvider(ctx context.Context, host string) (Check, []string) {
 	c := Check{Name: host}
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -358,11 +388,11 @@ func (p *Preflight) dnsProvider(ctx context.Context, host string) Check {
 	if err != nil {
 		c.Detail = err.Error()
 		c.Hint = "the system resolver cannot find " + host
-		return c
+		return c, nil
 	}
 	c.OK = true
 	c.Detail = strings.Join(addrs, ", ")
-	return c
+	return c, addrs
 }
 
 // dnsSRV is the edge's SRV record, and the IPv4 addresses its targets
@@ -667,56 +697,6 @@ func dialViaProxy(ctx context.Context, proxy *url.URL, target string, timeout ti
 	return conn, nil
 }
 
-// Write prints the report under a heading per category, a mark and the
-// check's name in a column, a failure's hint beneath it, then the route a
-// script can read and the assessment last. Colored only on a terminal, and
-// not under NO_COLOR. It returns an error naming what failed when no route
-// works.
-func (r Report) Write(w io.Writer) error {
-	paint := colors(w)
-	headings := map[string]string{
-		"Network": "Network",
-		"DNS":     "DNS",
-		"Mint":    "Mint  https://" + r.Provider + "/",
-		"Edge":    "Edge  port 7844, or the relay on 443",
-		"Install": "Install  this platform's binary",
-	}
-	width := 0
-	for _, c := range r.Checks {
-		width = max(width, len(c.Name))
-	}
-	fmt.Fprintln(w, paint.bold("tunneld preflight")+paint.dim("  "+r.Provider))
-	category := ""
-	for _, c := range r.Checks {
-		if c.Category != category {
-			category = c.Category
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, paint.bold(cmp.Or(headings[category], category)))
-		}
-		mark := paint.green("✓")
-		if !c.OK {
-			mark = paint.red("✗")
-		}
-		fmt.Fprintf(w, "  %s %-*s  %s\n", mark, width, c.Name, c.Detail)
-		if !c.OK && c.Hint != "" {
-			fmt.Fprintf(w, "    %*s  %s\n", width, "", paint.yellow("→ "+c.Hint))
-		}
-	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "route: %s\n", r.Route)
-	if r.Assessment != "" {
-		if r.Route == RouteNone {
-			fmt.Fprintln(w, paint.red("✗ ")+paint.bold(r.Assessment))
-		} else {
-			fmt.Fprintln(w, paint.green("✓ ")+paint.bold(r.Assessment))
-		}
-	}
-	if failed := r.Failed(); len(failed) > 0 {
-		return fmt.Errorf("no route to the edge: %s failed", strings.Join(failed, ", "))
-	}
-	return nil
-}
-
 // phrase names a check in a sentence.
 func phrase(c Check) string {
 	switch {
@@ -728,29 +708,6 @@ func phrase(c Check) string {
 		return "direct " + c.Name
 	}
 	return "the " + c.Name
-}
-
-// palette is ANSI styling, or none.
-type palette struct{ on bool }
-
-func (p palette) wrap(code, s string) string {
-	if !p.on {
-		return s
-	}
-	return "\x1b[" + code + "m" + s + "\x1b[0m"
-}
-
-func (p palette) bold(s string) string   { return p.wrap("1", s) }
-func (p palette) dim(s string) string    { return p.wrap("2", s) }
-func (p palette) green(s string) string  { return p.wrap("32", s) }
-func (p palette) red(s string) string    { return p.wrap("31", s) }
-func (p palette) yellow(s string) string { return p.wrap("33", s) }
-
-// colors is on for a terminal and off for anything else, a pipe or a file,
-// whose reader may not render escapes; NO_COLOR turns it off anywhere.
-func colors(w io.Writer) palette {
-	f, ok := w.(*os.File)
-	return palette{on: ok && term.IsTerminal(int(f.Fd())) && os.Getenv("NO_COLOR") == ""}
 }
 
 func issuer(cert *x509.Certificate) string {

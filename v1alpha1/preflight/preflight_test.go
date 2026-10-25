@@ -40,9 +40,12 @@ func local(t *testing.T, server *httptest.Server, edgePort int) *Preflight {
 		lookupSRV: func(context.Context) ([]*net.SRV, error) {
 			return []*net.SRV{{Target: "edge.test.", Port: uint16(edgePort)}}, nil
 		},
-		doh:     func(context.Context, string) (string, error) { return "", errors.New("no DoH here") },
-		proxy:   func(string, string) *url.URL { return nil },
-		timeout: time.Second,
+		doh:        func(context.Context, string) (string, error) { return "", errors.New("no DoH here") },
+		proxy:      func(string, string) *url.URL { return nil },
+		getenv:     func(string) string { return "" },
+		private:    bogon,
+		captiveURL: noPortal(t),
+		timeout:    time.Second,
 	}
 }
 
@@ -235,7 +238,7 @@ func TestRunSettlesTheRoute(t *testing.T) {
 	port := edgeTCP(t, server)
 
 	p := local(t, server, port)
-	if r := p.Run(context.Background()); r.Route != RouteHTTP2 {
+	if r := p.Run(context.Background(), nil); r.Route != RouteHTTP2 {
 		t.Errorf("route = %s, want %s with no QUIC listener", r.Route, RouteHTTP2)
 	}
 
@@ -255,13 +258,13 @@ func TestRunSettlesTheRoute(t *testing.T) {
 			_ = conn.CloseWithError(0, "")
 		}
 	}()
-	if r := p.Run(context.Background()); r.Route != RouteQUIC {
+	if r := p.Run(context.Background(), nil); r.Route != RouteQUIC {
 		t.Errorf("route = %s, want %s with QUIC answering", r.Route, RouteQUIC)
 	}
 	listener.Close()
 
 	p.lookupSRV = func(context.Context) ([]*net.SRV, error) { return nil, errors.New("refused") }
-	r := p.Run(context.Background())
+	r := p.Run(context.Background(), nil)
 	if r.Route != RouteRelay {
 		t.Errorf("route = %s, want %s with no edge address", r.Route, RouteRelay)
 	}
@@ -269,12 +272,12 @@ func TestRunSettlesTheRoute(t *testing.T) {
 	if err := r.Write(&out); err != nil {
 		t.Errorf("Write = %v on a working route", err)
 	}
-	if !strings.Contains(out.String(), "\nroute: relay\n✓ tunneld will work here using ") {
+	if !strings.Contains(out.String(), "\nroute: relay\ntunneld will work here using ") {
 		t.Errorf("report does not end with the route and the assessment:\n%s", out.String())
 	}
 
 	p.bridges = []string{"wss://127.0.0.1:1/relay"}
-	r = p.Run(context.Background())
+	r = p.Run(context.Background(), nil)
 	if r.Route != RouteNone {
 		t.Fatalf("route = %s, want %s", r.Route, RouteNone)
 	}
@@ -295,7 +298,7 @@ func TestAssessment(t *testing.T) {
 	noDoH := func(context.Context, string) (string, error) { return "", errors.New("blocked") }
 
 	t.Run("direct", func(t *testing.T) {
-		r := local(t, server, port).Run(context.Background())
+		r := local(t, server, port).Run(context.Background(), nil)
 		want := "tunneld will work here using a direct HTTPS mint to " + local(t, server, port).provider +
 			", the system resolver, and an address check on HTTPS 443, over direct HTTP/2 (TCP 7844)."
 		if r.Assessment != want {
@@ -326,7 +329,7 @@ func TestAssessment(t *testing.T) {
 	t.Run("no proxy, no DNS: the address can never be confirmed", func(t *testing.T) {
 		p := local(t, server, port)
 		p.lookupHost, p.doh = noDNS, noDoH
-		r := p.Run(context.Background())
+		r := p.Run(context.Background(), nil)
 		if r.Route != RouteNone {
 			t.Fatalf("route = %s, want none: the HTTPS checks answer, the address check cannot", r.Route)
 		}
@@ -339,7 +342,7 @@ func TestAssessment(t *testing.T) {
 		p := local(t, server, 0)
 		p.lookupSRV = func(context.Context) ([]*net.SRV, error) { return nil, errors.New("refused") }
 		p.bridges = []string{"wss://127.0.0.1:1/relay"}
-		r := p.Run(context.Background())
+		r := p.Run(context.Background(), nil)
 		if !strings.HasPrefix(r.Assessment, "tunneld will not work here: direct QUIC, direct HTTP/2 and the relay all failed") {
 			t.Errorf("assessment %q", r.Assessment)
 		}
@@ -431,4 +434,14 @@ func TestDownloads(t *testing.T) {
 	if c.OK || !strings.Contains(c.Hint, "404") {
 		t.Errorf("a missing asset: ok=%v %q hint %q", c.OK, c.Detail, c.Hint)
 	}
+}
+
+// noPortal answers as a network with no captive portal: 204, always.
+func noPortal(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/generate_204"
 }
