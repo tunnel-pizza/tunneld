@@ -985,6 +985,7 @@ default.**
 | `--multiview` | `TUNNELD_MULTIVIEW` | Answer the tunnel's own address with a panel framing every origin. **Default on**, and inert with a single origin, which keeps the bare address for itself. |
 | `--qr` | `TUNNELD_QR` | Print the address as a QR code on stderr once the tunnel is up, beneath the origins it reaches, and open no browser tab (an embedding program's `WithOpen(true)` still opens one): the one address a browser would open, the panel when there is one, so one code however many origins. Plain half-block text with no escapes, light modules drawn, so it reads right on a dark terminal; on a light one it is inverted, which many cameras still read. Error correction is level M, which recovers about 15% of a code where the frame's level L recovers 7%, for a code that is text and may be copied on its way to a phone; for the addresses tunnel.pizza mints the two are the same size. Not printed when the console is about to draw a frame, where `Ctrl+K` then `r` is the code. **Default off.** |
 | `--mcp` | `TUNNELD_MCP` | Serve MCP on stdin and stdout, for the MCP client that started the run: a plugin's stdio server. stdout then carries JSON-RPC and nothing else, so the addresses a run would print there go to stderr, and a pipe on stdin is the client's rather than a `kubectl debug -i` session's, so no line on it stops the run. The tunnel's MCP server at `/_tunneld/mcp` is there either way. **Default off.** |
+| `--preflight` | `TUNNELD_PREFLIGHT` | Check every network path a tunnel depends on, say which route a run would take, and exit; mints nothing and opens no tunnel. See [Preflight](#preflight). **Default off.** |
 | `--identity-providers` | `TUNNELD_IDENTITY_PROVIDERS` | Identity providers to find a mint credential with, all asked at once, the first in the list to find one winning. **Default `github,anthropic`**: `gh auth token` and then the GitHub environment variables, then a Claude Code workspace's OAuth token. Empty sends no credential. A name with no provider behind it is an error before the tunnel is minted, so a typo does not quietly send nothing. `LIBTUNNEL_TOKEN` outranks all of it. |
 
 So the whole thing runs from a container with no command line at all:
@@ -1411,6 +1412,7 @@ after construction still lands.
 | `TUNNELD_IDENTITY_PROVIDERS` | `--identity-providers` | Identity providers to find a mint credential with, comma-separated and in order. Empty sends no credential. |
 | `TUNNELD_QR` | `--qr` | Whether to print the address as a QR code on stderr. Any value `strconv.ParseBool` accepts. |
 | `TUNNELD_MCP` | `--mcp` | Whether to serve MCP on stdin and stdout. Any value `strconv.ParseBool` accepts. |
+| `TUNNELD_PREFLIGHT` | `--preflight` | Whether to check the network and exit instead of running. Any value `strconv.ParseBool` accepts. |
 | `HTTP_ORIGIN` | *(no flag)* | Written, never read: set for the programs a run starts to the tunnel's origin, `https://<hostname>`; see [Programs](#programs). |
 | `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
 | `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
@@ -1434,6 +1436,52 @@ The tunnel engine carries its own `LIBTUNNEL_*` surface for everything this one
 doesn't expose. Those variables pass straight through and are documented in
 [libtunnel](https://github.com/cnuss/libtunnel#environment-variables), not
 mirrored here.
+
+## Preflight
+
+`tunneld --preflight` (or `npx tunneld --preflight`) answers, in seconds and
+before anything is built around it, whether a tunnel can come up on this
+network and, if not, what is in the way. It walks every path a run depends on,
+one line per check, prints the route a run would take, and exits. It mints
+nothing and opens no tunnel: every check is a lookup, a request that changes
+nothing, or a handshake closed as soon as it completes. `--provider` picks the
+host checked, as for a run.
+
+```text
+ok    proxy: none for tunnel.pizza:443
+ok    dns tunnel.pizza: 104.21.33.129, 172.67.145.48
+ok    dns SRV _v2-origintunneld._tcp.argotunnel.com: region1.v2.argotunnel.com:7844, region2.v2.argotunnel.com:7844
+ok    dns DoH region1.v2.argotunnel.com: 198.41.192.7
+ok    https GET https://tunnel.pizza/: 200 OK, certificate issued by "WE1 (Google Trust Services)"
+ok    https POST https://tunnel.pizza/: 200 OK
+fail  edge QUIC (UDP 7844): write udp [::]:45623->198.41.200.13:7844: sendmsg: operation not permitted
+      allow UDP 7844 to the Cloudflare edge (198.41.192.0/24 and 198.41.200.0/24); a run falls back to TCP
+fail  edge HTTP/2 (TCP 7844): dial tcp 198.41.200.13:7844: i/o timeout
+      allow TCP 7844 to the Cloudflare edge (198.41.192.0/24 and 198.41.200.0/24), server name h2.cftunnel.com
+ok    relay: wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com
+route: relay
+```
+
+A failing check is followed by what to ask of whoever controls the network.
+The report goes to stdout. The exit status is 0 when some route works and 1
+when none does, with the routes that failed on stderr, so a setup script can
+gate on it.
+
+| Check | What it asks | When it fails |
+| ----- | ------------ | ------------- |
+| `proxy` | Whether `HTTPS_PROXY`/`NO_PROXY` send the provider through a proxy. Informational: a run dials the edge on 7844 directly, never through the proxy. | Never. |
+| `dns <provider>` | The provider's addresses from the system resolver. | The resolver cannot find it. |
+| `dns SRV` | The edge's SRV record, `_v2-origintunneld._tcp.argotunnel.com`, and its targets' addresses. | SRV lookups are refused; a run falls back to DNS-over-HTTPS. |
+| `dns DoH` | `region1.v2.argotunnel.com` over DNS-over-HTTPS, from `cloudflare-dns.com` and `dns.google` at pinned addresses. Its answer is the edge address when SRV gives none. | DoH is blocked. |
+| `https GET` | The provider's `/`, through the proxy a run would use, with the certificate's issuer, so a TLS-intercepting proxy is visible. A certificate tunneld does not trust is named by issuer, with where its CA goes: the system store or `SSL_CERT_FILE`, which Go reads (`NODE_EXTRA_CA_CERTS` it does not). | HTTPS to the provider does not get through. |
+| `https POST` | The provider's `/` again with a POST, the mint's method. The mint itself is `POST /tunnel`, which this never sends. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
+| `edge QUIC` | A QUIC handshake with the edge on UDP 7844, as `quic.cftunnel.com`. | UDP 7844 is blocked; a run falls back to TCP. |
+| `edge HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
+| `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or the machine has no CA store to check the relay's host against. |
+
+The route is the first of direct QUIC, direct HTTP/2 and the relay that works,
+in the order a run tries them; `none` when none does, or when the mint's GET
+or POST cannot get through.
 
 ## Running in a container
 

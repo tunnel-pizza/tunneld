@@ -25,6 +25,7 @@ func TestEnvNamesAreStable(t *testing.T) {
 		{v1.DefaultIdentityProviders, "github,anthropic"},
 		{v1.NotifyPidEnv, "TUNNELD_NOTIFY_PID"},
 		{v1.QREnv, "TUNNELD_QR"},
+		{v1.PreflightEnv, "TUNNELD_PREFLIGHT"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
