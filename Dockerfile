@@ -23,6 +23,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/tunnel-pizza/tunneld/v1alpha1.version=${VERSION}" \
       -o /tunneld .
 
-FROM busybox:stable
+# The binary alone, one layer: another image can take it on top of its own, as
+# rowdy's layers-from does, which refuses a base underneath it. scratch has no
+# PATH lookup to lean on, so the entrypoint is absolute.
+FROM scratch
 COPY --from=build /tunneld /usr/local/bin/tunneld
-ENTRYPOINT ["tunneld"]
+ENTRYPOINT ["/usr/local/bin/tunneld"]
