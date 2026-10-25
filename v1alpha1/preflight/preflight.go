@@ -346,9 +346,7 @@ func (p *Preflight) assess(r Report, proxy *url.URL, address Check) string {
 	names := "DNS-over-HTTPS"
 	check := "an address check on HTTPS 443"
 	if proxy != nil {
-		shown := *proxy
-		shown.User = nil
-		mint = "an HTTPS mint through the proxy at " + shown.Host
+		mint = "an HTTPS mint through the proxy at " + proxy.Host
 		names = "the proxy's resolver"
 		check = "an address check through the proxy"
 	} else if strings.Contains(address.Detail, "system resolver") {
