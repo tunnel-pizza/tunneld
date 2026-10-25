@@ -1437,8 +1437,10 @@ mirrored here.
 
 ## Running in a container
 
-`ghcr.io/tunnel-pizza/tunneld` is the same binary on a busybox base, running as
-root. Docker Hub has the same image, same digest and tags, as `tunneld/tunneld` and
+`ghcr.io/tunnel-pizza/tunneld` is the same binary and nothing else: one layer on
+`scratch`, `/usr/local/bin/tunneld`, running as root. The shell it offers is its
+built-in one. Another image can take that layer on top of its own, the way
+rowdy's `layers-from` does, to carry tunneld without installing it. Docker Hub has the same image, same digest and tags, as `tunneld/tunneld` and
 `tunneld/debug`. Every flag has an environment mirror, which is what a container is
 configured with:
 
