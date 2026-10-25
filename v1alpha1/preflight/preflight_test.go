@@ -28,12 +28,11 @@ func local(t *testing.T, server *httptest.Server, edgePort int) *Preflight {
 	edgeTLS := &tls.Config{ServerName: "example.com", RootCAs: pool}
 	provider := strings.TrimPrefix(server.URL, "https://")
 	return &Preflight{
-		provider:  provider,
-		bridges:   []string{"wss://" + provider + "/relay"},
-		rootCAs:   pool,
-		bridgeTLS: func(string) *tls.Config { return &tls.Config{ServerName: "example.com", RootCAs: pool} },
-		quic:      &tls.Config{ServerName: "example.com", RootCAs: pool, NextProtos: []string{"argotunnel"}},
-		http2:     edgeTLS,
+		provider: provider,
+		bridges:  []string{"wss://" + provider + "/relay"},
+		rootCAs:  pool,
+		quic:     &tls.Config{ServerName: "example.com", RootCAs: pool, NextProtos: []string{"argotunnel"}},
+		http2:    edgeTLS,
 		lookupHost: func(context.Context, string) ([]string, error) {
 			return []string{"127.0.0.1"}, nil
 		},
@@ -216,17 +215,15 @@ func TestRelay(t *testing.T) {
 		t.Fatalf("relay failed: %s", c.Detail)
 	}
 
-	// A run checks the bridge's host against the system store alone; one
-	// without the CA is named as such, not as a blocked network.
-	p.bridgeTLS = func(string) *tls.Config {
-		return &tls.Config{ServerName: "example.com", RootCAs: x509.NewCertPool()}
-	}
+	// The relay's host is checked against the same trust set as the mint; a
+	// certificate outside it is named by issuer, not as a blocked network.
+	p.rootCAs = x509.NewCertPool()
 	c := p.relay(context.Background())
 	if c.OK {
 		t.Fatal("relay passed without the bridge's CA")
 	}
-	if !strings.Contains(c.Hint, "CA store") {
-		t.Errorf("hint %q does not name the CA store", c.Hint)
+	if !strings.Contains(c.Hint, "SSL_CERT_FILE") {
+		t.Errorf("hint %q does not say where the CA goes", c.Hint)
 	}
 }
 

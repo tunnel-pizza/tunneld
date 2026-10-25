@@ -1477,7 +1477,7 @@ gate on it.
 | `https POST` | The provider's `/` again with a POST, the mint's method. The mint itself is `POST /tunnel`, which this never sends. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
 | `edge QUIC` | A QUIC handshake with the edge on UDP 7844, as `quic.cftunnel.com`. | UDP 7844 is blocked; a run falls back to TCP. |
 | `edge HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
-| `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or the machine has no CA store to check the relay's host against. |
+| `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or something answers TLS for the relay with a certificate tunneld does not trust, named by issuer as for `https GET`. |
 
 The route is the first of direct QUIC, direct HTTP/2 and the relay that works,
 in the order a run tries them; `none` when none does, or when the mint's GET

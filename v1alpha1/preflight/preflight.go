@@ -90,10 +90,8 @@ type Preflight struct {
 	provider string
 	bridges  []string
 	rootCAs  *x509.CertPool
-	// bridgeTLS is the outer TLS to a bridge's host, as a run dials it.
-	bridgeTLS func(host string) *tls.Config
-	quic      *tls.Config
-	http2     *tls.Config
+	quic     *tls.Config
+	http2    *tls.Config
 
 	lookupHost func(ctx context.Context, host string) ([]string, error)
 	lookupSRV  func(ctx context.Context) ([]*net.SRV, error)
@@ -116,10 +114,8 @@ func New(provider string) *Preflight {
 		provider: provider,
 		bridges:  bridges,
 		rootCAs:  trust.Pool(),
-		// A run verifies the bridge's host against the system store alone.
-		bridgeTLS: func(host string) *tls.Config { return &tls.Config{ServerName: host} },
-		quic:      configs[connection.QUIC],
-		http2:     configs[connection.HTTP2],
+		quic:     configs[connection.QUIC],
+		http2:    configs[connection.HTTP2],
 		lookupHost: func(ctx context.Context, host string) ([]string, error) {
 			return net.DefaultResolver.LookupHost(ctx, host)
 		},
@@ -421,8 +417,8 @@ func (p *Preflight) relay(ctx context.Context) Check {
 	c.Hint = "allow WebSocket upgrades to " + p.bridges[0]
 	var unknown x509.UnknownAuthorityError
 	if errors.As(last, &unknown) {
-		c.Hint = "the relay's TLS is checked against this machine's CA store alone, and it has no CA for " +
-			issuer(unknown.Cert) + "; install ca-certificates or point SSL_CERT_FILE at a bundle"
+		c.Hint = "something on this network is answering TLS for the relay with a certificate issued by " +
+			issuer(unknown.Cert) + "; put that CA in the system store or SSL_CERT_FILE"
 	}
 	return c
 }
@@ -455,7 +451,7 @@ func (p *Preflight) relayOne(ctx context.Context, bridge string) error {
 
 	stream := raw
 	if secure {
-		conn := tls.Client(raw, p.bridgeTLS(u.Hostname()))
+		conn := tls.Client(raw, &tls.Config{ServerName: u.Hostname(), RootCAs: p.rootCAs})
 		if err := conn.HandshakeContext(ctx); err != nil {
 			return fmt.Errorf("TLS to %s: %w", target, err)
 		}
