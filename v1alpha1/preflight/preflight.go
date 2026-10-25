@@ -107,12 +107,12 @@ type Preflight struct {
 	quic     *tls.Config
 	http2    *tls.Config
 
-	lookupHost func(ctx context.Context, host string) ([]string, error)
-	lookupSRV  func(ctx context.Context) ([]*net.SRV, error)
-	doh        func(ctx context.Context, host string) (string, error)
-	proxy      func(scheme, target string) *url.URL
-	getenv     func(string) string
-	captiveURL string
+	lookupHost   func(ctx context.Context, host string) ([]string, error)
+	lookupSRV    func(ctx context.Context) ([]*net.SRV, error)
+	doh          func(ctx context.Context, host string) (string, error)
+	proxy        func(scheme, target string) *url.URL
+	getenv       func(string) string
+	portalProbes []portalProbe
 	// private is whether an address is one no public name resolves to.
 	private func(string) bool
 
@@ -150,11 +150,11 @@ func New(provider, version string) *Preflight {
 			_, srvs, err := net.DefaultResolver.LookupSRV(ctx, "v2-origintunneld", "tcp", "argotunnel.com")
 			return srvs, err
 		},
-		doh:        prober.LookupHost,
-		proxy:      proxyFor,
-		getenv:     os.Getenv,
-		private:    bogon,
-		captiveURL: "http://connectivitycheck.gstatic.com/generate_204",
+		doh:          prober.LookupHost,
+		proxy:        proxyFor,
+		getenv:       os.Getenv,
+		private:      bogon,
+		portalProbes: portalProbes,
 		// Each check's own budget. The whole walk stays under a minute even
 		// when every path times out.
 		timeout:     5 * time.Second,

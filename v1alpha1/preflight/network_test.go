@@ -62,25 +62,52 @@ func TestProxyEnv(t *testing.T) {
 }
 
 func TestCaptivePortal(t *testing.T) {
-	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "https://portal.hotel.example/login", http.StatusFound)
+	// A network that lets Apple's probe through, so a phone shows its
+	// sign-in sheet, and holds the rest.
+	network := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hotspot-detect.html":
+			w.Write([]byte("<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>"))
+		case "/generate_204":
+			w.WriteHeader(http.StatusNoContent)
+		case "/held/generate_204":
+			http.Redirect(w, r, "https://portal.hotel.example/login", http.StatusFound)
+		case "/held/connecttest.txt":
+			w.Write([]byte("<html>Welcome to the hotel network</html>"))
+		}
 	}))
-	defer portal.Close()
+	defer network.Close()
+	apple := portalProbe{"Apple", network.URL + "/hotspot-detect.html", http.StatusOK, "Success"}
+	android := portalProbe{"Android", network.URL + "/generate_204", http.StatusNoContent, ""}
+	gone := portalProbe{"Windows", "http://127.0.0.1:1/connecttest.txt", http.StatusOK, "Microsoft Connect Test"}
 
 	p := local(t, provider(t, ok), 0)
-	if c := p.captivePortal(context.Background()); !c.OK || c.Warn {
-		t.Errorf("a network answering 204: ok=%v warn=%v %q", c.OK, c.Warn, c.Detail)
-	}
-
-	p.captiveURL = portal.URL + "/generate_204"
-	c := p.captivePortal(context.Background())
-	if c.OK || !strings.Contains(c.Detail, "portal.hotel.example") || !strings.Contains(c.Hint, "sign in") {
-		t.Errorf("a portal: ok=%v %q / %q", c.OK, c.Detail, c.Hint)
-	}
-
-	p.captiveURL = "http://127.0.0.1:1/generate_204"
-	if c := p.captivePortal(context.Background()); !c.OK || !c.Warn {
-		t.Errorf("plain HTTP blocked: ok=%v warn=%v, want a warning", c.OK, c.Warn)
+	for _, tc := range []struct {
+		name   string
+		probes []portalProbe
+		ok     bool
+		warn   bool
+		says   string
+	}{
+		{"every probe answers as asked", []portalProbe{apple, android}, true, false, "none: Apple, Android answered as expected"},
+		{"one held, a redirect to the portal", []portalProbe{apple, {"Android", network.URL + "/held/generate_204", http.StatusNoContent, ""}}, false, false, "Android: " + strings.TrimPrefix(network.URL, "http://") + " answered 302 Found, sending this machine to https://portal.hotel.example/login"},
+		{"one held, the portal's own page", []portalProbe{apple, {"Windows", network.URL + "/held/connecttest.txt", http.StatusOK, "Microsoft Connect Test"}}, false, false, "Windows:"},
+		{"one does not answer", []portalProbe{apple, gone}, true, false, "Windows did not answer"},
+		{"none answers", []portalProbe{gone}, true, true, "plain HTTP does not get out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.portalProbes = tc.probes
+			c := p.captivePortal(context.Background())
+			if c.OK != tc.ok || c.Warn != tc.warn {
+				t.Errorf("ok=%v warn=%v, want ok=%v warn=%v: %q", c.OK, c.Warn, tc.ok, tc.warn, c.Detail)
+			}
+			if !strings.Contains(c.Detail, tc.says) {
+				t.Errorf("detail %q does not say %q", c.Detail, tc.says)
+			}
+			if !tc.ok && !strings.Contains(c.Hint, "sign in") {
+				t.Errorf("hint %q does not say to sign in", c.Hint)
+			}
+		})
 	}
 }
 

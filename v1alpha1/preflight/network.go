@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/http/httpproxy"
 )
@@ -110,10 +111,31 @@ func (p *Preflight) withoutProxy(ctx context.Context) Check {
 	return c
 }
 
-// captivePortal asks for a page that answers 204 and nothing else, over
-// plain HTTP as a phone checking for a portal does. Anything else answering
-// is a network that wants a sign-in first, and until then nothing else here
-// gets through.
+// portalProbe is one of the pages operating systems and browsers ask for to
+// tell whether a network wants a sign-in: a fixed answer, which a portal
+// replaces with a redirect or its own page.
+type portalProbe struct {
+	who    string
+	url    string
+	status int
+	body   string
+}
+
+// portalProbes are Apple's (iOS and macOS, and the older iOS one), Android
+// and Chrome's, Windows' and Firefox's. Some portals let one through, often
+// Apple's so a phone shows its sign-in sheet, and hold the rest, so all are
+// asked.
+var portalProbes = []portalProbe{
+	{"Apple", "http://captive.apple.com/hotspot-detect.html", http.StatusOK, "Success"},
+	{"Apple (older iOS)", "http://www.apple.com/library/test/success.html", http.StatusOK, "Success"},
+	{"Android", "http://connectivitycheck.gstatic.com/generate_204", http.StatusNoContent, ""},
+	{"Windows", "http://www.msftconnecttest.com/connecttest.txt", http.StatusOK, "Microsoft Connect Test"},
+	{"Firefox", "http://detectportal.firefox.com/success.txt", http.StatusOK, "success"},
+}
+
+// captivePortal asks every portal probe, at once, over plain HTTP as a
+// device checking for a portal does. Any answering otherwise is a network
+// that wants a sign-in first, and until then nothing else here gets through.
 func (p *Preflight) captivePortal(ctx context.Context) Check {
 	c := Check{OK: true}
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
@@ -127,30 +149,67 @@ func (p *Preflight) captivePortal(ctx context.Context) Check {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	defer client.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.captiveURL, nil)
+
+	results := make([]string, len(p.portalProbes))
+	held := make([]bool, len(p.portalProbes))
+	unreachable := make([]bool, len(p.portalProbes))
+	var wg sync.WaitGroup
+	for i, probe := range p.portalProbes {
+		wg.Go(func() {
+			results[i], held[i], unreachable[i] = askPortalProbe(ctx, client, probe)
+		})
+	}
+	wg.Wait()
+
+	var answered, blocked, intercepted []string
+	for i, probe := range p.portalProbes {
+		switch {
+		case held[i]:
+			intercepted = append(intercepted, probe.who+": "+results[i])
+		case unreachable[i]:
+			blocked = append(blocked, probe.who)
+		default:
+			answered = append(answered, probe.who)
+		}
+	}
+	switch {
+	case len(intercepted) > 0:
+		c.OK = false
+		c.Detail = "a portal answers in place of " + strings.Join(intercepted, "; ")
+		c.Hint = "this network wants a sign-in first: open a browser, sign in to its portal, and run this again"
+	case len(answered) == 0:
+		c.Warn = true
+		c.Detail = "plain HTTP does not get out, so a portal cannot be seen from here: " + results[0]
+	default:
+		c.Detail = "none: " + strings.Join(answered, ", ") + " answered as expected"
+		if len(blocked) > 0 {
+			c.Detail += "; " + strings.Join(blocked, ", ") + " did not answer"
+		}
+	}
+	return c
+}
+
+// askPortalProbe reports what answered probe and whether that was a portal
+// holding it, or that nothing answered at all.
+func askPortalProbe(ctx context.Context, client *http.Client, probe portalProbe) (what string, held, unreachable bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probe.url, nil)
 	if err != nil {
-		c.Detail = err.Error()
-		return c
+		return err.Error(), false, true
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		c.Warn = true
-		c.Detail = "plain HTTP does not get out, so a portal cannot be seen from here: " + err.Error()
-		return c
+		return err.Error(), false, true
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	resp.Body.Close()
-	if resp.StatusCode == http.StatusNoContent {
-		c.Detail = "none: " + hostOfURL(p.captiveURL) + " answered 204"
-		return c
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode == probe.status && strings.Contains(string(body), probe.body) {
+		return resp.Status, false, false
 	}
-	c.OK = false
-	c.Detail = hostOfURL(p.captiveURL) + " answered " + resp.Status + " where it only ever answers 204"
+	what = hostOfURL(probe.url) + " answered " + resp.Status
 	if location := resp.Header.Get("Location"); location != "" {
-		c.Detail += ", sending this machine to " + location
+		what += ", sending this machine to " + location
 	}
-	c.Hint = "this network wants a sign-in first: open a browser, sign in to its portal, and run this again"
-	return c
+	return what, true, false
 }
 
 // interception asks whether the system resolver's answer for host really

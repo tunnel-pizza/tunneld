@@ -40,12 +40,12 @@ func local(t *testing.T, server *httptest.Server, edgePort int) *Preflight {
 		lookupSRV: func(context.Context) ([]*net.SRV, error) {
 			return []*net.SRV{{Target: "edge.test.", Port: uint16(edgePort)}}, nil
 		},
-		doh:        func(context.Context, string) (string, error) { return "", errors.New("no DoH here") },
-		proxy:      func(string, string) *url.URL { return nil },
-		getenv:     func(string) string { return "" },
-		private:    bogon,
-		captiveURL: noPortal(t),
-		timeout:    time.Second,
+		doh:          func(context.Context, string) (string, error) { return "", errors.New("no DoH here") },
+		proxy:        func(string, string) *url.URL { return nil },
+		getenv:       func(string) string { return "" },
+		private:      bogon,
+		portalProbes: noPortal(t),
+		timeout:      time.Second,
 	}
 }
 
@@ -436,12 +436,13 @@ func TestDownloads(t *testing.T) {
 	}
 }
 
-// noPortal answers as a network with no captive portal: 204, always.
-func noPortal(t *testing.T) string {
+// noPortal is a portal probe on a network with no captive portal: it
+// answers 204, as asked.
+func noPortal(t *testing.T) []portalProbe {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(server.Close)
-	return server.URL + "/generate_204"
+	return []portalProbe{{"Android", server.URL + "/generate_204", http.StatusNoContent, ""}}
 }
