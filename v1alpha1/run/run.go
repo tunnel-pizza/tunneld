@@ -143,7 +143,8 @@ func WithCommand(cmd *cobra.Command) Option { return func(r *RunImpl) { r.cmd = 
 
 // WithOrigins sets where the origins the run exposes arrive: the first value
 // before the first mint, and each later one, the whole set, a new tunnel from
-// the spec the run saved. Closed, the run keeps the set it has.
+// the spec the run saved. An empty set is thrown away. Closed, the run keeps
+// the set it has.
 func WithOrigins(origins <-chan v1.Origins) Option { return func(r *RunImpl) { r.origins = origins } }
 
 // WithAttached sets what the origins are attached to: told the addresses they
@@ -238,9 +239,10 @@ func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 		run.router.Cancel()
 	}()
 
-	// The first set, before the first mint. One already sent is taken even
-	// when ctx is done, so a run stopped early still mints with its origins.
-	if run.origins != nil {
+	// The first set with an origin in it, before the first mint; an empty one
+	// is thrown away. One already sent is taken even when ctx is done, so a
+	// run stopped early still mints with its origins.
+	for run.origins != nil && run.current == nil {
 		var first v1.Origins
 		ok := true
 		select {
@@ -252,10 +254,11 @@ func (r *RunImpl) Run(ctx context.Context, opts ...Option) error {
 				return nil
 			}
 		}
-		if ok {
-			run.current = first
-		} else {
+		switch {
+		case !ok:
 			run.origins = nil
+		case !empty(first):
+			run.current = first
 		}
 	}
 
@@ -659,6 +662,10 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 				r.origins = nil
 				continue
 			}
+			if empty(changed) {
+				log.Debug("an empty set of origins arrived for the run; keeping the tunnel")
+				continue
+			}
 			log.Info("a new set of origins arrived for the run", "count", changed.Len())
 			r.current = changed
 			return saved, true, nil
@@ -705,6 +712,9 @@ func (r *RunImpl) wait(ctx context.Context, tun libtunnel.TunnelV1, saved string
 	}
 	return "", false, tun.Err()
 }
+
+// empty reports whether origins has no origin in it.
+func empty(origins v1.Origins) bool { return origins == nil || origins.Len() == 0 }
 
 // sameSpec reports whether a and b are one spec: equal as JSON — the same
 // envelope, whatever its spacing or the order of its keys, numbers compared
