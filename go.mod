@@ -1,16 +1,11 @@
 module github.com/tunnel-pizza/tunneld
 
-// 1.26 is libtunnel's own floor, and tunneld links it into the binary. Below
+// 1.27.3 is libtunnel's own floor, and tunneld links it into the binary. Below
 // that the module's own needs are older — 1.24 for generic type aliases (`type
 // BuilderV1[T any] = v1.Builder[T]` in lib/lib.go) and slog.DiscardHandler —
 // so this directive tracks the dependency, not the source. Raise it only when
 // a dependency or the surface actually needs the newer semantics.
-go 1.26.0
-
-// What CI and the release binaries build with: setup-go installs this rather
-// than the go line, so a standard-library fix ships without raising the floor
-// for an embedding program.
-toolchain go1.26.10
+go 1.27.3
 
 require (
 	charm.land/bubbletea/v2 v2.0.9
@@ -20,8 +15,8 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/vt v0.0.0-20260906004030-3986e9119cf9
-	github.com/cloudflare/cloudflared v0.0.0-20260612062426-68620efbce4c
-	github.com/cnuss/libtunnel v0.3.4
+	github.com/cloudflare/cloudflared v0.0.0-20261026093458-dc3b264da64a
+	github.com/cnuss/libtunnel v0.3.5
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/dustin/go-humanize v1.0.1
@@ -61,13 +56,13 @@ require (
 	github.com/vtolstov/go-ioctl v0.0.0-20151206205506-6be9cced4810
 	github.com/yuin/goldmark v1.8.6
 	go.bug.st/serial v1.6.2
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394
-	golang.org/x/net v0.60.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
-	golang.org/x/text v0.42.0
-	golang.org/x/tools v0.49.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
+	golang.org/x/text v0.43.0
+	golang.org/x/tools v0.51.0
 	gopkg.in/yaml.v2 v2.4.0
 	k8s.io/cri-streaming v0.37.0
 	k8s.io/klog/v2 v2.140.0
@@ -91,6 +86,7 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/cloudflare/backoff v0.0.0-20240920015135-e46b80a3a7d0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
@@ -104,7 +100,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
-	github.com/go-chi/chi/v5 v5.2.4 // indirect
+	github.com/go-chi/chi/v5 v5.3.1 // indirect
 	github.com/go-chi/cors v1.2.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
@@ -121,7 +117,7 @@ require (
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.3.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.1 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
@@ -183,7 +179,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
