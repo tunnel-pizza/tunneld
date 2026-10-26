@@ -13,16 +13,16 @@ import (
 func TestPrinterStartsALineAndEndsItLater(t *testing.T) {
 	var out bytes.Buffer
 	p := newPrinter(&out, "tunnel.pizza")
-	p.start("Edge", "QUIC")
+	p.start("Edge", "HTTP/2")
 	started := out.String()
-	if !strings.HasSuffix(started, "  QUIC            ") || strings.HasSuffix(started, "\n") {
+	if !strings.HasSuffix(started, "  HTTP/2          ") || strings.HasSuffix(started, "\n") {
 		t.Fatalf("after start: %q, want the name and no newline", started)
 	}
 	if !strings.Contains(started, "\nEdge  port 7844, or the relay on 443\n") {
 		t.Errorf("no heading before the first check of a category: %q", started)
 	}
-	p.end(Check{OK: false, Detail: "context deadline exceeded", Hint: "allow UDP 7844"})
-	want := started + "context deadline exceeded  ✗\n" + strings.Repeat(" ", 2+p.width+2) + "→ allow UDP 7844\n"
+	p.end(Check{OK: false, Detail: "context deadline exceeded", Hint: "allow TCP 7844"})
+	want := started + "context deadline exceeded  ✗\n" + strings.Repeat(" ", 2+p.width+2) + "→ allow TCP 7844\n"
 	if out.String() != want {
 		t.Errorf("after end:\n%q\nwant\n%q", out.String(), want)
 	}

@@ -28,7 +28,6 @@ import (
 	"github.com/cloudflare/cloudflared/connection"
 	"github.com/cnuss/libtunnel/v1alpha1/cloudflare/probe"
 	"github.com/cnuss/libtunnel/v1alpha1/cloudflare/trust"
-	"github.com/quic-go/quic-go"
 	"golang.org/x/net/http/httpproxy"
 	"golang.org/x/net/websocket"
 )
@@ -37,7 +36,6 @@ import (
 type Route string
 
 const (
-	RouteQUIC  Route = "direct QUIC"
 	RouteHTTP2 Route = "direct HTTP/2"
 	RouteRelay Route = "relay"
 	RouteNone  Route = "none"
@@ -104,7 +102,6 @@ type Preflight struct {
 	provider string
 	bridges  []string
 	rootCAs  *x509.CertPool
-	quic     *tls.Config
 	http2    *tls.Config
 
 	lookupHost   func(ctx context.Context, host string) ([]string, error)
@@ -141,7 +138,6 @@ func New(provider, version string) *Preflight {
 		provider: provider,
 		bridges:  bridges,
 		rootCAs:  trust.Pool(),
-		quic:     configs[connection.QUIC],
 		http2:    configs[connection.HTTP2],
 		lookupHost: func(ctx context.Context, host string) ([]string, error) {
 			return net.DefaultResolver.LookupHost(ctx, host)
@@ -270,7 +266,6 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 	post = step("Mint", "POST", func() Check { return post })
 	confirm := step("Mint", "address check", func() Check { return p.addressCheck(proxy, get, resolved, doh) })
 
-	quicCheck := step("Edge", "QUIC", func() Check { return p.edgeQUIC(ctx, edges) })
 	http2Check := step("Edge", "HTTP/2", func() Check { return p.edgeHTTP2(ctx, edges) })
 	relay := step("Edge", "relay", func() Check { return p.relay(ctx) })
 	step("Install", "release", func() Check { return p.downloadRelease(ctx) })
@@ -279,8 +274,6 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 	switch {
 	case !get.OK || !post.OK || !confirm.OK:
 		r.Route = RouteNone
-	case quicCheck.OK:
-		r.Route = RouteQUIC
 	case http2Check.OK:
 		r.Route = RouteHTTP2
 	case relay.OK:
@@ -338,7 +331,7 @@ func (p *Preflight) assess(r Report, proxy *url.URL, address Check) string {
 				}
 			}
 		}
-		return "tunneld will not work here: direct QUIC, direct HTTP/2 and the relay all failed to reach the edge. Ask for " +
+		return "tunneld will not work here: direct HTTP/2 and the relay both failed to reach the edge. Ask for " +
 			askFor(r) + "."
 	}
 
@@ -353,7 +346,6 @@ func (p *Preflight) assess(r Report, proxy *url.URL, address Check) string {
 		names = "the system resolver"
 	}
 	over := map[Route]string{
-		RouteQUIC:  "direct QUIC (UDP 7844)",
 		RouteHTTP2: "direct HTTP/2 (TCP 7844)",
 		RouteRelay: "the relay (a WebSocket on HTTPS 443)",
 	}[r.Route]
@@ -365,10 +357,10 @@ func (p *Preflight) assess(r Report, proxy *url.URL, address Check) string {
 func askFor(r Report) string {
 	for _, c := range r.Checks {
 		if c.Name == "relay" && c.Hint != "" {
-			return c.Hint + ", or UDP or TCP 7844 to the Cloudflare edge (" + edgeRanges + ")"
+			return c.Hint + ", or TCP 7844 to the Cloudflare edge (" + edgeRanges + ")"
 		}
 	}
-	return "UDP or TCP 7844 to the Cloudflare edge (" + edgeRanges + ")"
+	return "TCP 7844 to the Cloudflare edge (" + edgeRanges + ")"
 }
 
 func capitalize(s string) string {
@@ -522,31 +514,6 @@ func refused(get, post *http.Response) bool {
 		return get.StatusCode < 400
 	}
 	return false
-}
-
-func (p *Preflight) edgeQUIC(ctx context.Context, edges []string) Check {
-	c := Check{Name: "QUIC"}
-	if len(edges) == 0 {
-		c.Detail = "no edge address: DNS found none"
-		c.Hint = "allow DNS lookups of " + edgeName
-		return c
-	}
-	var last error
-	for _, edge := range edges {
-		ctx, cancel := context.WithTimeout(ctx, p.timeout)
-		conn, err := quic.DialAddr(ctx, edge, p.quic.Clone(), &quic.Config{HandshakeIdleTimeout: p.timeout})
-		cancel()
-		if err == nil {
-			_ = conn.CloseWithError(0, "")
-			c.OK = true
-			c.Detail = edge + ", handshake as " + p.quic.ServerName
-			return c
-		}
-		last = err
-	}
-	c.Detail = last.Error()
-	c.Hint = "allow UDP 7844 to the Cloudflare edge (" + edgeRanges + "); a run falls back to TCP"
-	return c
 }
 
 func (p *Preflight) edgeHTTP2(ctx context.Context, edges []string) Check {

@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"golang.org/x/net/websocket"
 )
 
@@ -32,7 +31,6 @@ func local(t *testing.T, server *httptest.Server, edgePort int) *Preflight {
 		provider: provider,
 		bridges:  []string{"wss://" + provider + "/relay"},
 		rootCAs:  pool,
-		quic:     &tls.Config{ServerName: "example.com", RootCAs: pool, NextProtos: []string{"argotunnel"}},
 		http2:    edgeTLS,
 		lookupHost: func(context.Context, string) ([]string, error) {
 			return []string{"127.0.0.1"}, nil
@@ -187,31 +185,6 @@ func TestEdgeHTTP2(t *testing.T) {
 	}
 }
 
-func TestEdgeQUIC(t *testing.T) {
-	server := provider(t, ok)
-	config := server.TLS.Clone()
-	config.NextProtos = []string{"argotunnel"}
-	listener, err := quic.ListenAddr("127.0.0.1:0", config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		for {
-			conn, err := listener.Accept(context.Background())
-			if err != nil {
-				return
-			}
-			_ = conn.CloseWithError(0, "")
-		}
-	}()
-	p := local(t, server, 0)
-	c := p.edgeQUIC(context.Background(), []string{listener.Addr().String()})
-	if !c.OK {
-		t.Fatalf("QUIC handshake failed: %s", c.Detail)
-	}
-}
-
 func TestRelay(t *testing.T) {
 	server := provider(t, ok)
 	p := local(t, server, 0)
@@ -231,40 +204,29 @@ func TestRelay(t *testing.T) {
 	}
 }
 
-// TestRunSettlesTheRoute pins the order a run tries: QUIC, then HTTP/2,
-// then the relay, and none when the mint's request cannot get through.
+// TestRunSettlesTheRoute pins the order a run tries: HTTP/2 to the edge,
+// then the relay, and none when the mint's request cannot get through. A
+// run never uses QUIC, so the report neither checks it nor names it.
 func TestRunSettlesTheRoute(t *testing.T) {
 	server := provider(t, ok)
 	port := edgeTCP(t, server)
 
 	p := local(t, server, port)
-	if r := p.Run(context.Background(), nil); r.Route != RouteHTTP2 {
-		t.Errorf("route = %s, want %s with no QUIC listener", r.Route, RouteHTTP2)
+	r := p.Run(context.Background(), nil)
+	if r.Route != RouteHTTP2 {
+		t.Errorf("route = %s, want %s", r.Route, RouteHTTP2)
 	}
-
-	// QUIC on the same port number, over UDP, is the route a run takes first.
-	config := server.TLS.Clone()
-	config.NextProtos = []string{"argotunnel"}
-	listener, err := quic.ListenAddr("127.0.0.1:"+strconv.Itoa(port), config, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() {
-		for {
-			conn, err := listener.Accept(context.Background())
-			if err != nil {
-				return
-			}
-			_ = conn.CloseWithError(0, "")
+	for _, c := range r.Checks {
+		if strings.Contains(c.Name, "QUIC") {
+			t.Errorf("the report checks %q, which a run never uses", c.Name)
 		}
-	}()
-	if r := p.Run(context.Background(), nil); r.Route != RouteQUIC {
-		t.Errorf("route = %s, want %s with QUIC answering", r.Route, RouteQUIC)
 	}
-	listener.Close()
+	if strings.Contains(r.Assessment, "QUIC") {
+		t.Errorf("the assessment names QUIC: %q", r.Assessment)
+	}
 
 	p.lookupSRV = func(context.Context) ([]*net.SRV, error) { return nil, errors.New("refused") }
-	r := p.Run(context.Background(), nil)
+	r = p.Run(context.Background(), nil)
 	if r.Route != RouteRelay {
 		t.Errorf("route = %s, want %s with no edge address", r.Route, RouteRelay)
 	}
@@ -281,7 +243,7 @@ func TestRunSettlesTheRoute(t *testing.T) {
 	if r.Route != RouteNone {
 		t.Fatalf("route = %s, want %s", r.Route, RouteNone)
 	}
-	err = r.Write(&bytes.Buffer{})
+	err := r.Write(&bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "relay") {
 		t.Errorf("Write = %v, want an error naming every route", err)
 	}
@@ -343,7 +305,7 @@ func TestAssessment(t *testing.T) {
 		p.lookupSRV = func(context.Context) ([]*net.SRV, error) { return nil, errors.New("refused") }
 		p.bridges = []string{"wss://127.0.0.1:1/relay"}
 		r := p.Run(context.Background(), nil)
-		if !strings.HasPrefix(r.Assessment, "tunneld will not work here: direct QUIC, direct HTTP/2 and the relay all failed") {
+		if !strings.HasPrefix(r.Assessment, "tunneld will not work here: direct HTTP/2 and the relay both failed") {
 			t.Errorf("assessment %q", r.Assessment)
 		}
 		if !strings.Contains(r.Assessment, "7844") {
