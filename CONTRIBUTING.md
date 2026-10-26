@@ -156,7 +156,7 @@ variables (see the naming rules in [`v1/v1.go`](./v1/v1.go)).
 
 ## Local development
 
-Requires Go 1.26 or later — the floor comes from `libtunnel`, the tunnel engine
+Requires Go 1.27.3 or later — the floor comes from `libtunnel`, the tunnel engine
 (see the comment in [`go.mod`](./go.mod)).
 
 ```sh
