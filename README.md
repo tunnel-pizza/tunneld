@@ -343,7 +343,6 @@ And the rest of what tunneld requires directly:
 | [`github.com/moby/moby/client`](https://github.com/moby/moby), [`github.com/moby/moby/api`](https://github.com/moby/moby), [`github.com/containerd/errdefs`](https://github.com/containerd/errdefs) | `attach://dockerd`. |
 | [`github.com/spf13/cobra`](https://github.com/spf13/cobra), [`github.com/spf13/pflag`](https://github.com/spf13/pflag), [`github.com/spf13/viper`](https://github.com/spf13/viper) | The command line and its environment. |
 | [`github.com/yuin/goldmark`](https://github.com/yuin/goldmark) | Messages of the day. |
-| [`github.com/quic-go/quic-go`](https://github.com/quic-go/quic-go) | The QUIC handshake `--preflight` tries against the edge; cloudflared links it for the tunnel itself. |
 | [`rsc.io/qr`](https://github.com/rsc/qr) | The QR code a phone reads. |
 | [`github.com/shirou/gopsutil/v4`](https://github.com/shirou/gopsutil) | How much memory is free, which sizes the terminal's history. |
 | [`github.com/go-jose/go-jose/v4`](https://github.com/go-jose/go-jose) | Checking the tokens the provider signs, for Single Sign-On. |

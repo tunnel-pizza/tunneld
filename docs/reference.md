@@ -1475,8 +1475,6 @@ Mint  https://tunnel.pizza/
   address check   through the proxy, which resolves the tunnel's name  ✓
 
 Edge  port 7844, or the relay on 443
-  QUIC            no edge address: DNS found none  ✗
-                  → allow DNS lookups of region1.v2.argotunnel.com
   HTTP/2          no edge address: DNS found none  ✗
                   → allow DNS lookups of region1.v2.argotunnel.com
   relay           wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
@@ -1491,7 +1489,7 @@ tunneld will work here using an HTTPS mint through the proxy at proxy.internal:3
 
 On an open network the last line is "tunneld will work here using a direct
 HTTPS mint to tunnel.pizza, DNS-over-HTTPS, and an address check on HTTPS 443,
-over direct QUIC (UDP 7844)". When it cannot, the sentence names the first
+over direct HTTP/2 (TCP 7844)". When it cannot, the sentence names the first
 thing in the way and what to ask for: "tunneld will not work here: the address
 check failed (...). A run cannot confirm its address without one of them:
 ...". Color, on a terminal only, and never under `NO_COLOR`; a pipe or a file
@@ -1515,15 +1513,17 @@ gate on it.
 | `GET` | The provider's `/`, through the proxy a run would use, with the certificate's issuer, so a TLS-intercepting proxy is visible. A certificate tunneld does not trust is named by issuer, with where its CA goes: the system store or `SSL_CERT_FILE`, which Go reads (`NODE_EXTRA_CA_CERTS` it does not). | HTTPS to the provider does not get through. |
 | `POST` | The provider's `/` again with a POST, the mint's method. The mint itself is `POST /tunnel`, which this never sends. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
 | `address check` | The step after the mint: a run asks for its new address from here and prints it only once that comes back through the tunnel. Through the proxy when one applies, which resolves the tunnel's name; otherwise the name over DNS-over-HTTPS, or the system resolver when DoH cannot be reached, and HTTPS 443 directly. No tunnel exists to ask for, so this is settled from the checks above. | There is no proxy, and neither DNS-over-HTTPS nor the system resolver answers: a run would mint and never print its address. |
-| `QUIC` | A QUIC handshake with the edge on UDP 7844, as `quic.cftunnel.com`. | UDP 7844 is blocked; a run falls back to TCP. |
 | `HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
 | `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or something answers TLS for the relay with a certificate tunneld does not trust, named by issuer as for `GET`. |
 | `release` | This platform's release binary, `https://github.com/tunnel-pizza/tunneld/releases/download/<version>/tunneld-<os>-<arch>` (`latest` for a build that is not a release), followed one redirect at a time and asked for its first byte only: `github.com` redirects to `release-assets.githubusercontent.com`, GitHub's CDN in front of Azure Blob storage, with a signed address that expires within the hour. The line is the chain of hosts and statuses. Informational: it does not change the route. | A host on the chain does not get through, or answers anything but the file. |
 | `npm` | This platform's package as `npx` fetches it: its metadata from the registry (`registry.npmjs.org`, Cloudflare, or `npm_config_registry`), then its tarball's first byte. `www.npmjs.com`, the website, is never on that path. Informational. | The registry or the tarball does not get through. |
 
-The route is the first of direct QUIC, direct HTTP/2 and the relay that works,
-in the order a run tries them; `none` when none does, when the mint's GET or
-POST cannot get through, or when the address check cannot succeed.
+The route is the first of direct HTTP/2 and the relay that works, in the order
+a run tries them; `none` when neither does, when the mint's GET or POST cannot
+get through, or when the address check cannot succeed. A run never uses QUIC:
+it reaches the edge over HTTP/2 on TCP only, since some networks drop UDP to
+the edge while cloudflared retries QUIC there forever, so there is no QUIC
+check.
 
 ## Running in a container
 

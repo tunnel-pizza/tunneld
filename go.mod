@@ -39,7 +39,6 @@ require (
 	github.com/packetcap/go-pcap v0.0.0-20240528124601-8c87ecf5dbc5
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.9
-	github.com/quic-go/quic-go v0.62.0
 	github.com/rck/unit v0.0.3
 	github.com/shirou/gopsutil/v4 v4.26.3
 	github.com/sirupsen/logrus v1.9.3
@@ -147,6 +146,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
+	github.com/quic-go/quic-go v0.62.0 // indirect
 	github.com/rekby/gpt v0.0.0-20200219180433-a930afbc6edc // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
