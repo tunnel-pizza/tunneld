@@ -26,7 +26,7 @@ const (
 // program falls quiet, or the wait runs out.
 type For struct {
 	Until     string `json:"until,omitempty" jsonschema:"a regular expression (RE2) that ends the wait once the text read, or a full-screen program's rows, match it; \\s is ASCII only, \\p{Zs} matches any space"`
-	IdleMs    *int   `json:"idle_ms,omitempty" jsonschema:"end once the program has printed nothing, or a full-screen program's screen has not changed, for this long, in milliseconds: 500 when left out, 0 never"`
+	IdleMs    *int   `json:"idle_ms,omitempty" jsonschema:"end once the program has printed nothing, or a full-screen program's screen has not changed, for this long, in milliseconds: left out, 500 without until and 0 with it; 0 never"`
 	TimeoutMs int    `json:"timeout_ms,omitempty" jsonschema:"end after this long, in milliseconds: 10000 when left out, at most 25000"`
 }
 
@@ -46,6 +46,9 @@ func (w For) Pattern() (*regexp.Regexp, error) {
 // not compile before it does anything else.
 func Wait(c tool.Context, ctx context.Context, name string, term attach.Terminal, reader, cursor string, until *regexp.Regexp, w For, start time.Time) (types.Reply, error) {
 	idle := defaultIdle
+	if until != nil {
+		idle = 0
+	}
 	if w.IdleMs != nil {
 		idle = time.Duration(max(0, *w.IdleMs)) * time.Millisecond
 	}
