@@ -39,7 +39,7 @@ func TestTerminalWait(t *testing.T) {
 		failed bool
 	}{
 		"from where this sign-in stopped": {exec, at(""), tooltest.Waited{Reader: "grant g-1", Idle: 500 * time.Millisecond}, `"cursor":"@12"`, false},
-		"from a cursor, until":            {exec, at(`,"cursor":"@5","until":"go\\.mod"`), tooltest.Waited{Reader: "grant g-1", Cursor: "@5", Until: `go\.mod`, Idle: 500 * time.Millisecond}, `"matched":true`, false},
+		"from a cursor, until":            {exec, at(`,"cursor":"@5","until":"go\\.mod"`), tooltest.Waited{Reader: "grant g-1", Cursor: "@5", Until: `go\.mod`}, `"matched":true`, false},
 		"the secret":                      {nil, at(""), tooltest.Waited{Reader: "secret", Idle: 500 * time.Millisecond}, `"text":"$ ls\ngo.mod\n"`, false},
 		"a stale cursor":                  {exec, at(`,"cursor":"stale"`), tooltest.Waited{Reader: "grant g-1", Cursor: "stale", Idle: 500 * time.Millisecond}, "not this terminal's", true},
 		"a bad pattern":                   {exec, at(`,"until":"("`), tooltest.Waited{}, "until is not a regular expression", true},
