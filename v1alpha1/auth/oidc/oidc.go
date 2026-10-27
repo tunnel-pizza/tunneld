@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cnuss/libtunnel/v1alpha1/cloudflare/trust"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -102,11 +104,14 @@ type OidcImpl struct {
 var _ Oidc = (*OidcImpl)(nil)
 
 // New returns an OidcImpl asking tunnel.pizza, with a 10 s client, the wall
-// clock and a logger that discards.
+// clock and a logger that discards. The client verifies against the trust set
+// the mint uses, so a host with no CA store of its own still verifies tokens.
 func New(opts ...Option) *OidcImpl {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: trust.Pool()}
 	return v1.Apply(&OidcImpl{
 		issuer: func() string { return "https://" + v1.DefaultProvider + "/" },
-		http:   &http.Client{Timeout: 10 * time.Second},
+		http:   &http.Client{Timeout: 10 * time.Second, Transport: transport},
 		now:    time.Now,
 		log:    slog.New(slog.DiscardHandler),
 	}, opts...)
