@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cnuss/libtunnel/v1alpha1/cloudflare/trust"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -183,6 +184,9 @@ func TestOptions(t *testing.T) {
 		if o.issuer() != "https://tunnel.pizza/" || o.http == nil || o.http.Timeout != 10*time.Second || o.now == nil || o.log == nil {
 			t.Errorf("%s: issuer %q, client %v, clock %v, log %v", name, o.issuer(), o.http, o.now != nil, o.log != nil)
 		}
+	}
+	if tr, ok := New().http.Transport.(*http.Transport); !ok || tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs != trust.Pool() || tr.Proxy == nil {
+		t.Errorf("transport %#v, want one verifying against trust.Pool() through the environment's proxy", New().http.Transport)
 	}
 	asked := 0
 	o := New(WithIssuer(func() string { asked++; return "https://p.example" }))
