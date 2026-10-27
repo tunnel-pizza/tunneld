@@ -16,7 +16,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/vt v0.0.0-20260906004030-3986e9119cf9
 	github.com/cloudflare/cloudflared v0.0.0-20261026093458-dc3b264da64a
-	github.com/cnuss/libtunnel v0.3.5
+	github.com/cnuss/libtunnel v0.3.6
 	github.com/containerd/errdefs v1.0.0
 	github.com/creack/pty v1.1.24
 	github.com/dustin/go-humanize v1.0.1
