@@ -442,7 +442,9 @@ of a socket with tunneld's terminal shim preloaded (`LD_PRELOAD`), and asking
 about its terminal (`isatty`, `tcgetattr`, the window size, `/dev/tty`) is
 answered as a terminal would. vi and less draw at the page's size and redraw on
 resize, shells and python edit lines, and Ctrl-C and Ctrl-Z reach the job in
-front. A statically linked program, or a Go program, asks the kernel instead
+front. Keys typed while a program reads whole lines stay in the line as a
+terminal keeps them, arrow keys included (shown as `^[[A`), so what is typed
+ahead of a prompt, an up-arrow before the REPL has redrawn, reaches it. A statically linked program, or a Go program, asks the kernel instead
 and cannot be helped: it is served over pipes, and a warning at startup and a
 line on the page say so. If the shim does not load (a `noexec` temp
 directory), the run carries on over pipes and the log says why. One thing
