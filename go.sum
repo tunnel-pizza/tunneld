@@ -66,8 +66,8 @@ github.com/cloudflare/cloudflared v0.0.0-20261026093458-dc3b264da64a h1:Iq6+S8Lq
 github.com/cloudflare/cloudflared v0.0.0-20261026093458-dc3b264da64a/go.mod h1:jKeXwKT2RUf/JW8F8C1YEZQiUK+/v4hW5Fsbt/fhnmA=
 github.com/cloudwego/base64x v0.1.7 h1:NppS+Fgzg5ovhn4NkUXaDT3x9jldgH5ToMCqzBSi2zI=
 github.com/cloudwego/base64x v0.1.7/go.mod h1:Cu1PV9zfrSf7ET2tIbWbbEy7jO7HHJ13q4X2SQ8aWYg=
-github.com/cnuss/libtunnel v0.3.5 h1:5PI/dpD1OWps2IA/BTkFpAbMXxfldoXfisg+FFH/siw=
-github.com/cnuss/libtunnel v0.3.5/go.mod h1:MT9iK5BMUDcLvboBdu4iS45LJmFQfXSG/FC2z4b/s2Y=
+github.com/cnuss/libtunnel v0.3.6 h1:bkGhpFhJrIQd5B11vCbUi/pffTsOJrX9qtIWsEF5RyU=
+github.com/cnuss/libtunnel v0.3.6/go.mod h1:MT9iK5BMUDcLvboBdu4iS45LJmFQfXSG/FC2z4b/s2Y=
 github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
 github.com/containerd/errdefs v1.0.0/go.mod h1:+YBYIdtsnF4Iw6nWZhJcqGSg/dwvV7tyJ/kCkyJ2k+M=
 github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151Xdx3ZPPE=
