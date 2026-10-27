@@ -60,7 +60,9 @@ func TestSays(t *testing.T) {
 		"NotATerminal":   {NotATerminal("https://0tabc.tunneld.domain/", v1.Origin{Index: 0, URI: *shell, Scheme: v1.HttpScheme}), []string{"https://0tabc.tunneld.domain/ is not a terminal: origin 0 is http", "terminal_sessions lists the terminals"}},
 		"NoScope":        {NoScope("a_tool", "tunnel:exec"), []string{"This sign-in can't call a_tool", "a_tool needs the tunnel:exec scope"}},
 		"NotAPattern":    {NotAPattern(fmt.Errorf("missing closing )")), []string{"until is not a regular expression: missing closing )", `until takes RE2 syntax: \s is ASCII only, \p{Zs} matches any space`}},
-		"NothingToSend":  {NothingToSend(), []string{"Nothing to send", "input needs at least one step"}},
+		"NothingToSend":  {NothingToSend(), []string{"Nothing to send", "send input steps, a command, attachments, or a mix"}},
+		"BadAttachment":  {BadAttachment(fmt.Errorf("attachment 1: not a data: URI")), []string{"attachment 1: not a data: URI", "each attachment is an absolute path, a data: URI, and optionally an octal mode, 1 MiB in all"}},
+		"Unwritable":     {Unwritable(fmt.Errorf("permission denied")), []string{"Could not write the attachments: permission denied", "nothing was typed; pick a path tunneld's user can write"}},
 		"Unsendable":     {Unsendable(fmt.Errorf("%w %q: step 2", attach.ErrUnknownKey, "Hyper")), []string{`attach: unknown key "Hyper": step 2`, "each step is exactly one of text or key"}},
 		"UnknownScheme":  {UnknownScheme("ssh"), []string{`"ssh" is not a scheme`, "scheme must be exec, attach or http"}},
 	} {

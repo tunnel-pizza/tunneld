@@ -93,9 +93,22 @@ func Unreadable(err error) error {
 	return refusal("", err)
 }
 
-// NothingToSend is the refusal for input with no steps.
+// NothingToSend is the refusal for a call with no input steps, no command
+// and no attachments.
 func NothingToSend() error {
-	return refusal("input needs at least one step", errors.New("Nothing to send"))
+	return refusal("send input steps, a command, attachments, or a mix", errors.New("Nothing to send"))
+}
+
+// BadAttachment is the refusal for an attachment checked before anything
+// was written, err saying which and why.
+func BadAttachment(err error) error {
+	return refusal("each attachment is an absolute path, a data: URI, and optionally an octal mode, 1 MiB in all", err)
+}
+
+// Unwritable is the refusal for attachments this machine would not take,
+// err saying why; nothing was typed.
+func Unwritable(err error) error {
+	return refusal("nothing was typed; pick a path tunneld's user can write", fmt.Errorf("Could not write the attachments: %w", err))
 }
 
 // Unsendable is the refusal for input the terminal would not send, err
