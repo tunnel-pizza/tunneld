@@ -55,7 +55,7 @@ func TestTerminalExec(t *testing.T) {
 			`"structuredContent":{"cursor":"@10","dropped":false,"matched":false,"text":"go.mod\n","timed_out":false,"truncated":false}`,
 			tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Idle: 500 * time.Millisecond}},
 		"until the prompt": {exec, at("https://0tabc.tunneld.domain/?1", ls, `,"until":"go\\.mod"`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
-			`"matched":true`, tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Until: `go\.mod`, Idle: 500 * time.Millisecond}},
+			`"matched":true`, tooltest.Waited{Reader: "grant g-1", Cursor: "@3", Until: `go\.mod`}},
 		"no wait": {exec, at("https://0tabc.tunneld.domain/?1", ls, `,"idle_ms":0`), nil, []attach.Input{{Text: "ls"}, {Key: "Enter"}},
 			`"structuredContent":{"cursor":"@3","dropped":false,"matched":false,"text":"","timed_out":false,"truncated":false}`, tooltest.Waited{}},
 		"the secret": {nil, at("https://0tabc.tunneld.domain/?1", `[{"key":"Esc"},{"text":":wq"}]`, ""), nil, []attach.Input{{Key: "Esc"}, {Text: ":wq"}},

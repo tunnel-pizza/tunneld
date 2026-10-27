@@ -79,7 +79,8 @@ func TestWait(t *testing.T) {
 		failed string
 	}{
 		"defaults":       {For{}, &waiting{got: attach.Output{Text: "hi", Cursor: "@2"}}, 500 * time.Millisecond, 10 * time.Second, "", types.Reply{Output: attach.Output{Text: "hi", Cursor: "@2"}}, ""},
-		"a match":        {For{Until: `done: \d`}, &waiting{matched: true}, 500 * time.Millisecond, 10 * time.Second, `done: \d`, types.Reply{Matched: true}, ""},
+		"a match":        {For{Until: `done: \d`}, &waiting{matched: true}, 0, 10 * time.Second, `done: \d`, types.Reply{Matched: true}, ""},
+		"until and idle": {For{Until: `\$ $`, IdleMs: ms(2000)}, &waiting{}, 2 * time.Second, 10 * time.Second, `\$ $`, types.Reply{}, ""},
 		"no quiet":       {For{IdleMs: ms(0), TimeoutMs: 2000}, &waiting{}, 0, 2 * time.Second, "", types.Reply{}, ""},
 		"past the cap":   {For{TimeoutMs: 60_000}, &waiting{}, 500 * time.Millisecond, 25 * time.Second, "", types.Reply{}, ""},
 		"timed out":      {For{TimeoutMs: 1, IdleMs: ms(0)}, &waiting{block: true}, 0, time.Millisecond, "", types.Reply{TimedOut: true}, ""},
