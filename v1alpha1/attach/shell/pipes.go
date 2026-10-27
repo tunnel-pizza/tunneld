@@ -175,9 +175,11 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 // included. What a person types at the page arrives as a terminal's keys —
 // Enter is \r, Backspace is DEL.
 //
-// In canonical mode, arrow keys and other escape sequences are dropped: there
-// is no line editing to move through, and passed on they would be typed into
-// the line as noise.
+// In canonical mode on pipes, arrow keys and other escape sequences are
+// dropped: there is no line editing to move through, and passed on they would
+// be typed into the line as noise. A program on a terminal (terminal) gets
+// them in its line, as a kernel's line discipline keeps them, so keys typed
+// while it is between modes reach it when it goes raw.
 type cooked struct {
 	echo   io.Writer
 	stdin  io.WriteCloser
@@ -186,6 +188,10 @@ type cooked struct {
 	// flushes counts the input flushes the program asked for; each takes the
 	// line being edited with it. nil: none are ever asked for.
 	flushes func() uint32
+	// terminal is a program that believes it has a terminal (the shim's):
+	// escape sequences stay in its line, as a kernel's line discipline keeps
+	// them. Pipes drop them.
+	terminal bool
 
 	// mu serialises keys against settle, which the output side calls.
 	mu      sync.Mutex
@@ -307,6 +313,13 @@ func (c *cooked) key(b byte, m settings) error {
 		}
 	}
 	switch {
+	case b == 0x1b && c.terminal:
+		c.line = append(c.line, b)
+		if m.lflag&lECHOCTL != 0 {
+			c.echoed(m, caret(b))
+		} else {
+			c.echoed(m, string([]byte{b}))
+		}
 	case b == 0x1b:
 		c.esc = 1
 	case b == '\r' || b == '\n':
@@ -349,12 +362,17 @@ func (c *cooked) send(newline bool) error {
 	return err
 }
 
-// erase takes n characters off the end of the line, and off the screen.
+// erase takes n characters off the end of the line, and off the screen: a
+// control character echoed as ^X takes both its columns.
 func (c *cooked) erase(m settings, n int) {
 	for ; n > 0 && len(c.line) > 0; n-- {
-		_, size := utf8.DecodeLastRune(c.line)
+		r, size := utf8.DecodeLastRune(c.line)
 		c.line = c.line[:len(c.line)-size]
-		c.echoed(m, "\b \b")
+		if r < 0x20 && r != '\t' && m.lflag&lECHOCTL != 0 {
+			c.echoed(m, "\b\b  \b\b")
+		} else {
+			c.echoed(m, "\b \b")
+		}
 	}
 }
 

@@ -96,6 +96,67 @@ func TestCooked(t *testing.T) {
 	}
 }
 
+// TestCookedOnATerminal pins the line a program on the shim gets, which
+// believes it has a terminal: escape sequences stay in the line, as a
+// kernel's line discipline keeps them, echoed as ^[ under ECHOCTL, so keys
+// typed while the program is between modes reach it.
+func TestCookedOnATerminal(t *testing.T) {
+	noCtl := defaultMode
+	noCtl.lflag &^= lECHOCTL
+	for _, tc := range []struct {
+		name string
+		mode settings
+		keys string
+		sent string
+		echo string
+	}{
+		{"an arrow key stays in the line", defaultMode, "l\x1b[Ds\r", "l\x1b[Ds\n", "l^[[Ds\r\n"},
+		{"an application-mode arrow too", defaultMode, "\x1bOA\r", "\x1bOA\n", "^[OA\r\n"},
+		{"Alt-key stays", defaultMode, "\x1bxls\r", "\x1bxls\n", "^[xls\r\n"},
+		{"Backspace takes ^[ and both its columns", defaultMode, "a\x1b\x7f\r", "a\n", "a^[\b\b  \b\b\r\n"},
+		{"without ECHOCTL, ESC echoes as itself", noCtl, "x\x1bOA\r", "x\x1bOA\n", "x\x1bOA\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, whole := range []bool{false, true} {
+				var echo bytes.Buffer
+				stdin := &stdinFake{}
+				mode := tc.mode
+				c := &cooked{echo: &echo, stdin: stdin, mode: func() settings { return mode }, signal: func(signalKey) {}, terminal: true}
+				if whole {
+					_, _ = c.Write([]byte(tc.keys))
+				} else {
+					for i := range len(tc.keys) {
+						_, _ = c.Write([]byte{tc.keys[i]})
+					}
+				}
+				if got := stdin.String(); got != tc.sent {
+					t.Errorf("whole=%v: sent %q, want %q", whole, got, tc.sent)
+				}
+				if got := echo.String(); got != tc.echo {
+					t.Errorf("whole=%v: echoed %q, want %q", whole, got, tc.echo)
+				}
+			}
+		})
+	}
+}
+
+// TestCookedHandsEscapesOverAcrossRaw pins type-ahead of an arrow key: typed
+// while the program is in canonical mode, it reaches the program when the
+// program goes raw, as a terminal hands its line over when ICANON goes.
+func TestCookedHandsEscapesOverAcrossRaw(t *testing.T) {
+	raw := defaultMode
+	raw.lflag &^= lICANON | lECHO
+	mode := defaultMode
+	stdin := &stdinFake{}
+	c := &cooked{echo: io.Discard, stdin: stdin, mode: func() settings { return mode }, signal: func(signalKey) {}, terminal: true}
+	_, _ = c.Write([]byte("\x1bOA"))
+	mode = raw
+	_, _ = c.Write([]byte("\r"))
+	if got := stdin.String(); got != "\x1bOA\n" {
+		t.Errorf("sent %q, want the typed-ahead arrow, then Enter", got)
+	}
+}
+
 // TestCookedFollowsTheSettings pins the discipline when a program has set its
 // terminal: raw mode passes bytes through as they come, escape sequences
 // included; echo follows ECHO; the keys come from c_cc; ISIG off makes ^C a

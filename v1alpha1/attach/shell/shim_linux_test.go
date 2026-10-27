@@ -171,13 +171,18 @@ func TestShimJobControl(t *testing.T) {
 	r.await("after-fg", at)
 }
 
-// TestShimReadline pins line editing: an up-arrow recalls the last line.
+// TestShimReadline pins line editing: an up-arrow recalls the last line,
+// typed ahead the moment the answer shows, while the REPL may still be in
+// canonical mode between prompts, as a person or an agent types. The arrow
+// is sent as a terminal sends it in application cursor mode, which Python's
+// REPL (3.13 and later) turns on: SS3 A, which GNU readline, behind the
+// older REPL, takes as well.
 func TestShimReadline(t *testing.T) {
 	r := onShim(t, "python3", "-q")
 	at := r.await(">>> ", 0)
 	r.send("6*7\r")
 	at = r.await("42", at)
-	r.send("\x1b[A\r")
+	r.send("\x1bOA\r")
 	r.await("42", at)
 	r.send("exit()\r")
 }

@@ -242,7 +242,7 @@ func (a *TargetImpl) attachShim(ctx context.Context, in io.Reader, out, errw io.
 
 	settle := func() {}
 	if in != nil {
-		keys := &cooked{echo: out, stdin: halfCloser{ours}, mode: mode, flushes: pg.flushes, signal: func(k signalKey) {
+		keys := &cooked{echo: out, stdin: halfCloser{ours}, mode: mode, flushes: pg.flushes, terminal: true, signal: func(k signalKey) {
 			signal(keySignals[k])
 		}}
 		settle = keys.settle
