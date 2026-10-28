@@ -1417,7 +1417,7 @@ after construction still lands.
 | `TUNNELD_PREFLIGHT` | `--preflight` | Whether to check the network and exit instead of running. Any value `strconv.ParseBool` accepts. |
 | `HTTP_ORIGIN` | *(no flag)* | Written, never read: set for the programs a run starts to the tunnel's origin, `https://<hostname>`; see [Programs](#programs). |
 | `TUNNELD_OWNER` | *(no flag)* | Written, never read: the tunnel's owner as its latest mint named it; see [The owner](#the-owner). Absent when the mint named nobody. |
-| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, so the programs the run starts never inherit it. |
+| `TUNNELD_WWW_AUTHENTICATE` | *(no flag)* | Password protection or Single Sign-On; see [Protection](#protection). Environment only: a command line is readable by every user on the machine. Set and empty means public, deliberately. Unset once read, and left out of the environment of every program the run starts, so none inherits it. |
 
 Binding is [spf13/viper](https://github.com/spf13/viper), one instance per
 built command rather than the package global, with each variable bound

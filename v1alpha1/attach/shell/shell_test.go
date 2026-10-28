@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -318,5 +319,69 @@ func TestEndStopsTheProgramAndWhatItStarted(t *testing.T) {
 	}
 	if out, _ := exec.Command("pgrep", "-f", "sleep 31337").Output(); len(out) > 0 {
 		t.Errorf("the program's child is still running after End: pids %s", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestAttachKeepsThePasswordFromTheProgram pins that a program never
+// inherits the tunnel's password hash, on a terminal or over pipes, while
+// the rest of tunneld's environment still reaches it.
+func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fixture is a /bin/sh script")
+	}
+	t.Setenv(v1.WWWAuthenticateEnv, `Basic pw="$pbkdf2-sha256$i=600000$c2FsdA$aGFzaA"`)
+	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
+	path := filepath.Join(t.TempDir(), "tunneld-env-fixture")
+	script := "#!/bin/sh\nprintf 'AUTH:%s|KEPT:%s\\n' \"${TUNNELD_WWW_AUTHENTICATE-unset}\" \"$TUNNELD_ENV_FIXTURE\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing the fixture: %v", err)
+	}
+	for name, pipes := range map[string]bool{"on a terminal": false, "over pipes": true} {
+		t.Run(name, func(t *testing.T) {
+			if !pipes {
+				needsPTY(t)
+			}
+			target, err := New().Open(t.Context(), path, nil, slog.New(slog.DiscardHandler))
+			if err != nil {
+				t.Fatalf("Open() = %v", err)
+			}
+			defer func() { _ = target.Close() }()
+			target.(*TargetImpl).pipes = pipes
+
+			out := &sink{}
+			resize := make(chan remotecommand.TerminalSize)
+			close(resize)
+			if err := target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), out, out, true, resize); err != nil {
+				t.Fatalf("AttachContainer() = %v", err)
+			}
+			if got := out.String(); !strings.Contains(got, "AUTH:unset|KEPT:kept") {
+				t.Errorf("the program saw %q, want no password and the rest kept", got)
+			}
+		})
+	}
+}
+
+// TestEnviron pins the environment a program starts from: tunneld's own,
+// without the tunnel's password, under any spelling a case-blind
+// environment would read as it.
+func TestEnviron(t *testing.T) {
+	t.Setenv(v1.WWWAuthenticateEnv, "Basic pw=x")
+	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
+	got := environ()
+	if !slices.Contains(got, "TUNNELD_ENV_FIXTURE=kept") {
+		t.Errorf("environ() lost the rest of the environment: %q", got)
+	}
+	for _, kv := range got {
+		if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) {
+			t.Errorf("environ() kept %q", kv)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		t.Setenv(strings.ToLower(v1.WWWAuthenticateEnv), "Basic pw=y")
+		for _, kv := range environ() {
+			if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) {
+				t.Errorf("environ() kept %q", kv)
+			}
+		}
 	}
 }
