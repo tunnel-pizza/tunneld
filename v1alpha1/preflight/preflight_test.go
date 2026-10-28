@@ -408,3 +408,81 @@ func noPortal(t *testing.T) []portalProbe {
 	t.Cleanup(server.Close)
 	return []portalProbe{{"Android", server.URL + "/generate_204", http.StatusNoContent, ""}}
 }
+
+// TestEdgeAccessibility pins the provider's own verdict on this address: ok
+// when its edge answers and the mint's blocklist does not list it, a warning
+// when it does or the provider offers no such answer, a failure otherwise,
+// and never the path it asked in what it prints.
+func TestEdgeAccessibility(t *testing.T) {
+	answer := func(status int, dnsbl string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/research/probe.sh" || r.Method != http.MethodHead {
+				w.WriteHeader(http.StatusTeapot)
+				return
+			}
+			if dnsbl != "" {
+				w.Header().Set("X-Dnsbl", dnsbl)
+			}
+			w.WriteHeader(status)
+		}
+	}
+	cases := []struct {
+		name     string
+		handler  http.HandlerFunc
+		ok, warn bool
+		says     string
+	}{
+		{"clean", answer(http.StatusOK, "false"), true, false, "not on a blocklist"},
+		{"listed", answer(http.StatusOK, "true"), true, true, "on a blocklist"},
+		{"no verdict", answer(http.StatusOK, ""), true, false, "reachable"},
+		{"not offered", answer(http.StatusNotFound, ""), true, true, "not offered"},
+		{"refused", answer(http.StatusForbidden, ""), false, false, "403"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := local(t, provider(t, tc.handler), 0)
+			c := p.edgeAccessibility(context.Background(), "127.0.0.1")
+			if c.OK != tc.ok || c.Warn != tc.warn || !strings.Contains(c.Detail, tc.says) {
+				t.Errorf("edgeAccessibility = ok %v warn %v %q, want ok %v warn %v saying %q", c.OK, c.Warn, c.Detail, tc.ok, tc.warn, tc.says)
+			}
+			if tc.warn && c.Hint == "" || strings.Contains(c.Detail+c.Hint, "research") {
+				t.Errorf("detail %q, hint %q: want a hint on a warning and the path never shown", c.Detail, c.Hint)
+			}
+		})
+	}
+
+	t.Run("no answer", func(t *testing.T) {
+		server := provider(t, ok)
+		p := local(t, server, 0)
+		server.Close()
+		c := p.edgeAccessibility(context.Background(), "127.0.0.1")
+		if c.OK || c.Detail == "" || strings.Contains(c.Detail+c.Hint, "research") {
+			t.Errorf("edgeAccessibility = ok %v %q, hint %q: want a failure that never shows the path", c.OK, c.Detail, c.Hint)
+		}
+	})
+}
+
+// TestEdgeAccessibilityLeavesTheRouteAlone pins that the check is early
+// signal: a provider refusing it changes neither the route nor what a run is
+// said to need.
+func TestEdgeAccessibilityLeavesTheRouteAlone(t *testing.T) {
+	server := provider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/research/probe.sh" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+	})
+	p := local(t, server, edgeTCP(t, server))
+	r := p.Run(context.Background(), nil)
+	var found bool
+	for _, c := range r.Checks {
+		if strings.HasSuffix(c.Name, "edge accessibility") {
+			found = c.Category == "Network" && !c.OK
+		}
+	}
+	if !found {
+		t.Errorf("no failed Network check named edge accessibility in %+v", r.Checks)
+	}
+	if r.Route != RouteHTTP2 || len(r.Failed()) != 0 {
+		t.Errorf("route %s, failed %q: want the route the edge gives, unchanged", r.Route, r.Failed())
+	}
+}

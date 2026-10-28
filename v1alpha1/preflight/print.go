@@ -28,7 +28,7 @@ func newPrinter(w io.Writer, provider string) *printer {
 	if w == nil {
 		return nil
 	}
-	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider))), provider: provider}
+	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider)+edgeAccess)), provider: provider}
 }
 
 func (p *printer) title() {

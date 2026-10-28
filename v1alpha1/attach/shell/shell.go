@@ -31,6 +31,7 @@ import (
 	"github.com/creack/pty"
 	"k8s.io/cri-streaming/pkg/streaming/remotecommand"
 
+	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 )
@@ -481,11 +482,13 @@ func (a *TargetImpl) ExitCode() int {
 }
 
 // environ is tunneld's environment for a program it starts, without the
-// tunnel's password: a viewer at the program could read the hash and try
-// passwords against it offline. Matched without case, as Windows reads names.
+// tunnel's password, which a viewer at the program could try passwords
+// against offline, or the mint credential, which mints in its owner's name.
+// Matched without case, as Windows reads names. A program running as the
+// same user can still read tunneld's own from /proc/<pid>/environ.
 func environ() []string {
 	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		return strings.EqualFold(name, v1.WWWAuthenticateEnv)
+		return strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv)
 	})
 }
