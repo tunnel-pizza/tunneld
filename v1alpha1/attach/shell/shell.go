@@ -22,6 +22,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -334,7 +336,7 @@ func (a *TargetImpl) AttachContainer(ctx context.Context, _, _, _ string, in io.
 	// TERM is what makes a full-screen program willing to draw. The value is
 	// the one the page's terminal emulator implements, and the same one the
 	// frame announces to a container.
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(environ(), "TERM=xterm-256color")
 
 	term, slave, err := a.open()
 	if err != nil {
@@ -476,4 +478,14 @@ func (a *TargetImpl) ExitCode() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.code
+}
+
+// environ is tunneld's environment for a program it starts, without the
+// tunnel's password: a viewer at the program could read the hash and try
+// passwords against it offline. Matched without case, as Windows reads names.
+func environ() []string {
+	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return strings.EqualFold(name, v1.WWWAuthenticateEnv)
+	})
 }

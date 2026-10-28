@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -92,7 +91,7 @@ func (a *TargetImpl) attachPipes(ctx context.Context, in io.Reader, out, errw io
 	cmd := exec.CommandContext(ctx, a.path, pipeArgs(a.path, a.args)...)
 	// dumb says what the output is going to: no cursor to move, no colors
 	// anybody asked for.
-	cmd.Env = append(os.Environ(), "TERM=dumb")
+	cmd.Env = append(environ(), "TERM=dumb")
 	// Through oproc, the one piece of a terminal's output processing a
 	// program counts on. out and errw are one writer when the caller passes
 	// one, and stay one — exec gives both streams a single pipe when they
