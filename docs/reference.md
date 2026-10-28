@@ -341,6 +341,13 @@ lines. With no file (`--no-cache`, or no cache directory) `TUNNELD_ENV` is
 unset. Neither variable is ever inherited from a run this one was started
 under.
 
+The rest of the run's environment reaches it, `LIBTUNNEL_SPEC` among it (the
+handoff a nested tunneld takes the tunnel over by), but never
+`TUNNELD_WWW_AUTHENTICATE` (the password's hash) or `LIBTUNNEL_TOKEN` (the mint
+credential). That keeps them out of `env` and of what the program starts; a
+program running as the same user can still read tunneld's own environment from
+`/proc/<pid>/environ`, and the run's spec file.
+
 A bare argument that names a program on `$PATH` is that origin written short,
 since a word that resolves to a program is not a hostname anybody meant:
 
@@ -1457,33 +1464,34 @@ In a sandbox whose only way out is an HTTPS proxy, with no DNS at all:
 tunneld preflight  tunnel.pizza
 
 Network
-  proxy           tunnel.pizza:443 goes through http://proxy.internal:3128; the edge on 7844 is dialed directly (HTTPS_PROXY=http://proxy.internal:3128)  ✓
-  without proxy   blocked without the proxy, so the proxy is the only way out: Get "https://tunnel.pizza/": dial tcp: lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✓
-  captive portal  plain HTTP does not get out, so a portal cannot be seen from here: Get "http://captive.apple.com/hotspot-detect.html": dial tcp: lookup captive.apple.com on 127.0.0.11:53: server misbehaving  !
+  proxy                            tunnel.pizza:443 goes through http://proxy.internal:3128; the edge on 7844 is dialed directly (HTTPS_PROXY=http://proxy.internal:3128)  ✓
+  without proxy                    blocked without the proxy, so the proxy is the only way out: Get "https://tunnel.pizza/": dial tcp: lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✓
+  captive portal                   plain HTTP does not get out, so a portal cannot be seen from here: Get "http://captive.apple.com/hotspot-detect.html": dial tcp: lookup captive.apple.com on 127.0.0.11:53: server misbehaving  !
+  tunnel.pizza edge accessibility  reachable, this address not on a blocklist  ✓
 
 DNS
-  tunnel.pizza    lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✗
-                  → the system resolver cannot find tunnel.pizza
-  interception    nothing to check: the system resolver did not answer  ✓
-  made-up name    the system resolver did not answer  ✓
-  edge SRV        lookup _v2-origintunneld._tcp.argotunnel.com on 127.0.0.11:53: server misbehaving  ✗
-                  → SRV lookups are refused here; a run falls back to DNS-over-HTTPS
-  DoH             tunnel should retry: lookup region1.v2.argotunnel.com on 127.0.0.11:53: Post "https://dns.google/dns-query": dial tcp 8.8.8.8:443: connect: network is unreachable  ✗
-                  → DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked
+  tunnel.pizza                     lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✗
+                                   → the system resolver cannot find tunnel.pizza
+  interception                     nothing to check: the system resolver did not answer  ✓
+  made-up name                     the system resolver did not answer  ✓
+  edge SRV                         lookup _v2-origintunneld._tcp.argotunnel.com on 127.0.0.11:53: server misbehaving  ✗
+                                   → SRV lookups are refused here; a run falls back to DNS-over-HTTPS
+  DoH                              tunnel should retry: lookup region1.v2.argotunnel.com on 127.0.0.11:53: Post "https://dns.google/dns-query": dial tcp 8.8.8.8:443: connect: network is unreachable  ✗
+                                   → DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked
 
 Mint  https://tunnel.pizza/
-  GET             200 OK, certificate issued by "WE1 (Google Trust Services)"  ✓
-  POST            200 OK  ✓
-  address check   through the proxy, which resolves the tunnel's name  ✓
+  GET                              200 OK, certificate issued by "WE1 (Google Trust Services)"  ✓
+  POST                             200 OK  ✓
+  address check                    through the proxy, which resolves the tunnel's name  ✓
 
 Edge  port 7844, or the relay on 443
-  HTTP/2          no edge address: DNS found none  ✗
-                  → allow DNS lookups of region1.v2.argotunnel.com
-  relay           wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
+  HTTP/2                           no edge address: DNS found none  ✗
+                                   → allow DNS lookups of region1.v2.argotunnel.com
+  relay                            wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
 
 Install  this platform's binary
-  release         github.com 302 → github.com 302 → release-assets.githubusercontent.com 206 (Azure Blob storage)  ✓
-  npm             registry.npmjs.org 200 → registry.npmjs.org 206 (Cloudflare)  ✓
+  release                          github.com 302 → github.com 302 → release-assets.githubusercontent.com 206 (Azure Blob storage)  ✓
+  npm                              registry.npmjs.org 200 → registry.npmjs.org 206 (Cloudflare)  ✓
 
 route: relay
 tunneld will work here using an HTTPS mint through the proxy at proxy.internal:3128, the proxy's resolver, and an address check through the proxy, over the relay (a WebSocket on HTTPS 443).  ✓
@@ -1507,6 +1515,7 @@ gate on it.
 | `proxy` | The proxy variables set (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, either case, passwords left out) and whether the provider goes through one. A run takes it for the mint, the relay and the address check, and dials the edge on 7844 directly. | Never; a warning (`!`) when upper and lower case differ (Go reads the upper), when only `HTTP_PROXY` is set (HTTPS goes direct), when only `ALL_PROXY` is set (tunneld does not read it), or when the proxy is SOCKS (the relay speaks HTTP CONNECT only). |
 | `without proxy` | With a proxy only: the provider asked directly, so a proxy refusing it can be told apart from a network that does. When the proxy fails and this gets through, the mint's hint says to set `NO_PROXY=<provider>`. | Never. |
 | `captive portal` | The pages devices ask for to tell whether a network wants a sign-in, all at once over plain HTTP: Apple's (`captive.apple.com/hotspot-detect.html`, and older iOS's `www.apple.com/library/test/success.html`, both `Success`), Android and Chrome's (`connectivitycheck.gstatic.com/generate_204`, a 204), Windows' (`www.msftconnecttest.com/connecttest.txt`, `Microsoft Connect Test`) and Firefox's (`detectportal.firefox.com/success.txt`, `success`). Some portals let one through, often Apple's so a phone shows its sign-in sheet, and hold the rest. | Any of them answers otherwise, a redirect to a sign-in page above all, and the line names which and where it was sent; a warning when none gets out over plain HTTP, since no portal can then be seen. |
+| `<provider> edge accessibility` | Whether the provider's edge lets this address through to its mint: a HEAD its edge answers ahead of every gate, through the proxy a run uses, and tunnel.pizza's answer says whether the mint's blocklist (DroneBL, Barracuda) lists the address. Early signal only: the route and the last line stay the mint's and the edge's own checks. | A warning when the address is listed (a mint from here is held about 30 s and refused unless it carries a token the provider signed, as `create_tunnel`'s `LIBTUNNEL_TOKEN` is), or when the provider does not offer the check; a failure when it does not answer, or answers anything else. |
 | `<provider>` | The provider's addresses from the system resolver. | The resolver cannot find it. |
 | `interception` | Whether the system resolver's answer for the provider really is the provider: a private address never is, and any other has to present the provider's certificate. Answers differing from DNS-over-HTTPS prove nothing, since a CDN answers by where it is asked from. Through a proxy the answer is only reported, since a run does not use it. When the mint's GET fails after this, its hint names the interception. | The answer is private, or cannot present the provider's certificate: a hotel's or airport's portal, or a filtering resolver. |
 | `made-up name` | A name that cannot exist, `tunneld-preflight-<random>.example.com`, from the system resolver. | A warning when it answers: the resolver answers every name, as a captive portal or an advertising resolver does, and none of its answers can be trusted. |

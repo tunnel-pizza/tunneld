@@ -18,6 +18,7 @@ import (
 
 	"github.com/tunnel-pizza/tunneld/v1alpha1/attach"
 
+	ltv1 "github.com/cnuss/libtunnel/v1"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 )
 
@@ -330,9 +331,10 @@ func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
 		t.Skip("the fixture is a /bin/sh script")
 	}
 	t.Setenv(v1.WWWAuthenticateEnv, `Basic pw="$pbkdf2-sha256$i=600000$c2FsdA$aGFzaA"`)
+	t.Setenv(ltv1.TokenEnv, "a.mint.token")
 	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
 	path := filepath.Join(t.TempDir(), "tunneld-env-fixture")
-	script := "#!/bin/sh\nprintf 'AUTH:%s|KEPT:%s\\n' \"${TUNNELD_WWW_AUTHENTICATE-unset}\" \"$TUNNELD_ENV_FIXTURE\"\n"
+	script := "#!/bin/sh\nprintf 'AUTH:%s|TOKEN:%s|KEPT:%s\\n' \"${TUNNELD_WWW_AUTHENTICATE-unset}\" \"${LIBTUNNEL_TOKEN-unset}\" \"$TUNNELD_ENV_FIXTURE\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing the fixture: %v", err)
 	}
@@ -354,8 +356,8 @@ func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
 			if err := target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), out, out, true, resize); err != nil {
 				t.Fatalf("AttachContainer() = %v", err)
 			}
-			if got := out.String(); !strings.Contains(got, "AUTH:unset|KEPT:kept") {
-				t.Errorf("the program saw %q, want no password and the rest kept", got)
+			if got := out.String(); !strings.Contains(got, "AUTH:unset|TOKEN:unset|KEPT:kept") {
+				t.Errorf("the program saw %q, want no password, no mint token, and the rest kept", got)
 			}
 		})
 	}
@@ -366,13 +368,14 @@ func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
 // environment would read as it.
 func TestEnviron(t *testing.T) {
 	t.Setenv(v1.WWWAuthenticateEnv, "Basic pw=x")
+	t.Setenv(ltv1.TokenEnv, "a.mint.token")
 	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
 	got := environ()
 	if !slices.Contains(got, "TUNNELD_ENV_FIXTURE=kept") {
 		t.Errorf("environ() lost the rest of the environment: %q", got)
 	}
 	for _, kv := range got {
-		if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) {
+		if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv) {
 			t.Errorf("environ() kept %q", kv)
 		}
 	}

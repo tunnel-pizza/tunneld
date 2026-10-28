@@ -15,7 +15,7 @@ func TestPrinterStartsALineAndEndsItLater(t *testing.T) {
 	p := newPrinter(&out, "tunnel.pizza")
 	p.start("Edge", "HTTP/2")
 	started := out.String()
-	if !strings.HasSuffix(started, "  HTTP/2          ") || strings.HasSuffix(started, "\n") {
+	if !strings.HasSuffix(started, "  HTTP/2"+strings.Repeat(" ", p.width-len("HTTP/2")+2)) || strings.HasSuffix(started, "\n") {
 		t.Fatalf("after start: %q, want the name and no newline", started)
 	}
 	if !strings.Contains(started, "\nEdge  port 7844, or the relay on 443\n") {

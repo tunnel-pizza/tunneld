@@ -228,6 +228,7 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 		direct = step("Network", "without proxy", func() Check { return p.withoutProxy(ctx) })
 	}
 	step("Network", "captive portal", func() Check { return p.captivePortal(ctx) })
+	step("Network", host+edgeAccess, func() Check { return p.edgeAccessibility(ctx, host) })
 
 	var system []string
 	resolved := step("DNS", host, func() (c Check) {
@@ -501,6 +502,68 @@ func (p *Preflight) https(ctx context.Context, host string) (get, post Check) {
 	}
 	post.OK = true
 	return get, post
+}
+
+// edgeAccess names the edge accessibility check, after the provider's host.
+const edgeAccess = " edge accessibility"
+
+// accessPath answers ahead of every gate at the provider's edge, with
+// x-dnsbl saying whether the mint's blocklist lists the caller's address.
+const accessPath = "/research/probe.sh"
+
+// edgeAccessibility asks the provider's edge, through the proxy a run uses,
+// whether a mint from this address gets past its blocklist: a listed one is
+// held and refused. It never names the path in what it prints, and it is
+// early signal only: the route stays the mint's and the edge's checks.
+func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
+	var c Check
+	client := &http.Client{
+		Timeout: p.timeout,
+		Transport: &http.Transport{
+			Proxy: func(r *http.Request) (*url.URL, error) {
+				return p.proxy(r.URL.Scheme, canonicalHost(r.URL)), nil
+			},
+			TLSClientConfig: &tls.Config{RootCAs: p.rootCAs},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+p.provider+accessPath, nil)
+	if err != nil {
+		c.Detail = err.Error()
+		return c
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		var u *url.Error
+		if errors.As(err, &u) {
+			err = u.Err
+		}
+		c.Detail = "no answer: " + err.Error()
+		c.Hint = "allow HTTPS to " + host
+		return c
+	}
+	resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		c.OK, c.Warn = true, true
+		c.Detail = "not offered by " + host
+		c.Hint = "nothing to read here; the mint's own checks below still apply"
+	case resp.StatusCode != http.StatusOK:
+		c.Detail = "answered " + resp.Status
+		c.Hint = "allow HTTPS to " + host
+	case resp.Header.Get("X-Dnsbl") == "true":
+		c.OK, c.Warn = true, true
+		c.Detail = "this address is on a blocklist " + host + " enforces at the mint"
+		c.Hint = "a mint from here is held about 30 s and refused unless it carries a token " + host + " signed: create_tunnel's LIBTUNNEL_TOKEN"
+	case resp.Header.Get("X-Dnsbl") == "false":
+		c.OK = true
+		c.Detail = "reachable, this address not on a blocklist"
+	default:
+		c.OK = true
+		c.Detail = "reachable"
+	}
+	return c
 }
 
 // refused is whether a POST was turned away where the GET got through: a
