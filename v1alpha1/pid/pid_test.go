@@ -203,7 +203,8 @@ func TestRegisterAnswersTheLauncher(t *testing.T) {
 func readAll(t *testing.T, r *os.File) string {
 	t.Helper()
 	defer r.Close()
-	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	// Windows pipes take no deadline; go test's own timeout covers them.
+	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil && !errors.Is(err, os.ErrNoDeadline) {
 		t.Fatal(err)
 	}
 	b, err := io.ReadAll(r)
