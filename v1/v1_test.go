@@ -2,6 +2,7 @@ package v1_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -86,5 +87,18 @@ func TestApplyOrder(t *testing.T) {
 	}
 	if got := v1.Apply(&knobs{}); got.name != "" || got.seen != nil {
 		t.Error("Apply with no options changed its argument")
+	}
+}
+
+// TestExitError pins what a run that ends with a status says: the error it
+// carries when it has one, unwrapped for errors.Is, else that a program
+// exited with the status.
+func TestExitError(t *testing.T) {
+	running := v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid 42", v1.ErrRunning)}
+	if running.Error() != "already running as pid 42" || !errors.Is(running, v1.ErrRunning) {
+		t.Errorf("ExitError with an error = %q, Is ErrRunning %v; want the error's words and its sentinel", running, errors.Is(running, v1.ErrRunning))
+	}
+	if got := (v1.ExitError{Code: 3}).Error(); got != "a program the run started exited with status 3" {
+		t.Errorf("ExitError without one = %q", got)
 	}
 }

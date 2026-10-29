@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
@@ -109,10 +108,11 @@ func TestRegisterRefusesTheSameRun(t *testing.T) {
 	if !errors.Is(err, v1.ErrRunning) || release != nil {
 		t.Fatalf("second Register() = %v, want ErrRunning and no release", err)
 	}
-	for _, want := range []string{"as pid " + mine, "npx tunneld -k ends it"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not say %q", err, want)
-		}
+	if want := "already running as pid " + mine; err.Error() != want {
+		t.Errorf("error %q, want %q and nothing of the launcher's", err, want)
+	}
+	if exit := (v1.ExitError{}); !errors.As(err, &exit) || exit.Code != v1.RunningCode {
+		t.Errorf("error %v, want an ExitError with status %d", err, v1.RunningCode)
 	}
 	if got, _ := os.ReadFile(path); string(got) != mine+"\n" {
 		t.Errorf("%s after the refusal = %q, want the first run's pid untouched", path, got)

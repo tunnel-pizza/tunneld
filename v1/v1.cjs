@@ -70,6 +70,10 @@ const POLL_MS = 50;
 // What the binary reads to know a launcher is waiting on it; see detach.
 const NOTIFY_ENV = "TUNNELD_NOTIFY_PID";
 
+// The status the binary exits with when another run holds this one's
+// lock. Keep in step with RunningCode in v1/v1.go.
+const RUNNING = 75;
+
 function fail(message) {
   console.error(`${WRAPPER_NAME}: ${message}`);
   process.exit(1);
@@ -401,6 +405,11 @@ function start(bin, args, detaching) {
   );
   child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
   child.on("exit", (code, signal) => {
+    if (code === RUNNING) {
+      console.error(
+        `${WRAPPER_NAME}: it is running in the background or another terminal: npx ${WRAPPER_NAME} -k ends it, and npx ${WRAPPER_NAME} -kd starts it again`,
+      );
+    }
     // Node ignores some signals itself (SIGPIPE), so re-raising is
     // unreliable; report a signal death the way a shell does, 128+signum.
     finish(interrupted ? signum(interrupted) : signal ? signum(signal) : (code ?? 1));

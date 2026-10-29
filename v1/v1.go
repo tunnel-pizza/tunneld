@@ -153,20 +153,34 @@ var ErrNotReady = errors.New("tunnel did not become ready")
 var ErrNoDocker = errors.New("docker daemon unreachable")
 
 // ErrRunning reports a run refused because the same run — the same working
-// directory, origins and arguments — is already going on this machine, in the
-// background or another terminal. Two of them would answer on one hostname
-// and share one registration, so the second is refused before it mints
-// anything; the message names the first one's pid.
+// directory, origins and arguments — is already going on this machine. Two of
+// them would answer on one hostname and share one registration, so the second
+// is refused before it mints anything, as an ExitError with RunningCode whose
+// error wraps this and names the first one's pid.
 var ErrRunning = errors.New("already running")
 
-// ExitError ends a run that its programs ended: every program it started has
-// exited, and Code is the status the process exits with, the first non-zero
-// one among theirs. A run whose programs all exited 0 ends with no error.
-type ExitError struct{ Code int }
+// RunningCode is the status a run refused with ErrRunning exits with,
+// EX_TEMPFAIL, for whatever started it to tell apart and say how to end or
+// replace the other.
+const RunningCode = 75
+
+// ExitError ends a run with Code as the process's exit status: when its
+// programs ended it, the first non-zero status among theirs, a run whose
+// programs all exited 0 ending with no error; or when Err says why, such as
+// ErrRunning.
+type ExitError struct {
+	Code int
+	Err  error
+}
 
 func (e ExitError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
 	return fmt.Sprintf("a program the run started exited with status %d", e.Code)
 }
+
+func (e ExitError) Unwrap() error { return e.Err }
 
 // The environment variables and defaults, centralized: every code knob with an
 // env-expressible value has a mirror here, and env beats code — an operator

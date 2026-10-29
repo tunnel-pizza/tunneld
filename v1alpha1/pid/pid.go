@@ -113,7 +113,8 @@ func (p *PidImpl) file(origins v1.Origins, ext string) string {
 //
 // Locked is what keeps it one run to a file. The same run started again — the
 // same directory, origins and arguments, so the same key — finds the lock
-// taken and is refused with v1.ErrRunning, naming the pid it read, before it
+// taken and is refused with an ExitError of v1.RunningCode wrapping
+// v1.ErrRunning, naming the pid it read, before it
 // mints anything: two of them would answer on one hostname, and one could end
 // and take the registration of the other with it. The lock is released by the
 // kernel as the file is closed, however that happens, so a run that died
@@ -147,8 +148,7 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 			f.Close()
 			if errors.Is(err, errLocked) {
 				body, _ := os.ReadFile(path)
-				return nil, fmt.Errorf("%w as pid %s, in the background or another terminal: npx %s -k ends it, and npx %s -kd starts it again",
-					v1.ErrRunning, strings.TrimSpace(string(body)), v1.CommandName, v1.CommandName)
+				return nil, v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid %s", v1.ErrRunning, strings.TrimSpace(string(body)))}
 			}
 			log.Warn("not registering this run", "error", err)
 			return release, nil

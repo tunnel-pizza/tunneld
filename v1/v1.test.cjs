@@ -249,6 +249,16 @@ test("a plain run hands the binary every word and relays its status", posixOnly,
   assert.match(got.stderr, /argv: fail 7 -d\n/);
 });
 
+test("a run refused as already running gets what to do about it from the launcher", posixOnly, (t) => {
+  const { launch } = pkg(t);
+  for (const args of [["fail", "75"], ["-d", "fail", "75"]]) {
+    const got = launch(...args);
+    assert.equal(got.status, 75, args.join(" "));
+    assert.match(got.stderr, /npx tunneld -k ends it, and npx tunneld -kd starts it again\n/, args.join(" "));
+  }
+  assert.doesNotMatch(launch("fail", "7").stderr, /-kd starts it again/);
+});
+
 test("-d hands the console back once the run signals, and -k tears it down", posixOnly, (t) => {
   const { launch, cache, marker, env } = pkg(t);
 
