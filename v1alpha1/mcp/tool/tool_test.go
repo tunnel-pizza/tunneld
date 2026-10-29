@@ -181,21 +181,24 @@ func TestStdio(t *testing.T) {
 }
 
 // TestChangesOrigins pins who may change a run's origins: the stdio client,
-// and a token holding tunnel:origins; the tunnel's secret and a token
-// without the scope are refused, saying why, and logged.
+// and a token holding tunnel:origins; the tunnel's secret, a token without
+// the scope, and one an unowned tunnel let in are refused, saying why, and
+// logged.
 func TestChangesOrigins(t *testing.T) {
 	overHTTP := &sdk.CallToolRequest{Extra: &sdk.RequestExtra{Header: http.Header{}}}
 	origins := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:origins"}})
 	exec := auth.WithAccess(t.Context(), auth.Access{Sub: "github:1", Scopes: []string{"mcp", "tunnel:exec"}})
+	unowned := auth.WithAccess(t.Context(), auth.Access{Sub: "github:9", Scopes: []string{"mcp", "tunnel:origins"}, Unowned: true})
 	for name, tc := range map[string]struct {
 		ctx  context.Context
 		req  *sdk.CallToolRequest
 		says string
 	}{
-		"the stdio client":            {t.Context(), &sdk.CallToolRequest{}, ""},
-		"a token with tunnel:origins": {origins, overHTTP, ""},
-		"the tunnel's secret":         {t.Context(), overHTTP, "The tunnel's secret can't call a_tool"},
-		"a token without the scope":   {exec, overHTTP, "a_tool needs the tunnel:origins scope"},
+		"the stdio client":                 {t.Context(), &sdk.CallToolRequest{}, ""},
+		"a token with tunnel:origins":      {origins, overHTTP, ""},
+		"the tunnel's secret":              {t.Context(), overHTTP, "The tunnel's secret can't call a_tool"},
+		"a token without the scope":        {exec, overHTTP, "a_tool needs the tunnel:origins scope"},
+		"a token an unowned tunnel let in": {unowned, overHTTP, "a_tool can't change a tunnel nobody owns"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, got := logged(t)

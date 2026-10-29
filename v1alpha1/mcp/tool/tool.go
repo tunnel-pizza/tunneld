@@ -90,8 +90,8 @@ func (c Context) Terminal(ctx context.Context, tool, url string, start time.Time
 
 // ChangesOrigins is nil when the caller may change the run's origins, else
 // why not, logged: the client that started this tunneld, over stdio, or a
-// token holding auth.OriginsScope. Not the tunnel's secret, which opens
-// everything else.
+// token holding auth.OriginsScope, never one an unowned tunnel let in. Not
+// the tunnel's secret, which opens everything else.
 func (c Context) ChangesOrigins(ctx context.Context, req *sdk.CallToolRequest, tool string, start time.Time) error {
 	if Stdio(req) {
 		return nil
@@ -100,6 +100,10 @@ func (c Context) ChangesOrigins(ctx context.Context, req *sdk.CallToolRequest, t
 	if !byToken {
 		c.Logged(ctx, tool, "refused", start)
 		return refusals.SecretRefused(tool, auth.OriginsScope)
+	}
+	if access.Unowned {
+		c.Logged(ctx, tool, "refused", start)
+		return refusals.Unowned(tool)
 	}
 	if !access.Has(auth.OriginsScope) {
 		c.Logged(ctx, tool, "refused", start)

@@ -59,6 +59,10 @@ type Auth interface {
 type Access struct {
 	Sub, ClientID, Actor, Grant string
 	Scopes                      []string
+	// Unowned is a token let in only because the tunnel is unowned and
+	// public: its holder knew the hostname and nothing more, so nothing
+	// that lists the tunnel's insides answers it.
+	Unowned bool
 }
 
 // Has is whether the token holds scope.
@@ -453,7 +457,7 @@ func (a *AuthImpl) Bearer(r *http.Request, resource string) (access Access, ok b
 	if err != nil {
 		return Access{}, false, err
 	}
-	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Grant: c.Grant, Scopes: strings.Fields(c.Scope)}
+	access = Access{Sub: c.Subject, ClientID: c.ClientID, Actor: c.Actor, Grant: c.Grant, Scopes: strings.Fields(c.Scope), Unowned: a.unowned(s)}
 	if !a.unowned(s) && !slices.Contains(a.listed(s), access.Sub) {
 		return access, false, ErrNotListed
 	}

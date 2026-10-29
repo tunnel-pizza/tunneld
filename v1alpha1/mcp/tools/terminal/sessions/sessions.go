@@ -11,6 +11,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	v1types "github.com/tunnel-pizza/tunneld/v1/types"
+	"github.com/tunnel-pizza/tunneld/v1alpha1/auth"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/errors/refusals"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/mcp/tool"
@@ -35,6 +36,10 @@ type In struct {
 func run() tool.RunFunc[In, types.Sessions] {
 	return func(c tool.Context, ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, types.Sessions, error) {
 		start := time.Now()
+		if access, byToken := auth.AccessOf(ctx); byToken && access.Unowned {
+			c.Logged(ctx, "terminal_sessions", "refused", start)
+			return errors.ErrSessions(refusals.Undiscoverable("terminal_sessions"))
+		}
 		switch in.Scheme {
 		case v1.ExecScheme, v1.AttachScheme, v1.HttpScheme:
 		default:

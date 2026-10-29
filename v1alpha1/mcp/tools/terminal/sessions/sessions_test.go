@@ -62,11 +62,12 @@ func TestTerminalSessions(t *testing.T) {
 		want   *types.Sessions
 		says   string
 	}{
-		"the secret, exec":              {nil, "exec", execs, ""},
-		"any admitted token, exec":      {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "exec", execs, ""},
-		"any admitted token, attach":    {&auth.Access{Sub: "github:1"}, "attach", containers, ""},
-		"no scheme":                     {nil, "", nil, "missing properties"},
-		"a scheme that is none of them": {nil, "ssh", nil, "exec, attach or http"},
+		"the secret, exec":                 {nil, "exec", execs, ""},
+		"any admitted token, exec":         {&auth.Access{Sub: "github:1", Scopes: []string{"mcp"}}, "exec", execs, ""},
+		"any admitted token, attach":       {&auth.Access{Sub: "github:1"}, "attach", containers, ""},
+		"a token an unowned tunnel let in": {&auth.Access{Sub: "github:9", Scopes: []string{"mcp"}, Unowned: true}, "exec", nil, "terminal_exec"},
+		"no scheme":                        {nil, "", nil, "missing properties"},
+		"a scheme that is none of them":    {nil, "ssh", nil, "exec, attach or http"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tracked := cache.New(cache.WithDir(""), cache.WithTracking(map[string]string{

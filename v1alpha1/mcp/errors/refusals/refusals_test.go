@@ -64,6 +64,8 @@ func TestSays(t *testing.T) {
 		"BadAttachment":  {BadAttachment(fmt.Errorf("attachment 1: not a data: URI")), []string{"attachment 1: not a data: URI", "each attachment is an absolute path, a data: URI, and optionally an octal mode, 1 MiB in all"}},
 		"Unwritable":     {Unwritable(fmt.Errorf("permission denied")), []string{"Could not write the attachments: permission denied", "nothing was typed; pick a path tunneld's user can write"}},
 		"Unsendable":     {Unsendable(fmt.Errorf("%w %q: step 2", attach.ErrUnknownKey, "Hyper")), []string{`attach: unknown key "Hyper": step 2`, "each step is exactly one of text or key"}},
+		"Undiscoverable": {Undiscoverable("terminal_sessions"), []string{"terminal_sessions does not list a tunnel nobody owns", "Act on a terminal you were given the address of: terminal_exec, terminal_read, terminal_wait or terminal_screen with https://hostname/, or https://hostname/?n for origin n"}},
+		"Unowned":        {Unowned("origin_add"), []string{"origin_add can't change a tunnel nobody owns", "Only the client that started its tunneld, over stdio, can"}},
 		"UnknownScheme":  {UnknownScheme("ssh"), []string{`"ssh" is not a scheme`, "scheme must be exec, attach or http"}},
 	} {
 		if got := texts(t, tc.err); !slices.Equal(got, tc.says) {

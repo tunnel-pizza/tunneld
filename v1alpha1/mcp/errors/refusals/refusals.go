@@ -118,6 +118,22 @@ func Unsendable(err error) error {
 	return refusal("each step is exactly one of text or key", err)
 }
 
+// Undiscoverable is the refusal for tool, which lists what a tunnel serves,
+// to a caller an unowned public tunnel let in: such a tunnel is reached by
+// the address of a terminal its caller was given, never found.
+func Undiscoverable(tool string) error {
+	return refusal("Act on a terminal you were given the address of: terminal_exec, terminal_read, terminal_wait or terminal_screen with https://hostname/, or https://hostname/?n for origin n",
+		fmt.Errorf("%s does not list a tunnel nobody owns", tool))
+}
+
+// Unowned is the refusal for tool, which changes what a tunnel serves, to a
+// caller an unowned public tunnel let in: that tunnel's terminals are open
+// to anyone with an address, its origins to nobody but the one who ran it.
+func Unowned(tool string) error {
+	return refusal("Only the client that started its tunneld, over stdio, can",
+		fmt.Errorf("%s can't change a tunnel nobody owns", tool))
+}
+
 // UnknownScheme is the refusal for scheme, which no origin can have.
 func UnknownScheme(scheme v1.Scheme) error {
 	return refusal("scheme must be exec, attach or http", fmt.Errorf("%q is not a scheme", scheme))
