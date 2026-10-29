@@ -27,6 +27,20 @@ func notify(pid int) error {
 	return unix.Kill(pid, unix.SIGUSR2)
 }
 
+// pipe is fd as a file when it is an open pipe or socket — a Node launcher's
+// stdio pipe is a socketpair — made close-on-exec, or nil.
+func pipe(fd int) *os.File {
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil {
+		return nil
+	}
+	if kind := st.Mode & unix.S_IFMT; kind != unix.S_IFIFO && kind != unix.S_IFSOCK {
+		return nil
+	}
+	unix.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), "pid")
+}
+
 // lock takes an exclusive lock on f without waiting, or returns errLocked when
 // another open file holds it. flock's lock belongs to the open file, so the
 // kernel drops it as the file is closed, however the process ends.

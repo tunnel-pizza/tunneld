@@ -9,6 +9,7 @@
 package pid
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -53,14 +54,24 @@ type PidImpl struct {
 
 	// parent is the launcher waiting on this run, or 0 for none.
 	parent int
+
+	// statusPipe is the pipe that launcher reads a refusal's status from, or
+	// nil.
+	statusPipe *os.File
 }
 
 // New returns a PidImpl configured by opts, pointed at the user's cache
-// directory. It reads v1.NotifyPidEnv once and takes it out of the
-// environment, so no program an origin starts inherits it.
+// directory. It reads v1.NotifyPidEnv and v1.StatusFdEnv once and takes them
+// out of the environment, so no program an origin starts inherits them. The
+// status pipe is taken only from a launcher NotifyPidEnv names: a descriptor
+// number from anywhere else could be one this process opened itself.
 func New(opts ...Option) *PidImpl {
 	p := &PidImpl{parent: Parent(os.Getenv(v1.NotifyPidEnv), os.Getppid())}
+	if p.parent != 0 {
+		p.statusPipe = StatusPipe(os.Getenv(v1.StatusFdEnv))
+	}
 	os.Unsetenv(v1.NotifyPidEnv)
+	os.Unsetenv(v1.StatusFdEnv)
 	if base, err := os.UserCacheDir(); err == nil {
 		p.dir = filepath.Join(base, dirName)
 	}
@@ -77,6 +88,24 @@ func WithDir(dir string) Option {
 // environment. 0 is none.
 func WithParent(pid int) Option {
 	return func(p *PidImpl) { p.parent = pid }
+}
+
+// WithStatusPipe replaces the pipe Register writes a refusal's status to, which New
+// reads from the environment. nil is none.
+func WithStatusPipe(f *os.File) Option {
+	return func(p *PidImpl) { p.statusPipe = f }
+}
+
+// StatusPipe is the launcher's status pipe, or nil: the descriptor value names,
+// when it is a pipe or a socket this process has open, above stderr. It is
+// made close-on-exec, so no program an origin starts holds the launcher's
+// pipe open.
+func StatusPipe(value string) *os.File {
+	fd, err := strconv.Atoi(value)
+	if err != nil || fd <= 2 {
+		return nil
+	}
+	return pipe(fd)
 }
 
 // Parent is the pid to signal once the addresses are out, or 0 for none: the
@@ -125,7 +154,12 @@ func (p *PidImpl) file(origins v1.Origins, ext string) string {
 // A run that cannot register for any other reason still runs: the file is how
 // another command finds it, not something the tunnel needs. The failure is
 // logged and release is then a no-op.
+//
+// With a launcher's status pipe, a refusal writes its status there, and the
+// pipe is closed on the way out whatever happened: the launcher reads to the
+// end, and a detached run holds nothing of its.
 func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), err error) {
+	defer p.closeStatusPipe()
 	release = func() {}
 	path := p.file(origins, ".pid")
 	if path == "" {
@@ -148,7 +182,13 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 			f.Close()
 			if errors.Is(err, errLocked) {
 				body, _ := os.ReadFile(path)
-				return nil, v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid %s", v1.ErrRunning, strings.TrimSpace(string(body)))}
+				holder := strings.TrimSpace(string(body))
+				if p.statusPipe != nil {
+					if pid, err := strconv.Atoi(holder); err == nil {
+						p.refused(origins, pid)
+					}
+				}
+				return nil, v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid %s", v1.ErrRunning, holder)}
 			}
 			log.Warn("not registering this run", "error", err)
 			return release, nil
@@ -186,6 +226,40 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 	}
 	log.Warn("not registering this run: its file kept changing underneath it", "path", path)
 	return release, nil
+}
+
+// status is what a refused run tells the launcher: the pid of the run holding
+// the lock, and the paths of that run's settings and log, those that exist.
+type status struct {
+	Pid int    `json:"pid"`
+	Env string `json:"env,omitempty"`
+	Log string `json:"log,omitempty"`
+}
+
+// refused writes the status of a run refused for pid to the status pipe, as a
+// line of JSON.
+func (p *PidImpl) refused(origins v1.Origins, pid int) {
+	s := status{Pid: pid}
+	if path := p.file(origins, ".env"); exists(path) {
+		s.Env = path
+	}
+	if path := p.file(origins, ".log"); exists(path) {
+		s.Log = path
+	}
+	_ = json.NewEncoder(p.statusPipe).Encode(s)
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// closeStatusPipe closes the status pipe, once.
+func (p *PidImpl) closeStatusPipe() {
+	if p.statusPipe != nil {
+		p.statusPipe.Close()
+		p.statusPipe = nil
+	}
 }
 
 // same reports whether path still names the file f has open.

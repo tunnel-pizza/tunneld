@@ -8,11 +8,13 @@ import (
 )
 
 // The npm launcher does not detach on Windows, so nothing there sets
-// v1.NotifyPidEnv and these two are never reached; they keep the build whole.
+// v1.NotifyPidEnv and these three are never reached; they keep the build whole.
 
 func redirect(*os.File) error { return errors.ErrUnsupported }
 
 func notify(int) error { return errors.ErrUnsupported }
+
+func pipe(int) *os.File { return nil }
 
 // lock takes an exclusive lock on f without waiting, or returns errLocked when
 // another handle holds it. The byte locked sits far past the end of the file:

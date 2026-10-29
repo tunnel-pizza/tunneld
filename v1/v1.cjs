@@ -33,15 +33,16 @@
 //     and once it signals that its addresses are out the launcher hands the
 //     console back.
 //   - `-k`, as the only word, ends every run on the machine, detached or
-//     not, the way Ctrl-C would, so the teardown runs. The binary registers
-//     each run as a file it holds open beside its cached spec
-//     (v1alpha1/cache), and -k ends whatever holds one.
-//   - `-kd`, or `-dk`, as the first word, is both: every run ended, then this
-//     one started detached.
+//     not, the way Ctrl-C would, so the teardown runs; `-k<pid>` ends the one
+//     run with that pid. The binary registers each run as a file it holds
+//     open beside its cached spec (v1alpha1/cache), and -k ends whatever
+//     holds one.
+//   - `-l`, as the only word, lists every run, a line each.
 //
-// The flags are read only as the first word and stripped before the binary
-// sees the line. The binary refuses them by name for that reason, so a brew
-// user and an npx user never mean different things by the same flag.
+// One flag at most, read only as the first word and stripped before the
+// binary sees the line. Anything else, -kd included, is the binary's, and it
+// refuses them as unknown flags, so a brew user and an npx user never mean
+// different things by the same flag.
 
 const { spawn, execFileSync } = require("child_process");
 const fs = require("fs");
@@ -73,6 +74,10 @@ const NOTIFY_ENV = "TUNNELD_NOTIFY_PID";
 // The status the binary exits with when another run holds this one's
 // lock. Keep in step with RunningCode in v1/v1.go.
 const RUNNING = 75;
+
+// Names fd 3, the pipe a detaching launcher reads a refused run's status
+// from: a line of JSON naming the run holding the lock, { pid, env, log }.
+const STATUS_ENV = "TUNNELD_STATUS_FD";
 
 function fail(message) {
   console.error(`${WRAPPER_NAME}: ${message}`);
@@ -355,7 +360,10 @@ function signum(signal) {
 //
 // A detached run that ends first — a bad origin, --help, a mint that fails —
 // has already said so on the caller's streams, and its exit status is passed
-// on, so it fails like a foreground one. Ctrl-C while waiting ends the run: it
+// on, so it fails like a foreground one. One refused because the same run is
+// already going names that run on the status pipe, fd 3, and that run
+// is handed back instead, the way this one would have been: its addresses on
+// stdout, the summary on stderr, status 0. Ctrl-C while waiting ends the run: it
 // is in a session of its own, where the terminal's Ctrl-C does not reach, and
 // nothing has been handed back yet.
 function start(bin, args, detaching) {
@@ -375,10 +383,11 @@ function start(bin, args, detaching) {
   if (detaching) {
     // Listening before the spawn: unheard, SIGUSR2 would end this process.
     process.on("SIGUSR2", () => {
-      child.removeAllListeners("exit");
+      child.removeAllListeners("close");
+      child.stdio[3].destroy();
       child.unref();
       finish(0);
-      process.stderr.write(summary(child.pid));
+      process.stderr.write(summary(located(child.pid)));
     });
   }
   for (const signal of signals) {
@@ -398,22 +407,43 @@ function start(bin, args, detaching) {
     detaching
       ? {
           detached: true,
-          stdio: ["ignore", "inherit", "inherit"],
-          env: { ...process.env, [NOTIFY_ENV]: String(process.pid) },
+          stdio: ["ignore", "inherit", "inherit", "pipe"],
+          env: { ...process.env, [NOTIFY_ENV]: String(process.pid), [STATUS_ENV]: "3" },
         }
       : { stdio: "inherit" },
   );
   child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
-  child.on("exit", (code, signal) => {
+  let status = "";
+  if (detaching) {
+    child.stdio[3].setEncoding("utf8").on("data", (chunk) => (status += chunk));
+  }
+  // close rather than exit: it waits for the status pipe to be read.
+  child.on("close", (code, signal) => {
+    const running = code === RUNNING && parse(status);
+    if (running?.pid > 0) {
+      finish(0);
+      process.stdout.write(addresses(running));
+      process.stderr.write(summary(running, true));
+      return;
+    }
     if (code === RUNNING) {
       console.error(
-        `${WRAPPER_NAME}: it is running in the background or another terminal: npx ${WRAPPER_NAME} -k ends it, and npx ${WRAPPER_NAME} -kd starts it again`,
+        `${WRAPPER_NAME}: it is running in the background or another terminal: npx ${WRAPPER_NAME} -k ends it`,
       );
     }
     // Node ignores some signals itself (SIGPIPE), so re-raising is
     // unreliable; report a signal death the way a shell does, 128+signum.
     finish(interrupted ? signum(interrupted) : signal ? signum(signal) : (code ?? 1));
   });
+}
+
+// parse is the status a refused run wrote, a line of JSON, or null.
+function parse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 // paint wraps text in an ANSI style when stderr is a terminal that wants
@@ -498,37 +528,74 @@ function prose(host, origins, columns) {
   return wrap(words, Math.max(columns, 24) - 2, "  ");
 }
 
-// summary is what a detached run is handed back with, once it has signalled:
-// the directory it runs in, its pid and its log, then what it shares and the
-// address each origin answers on.
-//
-// Read from the files the run keeps beside its spec, which it wrote before
-// signalling: <key>.pid, to find the key by the pid, and <key>.env, the
-// settings the run settled on and the hostname it got. A run under
-// --no-cache writes no .env, and gets what the pid file alone can say; its
-// addresses are on stdout above either way.
-function summary(pid) {
+// located is the run pid is, the way a refused run's status names one: its
+// pid, and the paths of its <key>.env and <key>.log, those that exist. The key
+// is found by the <key>.pid naming the pid.
+function located(pid) {
   const dir = cacheDir();
-  let key = null;
+  const run = { pid };
   try {
-    key = fs
+    const key = fs
       .readdirSync(dir)
       .filter((n) => n.endsWith(".pid"))
       .map((n) => path.basename(n, ".pid"))
       .find((k) => read(path.join(dir, `${k}.pid`)).trim() === String(pid));
+    for (const ext of key ? ["env", "log"] : []) {
+      const file = path.join(dir, `${key}.${ext}`);
+      if (fs.existsSync(file)) {
+        run[ext] = file;
+      }
+    }
   } catch {
     // No cache directory: nothing more to say than the pid.
   }
-  const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
+  return run;
+}
 
-  const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
+// cached is the settings the run <key> cached in <key>.env: empty when there
+// are none.
+function cached(key) {
+  return envFile(read(path.join(cacheDir(), `${key}.env`)));
+}
+
+// addresses is what run is printed on stdout, one per line, the way the
+// binary prints them: the panel's address alone when there is a panel,
+// otherwise one per origin, routed by ?n when there is more than one. Empty
+// with no cached settings.
+function addresses(run) {
+  const env = run.env ? envFile(read(run.env)) : {};
+  const host = env.LIBTUNNEL_HOSTNAME;
+  if (!host) {
+    return "";
+  }
+  const base = `https://${host}/`;
+  const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
+  if (origins.length <= 1 || env.TUNNELD_MULTIVIEW === "true") {
+    return `${base}\n`;
+  }
+  return origins.map((_, i) => `${base}?${i}\n`).join("");
+}
+
+// summary is what a detached run is handed back with: the directory it runs
+// in, its pid and its log, then what it shares and the address each origin
+// answers on. run is { pid, env, log }, as located finds it or a refused
+// run's status names it.
+//
+// Read from <key>.env, the settings the run settled on and the hostname it
+// got, which it writes before signalling. A run under --no-cache writes no
+// .env, and gets what its pid and log alone can say; its addresses are on
+// stdout above either way.
+function summary(run, already = false) {
+  const env = run.env ? envFile(read(run.env)) : {};
+
+  const lines = ["", `${bold(`🍕 tunneld is ${already ? "already" : "now"} running in the background`)}`, ""];
   const row = (name, value) => lines.push(`    ${dim(name)}  ${value}`);
   if (env.PWD) {
     row("cwd", home(env.PWD));
   }
-  row("pid", String(pid));
-  if (key) {
-    row("log", home(path.join(dir, `${key}.log`)));
+  row("pid", String(run.pid));
+  if (run.log) {
+    row("log", home(run.log));
   }
   lines.push("");
 
@@ -624,20 +691,11 @@ function alive(pid) {
   }
 }
 
-// kill ends every registered run with SIGINT, which is what Ctrl-C sends a
-// foreground run, so each one tears down the way it would there: the
-// programs its origins started, the attach servers, the tunnel. Detached or
-// not, npx or brew: whatever holds a <key>.pid in cacheDir is a run. It waits
-// for them to finish, and names each one it stopped.
-//
-// A file nobody holds is a run that ended without removing it — kill -9, a
-// crash — and is cleared without a word. One still going after STOP_MS is
-// named and the exit status is 1: it was asked, and asking twice changes
-// nothing, since the binary swallows repeats.
-//
-// then, if given, runs once every run is gone, and not at all if one is
-// still there: -kd starts its run only on a clean slate.
-function kill(then) {
+// runs is every registered run, as { pid, key }, sorted by key: whatever
+// holds a <key>.pid in cacheDir, detached or not, npx or brew. A file nobody
+// holds is a run that ended without removing it — kill -9, a crash — and is
+// cleared without a word.
+function runs() {
   const dir = cacheDir();
   let names = [];
   try {
@@ -648,8 +706,8 @@ function kill(then) {
     }
   }
 
-  const runs = [];
-  for (const name of names.filter((n) => n.endsWith(".pid"))) {
+  const found = [];
+  for (const name of names.filter((n) => n.endsWith(".pid")).sort()) {
     const file = path.join(dir, name);
     const pids = holders(file);
     if (pids.length === 0) {
@@ -657,37 +715,80 @@ function kill(then) {
       continue;
     }
     for (const pid of pids) {
-      if (runs.some((r) => r.pid === pid)) {
-        continue;
+      if (!found.some((r) => r.pid === pid)) {
+        found.push({ pid, key: path.basename(name, ".pid") });
       }
-      try {
-        process.kill(pid, "SIGINT");
-      } catch (err) {
-        console.error(`${WRAPPER_NAME}: cannot stop pid ${pid}: ${err.message}`);
-        continue;
-      }
-      runs.push({ pid, key: path.basename(name, ".pid") });
     }
   }
+  return found;
+}
 
-  if (runs.length === 0) {
-    if (!then) {
+// list prints every run on stdout, a line each: its pid, then its address,
+// directory and origins from its cached settings, or its key when there are
+// none.
+function list() {
+  const found = runs();
+  if (found.length === 0) {
+    console.error(`${WRAPPER_NAME}: no runs`);
+    return;
+  }
+  const width = Math.max(...found.map((r) => String(r.pid).length));
+  for (const { pid, key } of found) {
+    const env = cached(key);
+    const fields = env.LIBTUNNEL_HOSTNAME
+      ? [
+          `https://${env.LIBTUNNEL_HOSTNAME}/`,
+          env.PWD && home(env.PWD),
+          (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean).map(label).join(", "),
+        ]
+      : [key];
+    console.log([String(pid).padEnd(width), ...fields.filter(Boolean)].join("  "));
+  }
+}
+
+// kill ends every run, or only the one whose pid is only, with SIGINT, which
+// is what Ctrl-C sends a foreground run, so each one tears down the way it
+// would there: the programs its origins started, the attach servers, the
+// tunnel. It signals runs and nothing else, so a pid that is no run is
+// refused rather than signalled. It waits for them to finish, and names each
+// one it stopped.
+//
+// One still going after STOP_MS is named and the exit status is 1: it was
+// asked, and asking twice changes nothing, since the binary swallows repeats.
+function kill(only) {
+  const stopping = [];
+  for (const run of runs()) {
+    if (only && run.pid !== only) {
+      continue;
+    }
+    try {
+      process.kill(run.pid, "SIGINT");
+    } catch (err) {
+      console.error(`${WRAPPER_NAME}: cannot stop pid ${run.pid}: ${err.message}`);
+      continue;
+    }
+    stopping.push(run);
+  }
+
+  if (stopping.length === 0) {
+    if (only) {
+      console.error(`${WRAPPER_NAME}: no run with pid ${only}`);
+      process.exitCode = 1;
+    } else {
       console.error(`${WRAPPER_NAME}: no runs`);
     }
-    then?.();
     return;
   }
 
   const deadline = Date.now() + STOP_MS;
   const timer = setInterval(() => {
-    for (const r of runs.filter((r) => !r.done && !alive(r.pid))) {
+    for (const r of stopping.filter((r) => !r.done && !alive(r.pid))) {
       r.done = true;
       console.error(`${WRAPPER_NAME}: stopped pid ${r.pid} (${r.key})`);
     }
-    const left = runs.filter((r) => !r.done);
+    const left = stopping.filter((r) => !r.done);
     if (left.length === 0) {
       clearInterval(timer);
-      then?.();
       return;
     }
     if (Date.now() > deadline) {
@@ -700,40 +801,40 @@ function kill(then) {
   }, POLL_MS);
 }
 
-// FLAGS is the launcher's own first words. -kd and -dk are the two together,
-// in either order: end every run, then start this one detached — a restart.
-const FLAGS = { "-d": { detach: true }, "-k": { kill: true }, "-kd": { kill: true, detach: true }, "-dk": { kill: true, detach: true } };
+// FLAG is the launcher's own first word, one at most: -d, -l, -k, or -k with
+// a pid and no space between.
+const FLAG = /^-(?:d|l|k([1-9]\d*)?)$/;
 
 function main() {
   const argv = process.argv.slice(2);
-  const flag = FLAGS[argv[0]] ? argv[0] : null;
-  const { kill: killing = false, detach: detaching = false } = FLAGS[flag] ?? {};
-  const args = flag ? argv.slice(1) : argv;
+  const match = FLAG.exec(argv[0] ?? "");
+  const flag = match ? argv[0].slice(0, 2) : null;
+  const args = match ? argv.slice(1) : argv;
   if (flag) {
     refuseOnWindows(flag);
   }
 
-  if (killing && !detaching) {
+  if (flag === "-k") {
     if (args.length > 0) {
-      fail(`-k takes no arguments: it ends every run. To end them and start this one detached: npx ${WRAPPER_NAME} -kd …`);
+      fail("-k takes no arguments: it ends every run, or the one -k<pid> names");
     }
-    kill();
+    kill(match[1] && Number(match[1]));
+    return;
+  }
+  if (flag === "-l") {
+    if (args.length > 0) {
+      fail("-l takes no arguments: it lists every run");
+    }
+    list();
     return;
   }
 
-  // Refused before anything is ended: -kd with a line that could mean two
-  // things should not cost the runs it was going to replace.
   const reading = misread(args);
   if (reading) {
     fail(ambiguous(reading, flag ? `npx ${WRAPPER_NAME} ${flag}` : `npx ${WRAPPER_NAME}`));
   }
 
-  const bin = binaryPath();
-  if (killing) {
-    kill(() => start(bin, args, true));
-  } else {
-    start(bin, args, detaching);
-  }
+  start(binaryPath(), args, flag === "-d");
 }
 
 if (require.main === module) {

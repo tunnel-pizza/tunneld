@@ -10,13 +10,48 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 )
+
+// TestStatusPipe pins which descriptors are a launcher's status pipe: a pipe or
+// socket this process has open, above stderr, which is then close-on-exec so
+// no program an origin starts inherits it. Anything else is none.
+func TestStatusPipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	fd := int(w.Fd())
+	got := pid.StatusPipe(strconv.Itoa(fd))
+	if got == nil {
+		t.Fatalf("StatusPipe(%d) = nil, want the pipe", fd)
+	}
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+	if err != nil || flags&unix.FD_CLOEXEC == 0 {
+		t.Errorf("fd %d flags = %#x, %v, want close-on-exec", fd, flags, err)
+	}
+	got.Close()
+
+	file, err := os.Create(filepath.Join(t.TempDir(), "file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for _, value := range []string{"", "x", "-1", "2", strconv.Itoa(int(file.Fd())), "100000"} {
+		if got := pid.StatusPipe(value); got != nil {
+			t.Errorf("StatusPipe(%q) = %v, want nil", value, got.Name())
+		}
+	}
+}
 
 // TestDetach pins what a detached run does once its addresses are out: the
 // run's stdout and stderr stop being the caller's — so a caller reading them

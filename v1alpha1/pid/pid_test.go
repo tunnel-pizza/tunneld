@@ -3,14 +3,19 @@
 package pid_test
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -52,13 +57,25 @@ func TestParent(t *testing.T) {
 	}
 }
 
-// TestNewTakesTheVariableOut pins that the launcher's pid is read once and
+// TestNewTakesTheVariableOut pins that the launcher's status is read once and
 // not left for a program an origin starts to inherit.
 func TestNewTakesTheVariableOut(t *testing.T) {
 	t.Setenv(v1.NotifyPidEnv, strconv.Itoa(os.Getppid()))
 	pid.New()
 	if v, ok := os.LookupEnv(v1.NotifyPidEnv); ok {
 		t.Errorf("%s = %q after New, want it unset", v1.NotifyPidEnv, v)
+	}
+}
+
+// TestNewTakesTheStatusPipeOnlyFromALauncher pins that the status
+// pipe is the launcher's protocol, like the signal: honoured only
+// beside a NotifyPidEnv naming this process's parent, and taken out of the
+// environment either way.
+func TestNewTakesTheStatusPipeOnlyFromALauncher(t *testing.T) {
+	t.Setenv(v1.StatusFdEnv, "3")
+	pid.New()
+	if v, ok := os.LookupEnv(v1.StatusFdEnv); ok {
+		t.Errorf("%s = %q after New, want it unset", v1.StatusFdEnv, v)
 	}
 }
 
@@ -124,6 +141,77 @@ func TestRegisterRefusesTheSameRun(t *testing.T) {
 		t.Fatalf("Register() after the first ended = %v, want it registered", err)
 	}
 	again()
+}
+
+// TestRegisterAnswersTheLauncher pins what a launcher waiting on the status
+// pipe reads: a refused run writes a line of JSON naming the pid it was
+// refused for and that run's settings and log files, those that exist, and
+// any run closes the pipe once Register returns, so the launcher reads to the
+// end either way and a detached run holds nothing of its.
+func TestRegisterAnswersTheLauncher(t *testing.T) {
+	p, o, stem := fixed(t)
+	first, err := p.Register(o, discard())
+	if err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	refused := func() map[string]any {
+		t.Helper()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = pid.New(pid.WithDir(filepath.Dir(stem)), pid.WithStatusPipe(w)).Register(o, discard())
+		if !errors.Is(err, v1.ErrRunning) {
+			t.Fatalf("second Register() = %v, want ErrRunning", err)
+		}
+		line := readAll(t, r)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(line), &got); err != nil || !strings.HasSuffix(line, "}\n") {
+			t.Fatalf("status pipe after a refusal = %q, want a line of JSON: %v", line, err)
+		}
+		return got
+	}
+
+	if got, want := refused(), map[string]any{"pid": float64(os.Getpid())}; !maps.Equal(got, want) {
+		t.Errorf("status with no settings or log = %v, want %v", got, want)
+	}
+	for _, ext := range []string{".env", ".log"} {
+		if err := os.WriteFile(stem+ext, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := map[string]any{"pid": float64(os.Getpid()), "env": stem + ".env", "log": stem + ".log"}
+	if got := refused(); !maps.Equal(got, want) {
+		t.Errorf("status = %v, want %v", got, want)
+	}
+	first()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := pid.New(pid.WithDir(filepath.Dir(stem)), pid.WithStatusPipe(w)).Register(o, discard())
+	if err != nil {
+		t.Fatalf("Register() = %v, want it registered", err)
+	}
+	defer release()
+	if got := readAll(t, r); got != "" {
+		t.Errorf("status pipe after registering = %q, want it closed with nothing written", got)
+	}
+}
+
+func readAll(t *testing.T, r *os.File) string {
+	t.Helper()
+	defer r.Close()
+	// Windows pipes take no deadline; go test's own timeout covers them.
+	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil && !errors.Is(err, os.ErrNoDeadline) {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading the status pipe: %v", err)
+	}
+	return string(b)
 }
 
 // TestNothingToDo pins the quiet cases: no directory registers nothing and
