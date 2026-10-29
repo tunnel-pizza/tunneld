@@ -74,6 +74,10 @@ const NOTIFY_ENV = "TUNNELD_NOTIFY_PID";
 // lock. Keep in step with RunningCode in v1/v1.go.
 const RUNNING = 75;
 
+// Names fd 3, the pipe a detaching launcher reads the pid of the run holding
+// the lock from, when the binary is refused.
+const RUNNING_PID_ENV = "TUNNELD_RUNNING_PID_FD";
+
 function fail(message) {
   console.error(`${WRAPPER_NAME}: ${message}`);
   process.exit(1);
@@ -355,7 +359,10 @@ function signum(signal) {
 //
 // A detached run that ends first — a bad origin, --help, a mint that fails —
 // has already said so on the caller's streams, and its exit status is passed
-// on, so it fails like a foreground one. Ctrl-C while waiting ends the run: it
+// on, so it fails like a foreground one. One refused because the same run is
+// already going names that run's pid on the pid pipe, fd 3, and that run
+// is handed back instead, the way this one would have been: its addresses on
+// stdout, the summary on stderr, status 0. Ctrl-C while waiting ends the run: it
 // is in a session of its own, where the terminal's Ctrl-C does not reach, and
 // nothing has been handed back yet.
 function start(bin, args, detaching) {
@@ -375,7 +382,8 @@ function start(bin, args, detaching) {
   if (detaching) {
     // Listening before the spawn: unheard, SIGUSR2 would end this process.
     process.on("SIGUSR2", () => {
-      child.removeAllListeners("exit");
+      child.removeAllListeners("close");
+      child.stdio[3].destroy();
       child.unref();
       finish(0);
       process.stderr.write(summary(child.pid));
@@ -398,13 +406,25 @@ function start(bin, args, detaching) {
     detaching
       ? {
           detached: true,
-          stdio: ["ignore", "inherit", "inherit"],
-          env: { ...process.env, [NOTIFY_ENV]: String(process.pid) },
+          stdio: ["ignore", "inherit", "inherit", "pipe"],
+          env: { ...process.env, [NOTIFY_ENV]: String(process.pid), [RUNNING_PID_ENV]: "3" },
         }
       : { stdio: "inherit" },
   );
   child.on("error", (err) => fail(`cannot run ${bin}: ${err.message}`));
-  child.on("exit", (code, signal) => {
+  let runningPid = "";
+  if (detaching) {
+    child.stdio[3].setEncoding("utf8").on("data", (chunk) => (runningPid += chunk));
+  }
+  // close rather than exit: it waits for the pid pipe to be read.
+  child.on("close", (code, signal) => {
+    const pid = Number(runningPid.trim());
+    if (code === RUNNING && pid > 0) {
+      finish(0);
+      process.stdout.write(addresses(pid));
+      process.stderr.write(summary(pid, true));
+      return;
+    }
     if (code === RUNNING) {
       console.error(
         `${WRAPPER_NAME}: it is running in the background or another terminal: npx ${WRAPPER_NAME} -k ends it, and npx ${WRAPPER_NAME} -kd starts it again`,
@@ -498,16 +518,9 @@ function prose(host, origins, columns) {
   return wrap(words, Math.max(columns, 24) - 2, "  ");
 }
 
-// summary is what a detached run is handed back with, once it has signalled:
-// the directory it runs in, its pid and its log, then what it shares and the
-// address each origin answers on.
-//
-// Read from the files the run keeps beside its spec, which it wrote before
-// signalling: <key>.pid, to find the key by the pid, and <key>.env, the
-// settings the run settled on and the hostname it got. A run under
-// --no-cache writes no .env, and gets what the pid file alone can say; its
-// addresses are on stdout above either way.
-function summary(pid) {
+// settings finds the run pid is by the <key>.pid naming it, and reads the
+// <key>.env its settings are cached in: empty when there is neither.
+function settings(pid) {
   const dir = cacheDir();
   let key = null;
   try {
@@ -519,9 +532,40 @@ function summary(pid) {
   } catch {
     // No cache directory: nothing more to say than the pid.
   }
-  const env = key ? envFile(read(path.join(dir, `${key}.env`))) : {};
+  return { dir, key, env: key ? envFile(read(path.join(dir, `${key}.env`))) : {} };
+}
 
-  const lines = ["", `${bold("🍕 tunneld is now running in the background")}`, ""];
+// addresses is what the run pid is printed on stdout, one per line, the way
+// the binary prints them: the panel's address alone when there is a panel,
+// otherwise one per origin, routed by ?n when there is more than one. Empty
+// with no cached settings.
+function addresses(pid) {
+  const { env } = settings(pid);
+  const host = env.LIBTUNNEL_HOSTNAME;
+  if (!host) {
+    return "";
+  }
+  const base = `https://${host}/`;
+  const origins = (env.TUNNELD_ORIGINS || "").split(",").filter(Boolean);
+  if (origins.length <= 1 || env.TUNNELD_MULTIVIEW === "true") {
+    return `${base}\n`;
+  }
+  return origins.map((_, i) => `${base}?${i}\n`).join("");
+}
+
+// summary is what a detached run is handed back with, once it has signalled:
+// the directory it runs in, its pid and its log, then what it shares and the
+// address each origin answers on.
+//
+// Read from the files the run keeps beside its spec, which it wrote before
+// signalling: <key>.pid, to find the key by the pid, and <key>.env, the
+// settings the run settled on and the hostname it got. A run under
+// --no-cache writes no .env, and gets what the pid file alone can say; its
+// addresses are on stdout above either way.
+function  summary(pid, already = false) {
+  const { dir, key, env } = settings(pid);
+
+  const lines = ["", `${bold(`🍕 tunneld is ${already ? "already" : "now"} running in the background`)}`, ""];
   const row = (name, value) => lines.push(`    ${dim(name)}  ${value}`);
   if (env.PWD) {
     row("cwd", home(env.PWD));

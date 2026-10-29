@@ -4,6 +4,7 @@ package pid_test
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"testing"
+	"time"
 
 	v1 "github.com/tunnel-pizza/tunneld/v1"
 	"github.com/tunnel-pizza/tunneld/v1alpha1/origins"
@@ -59,6 +61,18 @@ func TestNewTakesTheVariableOut(t *testing.T) {
 	pid.New()
 	if v, ok := os.LookupEnv(v1.NotifyPidEnv); ok {
 		t.Errorf("%s = %q after New, want it unset", v1.NotifyPidEnv, v)
+	}
+}
+
+// TestNewTakesThePidPipeOnlyFromALauncher pins that the pid
+// pipe is the launcher's protocol, like the signal: honoured only
+// beside a NotifyPidEnv naming this process's parent, and taken out of the
+// environment either way.
+func TestNewTakesThePidPipeOnlyFromALauncher(t *testing.T) {
+	t.Setenv(v1.RunningPidFdEnv, "3")
+	pid.New()
+	if v, ok := os.LookupEnv(v1.RunningPidFdEnv); ok {
+		t.Errorf("%s = %q after New, want it unset", v1.RunningPidFdEnv, v)
 	}
 }
 
@@ -124,6 +138,56 @@ func TestRegisterRefusesTheSameRun(t *testing.T) {
 		t.Fatalf("Register() after the first ended = %v, want it registered", err)
 	}
 	again()
+}
+
+// TestRegisterAnswersTheLauncher pins what a launcher waiting on the pid
+// pipe reads: a refused run writes the pid it was refused for, and any run
+// closes the pipe once Register returns, so the launcher reads to the end
+// either way and a detached run holds nothing of its.
+func TestRegisterAnswersTheLauncher(t *testing.T) {
+	p, o, stem := fixed(t)
+	first, err := p.Register(o, discard())
+	if err != nil {
+		t.Fatalf("first Register() error = %v", err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pid.New(pid.WithDir(filepath.Dir(stem)), pid.WithPidPipe(w)).Register(o, discard())
+	if !errors.Is(err, v1.ErrRunning) {
+		t.Fatalf("second Register() = %v, want ErrRunning", err)
+	}
+	if got := readAll(t, r); got != strconv.Itoa(os.Getpid())+"\n" {
+		t.Errorf("pid pipe after a refusal = %q, want the first run's pid", got)
+	}
+	first()
+
+	r, w, err = os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := pid.New(pid.WithDir(filepath.Dir(stem)), pid.WithPidPipe(w)).Register(o, discard())
+	if err != nil {
+		t.Fatalf("Register() = %v, want it registered", err)
+	}
+	defer release()
+	if got := readAll(t, r); got != "" {
+		t.Errorf("pid pipe after registering = %q, want it closed with nothing written", got)
+	}
+}
+
+func readAll(t *testing.T, r *os.File) string {
+	t.Helper()
+	defer r.Close()
+	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading the pid pipe: %v", err)
+	}
+	return string(b)
 }
 
 // TestNothingToDo pins the quiet cases: no directory registers nothing and

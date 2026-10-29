@@ -53,14 +53,23 @@ type PidImpl struct {
 
 	// parent is the launcher waiting on this run, or 0 for none.
 	parent int
+
+	// pidPipe is the pipe that launcher reads the running pid from, or nil.
+	pidPipe *os.File
 }
 
 // New returns a PidImpl configured by opts, pointed at the user's cache
-// directory. It reads v1.NotifyPidEnv once and takes it out of the
-// environment, so no program an origin starts inherits it.
+// directory. It reads v1.NotifyPidEnv and v1.RunningPidFdEnv once and takes them
+// out of the environment, so no program an origin starts inherits them. The
+// pid pipe is taken only from a launcher NotifyPidEnv names: a descriptor
+// number from anywhere else could be one this process opened itself.
 func New(opts ...Option) *PidImpl {
 	p := &PidImpl{parent: Parent(os.Getenv(v1.NotifyPidEnv), os.Getppid())}
+	if p.parent != 0 {
+		p.pidPipe = PidPipe(os.Getenv(v1.RunningPidFdEnv))
+	}
 	os.Unsetenv(v1.NotifyPidEnv)
+	os.Unsetenv(v1.RunningPidFdEnv)
 	if base, err := os.UserCacheDir(); err == nil {
 		p.dir = filepath.Join(base, dirName)
 	}
@@ -77,6 +86,24 @@ func WithDir(dir string) Option {
 // environment. 0 is none.
 func WithParent(pid int) Option {
 	return func(p *PidImpl) { p.parent = pid }
+}
+
+// WithPidPipe replaces the pipe Register writes the running pid to, which New
+// reads from the environment. nil is none.
+func WithPidPipe(f *os.File) Option {
+	return func(p *PidImpl) { p.pidPipe = f }
+}
+
+// PidPipe is the launcher's pid pipe, or nil: the descriptor value names,
+// when it is a pipe or a socket this process has open, above stderr. It is
+// made close-on-exec, so no program an origin starts holds the launcher's
+// pipe open.
+func PidPipe(value string) *os.File {
+	fd, err := strconv.Atoi(value)
+	if err != nil || fd <= 2 {
+		return nil
+	}
+	return pipe(fd)
 }
 
 // Parent is the pid to signal once the addresses are out, or 0 for none: the
@@ -125,7 +152,12 @@ func (p *PidImpl) file(origins v1.Origins, ext string) string {
 // A run that cannot register for any other reason still runs: the file is how
 // another command finds it, not something the tunnel needs. The failure is
 // logged and release is then a no-op.
+//
+// With a launcher's pid pipe, a refusal writes the pid it read there, and
+// the pipe is closed on the way out whatever happened: the launcher reads to
+// the end, and a detached run holds nothing of its.
 func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), err error) {
+	defer p.closePidPipe()
 	release = func() {}
 	path := p.file(origins, ".pid")
 	if path == "" {
@@ -148,7 +180,11 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 			f.Close()
 			if errors.Is(err, errLocked) {
 				body, _ := os.ReadFile(path)
-				return nil, v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid %s", v1.ErrRunning, strings.TrimSpace(string(body)))}
+				holder := strings.TrimSpace(string(body))
+				if p.pidPipe != nil && holder != "" {
+					fmt.Fprintln(p.pidPipe, holder)
+				}
+				return nil, v1.ExitError{Code: v1.RunningCode, Err: fmt.Errorf("%w as pid %s", v1.ErrRunning, holder)}
 			}
 			log.Warn("not registering this run", "error", err)
 			return release, nil
@@ -186,6 +222,14 @@ func (p *PidImpl) Register(origins v1.Origins, log v1.Logger) (release func(), e
 	}
 	log.Warn("not registering this run: its file kept changing underneath it", "path", path)
 	return release, nil
+}
+
+// closePidPipe closes the pid pipe, once.
+func (p *PidImpl) closePidPipe() {
+	if p.pidPipe != nil {
+		p.pidPipe.Close()
+		p.pidPipe = nil
+	}
 }
 
 // same reports whether path still names the file f has open.

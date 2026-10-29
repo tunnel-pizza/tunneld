@@ -156,7 +156,10 @@ test("ambiguous names both readings, ready to paste", { skip: win && "cmd.exe qu
 // writes its argv to stderr, then two addresses to stdout with their origins
 // on stderr, and caches <key>.env — the hostname, $ORIGINS as what it
 // settled on, and a spec that must never be shown — unless its first word is
-// --no-cache. With TUNNELD_NOTIFY_PID naming its parent, it moves stdout and
+// --no-cache. A <key>.pid naming a live process refuses it the way the
+// binary's lock does: it says so, writes that pid to the launcher's pid
+// pipe on fd 3 when TUNNELD_RUNNING_PID_FD is set, and exits 75; otherwise it
+// closes the pipe. With TUNNELD_NOTIFY_PID naming its parent, it moves stdout and
 // stderr to <key>.log and sends its parent SIGUSR2;
 // otherwise it prints the binary's stop hint. Then it waits. SIGINT is its
 // Ctrl-C: it takes a moment, as a real teardown does, leaves a mark in
@@ -171,6 +174,13 @@ echo "argv: $*" >&2
 if [ "$1" = fail ]; then echo "no origin" >&2; exit "$2"; fi
 key=$(printf %s "$*" | tr -c 'A-Za-z0-9' _)
 mkdir -p "$CACHE"
+running_pid=$(cat "$CACHE/$key.pid" 2>/dev/null)
+if [ -n "$running_pid" ] && kill -0 "$running_pid" 2>/dev/null; then
+  echo "tunneld: already running as pid $running_pid" >&2
+  if [ -n "$TUNNELD_RUNNING_PID_FD" ]; then echo "$running_pid" >&3; fi
+  exit 75
+fi
+if [ -n "$TUNNELD_RUNNING_PID_FD" ]; then exec 3>&-; fi
 exec 9>"$CACHE/$key.pid"
 echo $$ >&9
 echo "up $$" >> "$EVENTS"
@@ -304,6 +314,31 @@ test("-d hands the console back once the run signals, and -k tears it down", pos
   assert.equal(down.stderr, `tunneld: stopped pid ${pid} (_3000_bash)\n`);
   assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "SIGINT, not a kill");
   assert.deepEqual(pids(cache), []);
+});
+
+test("-d of a run already going hands that run back", posixOnly, (t) => {
+  const { launch } = pkg(t);
+  const up = launch("-d", ":3000", "bash");
+  assert.equal(up.status, 0, up.stderr);
+  const pid = Number(up.stderr.match(/^    pid  (\d+)$/m)[1]);
+  t.after(() => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  });
+
+  const again = launch("-d", ":3000", "bash");
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout, "https://t.example/\n", "the address, the way the binary prints it");
+  assert.match(again.stderr, /\ntunneld: already running as pid \d+\n\n🍕 tunneld is already running in the background\n/);
+  assert.match(again.stderr, new RegExp(`^    pid  ${pid}$`, "m"));
+  assert.match(again.stderr, /\n  https:\/\/t\.example\/  → \/bin\/bash -l\n/);
+  assert.doesNotMatch(again.stderr, /-kd starts it again/);
+
+  const fg = launch(":3000", "bash");
+  assert.equal(fg.status, 75, "the foreground still refuses");
+  assert.match(fg.stderr, /npx tunneld -k ends it, and npx tunneld -kd starts it again\n/);
+  assert.equal(launch("-k").status, 0);
 });
 
 test("-d names every origin's address, and says less with no cached settings", posixOnly, (t) => {

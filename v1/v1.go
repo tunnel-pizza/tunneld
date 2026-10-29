@@ -281,6 +281,13 @@ const (
 	// line of protocol between the launcher and the binary it ships with.
 	NotifyPidEnv = "TUNNELD_NOTIFY_PID"
 
+	// RunningPidFdEnv names the descriptor, a pipe, a launcher that set
+	// NotifyPidEnv reads the running pid from: a run refused with ErrRunning
+	// writes there the pid of the run it was refused for, and every run
+	// closes it once it has registered. Honoured only beside NotifyPidEnv naming the run's
+	// parent, and, like it, the launcher's protocol rather than a knob.
+	RunningPidFdEnv = "TUNNELD_RUNNING_PID_FD"
+
 	// WWWAuthenticateEnv is a tunnel's password protection: a WWW-Authenticate
 	// challenge whose private pw parameter is the password's PBKDF2 hash,
 	//

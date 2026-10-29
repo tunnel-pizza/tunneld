@@ -1072,6 +1072,21 @@ has already said so on the caller's streams, and its exit status is passed
 on. Ctrl+C while `-d` is waiting ends the run, since nothing has been handed
 back yet.
 
+**`-d` of a run already going hands that run back.** The same run started
+again is refused by the binary (below, "The same run twice"). Under `-d`
+the launcher learns the pid it was refused for, and hands that run back the
+way it would have handed back this one: its addresses on stdout, the summary
+on stderr, headed "🍕 tunneld is already running in the background", exit
+status 0. So `addr=$(npx tunneld -d :3000)` gives the same address however
+many times it runs. Under `--no-cache` there are no cached settings to read
+the addresses from, so stdout is empty.
+
+The pid comes over a pipe. The launcher opens one on the run's fd 3 and names
+it in `TUNNELD_RUNNING_PID_FD`. A run takes the pipe only when
+`TUNNELD_NOTIFY_PID` also names its parent. It makes the pipe close-on-exec,
+so no program an origin starts inherits it. A refused run writes the pid
+there, and every run closes the pipe once it has registered.
+
 **`-k` ends every run.** As the only word. Every tunneld run on the machine,
 for this user — detached or in the foreground of another terminal, started
 through npx or not — gets `SIGINT`, which is what Ctrl+C sends a foreground
@@ -1105,6 +1120,9 @@ launcher, seeing 75, says what to do about it:
 tunneld: already running as pid 43697
 tunneld: it is running in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
 ```
+
+That is the foreground. Under `-d` the launcher hands the running one back
+instead, above.
 
 Two of them would answer on one hostname, and one ending would take the
 other's registration with it. The kernel drops the lock with the file,
