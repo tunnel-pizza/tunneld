@@ -808,6 +808,23 @@ func TestBearer(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a token let in only because the tunnel is unowned and public says so", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			a       *AuthImpl
+			auth    string
+			unowned bool
+		}{
+			"unowned, public": {New(WithOidc(fakeOidc())), "Bearer unlisted", true},
+			"owned by nobody": {owned(New(WithOidc(fakeOidc())), ""), "Bearer unlisted", true},
+			"the owner":       {owned(New(WithOidc(fakeOidc())), "github:9"), "Bearer unlisted", false},
+			"listed":          {ssoAuth(t, fakeOidc()), "Bearer listed", false},
+		} {
+			got, ok, err := ask(tc.a, tc.auth, site)
+			if !ok || err != nil || got.Unowned != tc.unowned {
+				t.Errorf("%s: Bearer = %+v, %v, %v; want Unowned %v", name, got, ok, err, tc.unowned)
+			}
+		}
+	})
 	t.Run("an exchanged token says its client, scopes, who acts and its sign-in", func(t *testing.T) {
 		got, ok, err := ask(owned(pwAuth(t, fakeOidc()), "github:2"), "Bearer exchanged", site+"/_tunneld/mcp")
 		want := Access{Sub: "github:2", ClientID: fakeIssuer, Scopes: []string{"tunnel:attach", "tunnel:exec"}, Actor: "https://claude.ai/client.json", Grant: "grant-1"}
