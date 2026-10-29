@@ -1015,8 +1015,8 @@ docker run -e TUNNELD_ORIGINS=http://host.docker.internal:3000,http://host.docke
 A subcommand's name is read as the subcommand, not as a program: to expose a
 program called `version`, spell it `exec:///path/to/version`.
 
-`-d`, `-k`, `-kd` and `-dk` are not tunneld's and never will be: they are the
-npm launcher's, below, and the binary refuses them as unknown flags like any
+`-d`, `-k` and `-l` are not tunneld's and never will be: they are the npm
+launcher's, below, and the binary refuses them as unknown flags like any
 other, so `tunneld -d` and `npx tunneld -d` cannot come to mean two things.
 
 ## The npm launcher
@@ -1081,11 +1081,19 @@ status 0. So `addr=$(npx tunneld -d :3000)` gives the same address however
 many times it runs. Under `--no-cache` there are no cached settings to read
 the addresses from, so stdout is empty.
 
-The pid comes over a pipe. The launcher opens one on the run's fd 3 and names
-it in `TUNNELD_RUNNING_PID_FD`. A run takes the pipe only when
+The running run comes over a pipe. The launcher opens one on the run's fd 3
+and names it in `TUNNELD_STATUS_FD`. A run takes the pipe only when
 `TUNNELD_NOTIFY_PID` also names its parent. It makes the pipe close-on-exec,
-so no program an origin starts inherits it. A refused run writes the pid
-there, and every run closes the pipe once it has registered.
+so no program an origin starts inherits it. A refused run writes one line of
+JSON there, naming the run it was refused for:
+
+```
+{"pid":43697,"env":"/Users/me/Library/Caches/tunneld/894bb9b319b7b699.env","log":"/Users/me/Library/Caches/tunneld/894bb9b319b7b699.log"}
+```
+
+`env` and `log` are there when the files are. They are paths, not contents:
+the settings file also holds the cached spec, which never leaves it. Every
+run closes the pipe once it has registered.
 
 **`-k` ends every run.** As the only word. Every tunneld run on the machine,
 for this user — detached or in the foreground of another terminal, started
@@ -1094,10 +1102,22 @@ run, so each tears down the same way: the programs its origins started, the
 attach servers, the tunnel. `-k` waits for them, names each one it stopped by
 pid and key, and exits non-zero if one is still going after 30 seconds.
 
-**`-kd` is both, a restart.** As the first word, spelled `-dk` too: every run
-ends, and only once they all have does this one start, detached. One still
-tearing down after the 30 seconds leaves the new run unstarted and the exit
-status 1. An ambiguous line is refused before anything is ended.
+`-k<pid>`, the pid with no space before it, ends just that run, the same way.
+It signals runs and nothing else, so a pid that is no run is refused: "no run
+with pid 1234", status 1.
+
+**`-l` lists every run.** As the only word. A line each on stdout: the pid,
+then the address, directory and origins from the run's cached settings, or
+its key under `--no-cache`:
+
+```
+73146  https://0tc62f7m9b.tunneld.domain/  ~/project  http://localhost:3000, /bin/bash
+73190  4a1f0c2d9e8b7a65
+```
+
+One launcher flag at most. Any other first word is the binary's, so
+`-kd` and `-dk` reach it and it refuses them as unknown flags. A restart is
+`npx tunneld -k`, then `npx tunneld -d …`.
 
 **How `-k` finds a run.** The binary registers every run as `<key>.pid` in the
 cache directory, beside the `<key>.env` its spec is cached in — whether or
@@ -1118,7 +1138,7 @@ launcher, seeing 75, says what to do about it:
 
 ```
 tunneld: already running as pid 43697
-tunneld: it is running in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
+tunneld: it is running in the background or another terminal: npx tunneld -k ends it
 ```
 
 That is the foreground. Under `-d` the launcher hands the running one back

@@ -270,7 +270,7 @@ const (
 	IdentityProvidersEnv = "TUNNELD_IDENTITY_PROVIDERS"
 
 	// NotifyPidEnv is how the npm launcher asks a detached run to say when it
-	// is up. It carries the launcher's pid, and a run whose parent has that
+	// is up. It carries the launcher's status, and a run whose parent has that
 	// pid sends it SIGUSR2 once its addresses are out, having first moved its
 	// stdout and stderr to a log beside its spec, so the launcher can exit and
 	// hand the console back. A value naming any other process is ignored:
@@ -281,12 +281,14 @@ const (
 	// line of protocol between the launcher and the binary it ships with.
 	NotifyPidEnv = "TUNNELD_NOTIFY_PID"
 
-	// RunningPidFdEnv names the descriptor, a pipe, a launcher that set
-	// NotifyPidEnv reads the running pid from: a run refused with ErrRunning
-	// writes there the pid of the run it was refused for, and every run
-	// closes it once it has registered. Honoured only beside NotifyPidEnv naming the run's
-	// parent, and, like it, the launcher's protocol rather than a knob.
-	RunningPidFdEnv = "TUNNELD_RUNNING_PID_FD"
+	// StatusFdEnv names the descriptor, a pipe, a launcher that set
+	// NotifyPidEnv reads a refused run's status from: a run refused with
+	// ErrRunning writes there a line of JSON, {"pid":…,"env":…,"log":…},
+	// naming the run it was refused for and the paths of that run's settings
+	// and log, those that exist; every run closes it once it has registered.
+	// Honoured only beside NotifyPidEnv naming the run's parent, and, like it,
+	// the launcher's protocol rather than a knob.
+	StatusFdEnv = "TUNNELD_STATUS_FD"
 
 	// WWWAuthenticateEnv is a tunnel's password protection: a WWW-Authenticate
 	// challenge whose private pw parameter is the password's PBKDF2 hash,

@@ -21,19 +21,19 @@ import (
 	"github.com/tunnel-pizza/tunneld/v1alpha1/pid"
 )
 
-// TestPidPipe pins which descriptors are a launcher's pid pipe: a pipe or
+// TestStatusPipe pins which descriptors are a launcher's status pipe: a pipe or
 // socket this process has open, above stderr, which is then close-on-exec so
 // no program an origin starts inherits it. Anything else is none.
-func TestPidPipe(t *testing.T) {
+func TestStatusPipe(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer r.Close()
 	fd := int(w.Fd())
-	got := pid.PidPipe(strconv.Itoa(fd))
+	got := pid.StatusPipe(strconv.Itoa(fd))
 	if got == nil {
-		t.Fatalf("PidPipe(%d) = nil, want the pipe", fd)
+		t.Fatalf("StatusPipe(%d) = nil, want the pipe", fd)
 	}
 	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
 	if err != nil || flags&unix.FD_CLOEXEC == 0 {
@@ -47,8 +47,8 @@ func TestPidPipe(t *testing.T) {
 	}
 	defer file.Close()
 	for _, value := range []string{"", "x", "-1", "2", strconv.Itoa(int(file.Fd())), "100000"} {
-		if got := pid.PidPipe(value); got != nil {
-			t.Errorf("PidPipe(%q) = %v, want nil", value, got.Name())
+		if got := pid.StatusPipe(value); got != nil {
+			t.Errorf("StatusPipe(%q) = %v, want nil", value, got.Name())
 		}
 	}
 }

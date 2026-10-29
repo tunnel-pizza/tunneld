@@ -157,30 +157,40 @@ test("ambiguous names both readings, ready to paste", { skip: win && "cmd.exe qu
 // on stderr, and caches <key>.env — the hostname, $ORIGINS as what it
 // settled on, and a spec that must never be shown — unless its first word is
 // --no-cache. A <key>.pid naming a live process refuses it the way the
-// binary's lock does: it says so, writes that pid to the launcher's pid
-// pipe on fd 3 when TUNNELD_RUNNING_PID_FD is set, and exits 75; otherwise it
+// binary's lock does: it says so, writes that run's status — its pid and
+// the paths of its .env and .log, those that exist, as JSON — to the
+// launcher's pipe on fd 3 when TUNNELD_STATUS_FD is set, and exits 75;
+// otherwise it
 // closes the pipe. With TUNNELD_NOTIFY_PID naming its parent, it moves stdout and
 // stderr to <key>.log and sends its parent SIGUSR2;
 // otherwise it prints the binary's stop hint. Then it waits. SIGINT is its
 // Ctrl-C: it takes a moment, as a real teardown does, leaves a mark in
 // $MARKER so a test can tell a teardown from a kill, and exits 0. Coming up
 // and going down are appended to $EVENTS. A first argument of fail makes it
-// fail before any of it, with the second as its status. It also exits, without
+// fail before any of it, with the second as its status, and a first word of
+// one dash fails with status 1, the way cobra refuses a flag it does not
+// know. It also exits, without
 // a teardown, once its tree is gone or $RUNNER (the test process) is: a
 // detached one is in a session of its own, which an interrupted or failed run
 // never reaches.
 const STAND_IN = `#!/bin/sh
 echo "argv: $*" >&2
 if [ "$1" = fail ]; then echo "no origin" >&2; exit "$2"; fi
+case "$1" in -[!-]*) echo "unknown shorthand flag: $1" >&2; exit 1;; esac
 key=$(printf %s "$*" | tr -c 'A-Za-z0-9' _)
 mkdir -p "$CACHE"
 running_pid=$(cat "$CACHE/$key.pid" 2>/dev/null)
 if [ -n "$running_pid" ] && kill -0 "$running_pid" 2>/dev/null; then
   echo "tunneld: already running as pid $running_pid" >&2
-  if [ -n "$TUNNELD_RUNNING_PID_FD" ]; then echo "$running_pid" >&3; fi
+  if [ -n "$TUNNELD_STATUS_FD" ]; then
+    status="{\\"pid\\":$running_pid"
+    [ -f "$CACHE/$key.env" ] && status="$status,\\"env\\":\\"$CACHE/$key.env\\""
+    [ -f "$CACHE/$key.log" ] && status="$status,\\"log\\":\\"$CACHE/$key.log\\""
+    echo "$status}" >&3
+  fi
   exit 75
 fi
-if [ -n "$TUNNELD_RUNNING_PID_FD" ]; then exec 3>&-; fi
+if [ -n "$TUNNELD_STATUS_FD" ]; then exec 3>&-; fi
 exec 9>"$CACHE/$key.pid"
 echo $$ >&9
 echo "up $$" >> "$EVENTS"
@@ -264,9 +274,9 @@ test("a run refused as already running gets what to do about it from the launche
   for (const args of [["fail", "75"], ["-d", "fail", "75"]]) {
     const got = launch(...args);
     assert.equal(got.status, 75, args.join(" "));
-    assert.match(got.stderr, /npx tunneld -k ends it, and npx tunneld -kd starts it again\n/, args.join(" "));
+    assert.match(got.stderr, /: it is running in the background or another terminal: npx tunneld -k ends it\n/, args.join(" "));
   }
-  assert.doesNotMatch(launch("fail", "7").stderr, /-kd starts it again/);
+  assert.doesNotMatch(launch("fail", "7").stderr, /-k ends it/);
 });
 
 test("-d hands the console back once the run signals, and -k tears it down", posixOnly, (t) => {
@@ -332,12 +342,13 @@ test("-d of a run already going hands that run back", posixOnly, (t) => {
   assert.equal(again.stdout, "https://t.example/\n", "the address, the way the binary prints it");
   assert.match(again.stderr, /\ntunneld: already running as pid \d+\n\n🍕 tunneld is already running in the background\n/);
   assert.match(again.stderr, new RegExp(`^    pid  ${pid}$`, "m"));
+  assert.match(again.stderr, /^    log  .*\/_3000_bash\.log$/m, "the log the status names");
   assert.match(again.stderr, /\n  https:\/\/t\.example\/  → \/bin\/bash -l\n/);
-  assert.doesNotMatch(again.stderr, /-kd starts it again/);
+  assert.doesNotMatch(again.stderr, /-k ends it/);
 
   const fg = launch(":3000", "bash");
   assert.equal(fg.status, 75, "the foreground still refuses");
-  assert.match(fg.stderr, /npx tunneld -k ends it, and npx tunneld -kd starts it again\n/);
+  assert.match(fg.stderr, /npx tunneld -k ends it\n/);
   assert.equal(launch("-k").status, 0);
 });
 
@@ -376,45 +387,17 @@ test("-k ends a run in the foreground too", posixOnly, async (t) => {
   assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n");
 });
 
-for (const flag of ["-kd", "-dk"]) {
-  test(`${flag} ends every run, then starts this one detached`, posixOnly, async (t) => {
-    const { launch, start, cache, marker, events } = pkg(t);
-    const fg = start(":3000");
-    t.after(() => fg.kill("SIGKILL"));
-    await until(() => pids(cache).length === 1);
-
-    const up = launch(flag, ":4000");
-    assert.equal(up.status, 0, up.stderr);
-    assert.match(up.stderr, /^tunneld: stopped pid (\d+) \(_3000\)$/m);
-    assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "the old run tore down");
-    assert.equal(up.stdout, "https://t.example/?0\nhttps://t.example/?1\n");
-    const old = Number(up.stderr.match(/stopped pid (\d+)/)[1]);
-    const pid = Number(up.stderr.match(/^    pid  (\d+)$/m)[1]);
-    t.after(() => {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    });
-    assert.deepEqual(pids(cache), ["_4000.pid"], "the new run is the only one");
-    assert.deepEqual(events(), [`up ${old}`, `down ${old}`, `up ${pid}`], "the new run started only once the old one was down");
-    assert.equal(launch("-k").status, 0);
-  });
-}
-
-test("-kd refuses an ambiguous line before ending anything", posixOnly, async (t) => {
-  const { launch, start, cache, env } = pkg(t);
+test("-kd and -dk are not the launcher's: they reach the binary and end nothing", posixOnly, async (t) => {
+  const { launch, start, cache } = pkg(t);
   const fg = start(":3000");
   t.after(() => fg.kill("SIGKILL"));
   await until(() => pids(cache).length === 1);
-  const bin = tempDir(t);
-  for (const name of ["claude", "next"]) {
-    fs.writeFileSync(path.join(bin, name), "", { mode: 0o755 });
+  for (const flag of ["-kd", "-dk"]) {
+    const got = launch(flag, ":4000");
+    assert.equal(got.status, 1, flag);
+    assert.equal(got.stderr, `argv: ${flag} :4000\nunknown shorthand flag: ${flag}\n`, flag);
+    assert.doesNotMatch(got.stderr, /stopped pid/, flag);
   }
-  env.PATH = `${bin}${path.delimiter}${env.PATH}`;
-  const got = launch("-kd", "claude", "next dev");
-  assert.equal(got.status, 1);
-  assert.match(got.stderr, /ambiguous/);
-  assert.match(got.stderr, /npx tunneld -kd 'next dev' claude/);
   assert.deepEqual(pids(cache), ["_3000.pid"], "nothing was ended");
   assert.equal(launch("-k").status, 0);
 });
@@ -495,15 +478,73 @@ test("an ambiguous line is refused before the binary runs", posixOnly, (t) => {
   }
 });
 
+test("-k<pid> ends that run and no other", posixOnly, async (t) => {
+  const { launch, start, cache, marker } = pkg(t);
+  const one = start(":3000");
+  const two = start(":4000");
+  t.after(() => {
+    one.kill("SIGKILL");
+    two.kill("SIGKILL");
+  });
+  await until(() => pids(cache).length === 2);
+  const pid = Number(fs.readFileSync(path.join(cache, "_3000.pid"), "utf8"));
+
+  const down = launch(`-k${pid}`);
+  assert.equal(down.status, 0, down.stderr);
+  assert.equal(down.stderr, `tunneld: stopped pid ${pid} (_3000)\n`);
+  assert.equal(fs.readFileSync(marker, "utf8"), "torn down\n", "SIGINT, not a kill");
+  assert.deepEqual(pids(cache), ["_4000.pid"]);
+
+  const none = launch("-k999999");
+  assert.equal(none.status, 1);
+  assert.equal(none.stderr, "tunneld: no run with pid 999999\n");
+  assert.deepEqual(pids(cache), ["_4000.pid"], "a pid that is no run ends nothing");
+
+  assert.equal(launch(`-k${pid}`, ":3000").stderr, "tunneld: -k takes no arguments: it ends every run, or the one -k<pid> names\n");
+  assert.equal(launch("-k").status, 0);
+});
+
+test("-l lists every run, one line each", posixOnly, async (t) => {
+  const { launch, start, cache, env } = pkg(t);
+  assert.equal(launch("-l").stderr, "tunneld: no runs\n");
+
+  const up = launch("-d", ":3000", "bash");
+  assert.equal(up.status, 0, up.stderr);
+  const pid = Number(up.stderr.match(/^    pid  (\d+)$/m)[1]);
+  const bare = start("--no-cache", ":4000");
+  t.after(() => {
+    bare.kill("SIGKILL");
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  });
+  await until(() => pids(cache).length === 2);
+  const other = Number(fs.readFileSync(path.join(cache, "__no_cache__4000.pid"), "utf8"));
+
+  const got = launch("-l");
+  assert.equal(got.status, 0, got.stderr);
+  const width = Math.max(String(pid).length, String(other).length);
+  assert.equal(
+    got.stdout,
+    [
+      `${String(pid).padEnd(width)}  https://t.example/  ~/project  /bin/bash -l`,
+      `${String(other).padEnd(width)}  __no_cache__4000`,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(launch("-l", ":3000").stderr, "tunneld: -l takes no arguments: it lists every run\n");
+  assert.equal(launch("-k").status, 0);
+});
+
 test("-k takes no arguments", posixOnly, (t) => {
   const { launch } = pkg(t);
   const got = launch("-k", ":3000");
   assert.equal(got.status, 1);
-  assert.match(got.stderr, /-k takes no arguments: it ends every run\. To end them and start this one detached: npx tunneld -kd/);
+  assert.equal(got.stderr, "tunneld: -k takes no arguments: it ends every run, or the one -k<pid> names\n");
 });
 
-test("-d and -k are refused on Windows", { skip: !win && "Windows only" }, () => {
-  for (const flag of ["-d", "-k"]) {
+test("-d, -k and -l are refused on Windows", { skip: !win && "Windows only" }, () => {
+  for (const flag of ["-d", "-k", "-l"]) {
     const got = spawnSync(process.execPath, [path.join(__dirname, "v1.cjs"), flag], { encoding: "utf8" });
     assert.equal(got.status, 1);
     assert.match(got.stderr, new RegExp(`${flag} is not supported on Windows`));

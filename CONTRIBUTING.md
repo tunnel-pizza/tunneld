@@ -43,7 +43,7 @@ Deep-link by filename; line numbers will drift.
 | Worked examples                                | [`examples/`](./examples)                                        |
 | Sample pages the examples serve                | [`examples/sites`](./examples/sites)                             |
 | Build / lint / test commands, `THIRD_PARTY_LICENSES` (`make licenses`) | [`Makefile`](./Makefile)                 |
-| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, `-kd`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
+| npm launcher: finds the platform binary, hands it the process; `-d`, `-k`, `-k<pid>`, `-l`, refusing an ambiguous line | [`v1/v1.cjs`](./v1/v1.cjs) |
 | How a run is found and handed back: `<key>.pid` for `npx tunneld -k`, and `-d`'s signal | [`v1alpha1/pid/pid.go`](./v1alpha1/pid/pid.go) |
 | The launcher's tests, under `node --test` (part of `make test`) | [`v1/v1.test.cjs`](./v1/v1.test.cjs)                  |
 | npm manifest (version stays 0.0.0; the tag is the release) | [`package.json`](./package.json)                          |
