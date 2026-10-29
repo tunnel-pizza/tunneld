@@ -2418,11 +2418,12 @@ func TestFlagsStopAtTheFirstOrigin(t *testing.T) {
 }
 
 // TestLauncherFlagsAreNotTunnelds pins that -d and -k stay the npm
-// launcher's. Neither is defined here, so `npx tunneld -d` and `tunneld -d`
-// cannot come to mean two things; one that reaches the command anyway, first
-// or after another flag, is refused with where it belongs. Any other unknown
-// flag is still cobra's error, or the error of the command this one is
-// mounted under, which is what an embedding program's own handler expects.
+// launcher's, which strips them before the binary sees the line. Neither is
+// defined here, so `npx tunneld -d` and `tunneld -d` cannot come to mean two
+// things, and the command knows nothing of them: one that reaches it is an
+// unknown flag like any other, cobra's error, or the error of the command
+// this one is mounted under, which is what an embedding program's own
+// handler expects.
 func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
 	for _, s := range []string{"d", "k"} {
 		if f := New().Command().Flags().ShorthandLookup(s); f != nil {
@@ -2435,11 +2436,9 @@ func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"-d first", []string{"-d", ":3000"}, "-d is not a tunneld flag: the tunneld npm launcher detaches"},
-		{"-d after a flag", []string{"--log-level", "debug", "-d", ":3000"}, "-d is not a tunneld flag"},
-		{"-k", []string{"-k"}, "-k is not a tunneld flag: the tunneld npm launcher ends every run"},
-		{"-kd", []string{"-kd", ":3000"}, "-kd is not a tunneld flag: the tunneld npm launcher ends every run and detaches"},
-		{"-dk", []string{"-dk", ":3000"}, "-dk is not a tunneld flag"},
+		{"-d first", []string{"-d", ":3000"}, "unknown shorthand flag: 'd' in -d"},
+		{"-k", []string{"-k"}, "unknown shorthand flag: 'k' in -k"},
+		{"-kd", []string{"-kd", ":3000"}, "unknown shorthand flag: 'k' in -kd"},
 		{"another", []string{"-z"}, "unknown shorthand flag: 'z' in -z"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2459,7 +2458,7 @@ func TestLauncherFlagsAreNotTunnelds(t *testing.T) {
 		for args, want := range map[string]string{
 			"tunneld -z":         "the host's",
 			"tunneld version -z": "the host's",
-			"tunneld -d":         "-d is not a tunneld flag",
+			"tunneld -d":         "the host's",
 		} {
 			parent.SetArgs(strings.Fields(args))
 			if err := parent.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), want) {

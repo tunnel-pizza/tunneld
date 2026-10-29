@@ -40,7 +40,8 @@ func main() {
 	// embeds the builder: it is how npx tunneld -k and -d reach a run.
 	if err := v1alpha1.New(v1alpha1.WithPid(pid.New())).Command().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "tunneld: "+err.Error())
-		// A run its programs ended exits with their status.
+		// An ExitError exits with its Code: a refused run, or the status the
+		// programs a run started ended with.
 		if exit := (v1.ExitError{}); errors.As(err, &exit) {
 			os.Exit(exit.Code)
 		}

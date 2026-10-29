@@ -1016,10 +1016,8 @@ A subcommand's name is read as the subcommand, not as a program: to expose a
 program called `version`, spell it `exec:///path/to/version`.
 
 `-d`, `-k`, `-kd` and `-dk` are not tunneld's and never will be: they are the
-npm launcher's, below, and the binary refuses them by name, so `tunneld -d` and
-`npx tunneld -d` cannot come to mean two things. An embedding program mounting
-the command under its own name inherits the refusal; any other flag error goes
-to the parent command's own handler.
+npm launcher's, below, and the binary refuses them as unknown flags like any
+other, so `tunneld -d` and `npx tunneld -d` cannot come to mean two things.
 
 ## The npm launcher
 
@@ -1100,10 +1098,12 @@ systems through `lsof`.
 **The same run twice is refused.** The file is locked as well as held, so a
 second run of the same thing — the same directory, origins and arguments,
 which is the same key — finds the lock taken and stops before it mints
-anything, with `ErrRunning`:
+anything, with `ErrRunning` and exit status 75. The binary names the pid; the
+launcher, seeing 75, says what to do about it:
 
 ```
-tunneld: already running as pid 43697, in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
+tunneld: already running as pid 43697
+tunneld: it is running in the background or another terminal: npx tunneld -k ends it, and npx tunneld -kd starts it again
 ```
 
 Two of them would answer on one hostname, and one ending would take the

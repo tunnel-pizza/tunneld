@@ -174,8 +174,14 @@ var ErrNoDocker        = errors.New("docker daemon unreachable")
 var ErrRunning         = errors.New("already running")
 var ErrUnknownIdentity = errors.New("unknown identity provider")
 
-// match with errors.As: a run its programs ended, Code its exit status
-type ExitError struct{ Code int }
+// match with errors.As: Code is the exit status, Err the cause when there is
+// one (ErrRunning, with Code RunningCode)
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+const RunningCode = 75 // EX_TEMPFAIL
 
 const LogEnv               = "TUNNELD_LOG"
 const OriginsEnv           = "TUNNELD_ORIGINS"
