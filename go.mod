@@ -22,7 +22,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/florianl/go-tc v0.4.5-0.20240822175159-7926c32f7299
 	github.com/gliderlabs/ssh v0.3.5
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-logr/logr v1.4.4
 	github.com/google/go-tpm v0.9.2-0.20240919181259-d96ccf715685
 	github.com/google/uuid v1.6.0
