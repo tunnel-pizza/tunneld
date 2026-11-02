@@ -344,11 +344,13 @@ lines. With no file (`--no-cache`, or no cache directory) `TUNNELD_ENV` is
 unset. Neither variable is ever inherited from a run this one was started
 under.
 
-The rest of the run's environment reaches it, `LIBTUNNEL_SPEC` among it (the
-handoff a nested tunneld takes the tunnel over by), but never
-`TUNNELD_WWW_AUTHENTICATE` (the password's hash) or `LIBTUNNEL_TOKEN` (the mint
-credential). That keeps them out of `env` and of what the program starts; a
-program running as the same user can still read tunneld's own environment from
+The rest of the run's environment reaches it, but never
+`TUNNELD_WWW_AUTHENTICATE` (the password's hash), `LIBTUNNEL_TOKEN` (the mint
+credential) or `LIBTUNNEL_SPEC` (the tunnel's spec, secret included, which
+libtunnel exports into tunneld's own environment). So a tunneld started in a
+run's terminal mints a tunnel of its own rather than being handed this one.
+That keeps them out of `env` and of what the program starts; a program
+running as the same user can still read tunneld's own environment from
 `/proc/<pid>/environ`, and the run's spec file.
 
 A bare argument that names a program on `$PATH` is that origin written short,
