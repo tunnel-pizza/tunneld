@@ -483,12 +483,13 @@ func (a *TargetImpl) ExitCode() int {
 
 // environ is tunneld's environment for a program it starts, without the
 // tunnel's password, which a viewer at the program could try passwords
-// against offline, or the mint credential, which mints in its owner's name.
-// Matched without case, as Windows reads names. A program running as the
-// same user can still read tunneld's own from /proc/<pid>/environ.
+// against offline, the mint credential, which mints in its owner's name, or
+// the spec libtunnel exports, which holds the tunnel's secret. Matched
+// without case, as Windows reads names. A program running as the same user
+// can still read tunneld's own from /proc/<pid>/environ.
 func environ() []string {
 	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		return strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv)
+		return strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv) || strings.EqualFold(name, ltv1.SpecEnv)
 	})
 }
