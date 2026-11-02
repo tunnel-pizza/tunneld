@@ -324,17 +324,19 @@ func TestEndStopsTheProgramAndWhatItStarted(t *testing.T) {
 }
 
 // TestAttachKeepsThePasswordFromTheProgram pins that a program never
-// inherits the tunnel's password hash, on a terminal or over pipes, while
-// the rest of tunneld's environment still reaches it.
+// inherits the tunnel's password hash, the mint token or the tunnel's spec,
+// on a terminal or over pipes, while the rest of tunneld's environment still
+// reaches it.
 func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fixture is a /bin/sh script")
 	}
 	t.Setenv(v1.WWWAuthenticateEnv, `Basic pw="$pbkdf2-sha256$i=600000$c2FsdA$aGFzaA"`)
 	t.Setenv(ltv1.TokenEnv, "a.mint.token")
+	t.Setenv(ltv1.SpecEnv, `{"backend":"cloudflare","spec":{"secret":"c2VjcmV0"}}`)
 	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
 	path := filepath.Join(t.TempDir(), "tunneld-env-fixture")
-	script := "#!/bin/sh\nprintf 'AUTH:%s|TOKEN:%s|KEPT:%s\\n' \"${TUNNELD_WWW_AUTHENTICATE-unset}\" \"${LIBTUNNEL_TOKEN-unset}\" \"$TUNNELD_ENV_FIXTURE\"\n"
+	script := "#!/bin/sh\nprintf 'AUTH:%s|TOKEN:%s|SPEC:%s|KEPT:%s\\n' \"${TUNNELD_WWW_AUTHENTICATE-unset}\" \"${LIBTUNNEL_TOKEN-unset}\" \"${LIBTUNNEL_SPEC-unset}\" \"$TUNNELD_ENV_FIXTURE\"\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("writing the fixture: %v", err)
 	}
@@ -356,26 +358,31 @@ func TestAttachKeepsThePasswordFromTheProgram(t *testing.T) {
 			if err := target.AttachContainer(t.Context(), "", "", "", strings.NewReader(""), out, out, true, resize); err != nil {
 				t.Fatalf("AttachContainer() = %v", err)
 			}
-			if got := out.String(); !strings.Contains(got, "AUTH:unset|TOKEN:unset|KEPT:kept") {
-				t.Errorf("the program saw %q, want no password, no mint token, and the rest kept", got)
+			if got := out.String(); !strings.Contains(got, "AUTH:unset|TOKEN:unset|SPEC:unset|KEPT:kept") {
+				t.Errorf("the program saw %q, want no password, no mint token, no spec, and the rest kept", got)
 			}
 		})
 	}
 }
 
 // TestEnviron pins the environment a program starts from: tunneld's own,
-// without the tunnel's password, under any spelling a case-blind
-// environment would read as it.
+// without the tunnel's password, the mint token or the tunnel's spec, under
+// any spelling a case-blind environment would read as it. The hostname,
+// which is no secret, stays.
 func TestEnviron(t *testing.T) {
 	t.Setenv(v1.WWWAuthenticateEnv, "Basic pw=x")
 	t.Setenv(ltv1.TokenEnv, "a.mint.token")
+	t.Setenv(ltv1.SpecEnv, `{"backend":"cloudflare"}`)
+	t.Setenv(ltv1.HostnameEnv, "0t8qsb6pq3.tunneld.domain")
 	t.Setenv("TUNNELD_ENV_FIXTURE", "kept")
 	got := environ()
-	if !slices.Contains(got, "TUNNELD_ENV_FIXTURE=kept") {
-		t.Errorf("environ() lost the rest of the environment: %q", got)
+	for _, want := range []string{"TUNNELD_ENV_FIXTURE=kept", ltv1.HostnameEnv + "=0t8qsb6pq3.tunneld.domain"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("environ() lost %q: %q", want, got)
+		}
 	}
 	for _, kv := range got {
-		if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv) {
+		if name, _, _ := strings.Cut(kv, "="); strings.EqualFold(name, v1.WWWAuthenticateEnv) || strings.EqualFold(name, ltv1.TokenEnv) || strings.EqualFold(name, ltv1.SpecEnv) {
 			t.Errorf("environ() kept %q", kv)
 		}
 	}
