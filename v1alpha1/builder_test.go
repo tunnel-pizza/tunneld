@@ -59,6 +59,29 @@ func execute(t *testing.T, b v1.Builder, args ...string) (stdout, stderr string,
 	return out.String(), errOut.String(), err
 }
 
+// TestPreflightIsInformational pins that --preflight never fails the process:
+// with no route to the edge, here because every check is cut short, it still
+// says what failed on stderr and returns nil, so a setup script running it is
+// not failed by a report.
+func TestPreflightIsInformational(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var out, errOut bytes.Buffer
+	cmd := New().Command()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--preflight", "--provider", "127.0.0.1:1"})
+	if err := cmd.ExecuteContext(ctx); err != nil {
+		t.Fatalf("--preflight with no route = %v, want nil", err)
+	}
+	if !strings.Contains(out.String(), "route: none") {
+		t.Errorf("stdout has no route line:\n%s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no route to the edge") {
+		t.Errorf("stderr %q does not say what failed", errOut.String())
+	}
+}
+
 // TestOptionsLand pins that every builder option reaches the field the flag
 // binds over. Name through Name, the writers through cobra, the flag-backed
 // knobs through their defaults, and the origins through the field they seed —

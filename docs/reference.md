@@ -1559,9 +1559,10 @@ check failed (...). A run cannot confirm its address without one of them:
 gets the same layout without escapes.
 
 A failing check is followed by what to ask of whoever controls the network.
-The report goes to stdout. The exit status is 0 when some route works and 1
-when none does, with the routes that failed on stderr, so a setup script can
-gate on it.
+The report goes to stdout. Preflight is informational: when no route works,
+what failed is said on stderr as well, and the exit status is 0 either way, so
+a setup script that runs it is never failed by the report. A script that has
+to gate on the answer reads the `route:` line, `none` when nothing works.
 
 | Check | What it asks | When it fails |
 | ----- | ------------ | ------------- |
