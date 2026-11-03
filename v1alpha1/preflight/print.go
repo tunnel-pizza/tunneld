@@ -28,7 +28,7 @@ func newPrinter(w io.Writer, provider string) *printer {
 	if w == nil {
 		return nil
 	}
-	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider)+edgeAccess)), provider: provider}
+	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider)+pingLine)), provider: provider}
 }
 
 func (p *printer) title() {
@@ -47,8 +47,7 @@ func (p *printer) start(category, name string) {
 	if category != p.category {
 		p.category = category
 		headings := map[string]string{
-			"Mint":    "Mint  https://" + p.provider + "/",
-			"Edge":    "Edge  port 7844, or the relay on 443",
+			"Edge":    "Edge  https://" + p.provider + pingPath + ", port 7844, or the relay on 443",
 			"Install": "Install  this platform's binary",
 		}
 		fmt.Fprintln(p.w)
@@ -58,15 +57,18 @@ func (p *printer) start(category, name string) {
 }
 
 // end finishes the line start opened: what was seen and the mark, then the
-// hint for a failure or a warning.
+// hint for a failure or a warning. A failure the verdict does not rest on is
+// painted as a warning.
 func (p *printer) end(c Check) {
 	if p == nil {
 		return
 	}
 	mark := p.paint.green("✓")
 	switch {
-	case !c.OK:
+	case !c.OK && c.Decides:
 		mark = p.paint.red("✗")
+	case !c.OK:
+		mark = p.paint.yellow("✗")
 	case c.Warn:
 		mark = p.paint.yellow("!")
 	}

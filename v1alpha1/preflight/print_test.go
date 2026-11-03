@@ -18,7 +18,7 @@ func TestPrinterStartsALineAndEndsItLater(t *testing.T) {
 	if !strings.HasSuffix(started, "  HTTP/2"+strings.Repeat(" ", p.width-len("HTTP/2")+2)) || strings.HasSuffix(started, "\n") {
 		t.Fatalf("after start: %q, want the name and no newline", started)
 	}
-	if !strings.Contains(started, "\nEdge  port 7844, or the relay on 443\n") {
+	if !strings.Contains(started, "\nEdge  https://tunnel.pizza/ping, port 7844, or the relay on 443\n") {
 		t.Errorf("no heading before the first check of a category: %q", started)
 	}
 	p.end(Check{OK: false, Detail: "context deadline exceeded", Hint: "allow TCP 7844"})
@@ -53,6 +53,28 @@ func TestPrinterMarks(t *testing.T) {
 		}
 		if has := strings.Contains(out.String(), "→"); has != tc.hint {
 			t.Errorf("%+v: hint printed = %v, want %v", tc.check, has, tc.hint)
+		}
+	}
+}
+
+// TestPrinterMarksAnInformationalFailureApart pins that a failing check the
+// verdict does not rest on is painted as a warning, where one it rests on is
+// painted as a failure.
+func TestPrinterMarksAnInformationalFailureApart(t *testing.T) {
+	for _, tc := range []struct {
+		decides bool
+		mark    string
+	}{
+		{true, "\x1b[31m✗\x1b[0m"},
+		{false, "\x1b[33m✗\x1b[0m"},
+	} {
+		var out bytes.Buffer
+		p := newPrinter(&out, "tunnel.pizza")
+		p.paint.on = true
+		p.start("DNS", "x")
+		p.end(Check{Decides: tc.decides, Detail: "broken"})
+		if !strings.Contains(out.String(), "broken  "+tc.mark) {
+			t.Errorf("decides=%v: %q has no %q", tc.decides, out.String(), tc.mark)
 		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,7 +119,7 @@ func TestHTTPS(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := provider(t, tc.handler)
 			p := local(t, server, 0)
-			get, post := p.https(context.Background(), "127.0.0.1")
+			get, post := pings(p)
 			if !get.OK {
 				t.Fatalf("GET failed: %s", get.Detail)
 			}
@@ -137,11 +138,37 @@ func TestHTTPS(t *testing.T) {
 
 // TestHTTPSNamesAnInterceptingIssuer pins that a certificate the trust set
 // does not know is reported by its issuer, with where to put its CA.
+// pings asks as a run's GET and POST checks do: both at once, the POST
+// handed the GET's answer.
+func pings(p *Preflight) (get, post Check) {
+	got := spawn(context.Background(), p.timeout, func(ctx context.Context) (Check, int) { return p.pingGET(ctx, "127.0.0.1") })
+	post = p.pingPOST(context.Background(), "127.0.0.1", got)
+	return got.result(), post
+}
+
+// TestHTTPSAsksTogether pins that the POST does not wait for the GET to be
+// sent: the provider answers neither until both have arrived.
+func TestHTTPSAsksTogether(t *testing.T) {
+	var both sync.WaitGroup
+	both.Add(2)
+	server := provider(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ping" {
+			t.Errorf("%s %s, want /ping: the edge answers it, never the origin", r.Method, r.URL.Path)
+		}
+		both.Done()
+		both.Wait()
+	})
+	p := local(t, server, 0)
+	if get, post := pings(p); !get.OK || !post.OK {
+		t.Errorf("GET %v %q, POST %v %q: want both answered", get.OK, get.Detail, post.OK, post.Detail)
+	}
+}
+
 func TestHTTPSNamesAnInterceptingIssuer(t *testing.T) {
 	server := provider(t, ok)
 	p := local(t, server, 0)
 	p.rootCAs = x509.NewCertPool()
-	get, post := p.https(context.Background(), "127.0.0.1")
+	get, post := pings(p)
 	if get.OK || post.OK {
 		t.Fatalf("GET ok = %v, POST ok = %v, want both failed", get.OK, post.OK)
 	}
@@ -249,6 +276,124 @@ func TestRunSettlesTheRoute(t *testing.T) {
 	}
 }
 
+// TestRunChecksAtOnce pins that every check runs in its own goroutine: the
+// edge SRV lookup and DNS-over-HTTPS each wait for the other to start, which
+// one after the other neither would see within its budget.
+func TestRunChecksAtOnce(t *testing.T) {
+	server := provider(t, ok)
+	p := local(t, server, edgeTCP(t, server))
+	var both sync.WaitGroup
+	both.Add(2)
+	meet := func(ctx context.Context) error {
+		both.Done()
+		met := make(chan struct{})
+		go func() { both.Wait(); close(met) }()
+		select {
+		case <-met:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	srv := p.lookupSRV
+	p.lookupSRV = func(ctx context.Context) ([]*net.SRV, error) {
+		if err := meet(ctx); err != nil {
+			return nil, err
+		}
+		return srv(ctx)
+	}
+	p.doh = func(ctx context.Context, _ string) (string, error) {
+		if err := meet(ctx); err != nil {
+			return "", err
+		}
+		return "127.0.0.1", nil
+	}
+	r := p.Run(context.Background(), nil)
+	for _, c := range r.Checks {
+		if (c.Name == "edge SRV" || c.Name == "DoH") && !c.OK {
+			t.Errorf("%s = %q: the two never ran at the same time", c.Name, c.Detail)
+		}
+	}
+}
+
+// TestRunBoundsEveryCheck pins the budget: a check that has not resolved
+// within it, here one whose lookup ignores its context, resolves as an
+// error, the rest of the report settles without it, and the whole run takes
+// about one budget, not one per check.
+func TestRunBoundsEveryCheck(t *testing.T) {
+	server := provider(t, ok)
+	p := local(t, server, edgeTCP(t, server))
+	p.timeout = 300 * time.Millisecond
+	hang := make(chan struct{})
+	t.Cleanup(func() { close(hang) })
+	p.lookupSRV = func(context.Context) ([]*net.SRV, error) {
+		<-hang
+		return nil, errors.New("too late")
+	}
+	start := time.Now()
+	r := p.Run(context.Background(), nil)
+	if took := time.Since(start); took > 4*p.timeout {
+		t.Errorf("run took %s with a %s budget per check", took, p.timeout)
+	}
+	for _, c := range r.Checks {
+		if c.Name == "edge SRV" && (c.OK || !strings.Contains(c.Detail, "no answer within 300ms")) {
+			t.Errorf("edge SRV = ok %v %q, want no answer within the budget", c.OK, c.Detail)
+		}
+	}
+	if r.Route != RouteRelay {
+		t.Errorf("route = %s, want %s: no edge address, the relay still answers", r.Route, RouteRelay)
+	}
+}
+
+// TestRunGroupsTheReport pins where each line sits: the ping and its GET and
+// POST with the routes to the edge, the address check with the DNS it is
+// settled from, and no group of the mint's own.
+func TestRunGroupsTheReport(t *testing.T) {
+	server := provider(t, ok)
+	p := local(t, server, edgeTCP(t, server))
+	var lines []string
+	for _, c := range p.Run(context.Background(), nil).Checks {
+		lines = append(lines, c.Category+"/"+c.Name)
+	}
+	host := hostOf(p.provider)
+	want := []string{
+		"Network/proxy", "Network/captive portal",
+		"DNS/" + host, "DNS/interception", "DNS/made-up name", "DNS/edge SRV", "DNS/DoH", "DNS/address check",
+		"Edge/" + host + " ping", "Edge/GET", "Edge/POST", "Edge/HTTP/2", "Edge/relay",
+		"Install/release", "Install/npm",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("lines\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestRunDecidesFromTheRouteChecks pins which checks settle the verdict: the
+// mint's, the address check and the two routes to the edge. Every other one
+// is informational, and failing changes nothing.
+func TestRunDecidesFromTheRouteChecks(t *testing.T) {
+	server := provider(t, ok)
+	p := local(t, server, edgeTCP(t, server))
+	p.portalProbes = []portalProbe{{"Windows", "http://127.0.0.1:1/connecttest.txt", http.StatusOK, "Microsoft Connect Test"}}
+	// The system resolver answers the edge's SRV targets and nothing else.
+	p.lookupHost = func(_ context.Context, host string) ([]string, error) {
+		if host == "edge.test" {
+			return []string{"127.0.0.1"}, nil
+		}
+		return nil, &net.DNSError{Err: "server misbehaving", Name: host}
+	}
+	p.doh = func(context.Context, string) (string, error) { return "127.0.0.1", nil }
+	r := p.Run(context.Background(), nil)
+	decides := map[string]bool{"GET": true, "POST": true, "address check": true, "HTTP/2": true, "relay": true}
+	for _, c := range r.Checks {
+		if c.Decides != decides[c.Name] {
+			t.Errorf("%s %s: decides = %v, want %v", c.Category, c.Name, c.Decides, decides[c.Name])
+		}
+	}
+	if r.Route != RouteHTTP2 || len(r.Failed()) != 0 {
+		t.Errorf("route %s, failed %q: informational failures changed the verdict", r.Route, r.Failed())
+	}
+}
+
 // TestAssessment pins the report's last line: how a run gets through, in the
 // order it goes, or the first thing in its way.
 func TestAssessment(t *testing.T) {
@@ -275,7 +420,7 @@ func TestAssessment(t *testing.T) {
 		// The proxy here is the provider itself answering in its place; what
 		// is pinned is the wording a proxy gets.
 		proxy, _ := url.Parse("http://user:secret@proxy.internal:3128")
-		get, _ := p.https(context.Background(), "127.0.0.1")
+		get, _ := pings(p)
 		c := p.addressCheck(proxy, get, Check{}, Check{})
 		r := Report{Route: RouteRelay}
 		got := p.assess(r, proxy, c)
@@ -340,18 +485,25 @@ func downloads(t *testing.T) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
 	mux := http.NewServeMux()
-	file := func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Range") != "bytes=0-0" {
-			t.Errorf("%s asked for %q, want one byte", r.URL.Path, r.Header.Get("Range"))
+	// Every hop of a download is a HEAD: what is asked is whether the file is
+	// served, never the file.
+	head := func(r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("%s %s, want HEAD", r.Method, r.URL.Path)
 		}
+	}
+	file := func(w http.ResponseWriter, r *http.Request) {
+		head(r)
 		w.Header().Set("Server", "Windows-Azure-Blob/1.0")
-		w.WriteHeader(http.StatusPartialContent)
-		w.Write([]byte{0x7f})
+		w.Header().Set("Content-Length", "8388608")
+		w.WriteHeader(http.StatusOK)
 	}
 	mux.HandleFunc("/releases/latest/download/tunneld-test", func(w http.ResponseWriter, r *http.Request) {
+		head(r)
 		http.Redirect(w, r, "/releases/download/v1.2.3/tunneld-test", http.StatusFound)
 	})
 	mux.HandleFunc("/releases/download/v1.2.3/tunneld-test", func(w http.ResponseWriter, r *http.Request) {
+		head(r)
 		http.Redirect(w, r, "/blob/tunneld-test?sig=x", http.StatusFound)
 	})
 	mux.HandleFunc("/blob/tunneld-test", file)
@@ -375,7 +527,7 @@ func TestDownloads(t *testing.T) {
 
 	p.version = "v1.2.3"
 	c := p.downloadRelease(context.Background())
-	want := host + " 302 → " + host + " 206 (Azure Blob storage)"
+	want := host + " 302 → " + host + " 200 (Azure Blob storage)"
 	if !c.OK || c.Detail != want {
 		t.Errorf("release at a tag: ok=%v %q, want %q", c.OK, c.Detail, want)
 	}
@@ -387,7 +539,7 @@ func TestDownloads(t *testing.T) {
 	}
 
 	c = p.downloadNPM(context.Background())
-	if !c.OK || !strings.HasPrefix(c.Detail, host+" 200 → "+host+" 206") {
+	if !c.OK || !strings.HasPrefix(c.Detail, host+" 200 → "+host+" 200") {
 		t.Errorf("npm: ok=%v %q", c.OK, c.Detail)
 	}
 
@@ -395,6 +547,15 @@ func TestDownloads(t *testing.T) {
 	c = p.downloadRelease(context.Background())
 	if c.OK || !strings.Contains(c.Hint, "404") {
 		t.Errorf("a missing asset: ok=%v %q hint %q", c.OK, c.Detail, c.Hint)
+	}
+
+	// Unknown is a failure: a platform with nothing to download.
+	p.asset, p.npmPackage = "", ""
+	if c := p.downloadRelease(context.Background()); c.OK {
+		t.Errorf("release for a platform without a binary: ok=%v %q", c.OK, c.Detail)
+	}
+	if c := p.downloadNPM(context.Background()); c.OK {
+		t.Errorf("npm for a platform without a package: ok=%v %q", c.OK, c.Detail)
 	}
 }
 
@@ -416,12 +577,13 @@ func noPortal(t *testing.T) []portalProbe {
 func TestEdgeAccessibility(t *testing.T) {
 	answer := func(status int, dnsbl string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/research/probe.sh" || r.Method != http.MethodHead {
+			if r.URL.Path != "/ping" || r.Method != http.MethodHead {
 				w.WriteHeader(http.StatusTeapot)
 				return
 			}
 			if dnsbl != "" {
 				w.Header().Set("X-Dnsbl", dnsbl)
+				w.Header().Set("X-Ip", "203.0.113.9")
 			}
 			w.WriteHeader(status)
 		}
@@ -432,10 +594,11 @@ func TestEdgeAccessibility(t *testing.T) {
 		ok, warn bool
 		says     string
 	}{
-		{"clean", answer(http.StatusOK, "false"), true, false, "not on a blocklist"},
-		{"listed", answer(http.StatusOK, "true"), true, true, "on a blocklist"},
-		{"no verdict", answer(http.StatusOK, ""), true, false, "reachable"},
-		{"not offered", answer(http.StatusNotFound, ""), true, true, "not offered"},
+		{"clean", answer(http.StatusOK, "false"), true, false, "reachable, 203.0.113.9 not on a blocklist"},
+		{"listed", answer(http.StatusOK, "true"), true, true, "203.0.113.9 is on a blocklist 127.0.0.1 enforces at the mint"},
+		// Unknown is a failure: an answer with no verdict, or no such answer.
+		{"no verdict", answer(http.StatusOK, ""), false, false, "no blocklist verdict"},
+		{"not offered", answer(http.StatusNotFound, ""), false, false, "not offered"},
 		{"refused", answer(http.StatusForbidden, ""), false, false, "403"},
 	}
 	for _, tc := range cases {
@@ -445,8 +608,8 @@ func TestEdgeAccessibility(t *testing.T) {
 			if c.OK != tc.ok || c.Warn != tc.warn || !strings.Contains(c.Detail, tc.says) {
 				t.Errorf("edgeAccessibility = ok %v warn %v %q, want ok %v warn %v saying %q", c.OK, c.Warn, c.Detail, tc.ok, tc.warn, tc.says)
 			}
-			if tc.warn && c.Hint == "" || strings.Contains(c.Detail+c.Hint, "research") {
-				t.Errorf("detail %q, hint %q: want a hint on a warning and the path never shown", c.Detail, c.Hint)
+			if (tc.warn || !tc.ok) && c.Hint == "" || strings.Contains(c.Detail+c.Hint, "/ping") {
+				t.Errorf("detail %q, hint %q: want a hint on a warning or a failure and the path never shown", c.Detail, c.Hint)
 			}
 		})
 	}
@@ -456,7 +619,7 @@ func TestEdgeAccessibility(t *testing.T) {
 		p := local(t, server, 0)
 		server.Close()
 		c := p.edgeAccessibility(context.Background(), "127.0.0.1")
-		if c.OK || c.Detail == "" || strings.Contains(c.Detail+c.Hint, "research") {
+		if c.OK || c.Detail == "" || strings.Contains(c.Detail+c.Hint, "/ping") {
 			t.Errorf("edgeAccessibility = ok %v %q, hint %q: want a failure that never shows the path", c.OK, c.Detail, c.Hint)
 		}
 	})
@@ -467,7 +630,7 @@ func TestEdgeAccessibility(t *testing.T) {
 // said to need.
 func TestEdgeAccessibilityLeavesTheRouteAlone(t *testing.T) {
 	server := provider(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/research/probe.sh" {
+		if r.URL.Path == "/ping" && r.Method == http.MethodHead {
 			w.WriteHeader(http.StatusForbidden)
 		}
 	})
@@ -475,12 +638,12 @@ func TestEdgeAccessibilityLeavesTheRouteAlone(t *testing.T) {
 	r := p.Run(context.Background(), nil)
 	var found bool
 	for _, c := range r.Checks {
-		if strings.HasSuffix(c.Name, "edge accessibility") {
-			found = c.Category == "Network" && !c.OK
+		if strings.HasSuffix(c.Name, " ping") {
+			found = c.Category == "Edge" && !c.OK
 		}
 	}
 	if !found {
-		t.Errorf("no failed Network check named edge accessibility in %+v", r.Checks)
+		t.Errorf("no failed Edge check named ping in %+v", r.Checks)
 	}
 	if r.Route != RouteHTTP2 || len(r.Failed()) != 0 {
 		t.Errorf("route %s, failed %q: want the route the edge gives, unchanged", r.Route, r.Failed())
