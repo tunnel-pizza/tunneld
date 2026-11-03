@@ -28,7 +28,7 @@ func newPrinter(w io.Writer, provider string) *printer {
 	if w == nil {
 		return nil
 	}
-	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider)+edgeAccess)), provider: provider}
+	return &printer{w: w, paint: colors(w), width: max(len("captive portal"), len(hostOf(provider)+pingLine)), provider: provider}
 }
 
 func (p *printer) title() {
@@ -47,8 +47,7 @@ func (p *printer) start(category, name string) {
 	if category != p.category {
 		p.category = category
 		headings := map[string]string{
-			"Mint":    "Mint  https://" + p.provider + pingPath,
-			"Edge":    "Edge  port 7844, or the relay on 443",
+			"Edge":    "Edge  https://" + p.provider + pingPath + ", port 7844, or the relay on 443",
 			"Install": "Install  this platform's binary",
 		}
 		fmt.Fprintln(p.w)

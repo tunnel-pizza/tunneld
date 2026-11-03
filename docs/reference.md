@@ -1499,7 +1499,7 @@ waiting on another check included, so the report takes about 5 s however many
 paths time out. A check that has not resolved by then fails with `no answer
 within 5s`, and so does any check that could not find out: unknown is a
 failure, never a pass. The lines keep a fixed order, grouped under Network,
-DNS, Mint, Edge and Install, each printed once it and every line above it have
+DNS, Edge and Install, each printed once it and every line above it have
 resolved (the name first, the result and its mark, `✓`, `!` or `✗`, at the
 end of the line), then the route a run would take and one sentence saying
 whether tunneld will work here and how, and it exits. It mints nothing and
@@ -1507,8 +1507,8 @@ opens no tunnel: every check is a lookup, a request that changes nothing, or a
 handshake closed as soon as it completes. `--provider` picks the host checked,
 as for a run.
 
-Only the mint's `GET` and `POST`, the `address check`, direct `HTTP/2` and the
-`relay` decide the route and the last line. Every other check is
+Only the `address check`, the `GET` and `POST` to the provider's `/ping`, direct
+`HTTP/2` and the `relay` decide the route and the last line. Every other check is
 informational: its failure is painted yellow rather than red, and changes
 neither.
 
@@ -1518,35 +1518,33 @@ In a sandbox whose only way out is an HTTPS proxy, with no DNS at all:
 tunneld preflight  tunnel.pizza
 
 Network
-  proxy                            tunnel.pizza:443 goes through http://proxy.internal:3128; the edge on 7844 is dialed directly (HTTPS_PROXY=http://proxy.internal:3128)  ✓
-  without proxy                    blocked without the proxy, so the proxy is the only way out: Get "https://tunnel.pizza/": dial tcp: lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✓
-  captive portal                   plain HTTP does not get out, so a portal cannot be seen from here: Get "http://captive.apple.com/hotspot-detect.html": dial tcp: lookup captive.apple.com on 127.0.0.11:53: server misbehaving  ✗
-                                   → allow plain HTTP on port 80 to see one, or open a browser to check for a sign-in page
-  tunnel.pizza edge accessibility  reachable, this address not on a blocklist  ✓
+  proxy              tunnel.pizza:443 goes through http://proxy.internal:3128; the edge on 7844 is dialed directly (HTTPS_PROXY=http://proxy.internal:3128)  ✓
+  without proxy      blocked without the proxy, so the proxy is the only way out: Get "https://tunnel.pizza/ping": dial tcp: lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✓
+  captive portal     plain HTTP does not get out, so a portal cannot be seen from here: Get "http://captive.apple.com/hotspot-detect.html": dial tcp: lookup captive.apple.com on 127.0.0.11:53: server misbehaving  ✗
+                     → allow plain HTTP on port 80 to see one, or open a browser to check for a sign-in page
 
 DNS
-  tunnel.pizza                     lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✗
-                                   → the system resolver cannot find tunnel.pizza
-  interception                     nothing to check: the system resolver did not answer  ✗
-  made-up name                     the system resolver did not answer  ✗
-  edge SRV                         lookup _v2-origintunneld._tcp.argotunnel.com on 127.0.0.11:53: server misbehaving  ✗
-                                   → SRV lookups are refused here; a run falls back to DNS-over-HTTPS
-  DoH                              tunnel should retry: lookup region1.v2.argotunnel.com on 127.0.0.11:53: Post "https://dns.google/dns-query": dial tcp 8.8.8.8:443: connect: network is unreachable  ✗
-                                   → DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked
+  tunnel.pizza       lookup tunnel.pizza on 127.0.0.11:53: server misbehaving  ✗
+                     → the system resolver cannot find tunnel.pizza
+  interception       nothing to check: the system resolver did not answer  ✗
+  made-up name       the system resolver did not answer  ✗
+  edge SRV           lookup _v2-origintunneld._tcp.argotunnel.com on 127.0.0.11:53: server misbehaving  ✗
+                     → SRV lookups are refused here; a run falls back to DNS-over-HTTPS
+  DoH                tunnel should retry: lookup region1.v2.argotunnel.com on 127.0.0.11:53: Post "https://dns.google/dns-query": dial tcp 8.8.8.8:443: connect: network is unreachable  ✗
+                     → DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked
+  address check      through the proxy, which resolves the tunnel's name  ✓
 
-Mint  https://tunnel.pizza/ping
-  GET                              200 OK, certificate issued by "WE1 (Google Trust Services)"  ✓
-  POST                             200 OK  ✓
-  address check                    through the proxy, which resolves the tunnel's name  ✓
-
-Edge  port 7844, or the relay on 443
-  HTTP/2                           no edge address: DNS found none  ✗
-                                   → allow DNS lookups of region1.v2.argotunnel.com
-  relay                            wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
+Edge  https://tunnel.pizza/ping, port 7844, or the relay on 443
+  tunnel.pizza ping  reachable, 203.0.113.9 not on a blocklist  ✓
+  GET                200 OK, certificate issued by "WE1 (Google Trust Services)"  ✓
+  POST               200 OK  ✓
+  HTTP/2             no edge address: DNS found none  ✗
+                     → allow DNS lookups of region1.v2.argotunnel.com
+  relay              wss://tunnel.pizza/relay, edge handshake inside as h2.cftunnel.com  ✓
 
 Install  this platform's binary
-  release                          github.com 302 → github.com 302 → release-assets.githubusercontent.com 200 (Azure Blob storage)  ✓
-  npm                              registry.npmjs.org 200 → registry.npmjs.org 200 (Cloudflare)  ✓
+  release            github.com 302 → github.com 302 → release-assets.githubusercontent.com 200 (Azure Blob storage)  ✓
+  npm                registry.npmjs.org 200 → registry.npmjs.org 200 (Cloudflare)  ✓
 
 route: relay
 tunneld will work here using an HTTPS mint through the proxy at proxy.internal:3128, the proxy's resolver, and an address check through the proxy, over the relay (a WebSocket on HTTPS 443).  ✓
@@ -1570,15 +1568,15 @@ gate on it.
 | `proxy` | The proxy variables set (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY`, either case, passwords left out) and whether the provider goes through one. A run takes it for the mint, the relay and the address check, and dials the edge on 7844 directly. | Never; a warning (`!`) when upper and lower case differ (Go reads the upper), when only `HTTP_PROXY` is set (HTTPS goes direct), when only `ALL_PROXY` is set (tunneld does not read it), or when the proxy is SOCKS (the relay speaks HTTP CONNECT only). |
 | `without proxy` | With a proxy only: the provider's `/ping` asked directly, so a proxy refusing it can be told apart from a network that does. When the proxy fails and this gets through, the mint's hint says to set `NO_PROXY=<provider>`. | Only when it cannot be asked at all; blocked without the proxy is an answer. |
 | `captive portal` | The pages devices ask for to tell whether a network wants a sign-in, all at once over plain HTTP: Apple's (`captive.apple.com/hotspot-detect.html`, and older iOS's `www.apple.com/library/test/success.html`, both `Success`), Android and Chrome's (`connectivitycheck.gstatic.com/generate_204`, a 204), Windows' (`www.msftconnecttest.com/connecttest.txt`, `Microsoft Connect Test`) and Firefox's (`detectportal.firefox.com/success.txt`, `success`). Some portals let one through, often Apple's so a phone shows its sign-in sheet, and hold the rest. | Any of them answers otherwise, a redirect to a sign-in page above all, and the line names which and where it was sent; or none gets out over plain HTTP, since no portal can then be seen. |
-| `<provider> edge accessibility` | Whether the provider's edge lets this address through to its mint: a HEAD to `/ping`, which its edge answers ahead of every gate, through the proxy a run uses, and tunnel.pizza's answer says whether the mint's blocklist (DroneBL, Barracuda) lists the address. Early signal only: the route and the last line stay the mint's and the edge's own checks. | A warning when the address is listed (a mint from here is held about 30 s and refused unless it carries a token the provider signed, as `create_tunnel`'s `LIBTUNNEL_TOKEN` is); a failure when it does not answer, does not offer the check, answers without a verdict, or answers anything else. |
 | `<provider>` | The provider's addresses from the system resolver. | The resolver cannot find it. |
 | `interception` | Whether the system resolver's answer for the provider really is the provider: a private address never is, and any other has to present the provider's certificate. Answers differing from DNS-over-HTTPS prove nothing, since a CDN answers by where it is asked from. Through a proxy the answer is only reported, since a run does not use it. When the mint's GET fails after this, its hint names the interception. | The answer is private, or cannot present the provider's certificate: a hotel's or airport's portal, or a filtering resolver. Also when there is nothing to check, the system resolver not having answered, or the address does not answer. |
 | `made-up name` | A name that cannot exist, `tunneld-preflight-<random>.example.com`, from the system resolver. | A warning when it answers: the resolver answers every name, as a captive portal or an advertising resolver does, and none of its answers can be trusted. A failure when the resolver does not answer at all. |
 | `edge SRV` | The edge's SRV record, `_v2-origintunneld._tcp.argotunnel.com`, and its targets' addresses. | SRV lookups are refused; a run falls back to DNS-over-HTTPS. |
 | `DoH` | `region1.v2.argotunnel.com` over DNS-over-HTTPS, from `cloudflare-dns.com` and `dns.google` at pinned addresses. Its answer is the edge address when SRV gives none. | DoH is blocked. |
+| `address check` | The step after the mint: a run asks for its new address from here and prints it only once that comes back through the tunnel. Through the proxy when one applies, which resolves the tunnel's name; otherwise the name over DNS-over-HTTPS, or the system resolver when DoH cannot be reached, and HTTPS 443 directly. No tunnel exists to ask for, so this is settled from the checks above. | There is no proxy, and neither DNS-over-HTTPS nor the system resolver answers: a run would mint and never print its address. |
+| `<provider> ping` | Under Edge. Whether the provider's edge lets this address through to its mint: a HEAD to `/ping`, which its edge answers ahead of every gate, through the proxy a run uses. tunnel.pizza's answer names the address it saw this machine at (`x-ip`, which a proxy or NAT makes different from any address the machine has) and says whether the mint's blocklist (DroneBL, Barracuda) lists it (`x-dnsbl`). Early signal only: the route and the last line stay the mint's and the edge's own checks. | A warning when the address is listed (a mint from here is held about 30 s and refused unless it carries a token the provider signed, as `create_tunnel`'s `LIBTUNNEL_TOKEN` is); a failure when it does not answer, does not offer the check, answers without a verdict, or answers anything else. |
 | `GET` | The provider's `/ping`, through the proxy a run would use, with the certificate's issuer, so a TLS-intercepting proxy is visible. A certificate tunneld does not trust is named by issuer, with where its CA goes: the system store or `SSL_CERT_FILE`, which Go reads (`NODE_EXTRA_CA_CERTS` it does not). | HTTPS to the provider does not get through. |
 | `POST` | The provider's `/ping` with a POST, the mint's method, sent at the same time as the GET. The mint itself is `POST /tunnel`, which this never sends. tunnel.pizza's edge answers `/ping` for GET, HEAD and POST itself, never from its origin, so a cold start cannot time the Mint lines out; a provider without it still shows whether HTTPS and a POST get there. | A POST is refused where the GET was answered (403, 405 or 407, or any `X-Proxy-Error`, which the line repeats). |
-| `address check` | The step after the mint: a run asks for its new address from here and prints it only once that comes back through the tunnel. Through the proxy when one applies, which resolves the tunnel's name; otherwise the name over DNS-over-HTTPS, or the system resolver when DoH cannot be reached, and HTTPS 443 directly. No tunnel exists to ask for, so this is settled from the checks above. | There is no proxy, and neither DNS-over-HTTPS nor the system resolver answers: a run would mint and never print its address. |
 | `HTTP/2` | A TLS handshake with the edge on TCP 7844, as `h2.cftunnel.com`, dialed from both sources of its address at once, the SRV targets and the DoH answer, each as soon as it resolves; the first handshake to complete counts. Judged on the handshake, not the connect, which some networks accept and then drop. | TCP 7844 is blocked. A filter matching on server name has to allow `h2.cftunnel.com`, not `argotunnel.com`. |
 | `relay` | The WebSocket at `wss://<provider>/relay` (then tunnel.pizza's), through the proxy when one applies, and the edge's TLS completed inside it. | WebSocket upgrades are refused, or something answers TLS for the relay with a certificate tunneld does not trust, named by issuer as for `GET`. |
 | `release` | This platform's release binary, `https://github.com/tunnel-pizza/tunneld/releases/download/<version>/tunneld-<os>-<arch>` (`latest` for a build that is not a release), followed one redirect at a time with a `HEAD` on each, so nothing is downloaded: `github.com` redirects to `release-assets.githubusercontent.com`, GitHub's CDN in front of Azure Blob storage, with a signed address that expires within the hour. The line is the chain of hosts and statuses. Informational: it does not change the route. | A host on the chain does not get through, or answers anything but the file; or there is no binary for this platform. |

@@ -22,6 +22,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,7 +46,7 @@ const (
 // the network when it fails.
 type Check struct {
 	// Category is the heading the check is printed under: Network, DNS,
-	// Mint, Edge or Install.
+	// Edge or Install.
 	Category string
 	Name     string
 	OK       bool
@@ -69,22 +70,27 @@ type Report struct {
 	Assessment string
 }
 
+// mintSteps are the checks a run's mint stands on, in the order it takes
+// them: the first of them failing is what is in its way.
+var mintSteps = []string{"GET", "POST", "address check"}
+
 // Failed names what stops a run when the route is RouteNone, or is empty
-// when a route works: the mint's request when that is in the way, otherwise
-// every route to the edge, since a run tries each.
+// when a route works: the mint's first step in the way, otherwise every
+// route to the edge, since a run tries each.
 func (r Report) Failed() []string {
 	if r.Route != RouteNone {
 		return nil
 	}
+	for _, step := range mintSteps {
+		for _, c := range r.Checks {
+			if c.Name == step && !c.OK {
+				return []string{phrase(c)}
+			}
+		}
+	}
 	var routes []string
 	for _, c := range r.Checks {
-		if c.OK {
-			continue
-		}
-		if c.Category == "Mint" {
-			return []string{phrase(c)}
-		}
-		if c.Category == "Edge" {
+		if !c.OK && (c.Name == "HTTP/2" || c.Name == "relay") {
 			routes = append(routes, phrase(c))
 		}
 	}
@@ -237,14 +243,27 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 	madeUp := spawn(ctx, p.timeout, only(p.madeUpName))
 	srv := spawn(ctx, p.timeout, p.dnsSRV)
 	doh := spawn(ctx, p.timeout, p.dnsDoH)
-	get := spawn(ctx, p.timeout, func(ctx context.Context) (Check, int) { return p.mintGET(ctx, host) })
-	post := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.mintPOST(ctx, host, get) }))
+	get := spawn(ctx, p.timeout, func(ctx context.Context) (Check, int) { return p.pingGET(ctx, host) })
+	post := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.pingPOST(ctx, host, get) }))
 	http2 := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.http2Over(ctx, srv, doh) }))
 	relay := spawn(ctx, p.timeout, only(p.relay))
 	release := spawn(ctx, p.timeout, only(p.downloadRelease))
 	npm := spawn(ctx, p.timeout, only(p.downloadNPM))
 
 	got := map[string]Check{}
+	// getLine is the GET with the hint the lines above it point to; the
+	// address check, printed before it, is settled from it too.
+	getLine := func() Check {
+		c := get.result()
+		switch {
+		case c.OK:
+		case proxy != nil && direct.result().Direct:
+			c.Hint = "the proxy refuses " + host + " where a direct connection gets through: fix the proxy, or set NO_PROXY=" + host + " to go around it"
+		case !intercepted.result().OK:
+			c.Hint = "the system resolver's answer for " + host + " is not " + host + " (see interception): " + intercepted.result().Hint
+		}
+		return c
+	}
 	lines := []struct {
 		category, name string
 		decides        bool
@@ -253,27 +272,17 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 		{"Network", "proxy", false, proxyEnv.result},
 		{"Network", "without proxy", false, func() Check { return direct.result() }},
 		{"Network", "captive portal", false, portal.result},
-		{"Network", host + edgeAccess, false, access.result},
 		{"DNS", host, false, resolved.result},
 		{"DNS", "interception", false, intercepted.result},
 		{"DNS", "made-up name", false, madeUp.result},
 		{"DNS", "edge SRV", false, srv.result},
 		{"DNS", "DoH", false, doh.result},
-		{"Mint", "GET", true, func() Check {
-			c := get.result()
-			switch {
-			case c.OK:
-			case proxy != nil && got["without proxy"].Direct:
-				c.Hint = "the proxy refuses " + host + " where a direct connection gets through: fix the proxy, or set NO_PROXY=" + host + " to go around it"
-			case !got["interception"].OK:
-				c.Hint = "the system resolver's answer for " + host + " is not " + host + " (see interception): " + got["interception"].Hint
-			}
-			return c
+		{"DNS", "address check", true, func() Check {
+			return p.addressCheck(proxy, getLine(), got[host], got["DoH"])
 		}},
-		{"Mint", "POST", true, post.result},
-		{"Mint", "address check", true, func() Check {
-			return p.addressCheck(proxy, got["GET"], got[host], got["DoH"])
-		}},
+		{"Edge", host + pingLine, false, access.result},
+		{"Edge", "GET", true, getLine},
+		{"Edge", "POST", true, post.result},
 		{"Edge", "HTTP/2", true, http2.result},
 		{"Edge", "relay", true, relay.result},
 		{"Install", "release", false, release.result},
@@ -449,7 +458,7 @@ func (p *Preflight) assess(r Report, proxy *url.URL, address Check) string {
 		failed := r.Failed()
 		if len(failed) == 1 {
 			for _, c := range r.Checks {
-				if c.Category == "Mint" && phrase(c) == failed[0] {
+				if slices.Contains(mintSteps, c.Name) && phrase(c) == failed[0] {
 					return "tunneld will not work here: " + phrase(c) + " failed (" + c.Detail + "). " + capitalize(c.Hint) + "."
 				}
 			}
@@ -556,9 +565,9 @@ func (p *Preflight) dnsDoH(ctx context.Context) (Check, string) {
 	return c, address
 }
 
-// mintClient asks the provider through the proxy a run would use, with the
+// pingClient asks the provider through the proxy a run would use, with the
 // trust set a run uses, and follows no redirect.
-func (p *Preflight) mintClient() *http.Client {
+func (p *Preflight) pingClient() *http.Client {
 	return &http.Client{
 		Timeout: p.timeout,
 		Transport: &http.Transport{
@@ -574,7 +583,7 @@ func (p *Preflight) mintClient() *http.Client {
 // askPing sends method to the provider's ping and reads what little of the
 // answer it needs. Neither method mints: the mint is POST /tunnel.
 func (p *Preflight) askPing(ctx context.Context, method string) (*http.Response, error) {
-	client := p.mintClient()
+	client := p.pingClient()
 	defer client.CloseIdleConnections()
 	req, err := http.NewRequestWithContext(ctx, method, "https://"+p.provider+pingPath, nil)
 	if err != nil {
@@ -589,9 +598,9 @@ func (p *Preflight) askPing(ctx context.Context, method string) (*http.Response,
 	return resp, nil
 }
 
-// mintGET asks the provider's ping with a GET. Its value is the status, for
+// pingGET asks the provider's ping with a GET. Its value is the status, for
 // the POST to weigh its own against; zero when the GET got no answer.
-func (p *Preflight) mintGET(ctx context.Context, host string) (Check, int) {
+func (p *Preflight) pingGET(ctx context.Context, host string) (Check, int) {
 	c := Check{Name: "GET"}
 	g, err := p.askPing(ctx, http.MethodGet)
 	if err != nil {
@@ -613,10 +622,10 @@ func (p *Preflight) mintGET(ctx context.Context, host string) (Check, int) {
 	return c, g.StatusCode
 }
 
-// mintPOST asks the provider's ping with a POST, the mint's method, at the
+// pingPOST asks the provider's ping with a POST, the mint's method, at the
 // same time as get asks with a GET, then weighs its answer against the GET's:
 // a POST turned away where the GET got through is a method limit.
-func (p *Preflight) mintPOST(ctx context.Context, host string, get *task[int]) Check {
+func (p *Preflight) pingPOST(ctx context.Context, host string, get *task[int]) Check {
 	c := Check{Name: "POST"}
 	ps, err := p.askPing(ctx, http.MethodPost)
 	if !get.await(ctx) {
@@ -645,20 +654,20 @@ func (p *Preflight) mintPOST(ctx context.Context, host string, get *task[int]) C
 	return c
 }
 
-// edgeAccess names the edge accessibility check, after the provider's host.
-const edgeAccess = " edge accessibility"
+// pingLine names the ping's line, after the provider's host.
+const pingLine = " ping"
 
-// pingPath is what the mint checks and the edge accessibility check ask:
-// the provider's edge answers GET, HEAD and POST there ahead of every gate,
-// never from its origin, so a cold origin cannot time them out, with x-dnsbl
-// saying whether the mint's blocklist lists the caller's address. A provider
-// without it still shows whether HTTPS and a POST get there.
+// pingPath is what the ping and its GET and POST ask: the provider's edge
+// answers there ahead of every gate, never from its origin, so a cold origin
+// cannot time them out, and its HEAD carries x-ip, the address it saw, and
+// x-dnsbl, whether the mint's blocklist lists it. A provider without it still
+// shows whether HTTPS and a POST get there.
 const pingPath = "/ping"
 
-// edgeAccessibility asks the provider's edge, through the proxy a run uses,
-// whether a mint from this address gets past its blocklist: a listed one is
-// held and refused. It never names the path in what it prints, and it is
-// early signal only: the route stays the mint's and the edge's checks.
+// edgeAccessibility is the ping: a HEAD asking the provider's edge, through
+// the proxy a run uses, which address it sees this machine at and whether a
+// mint from there gets past its blocklist: a listed one is held and refused.
+// Early signal only: the route stays the GET's, the POST's and the routes'.
 func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 	var c Check
 	client := &http.Client{
@@ -688,6 +697,12 @@ func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 		return c
 	}
 	resp.Body.Close()
+	// The address the provider's edge saw this machine at, which a proxy or
+	// NAT makes different from any address it has itself.
+	address := "this address"
+	if ip := resp.Header.Get("X-Ip"); ip != "" && ip != "unknown" {
+		address = ip
+	}
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		c.Detail = "not offered by " + host
@@ -697,11 +712,11 @@ func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 		c.Hint = "allow HTTPS to " + host
 	case resp.Header.Get("X-Dnsbl") == "true":
 		c.OK, c.Warn = true, true
-		c.Detail = "this address is on a blocklist " + host + " enforces at the mint"
+		c.Detail = address + " is on a blocklist " + host + " enforces at the mint"
 		c.Hint = "a mint from here is held about 30 s and refused unless it carries a token " + host + " signed: create_tunnel's LIBTUNNEL_TOKEN"
 	case resp.Header.Get("X-Dnsbl") == "false":
 		c.OK = true
-		c.Detail = "reachable, this address not on a blocklist"
+		c.Detail = "reachable, " + address + " not on a blocklist"
 	default:
 		c.Detail = "reachable, but " + host + " gave no blocklist verdict"
 		c.Hint = "whether a mint from here is held is not known; the mint's own checks below still apply"
@@ -870,12 +885,10 @@ func dialViaProxy(ctx context.Context, proxy *url.URL, target string, timeout ti
 
 // phrase names a check in a sentence.
 func phrase(c Check) string {
-	switch {
-	case c.Category == "Mint" && c.Name == "address check":
-		return "the address check"
-	case c.Category == "Mint":
+	switch c.Name {
+	case "GET", "POST":
 		return "the mint's " + c.Name
-	case c.Category == "Edge" && c.Name != "relay":
+	case "HTTP/2":
 		return "direct " + c.Name
 	}
 	return "the " + c.Name

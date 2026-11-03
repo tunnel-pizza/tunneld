@@ -119,7 +119,7 @@ func TestHTTPS(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := provider(t, tc.handler)
 			p := local(t, server, 0)
-			get, post := mint(p)
+			get, post := pings(p)
 			if !get.OK {
 				t.Fatalf("GET failed: %s", get.Detail)
 			}
@@ -138,11 +138,11 @@ func TestHTTPS(t *testing.T) {
 
 // TestHTTPSNamesAnInterceptingIssuer pins that a certificate the trust set
 // does not know is reported by its issuer, with where to put its CA.
-// mint asks as a run's mint checks do: the GET and the POST at once, the
-// POST handed the GET's answer.
-func mint(p *Preflight) (get, post Check) {
-	got := spawn(context.Background(), p.timeout, func(ctx context.Context) (Check, int) { return p.mintGET(ctx, "127.0.0.1") })
-	post = p.mintPOST(context.Background(), "127.0.0.1", got)
+// pings asks as a run's GET and POST checks do: both at once, the POST
+// handed the GET's answer.
+func pings(p *Preflight) (get, post Check) {
+	got := spawn(context.Background(), p.timeout, func(ctx context.Context) (Check, int) { return p.pingGET(ctx, "127.0.0.1") })
+	post = p.pingPOST(context.Background(), "127.0.0.1", got)
 	return got.result(), post
 }
 
@@ -159,7 +159,7 @@ func TestHTTPSAsksTogether(t *testing.T) {
 		both.Wait()
 	})
 	p := local(t, server, 0)
-	if get, post := mint(p); !get.OK || !post.OK {
+	if get, post := pings(p); !get.OK || !post.OK {
 		t.Errorf("GET %v %q, POST %v %q: want both answered", get.OK, get.Detail, post.OK, post.Detail)
 	}
 }
@@ -168,7 +168,7 @@ func TestHTTPSNamesAnInterceptingIssuer(t *testing.T) {
 	server := provider(t, ok)
 	p := local(t, server, 0)
 	p.rootCAs = x509.NewCertPool()
-	get, post := mint(p)
+	get, post := pings(p)
 	if get.OK || post.OK {
 		t.Fatalf("GET ok = %v, POST ok = %v, want both failed", get.OK, post.OK)
 	}
@@ -345,6 +345,28 @@ func TestRunBoundsEveryCheck(t *testing.T) {
 	}
 }
 
+// TestRunGroupsTheReport pins where each line sits: the ping and its GET and
+// POST with the routes to the edge, the address check with the DNS it is
+// settled from, and no group of the mint's own.
+func TestRunGroupsTheReport(t *testing.T) {
+	server := provider(t, ok)
+	p := local(t, server, edgeTCP(t, server))
+	var lines []string
+	for _, c := range p.Run(context.Background(), nil).Checks {
+		lines = append(lines, c.Category+"/"+c.Name)
+	}
+	host := hostOf(p.provider)
+	want := []string{
+		"Network/proxy", "Network/captive portal",
+		"DNS/" + host, "DNS/interception", "DNS/made-up name", "DNS/edge SRV", "DNS/DoH", "DNS/address check",
+		"Edge/" + host + " ping", "Edge/GET", "Edge/POST", "Edge/HTTP/2", "Edge/relay",
+		"Install/release", "Install/npm",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("lines\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // TestRunDecidesFromTheRouteChecks pins which checks settle the verdict: the
 // mint's, the address check and the two routes to the edge. Every other one
 // is informational, and failing changes nothing.
@@ -398,7 +420,7 @@ func TestAssessment(t *testing.T) {
 		// The proxy here is the provider itself answering in its place; what
 		// is pinned is the wording a proxy gets.
 		proxy, _ := url.Parse("http://user:secret@proxy.internal:3128")
-		get, _ := mint(p)
+		get, _ := pings(p)
 		c := p.addressCheck(proxy, get, Check{}, Check{})
 		r := Report{Route: RouteRelay}
 		got := p.assess(r, proxy, c)
@@ -561,6 +583,7 @@ func TestEdgeAccessibility(t *testing.T) {
 			}
 			if dnsbl != "" {
 				w.Header().Set("X-Dnsbl", dnsbl)
+				w.Header().Set("X-Ip", "203.0.113.9")
 			}
 			w.WriteHeader(status)
 		}
@@ -571,8 +594,8 @@ func TestEdgeAccessibility(t *testing.T) {
 		ok, warn bool
 		says     string
 	}{
-		{"clean", answer(http.StatusOK, "false"), true, false, "not on a blocklist"},
-		{"listed", answer(http.StatusOK, "true"), true, true, "on a blocklist"},
+		{"clean", answer(http.StatusOK, "false"), true, false, "reachable, 203.0.113.9 not on a blocklist"},
+		{"listed", answer(http.StatusOK, "true"), true, true, "203.0.113.9 is on a blocklist 127.0.0.1 enforces at the mint"},
 		// Unknown is a failure: an answer with no verdict, or no such answer.
 		{"no verdict", answer(http.StatusOK, ""), false, false, "no blocklist verdict"},
 		{"not offered", answer(http.StatusNotFound, ""), false, false, "not offered"},
@@ -615,12 +638,12 @@ func TestEdgeAccessibilityLeavesTheRouteAlone(t *testing.T) {
 	r := p.Run(context.Background(), nil)
 	var found bool
 	for _, c := range r.Checks {
-		if strings.HasSuffix(c.Name, "edge accessibility") {
-			found = c.Category == "Network" && !c.OK
+		if strings.HasSuffix(c.Name, " ping") {
+			found = c.Category == "Edge" && !c.OK
 		}
 	}
 	if !found {
-		t.Errorf("no failed Network check named edge accessibility in %+v", r.Checks)
+		t.Errorf("no failed Edge check named ping in %+v", r.Checks)
 	}
 	if r.Route != RouteHTTP2 || len(r.Failed()) != 0 {
 		t.Errorf("route %s, failed %q: want the route the edge gives, unchanged", r.Route, r.Failed())

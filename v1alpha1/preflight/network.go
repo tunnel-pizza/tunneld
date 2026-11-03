@@ -61,7 +61,7 @@ func (p *Preflight) proxyEnv() Check {
 	case proxy != nil:
 		c.Detail = target + " goes through " + redact(proxy.String()) + "; the edge on 7844 is dialed directly"
 		if proxy.Scheme == "socks5" || proxy.Scheme == "socks5h" {
-			hints = append(hints, "the relay reaches a proxy with HTTP CONNECT only, so through a SOCKS proxy the mint gets out and the relay does not: name an HTTP proxy in HTTPS_PROXY")
+			hints = append(hints, "the relay reaches a proxy with HTTP CONNECT only, so through a SOCKS proxy the control plane is reached and the relay is not: name an HTTP proxy in HTTPS_PROXY")
 		}
 	case values["HTTPS_PROXY"] != "":
 		c.Detail = "NO_PROXY exempts " + host + ", so it goes direct"

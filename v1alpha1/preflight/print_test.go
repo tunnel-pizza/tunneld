@@ -18,7 +18,7 @@ func TestPrinterStartsALineAndEndsItLater(t *testing.T) {
 	if !strings.HasSuffix(started, "  HTTP/2"+strings.Repeat(" ", p.width-len("HTTP/2")+2)) || strings.HasSuffix(started, "\n") {
 		t.Fatalf("after start: %q, want the name and no newline", started)
 	}
-	if !strings.Contains(started, "\nEdge  port 7844, or the relay on 443\n") {
+	if !strings.Contains(started, "\nEdge  https://tunnel.pizza/ping, port 7844, or the relay on 443\n") {
 		t.Errorf("no heading before the first check of a category: %q", started)
 	}
 	p.end(Check{OK: false, Detail: "context deadline exceeded", Hint: "allow TCP 7844"})
