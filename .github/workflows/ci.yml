@@ -316,12 +316,25 @@ jobs:
       # Keyless: OIDC -> Fulcio cert -> Rekor transparency log, bundled in one
       # .sigstore file beside the binary. Windows executables are cosign-signed
       # like the rest, not Authenticode-signed; SECURITY.md says so.
+      # Rekor can take an entry and answer too late, and cosign's retry of
+      # that request is then refused as a duplicate (409). A new sign-blob
+      # signs with a new key and certificate, so its entry cannot conflict:
+      # each binary gets three of them before the step fails.
       - name: sign
         if: needs.prepare.outputs.signed == 'true'
         run: |
           set -euo pipefail
           for f in dist/tunneld-*; do
-            cosign sign-blob --yes --bundle "${f}.sigstore" "${f}"
+            for attempt in 1 2 3; do
+              if cosign sign-blob --yes --bundle "${f}.sigstore" "${f}"; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                exit 1
+              fi
+              echo "::warning::signing ${f} failed (attempt ${attempt}); signing it again"
+              sleep $((attempt * 15))
+            done
           done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
