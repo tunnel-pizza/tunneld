@@ -84,7 +84,7 @@ func (p *Preflight) proxyEnv() Check {
 	return c
 }
 
-// withoutProxy asks the provider directly, bypassing the proxy, so a proxy
+// withoutProxy asks the provider's ping directly, bypassing the proxy, so a proxy
 // that refuses it can be told apart from a network that does.
 func (p *Preflight) withoutProxy(ctx context.Context) Check {
 	c := Check{OK: true}
@@ -95,8 +95,9 @@ func (p *Preflight) withoutProxy(ctx context.Context) Check {
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	defer client.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+p.provider+"/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+p.provider+pingPath, nil)
 	if err != nil {
+		c.OK = false
 		c.Detail = err.Error()
 		return c
 	}
@@ -107,7 +108,7 @@ func (p *Preflight) withoutProxy(ctx context.Context) Check {
 	}
 	resp.Body.Close()
 	c.Direct = true
-	c.Detail = "https://" + p.provider + "/ answers " + resp.Status + " without the proxy too"
+	c.Detail = "https://" + p.provider + pingPath + " answers " + resp.Status + " without the proxy too"
 	return c
 }
 
@@ -178,8 +179,9 @@ func (p *Preflight) captivePortal(ctx context.Context) Check {
 		c.Detail = "a portal answers in place of " + strings.Join(intercepted, "; ")
 		c.Hint = "this network wants a sign-in first: open a browser, sign in to its portal, and run this again"
 	case len(answered) == 0:
-		c.Warn = true
+		c.OK = false
 		c.Detail = "plain HTTP does not get out, so a portal cannot be seen from here: " + results[0]
+		c.Hint = "allow plain HTTP on port 80 to see one, or open a browser to check for a sign-in page"
 	default:
 		c.Detail = "none: " + strings.Join(answered, ", ") + " answered as expected"
 		if len(blocked) > 0 {
@@ -221,6 +223,7 @@ func askPortalProbe(ctx context.Context, client *http.Client, probe portalProbe)
 func (p *Preflight) interception(ctx context.Context, host string, system []string, proxied bool) Check {
 	c := Check{OK: true}
 	if len(system) == 0 {
+		c.OK = false
 		c.Detail = "nothing to check: the system resolver did not answer"
 		return c
 	}
@@ -250,6 +253,7 @@ func (p *Preflight) interception(ctx context.Context, host string, system []stri
 			c.Hint = "this network rewrites DNS, as a captive portal or a filtering resolver does: sign in to its portal, or set HTTPS_PROXY to a proxy that resolves for you"
 			return c
 		}
+		c.OK = false
 		c.Detail = "could not reach " + address + " to check it: " + err.Error()
 		return c
 	}
@@ -278,6 +282,7 @@ func (p *Preflight) madeUpName(ctx context.Context) Check {
 	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
 		c.Detail = "none: a name that does not exist is not found"
 	default:
+		c.OK = false
 		c.Detail = "the system resolver did not answer"
 	}
 	return c

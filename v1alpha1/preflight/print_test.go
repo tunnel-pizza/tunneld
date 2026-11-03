@@ -57,6 +57,28 @@ func TestPrinterMarks(t *testing.T) {
 	}
 }
 
+// TestPrinterMarksAnInformationalFailureApart pins that a failing check the
+// verdict does not rest on is painted as a warning, where one it rests on is
+// painted as a failure.
+func TestPrinterMarksAnInformationalFailureApart(t *testing.T) {
+	for _, tc := range []struct {
+		decides bool
+		mark    string
+	}{
+		{true, "\x1b[31m✗\x1b[0m"},
+		{false, "\x1b[33m✗\x1b[0m"},
+	} {
+		var out bytes.Buffer
+		p := newPrinter(&out, "tunnel.pizza")
+		p.paint.on = true
+		p.start("DNS", "x")
+		p.end(Check{Decides: tc.decides, Detail: "broken"})
+		if !strings.Contains(out.String(), "broken  "+tc.mark) {
+			t.Errorf("decides=%v: %q has no %q", tc.decides, out.String(), tc.mark)
+		}
+	}
+}
+
 // TestRunPrintsWhatWritePrints pins that the report printed as it goes is the
 // report: Run's output and Close match Write on the finished report.
 func TestRunPrintsWhatWritePrints(t *testing.T) {

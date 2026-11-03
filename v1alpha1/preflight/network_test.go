@@ -88,12 +88,14 @@ func TestCaptivePortal(t *testing.T) {
 		ok     bool
 		warn   bool
 		says   string
+		hint   string
 	}{
-		{"every probe answers as asked", []portalProbe{apple, android}, true, false, "none: Apple, Android answered as expected"},
-		{"one held, a redirect to the portal", []portalProbe{apple, {"Android", network.URL + "/held/generate_204", http.StatusNoContent, ""}}, false, false, "Android: " + strings.TrimPrefix(network.URL, "http://") + " answered 302 Found, sending this machine to https://portal.hotel.example/login"},
-		{"one held, the portal's own page", []portalProbe{apple, {"Windows", network.URL + "/held/connecttest.txt", http.StatusOK, "Microsoft Connect Test"}}, false, false, "Windows:"},
-		{"one does not answer", []portalProbe{apple, gone}, true, false, "Windows did not answer"},
-		{"none answers", []portalProbe{gone}, true, true, "plain HTTP does not get out"},
+		{"every probe answers as asked", []portalProbe{apple, android}, true, false, "none: Apple, Android answered as expected", ""},
+		{"one held, a redirect to the portal", []portalProbe{apple, {"Android", network.URL + "/held/generate_204", http.StatusNoContent, ""}}, false, false, "Android: " + strings.TrimPrefix(network.URL, "http://") + " answered 302 Found, sending this machine to https://portal.hotel.example/login", "sign in"},
+		{"one held, the portal's own page", []portalProbe{apple, {"Windows", network.URL + "/held/connecttest.txt", http.StatusOK, "Microsoft Connect Test"}}, false, false, "Windows:", "sign in"},
+		{"one does not answer", []portalProbe{apple, gone}, true, false, "Windows did not answer", ""},
+		// Unknown is a failure: with nothing answering, no portal can be seen.
+		{"none answers", []portalProbe{gone}, false, false, "plain HTTP does not get out", "allow plain HTTP"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p.portalProbes = tc.probes
@@ -104,8 +106,8 @@ func TestCaptivePortal(t *testing.T) {
 			if !strings.Contains(c.Detail, tc.says) {
 				t.Errorf("detail %q does not say %q", c.Detail, tc.says)
 			}
-			if !tc.ok && !strings.Contains(c.Hint, "sign in") {
-				t.Errorf("hint %q does not say to sign in", c.Hint)
+			if !strings.Contains(c.Hint, tc.hint) {
+				t.Errorf("hint %q does not say %q", c.Hint, tc.hint)
 			}
 		})
 	}
@@ -138,6 +140,16 @@ func TestInterception(t *testing.T) {
 	if c := p.interception(context.Background(), "tunnel.pizza", []string{"203.0.113.9"}, true); !c.OK || !strings.Contains(c.Detail, "the proxy resolves") {
 		t.Errorf("through a proxy: ok=%v %q", c.OK, c.Detail)
 	}
+
+	// Unknown is a failure: nothing to check, or nothing answering to check.
+	if c := p.interception(context.Background(), "tunnel.pizza", nil, false); c.OK {
+		t.Errorf("no answer from the system resolver: ok=%v %q", c.OK, c.Detail)
+	}
+	p.provider = "example.com:1"
+	p.private = func(string) bool { return false }
+	if c := p.interception(context.Background(), "example.com", []string{"127.0.0.1"}, false); c.OK || !strings.Contains(c.Detail, "could not reach") {
+		t.Errorf("an address that does not answer: ok=%v %q", c.OK, c.Detail)
+	}
 }
 
 func TestMadeUpName(t *testing.T) {
@@ -150,6 +162,12 @@ func TestMadeUpName(t *testing.T) {
 	}
 	if c := p.madeUpName(context.Background()); c.Warn || !c.OK {
 		t.Errorf("a resolver that says not found: warn=%v %q", c.Warn, c.Detail)
+	}
+	p.lookupHost = func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "server misbehaving", Name: "x"}
+	}
+	if c := p.madeUpName(context.Background()); c.OK {
+		t.Errorf("a resolver that does not answer: ok=%v %q", c.OK, c.Detail)
 	}
 }
 
