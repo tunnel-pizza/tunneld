@@ -412,9 +412,15 @@ func (b *BuilderImpl) Run(ctx context.Context) error {
 
 	// Ahead of everything a run sets up: it needs no origins, no log file
 	// and no logger, and opens nothing.
+	// Informational whatever it finds: what failed is said on stderr, and the
+	// process still exits 0, so a setup script running it is never failed by
+	// the report.
 	if b.preflight {
 		out := cmd.OutOrStdout()
-		return preflight.New(b.provider, Version()).Run(ctx, out).Close(out)
+		if err := preflight.New(b.provider, Version()).Run(ctx, out).Close(out); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", cmd.Name(), err)
+		}
+		return nil
 	}
 
 	// An MCP run's stdin and stdout are its client's (mcp.WithStdio), so what
