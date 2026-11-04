@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +40,7 @@ func local(t *testing.T, server *httptest.Server, edgePort int) *Preflight {
 		lookupSRV: func(context.Context) ([]*net.SRV, error) {
 			return []*net.SRV{{Target: "edge.test.", Port: uint16(edgePort)}}, nil
 		},
-		doh:          func(context.Context, string) (string, error) { return "", errors.New("no DoH here") },
+		doh:          func(context.Context, string) ([]string, error) { return nil, errors.New("no DoH here") },
 		proxy:        func(string, string) *url.URL { return nil },
 		getenv:       func(string) string { return "" },
 		private:      bogon,
@@ -302,11 +303,14 @@ func TestRunChecksAtOnce(t *testing.T) {
 		}
 		return srv(ctx)
 	}
-	p.doh = func(ctx context.Context, _ string) (string, error) {
-		if err := meet(ctx); err != nil {
-			return "", err
+	p.doh = func(ctx context.Context, host string) ([]string, error) {
+		if host != edgeName {
+			return []string{"127.0.0.1"}, nil
 		}
-		return "127.0.0.1", nil
+		if err := meet(ctx); err != nil {
+			return nil, err
+		}
+		return []string{"127.0.0.1"}, nil
 	}
 	r := p.Run(context.Background(), nil)
 	for _, c := range r.Checks {
@@ -381,7 +385,7 @@ func TestRunDecidesFromTheRouteChecks(t *testing.T) {
 		}
 		return nil, &net.DNSError{Err: "server misbehaving", Name: host}
 	}
-	p.doh = func(context.Context, string) (string, error) { return "127.0.0.1", nil }
+	p.doh = func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }
 	r := p.Run(context.Background(), nil)
 	decides := map[string]bool{"GET": true, "POST": true, "address check": true, "HTTP/2": true, "relay": true}
 	for _, c := range r.Checks {
@@ -394,6 +398,72 @@ func TestRunDecidesFromTheRouteChecks(t *testing.T) {
 	}
 }
 
+// TestAddressDial pins the address check as a run makes it: the provider's
+// addresses from DNS-over-HTTPS, or the system resolver when DoH cannot be
+// reached, dialed in order with a handshake; one that fails before another
+// answers is named in a warning, and none answering is a failure.
+func TestAddressDial(t *testing.T) {
+	server := provider(t, ok)
+	answers := func(addrs ...string) func(context.Context, string) ([]string, error) {
+		return func(context.Context, string) ([]string, error) { return addrs, nil }
+	}
+	cases := []struct {
+		name     string
+		doh      func(context.Context, string) ([]string, error)
+		ok, warn bool
+		detail   string
+		hint     string
+	}{
+		{"the first answers", answers("127.0.0.1"), true, false, "over DNS-over-HTTPS, then HTTPS 443 directly: 127.0.0.1 answered", ""},
+		{"a dead address first", answers("::1", "127.0.0.1"), true, true, "127.0.0.1 answered", "::1"},
+		{"none answers", answers("::1"), false, false, "::1", "allow HTTPS"},
+		{"DoH unreachable", func(context.Context, string) ([]string, error) {
+			return nil, errors.New("dial cloudflare-dns.com: i/o timeout")
+		}, true, false, "system resolver", ""},
+		{"no such name", func(_ context.Context, host string) ([]string, error) {
+			return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+		}, false, false, "no such host", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := local(t, server, 0)
+			p.doh = tc.doh
+			host := hostOf(p.provider)
+			c := p.addressDial(context.Background(), host, pinged(""))
+			if c.OK != tc.ok || c.Warn != tc.warn || !strings.Contains(c.Detail, tc.detail) || !strings.Contains(c.Hint, tc.hint) {
+				t.Errorf("addressDial = ok %v warn %v %q / %q, want ok %v warn %v with %q / %q",
+					c.OK, c.Warn, c.Detail, c.Hint, tc.ok, tc.warn, tc.detail, tc.hint)
+			}
+		})
+	}
+}
+
+// pinged is a ping that has resolved naming tunnelHost, or none.
+func pinged(tunnelHost string) *task[string] {
+	t := &task[string]{done: make(chan struct{}), value: tunnelHost}
+	close(t.done)
+	return t
+}
+
+// TestAddressDialUsesTheTunnelZone pins that the address check dials the name
+// the provider's ping gave in the zone mints go to, where a run dials its
+// tunnel's own name, rather than the provider's.
+func TestAddressDialUsesTheTunnelZone(t *testing.T) {
+	p := local(t, provider(t, ok), 0)
+	var asked []string
+	p.doh = func(_ context.Context, host string) ([]string, error) {
+		asked = append(asked, host)
+		return []string{"127.0.0.1"}, nil
+	}
+	c := p.addressDial(context.Background(), hostOf(p.provider), pinged("example.com"))
+	if !c.OK || !strings.HasPrefix(c.Detail, "example.com over DNS-over-HTTPS") {
+		t.Errorf("addressDial = ok %v %q, want example.com dialed", c.OK, c.Detail)
+	}
+	if !slices.Equal(asked, []string{"example.com"}) {
+		t.Errorf("DoH asked for %q, want the tunnel zone's name only", asked)
+	}
+}
+
 // TestAssessment pins the report's last line: how a run gets through, in the
 // order it goes, or the first thing in its way.
 func TestAssessment(t *testing.T) {
@@ -402,7 +472,7 @@ func TestAssessment(t *testing.T) {
 	noDNS := func(context.Context, string) ([]string, error) {
 		return nil, &net.DNSError{Err: "refused", Name: "x"}
 	}
-	noDoH := func(context.Context, string) (string, error) { return "", errors.New("blocked") }
+	noDoH := func(context.Context, string) ([]string, error) { return nil, errors.New("blocked") }
 
 	t.Run("direct", func(t *testing.T) {
 		r := local(t, server, port).Run(context.Background(), nil)
@@ -421,7 +491,7 @@ func TestAssessment(t *testing.T) {
 		// is pinned is the wording a proxy gets.
 		proxy, _ := url.Parse("http://user:secret@proxy.internal:3128")
 		get, _ := pings(p)
-		c := p.addressCheck(proxy, get, Check{}, Check{})
+		c := p.addressCheck(proxy, get, Check{})
 		r := Report{Route: RouteRelay}
 		got := p.assess(r, proxy, c)
 		want := "tunneld will work here using an HTTPS mint through the proxy at proxy.internal:3128, the proxy's resolver, and an address check through the proxy, over the relay (a WebSocket on HTTPS 443)."
@@ -584,6 +654,7 @@ func TestEdgeAccessibility(t *testing.T) {
 			if dnsbl != "" {
 				w.Header().Set("X-Dnsbl", dnsbl)
 				w.Header().Set("X-Ip", "203.0.113.9")
+				w.Header().Set("X-Tunnel-Host", "ping.tunneld.test")
 			}
 			w.WriteHeader(status)
 		}
@@ -604,7 +675,10 @@ func TestEdgeAccessibility(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := local(t, provider(t, tc.handler), 0)
-			c := p.edgeAccessibility(context.Background(), "127.0.0.1")
+			c, tunnelHost := p.edgeAccessibility(context.Background(), "127.0.0.1")
+			if want := map[bool]string{true: "ping.tunneld.test"}[tc.name == "clean" || tc.name == "listed"]; tunnelHost != want {
+				t.Errorf("tunnel host = %q, want %q", tunnelHost, want)
+			}
 			if c.OK != tc.ok || c.Warn != tc.warn || !strings.Contains(c.Detail, tc.says) {
 				t.Errorf("edgeAccessibility = ok %v warn %v %q, want ok %v warn %v saying %q", c.OK, c.Warn, c.Detail, tc.ok, tc.warn, tc.says)
 			}
@@ -618,7 +692,7 @@ func TestEdgeAccessibility(t *testing.T) {
 		server := provider(t, ok)
 		p := local(t, server, 0)
 		server.Close()
-		c := p.edgeAccessibility(context.Background(), "127.0.0.1")
+		c, _ := p.edgeAccessibility(context.Background(), "127.0.0.1")
 		if c.OK || c.Detail == "" || strings.Contains(c.Detail+c.Hint, "/ping") {
 			t.Errorf("edgeAccessibility = ok %v %q, hint %q: want a failure that never shows the path", c.OK, c.Detail, c.Hint)
 		}
