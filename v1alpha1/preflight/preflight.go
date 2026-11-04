@@ -115,7 +115,7 @@ type Preflight struct {
 
 	lookupHost   func(ctx context.Context, host string) ([]string, error)
 	lookupSRV    func(ctx context.Context) ([]*net.SRV, error)
-	doh          func(ctx context.Context, host string) (string, error)
+	doh          func(ctx context.Context, host string) ([]string, error)
 	proxy        func(scheme, target string) *url.URL
 	getenv       func(string) string
 	portalProbes []portalProbe
@@ -155,7 +155,7 @@ func New(provider, version string) *Preflight {
 			_, srvs, err := net.DefaultResolver.LookupSRV(ctx, "v2-origintunneld", "tcp", "argotunnel.com")
 			return srvs, err
 		},
-		doh:          prober.LookupHost,
+		doh:          prober.LookupAddrs,
 		proxy:        proxyFor,
 		getenv:       os.Getenv,
 		private:      bogon,
@@ -232,7 +232,7 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 		direct = spawn(ctx, p.timeout, only(p.withoutProxy))
 	}
 	portal := spawn(ctx, p.timeout, only(p.captivePortal))
-	access := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.edgeAccessibility(ctx, host) }))
+	access := spawn(ctx, p.timeout, func(ctx context.Context) (Check, string) { return p.edgeAccessibility(ctx, host) })
 	resolved := spawn(ctx, p.timeout, func(ctx context.Context) (Check, []string) { return p.dnsProvider(ctx, host) })
 	intercepted := spawn(ctx, p.timeout, only(func(ctx context.Context) Check {
 		if !resolved.await(ctx) {
@@ -243,6 +243,10 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 	madeUp := spawn(ctx, p.timeout, only(p.madeUpName))
 	srv := spawn(ctx, p.timeout, p.dnsSRV)
 	doh := spawn(ctx, p.timeout, p.dnsDoH)
+	var dialed *task[struct{}]
+	if proxy == nil {
+		dialed = spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.addressDial(ctx, host, access) }))
+	}
 	get := spawn(ctx, p.timeout, func(ctx context.Context) (Check, int) { return p.pingGET(ctx, host) })
 	post := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.pingPOST(ctx, host, get) }))
 	http2 := spawn(ctx, p.timeout, only(func(ctx context.Context) Check { return p.http2Over(ctx, srv, doh) }))
@@ -278,7 +282,7 @@ func (p *Preflight) Run(ctx context.Context, w io.Writer) Report {
 		{"DNS", "edge SRV", false, srv.result},
 		{"DNS", "DoH", false, doh.result},
 		{"DNS", "address check", true, func() Check {
-			return p.addressCheck(proxy, getLine(), got[host], got["DoH"])
+			return p.addressCheck(proxy, getLine(), dialed.result())
 		}},
 		{"Edge", host + pingLine, false, access.result},
 		{"Edge", "GET", true, getLine},
@@ -425,11 +429,10 @@ func (r Report) Close(w io.Writer) error {
 
 // addressCheck is the step after the mint: a run asks for its new address
 // from here, and prints it only once that comes back through the tunnel. It
-// takes the proxy when one applies, which resolves the name; otherwise
-// DNS-over-HTTPS, or the system resolver when DNS-over-HTTPS cannot be
-// reached, and HTTPS 443 directly. No tunnel exists to ask for, so this is
-// settled from the checks that make up those paths.
-func (p *Preflight) addressCheck(proxy *url.URL, get, system, doh Check) Check {
+// takes the proxy when one applies, which resolves the name; otherwise it is
+// dialed, the provider standing in for the tunnel's name, which does not
+// exist yet.
+func (p *Preflight) addressCheck(proxy *url.URL, get, dialed Check) Check {
 	c := Check{Name: "address check"}
 	switch {
 	case !get.OK:
@@ -438,18 +441,74 @@ func (p *Preflight) addressCheck(proxy *url.URL, get, system, doh Check) Check {
 	case proxy != nil:
 		c.OK = true
 		c.Detail = "through the proxy, which resolves the tunnel's name"
-	case doh.OK:
-		c.OK = true
-		c.Detail = "the tunnel's name over DNS-over-HTTPS, then HTTPS 443 directly"
-	case system.OK:
-		c.OK = true
-		c.Detail = "the tunnel's name from the system resolver (DNS-over-HTTPS is blocked), then HTTPS 443 directly"
 	default:
-		c.Detail = "neither DNS-over-HTTPS nor the system resolver answers, and there is no proxy to resolve for it"
-		c.Hint = "a run cannot confirm its address without one of them: allow DNS, DNS-over-HTTPS to cloudflare-dns.com and dns.google, or set HTTPS_PROXY to a proxy"
+		return dialed
 	}
 	return c
 }
+
+// addressDial makes the address check as a run does, at the name the ping
+// gave in the zone mints go to, standing in for the tunnel's own name there,
+// or at host when it gave none: its addresses over DNS-over-HTTPS, or from
+// the system resolver when DoH cannot be reached, dialed in that order, IPv4
+// first, with a handshake for that name, each but the last for at most
+// dialEach. An address that failed before another answered is a warning: a
+// run spends that long on it every time it checks.
+func (p *Preflight) addressDial(ctx context.Context, host string, ping *task[string]) Check {
+	c := Check{Name: "address check"}
+	// The ping's answer is waited for no longer than one dial, so a slow
+	// ping leaves this check its own budget, at the provider instead.
+	waited, cancel := context.WithTimeout(ctx, dialEach)
+	if ping.await(waited) && ping.value != "" {
+		host = ping.value
+	}
+	cancel()
+	via := host + " over DNS-over-HTTPS"
+	addrs, err := p.doh(ctx, host)
+	var dnsErr *net.DNSError
+	switch {
+	case errors.As(err, &dnsErr) && dnsErr.IsNotFound:
+		c.Detail = "DNS-over-HTTPS says " + host + " does not exist: " + err.Error()
+		return c
+	case err != nil || len(addrs) == 0:
+		via = host + " from the system resolver (DNS-over-HTTPS is blocked)"
+		addrs, _ = p.lookupHost(ctx, host)
+	}
+	if len(addrs) == 0 {
+		c.Detail = "neither DNS-over-HTTPS nor the system resolver answers, and there is no proxy to resolve for it"
+		c.Hint = "a run cannot confirm its address without one of them: allow DNS, DNS-over-HTTPS to cloudflare-dns.com and dns.google, or set HTTPS_PROXY to a proxy"
+		return c
+	}
+	port := portOf(p.provider, "443")
+	var failed []string
+	for i, a := range addrs {
+		attempt, cancel := ctx, context.CancelFunc(func() {})
+		if i < len(addrs)-1 {
+			attempt, cancel = context.WithTimeout(ctx, dialEach)
+		}
+		dialer := &tls.Dialer{Config: &tls.Config{ServerName: host, RootCAs: p.rootCAs}}
+		conn, err := dialer.DialContext(attempt, "tcp", net.JoinHostPort(a, port))
+		cancel()
+		if err != nil {
+			failed = append(failed, a+": "+err.Error())
+			continue
+		}
+		conn.Close()
+		c.OK = true
+		c.Detail = via + ", then HTTPS 443 directly: " + a + " answered"
+		if len(failed) > 0 {
+			c.Warn = true
+			c.Hint = "first " + strings.Join(failed, "; ") + "; a run spends up to " + dialEach.String() + " on each before the next"
+		}
+		return c
+	}
+	c.Detail = via + ", then HTTPS 443 directly: no address answered: " + strings.Join(failed, "; ")
+	c.Hint = "allow HTTPS 443 to " + host + "'s addresses"
+	return c
+}
+
+// dialEach is how long a run gives each address of several before the next.
+const dialEach = 2 * time.Second
 
 // assess is the report's last line: whether tunneld will work here, and
 // how, in the order a run goes.
@@ -554,15 +613,15 @@ func (p *Preflight) dnsDoH(ctx context.Context) (Check, string) {
 	c := Check{Name: "DoH"}
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
-	address, err := p.doh(ctx, edgeName)
-	if err != nil {
-		c.Detail = err.Error()
+	addrs, err := p.doh(ctx, edgeName)
+	if err != nil || len(addrs) == 0 {
+		c.Detail = cmp.Or(err, errors.New("no addresses")).Error()
 		c.Hint = "DNS-over-HTTPS to cloudflare-dns.com (1.1.1.1) and dns.google (8.8.8.8) is blocked"
 		return c, ""
 	}
 	c.OK = true
-	c.Detail = address
-	return c, address
+	c.Detail = addrs[0]
+	return c, addrs[0]
 }
 
 // pingClient asks the provider through the proxy a run would use, with the
@@ -667,8 +726,10 @@ const pingPath = "/ping"
 // edgeAccessibility is the ping: a HEAD asking the provider's edge, through
 // the proxy a run uses, which address it sees this machine at and whether a
 // mint from there gets past its blocklist: a listed one is held and refused.
+// Its value is x-tunnel-host, a name always there in the zone mints go to,
+// for the address check to dial.
 // Early signal only: the route stays the GET's, the POST's and the routes'.
-func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
+func (p *Preflight) edgeAccessibility(ctx context.Context, host string) (Check, string) {
 	var c Check
 	client := &http.Client{
 		Timeout: p.timeout,
@@ -684,7 +745,7 @@ func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+p.provider+pingPath, nil)
 	if err != nil {
 		c.Detail = err.Error()
-		return c
+		return c, ""
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -694,9 +755,10 @@ func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 		}
 		c.Detail = "no answer: " + err.Error()
 		c.Hint = "allow HTTPS to " + host
-		return c
+		return c, ""
 	}
 	resp.Body.Close()
+	tunnelHost := resp.Header.Get("X-Tunnel-Host")
 	// The address the provider's edge saw this machine at, which a proxy or
 	// NAT makes different from any address it has itself.
 	address := "this address"
@@ -721,7 +783,7 @@ func (p *Preflight) edgeAccessibility(ctx context.Context, host string) Check {
 		c.Detail = "reachable, but " + host + " gave no blocklist verdict"
 		c.Hint = "whether a mint from here is held is not known; the mint's own checks below still apply"
 	}
-	return c
+	return c, tunnelHost
 }
 
 // refused is whether a POST was turned away where the GET, answering
